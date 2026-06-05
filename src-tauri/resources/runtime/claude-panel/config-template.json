@@ -1,0 +1,16 @@
+{
+  "apiKey": "",
+  "baseUrl": "",
+  "mainModel": "",
+  "branchModel": "",
+  "projectPath": "",
+  "interfaceType": "relay",
+  "permissionProfile": "safe",
+  "toolProfile": "none",
+  "highRiskToolsEnabled": false,
+  "notes": [
+    "本模板不包含真实 API Key。",
+    "API Key 可稍后在控制台中填写。",
+    "高权限工具默认锁定，不建议普通客户开启。"
+  ]
+}

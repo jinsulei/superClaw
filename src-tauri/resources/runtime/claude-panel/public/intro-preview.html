@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>开机动画预览</title>
+    <style>
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: #f3f6fb;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .stage {
+        width: min(1100px, 86vw);
+        aspect-ratio: 16 / 9;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        border-radius: 18px;
+        background: linear-gradient(180deg, #ffffff 0%, #edf3fa 100%);
+        box-shadow: 0 30px 80px rgba(82, 99, 125, 0.2);
+      }
+      video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .caption {
+        margin-top: 18px;
+        color: #111827;
+        font-size: 20px;
+        font-weight: 700;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="stage" aria-label="开机动画预览">
+        <video src="/intro/opening-welcome-transparent.webm" autoplay muted loop playsinline controls></video>
+      </section>
+      <div class="caption">开机动画预览</div>
+    </main>
+  </body>
+</html>

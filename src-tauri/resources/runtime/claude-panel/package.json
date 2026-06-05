@@ -1,0 +1,21 @@
+{
+  "name": "clean-claude-panel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A minimal local Claude Code control panel.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "electron:dev": "electron electron/main.js",
+    "pack:win": "electron-builder --dir --win portable",
+    "build:win": "electron-builder --win portable",
+    "prepare:portable": "node scripts/prepare-portable.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}

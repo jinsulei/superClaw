@@ -1,0 +1,26 @@
+import { _ } from '../helper.js'
+
+export default {
+  title: _('路由地图', 'Route Map'),
+  subtitle: _('可视化查看渠道 → 绑定 → 智能体的全局路由关系', 'Visualize Channel → Binding → Agent routing relationships'),
+  refresh: _('刷新', 'Refresh'),
+  loading: _('正在加载路由数据…', 'Loading route data…'),
+  noData: _('暂无路由数据，请先配置 Agent 和消息渠道', 'No route data. Please configure Agents and Channels first.'),
+  channels: _('消息渠道', 'Channels'),
+  agents: _('智能体', 'Agents'),
+  bindings: _('路由规则', 'Bindings'),
+  defaultAgent: _('默认 Agent', 'Default Agent'),
+  enabled: _('已启用', 'Enabled'),
+  disabled: _('已禁用', 'Disabled'),
+  matchAll: _('匹配所有', 'Match All'),
+  peer: _('指定对象', 'Specific Peer'),
+  account: _('账号', 'Account'),
+  statsAgents: _('智能体', 'Agents'),
+  statsChannels: _('渠道', 'Channels'),
+  statsBindings: _('绑定', 'Bindings'),
+  subAgentRelations: _('子代理关系', 'Sub-agent Relations'),
+  subAgentCall: _('子代理调用', 'Sub-agent Call'),
+  legendBinding: _('显式绑定', 'Explicit Binding'),
+  legendDefault: _('默认路由', 'Default Route'),
+  clickToNavigate: _('点击卡片跳转到对应配置页', 'Click card to navigate to config page'),
+}

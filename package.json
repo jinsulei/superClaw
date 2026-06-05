@@ -1,0 +1,34 @@
+{
+  "name": "superclaw",
+  "version": "0.15.0",
+  "private": true,
+  "description": "SuperClaw AI control panel",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "serve": "node scripts/serve.js",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build:pack": "pwsh ./build.ps1",
+    "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-desktop-client.ps1",
+    "download:uv": "node scripts/download-uv.js",
+    "download:openclaw": "node scripts/download-openclaw.js",
+    "version:sync": "node scripts/sync-version.js",
+    "version:set": "node scripts/sync-version.js"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.0",
+    "@tauri-apps/plugin-autostart": "^2.5.1",
+    "@tauri-apps/plugin-shell": "^2.3.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.0",
+    "terser": "^5.0.0",
+    "vite": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

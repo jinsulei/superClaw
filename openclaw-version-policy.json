@@ -1,0 +1,28 @@
+{
+  "standalone": {
+    "enabled": true,
+    "baseUrl": "https://github.com/qingchencloud/openclaw-standalone/releases/latest/download"
+  },
+  "r2": {
+    "enabled": false,
+    "baseUrl": null
+  },
+  "default": {
+    "official": {
+      "recommended": "2026.5.26"
+    },
+    "chinese": {
+      "recommended": "2026.5.26-zh.1"
+    }
+  },
+  "panels": {
+    "0.15.0": {
+      "official": {
+        "recommended": "2026.5.26"
+      },
+      "chinese": {
+        "recommended": "2026.5.26-zh.1"
+      }
+    }
+  }
+}

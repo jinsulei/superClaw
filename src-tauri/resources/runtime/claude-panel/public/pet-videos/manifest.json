@@ -1,0 +1,77 @@
+[
+  {
+    "index": 1,
+    "slug": "work-rest",
+    "title": "视频 1 工作 45 分钟・休息提醒",
+    "mp4": "/pet-videos/01-work-rest.mp4",
+    "webm": "/pet-videos/01-work-rest.webm"
+  },
+  {
+    "index": 2,
+    "slug": "lag-check",
+    "title": "视频 2 运行卡顿・引导排查问题",
+    "mp4": "/pet-videos/02-lag-check.mp4",
+    "webm": "/pet-videos/02-lag-check.webm"
+  },
+  {
+    "index": 3,
+    "slug": "latte-boost",
+    "title": "视频 3 持续努力・赠送虚拟拿铁",
+    "mp4": "/pet-videos/03-latte-boost.mp4",
+    "webm": "/pet-videos/03-latte-boost.webm"
+  },
+  {
+    "index": 4,
+    "slug": "celebrate",
+    "title": "视频 4 完成工作・烟花 + 跳舞庆祝",
+    "taskId": "cgt-20260531193205-kwfbv",
+    "mp4": "/pet-videos/04-celebrate.mp4",
+    "webm": "/pet-videos/04-celebrate.webm",
+    "size": 2480034
+  },
+  {
+    "index": 5,
+    "slug": "frustration-cheer",
+    "title": "视频 5 遭遇挫折・幽默打气",
+    "taskId": "cgt-20260531193944-4z4kf",
+    "mp4": "/pet-videos/05-frustration-cheer.mp4",
+    "webm": "/pet-videos/05-frustration-cheer.webm",
+    "size": 2207624
+  },
+  {
+    "index": 6,
+    "slug": "repeat-comfort",
+    "title": "视频 6 反复操作・温柔安抚",
+    "taskId": "cgt-20260531194122-lr7jb",
+    "mp4": "/pet-videos/06-repeat-comfort.mp4",
+    "webm": "/pet-videos/06-repeat-comfort.webm",
+    "size": 1581875
+  },
+  {
+    "index": 7,
+    "slug": "calm-down",
+    "title": "视频 7 用户烦躁・引导冷静",
+    "taskId": "cgt-20260531194252-dklnf",
+    "mp4": "/pet-videos/07-calm-down.mp4",
+    "webm": "/pet-videos/07-calm-down.webm",
+    "size": 1961142
+  },
+  {
+    "index": 8,
+    "slug": "relax-food",
+    "title": "视频 8 体验不佳・休闲解压",
+    "taskId": "cgt-20260531194422-7frm8",
+    "mp4": "/pet-videos/08-relax-food.mp4",
+    "webm": "/pet-videos/08-relax-food.webm",
+    "size": 1395111
+  },
+  {
+    "index": 9,
+    "slug": "polite-reminder",
+    "title": "视频 9 不文明用语・趣味劝导",
+    "taskId": "cgt-20260531194537-psvxw",
+    "mp4": "/pet-videos/09-polite-reminder.mp4",
+    "webm": "/pet-videos/09-polite-reminder.webm",
+    "size": 1224038
+  }
+]

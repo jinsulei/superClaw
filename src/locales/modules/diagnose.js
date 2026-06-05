@@ -1,0 +1,25 @@
+import { _ } from '../helper.js'
+
+export default {
+  title: _('连接诊断', 'Connection Diagnosis'),
+  desc: _('检测 Gateway 连接各环节是否正常', 'Check Gateway connection health step by step'),
+  runDiagnose: _('开始诊断', 'Run Diagnosis'),
+  running: _('正在诊断...', 'Diagnosing...'),
+  passed: _('通过', 'Passed'),
+  failed: _('未通过', 'Failed'),
+  allPassed: _('✅ 所有检查项通过', '✅ All checks passed'),
+  envInfo: _('环境信息', 'Environment Info'),
+  openclawDir: _('配置目录', 'Config Directory'),
+  port: _('端口', 'Port'),
+  authMode: _('认证模式', 'Auth Mode'),
+  deviceKey: _('设备密钥', 'Device Key'),
+  errLogExcerpt: _('错误日志摘要', 'Error Log Excerpt'),
+  stepConfig: _('配置文件', 'Config File'),
+  stepDeviceKey: _('设备密钥', 'Device Key'),
+  stepOrigins: _('允许来源', 'Allowed Origins'),
+  stepTcp: _('TCP 端口', 'TCP Port'),
+  stepHttp: _('HTTP 健康', 'HTTP Health'),
+  stepErrLog: _('错误日志', 'Error Log'),
+  diagnoseFailed: _('诊断执行失败', 'Diagnosis failed'),
+  noData: _('尚未运行诊断，点击上方按钮开始', 'No diagnosis yet, click the button above to start'),
+}

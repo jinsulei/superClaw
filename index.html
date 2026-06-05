@@ -1,0 +1,230 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SuperClaw</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/splash.css">
+  <!-- 样式由 main.js 通过 Vite 统一加载 -->
+</head>
+<body>
+  <!-- 启动加载屏 · Boot Manifest，双语（zh-CN / en，默认中文） -->
+  <div id="splash">
+    <div class="sp-panel" role="status" aria-live="polite">
+      <div class="sp-head">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="4 17 10 11 4 5"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
+        <span class="sp-name">SuperClaw</span>
+        <span class="sp-version" data-i18n="version">多引擎</span>
+      </div>
+      <div class="sp-steps">
+        <div class="sp-step is-active">
+          <svg class="sp-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="step.frontend">前端模块已就绪</span>
+        </div>
+        <div class="sp-step">
+          <svg class="sp-tick sp-tick--indigo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="step.openclaw">引擎 · openclaw</span>
+        </div>
+        <div class="sp-step">
+          <svg class="sp-tick sp-tick--gold" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          <span data-i18n="step.hermes">引擎 · hermes</span>
+        </div>
+        <div class="sp-step is-active">
+          <span class="sp-spinner" aria-hidden="true"></span>
+          <span data-i18n="step.preparing">正在准备工作空间…</span>
+        </div>
+      </div>
+      <div class="sp-divider"></div>
+      <div class="sp-phase" data-i18n="phase.boot">启动</div>
+      <div class="sp-status" data-i18n="status.boot">正在加载前端资源，请稍候…</div>
+      <div class="sp-diagnostics" hidden></div>
+      <div class="sp-actions" hidden></div>
+      <div class="sp-footer">
+        <span data-i18n="footer.left">启动 · 多引擎</span>
+        <span id="sp-elapsed" style="font-variant-numeric:tabular-nums">0s</span>
+      </div>
+    </div>
+    <div id="sp-lang" role="group" aria-label="language">
+      <button type="button" data-lang="zh-CN">中文</button>
+      <button type="button" data-lang="en">EN</button>
+    </div>
+  </div>
+  <script>
+  (function () {
+    // ─── i18n strings (splash 自带迷你 i18n，与应用 localStorage('superclaw_lang') 共享) ───
+    var STRINGS = {
+      'zh-CN': {
+        'version': '多引擎',
+        'step.frontend': '前端模块已就绪',
+        'step.openclaw': '引擎 · openclaw',
+        'step.hermes': '引擎 · hermes',
+        'step.preparing': '正在准备工作空间…',
+        'phase.boot': '启动',
+        'status.boot': '正在加载前端资源，请稍候…',
+        'footer.left': '启动 · 多引擎',
+        'phase.slow': '正在唤醒前端资源',
+        'status.slow': '这次启动比平时稍久，系统仍在等待资源响应… ({s}s)',
+        'diag.slow': '<strong>你可以继续等待。</strong> 如果长期停留在这里，通常与 WebView2 运行时、安装完整性或安全软件拦截有关。',
+        'phase.init': '正在初始化工作空间',
+        'status.init': '前端资源已就绪，正在连接配置、引擎和运行环境… ({s}s)',
+        'phase.timeout': '启动仍未完成',
+        'status.timeout': '应用等待时间较长，建议刷新重试；如果反复出现，请检查运行环境。',
+        'diag.timeout': '<strong>可尝试的处理方式</strong> · 刷新当前窗口、重启 SuperClaw、检查 WebView2 Runtime。',
+        'btn.reload': '刷新重试',
+        'btn.webview2': '检查 WebView2'
+      },
+      'en': {
+        'version': 'multi-engine',
+        'step.frontend': 'frontend modules ready',
+        'step.openclaw': 'engine · openclaw',
+        'step.hermes': 'engine · hermes',
+        'step.preparing': 'preparing workspace…',
+        'phase.boot': 'BOOT',
+        'status.boot': 'Loading frontend assets, please wait…',
+        'footer.left': 'STARTUP · MULTI-ENGINE',
+        'phase.slow': 'Waking the frontend',
+        'status.slow': 'This boot is taking a little longer than usual… ({s}s)',
+        'diag.slow': '<strong>You can keep waiting.</strong> If it stays here, it usually relates to the WebView2 runtime, installation integrity, or security software interference.',
+        'phase.init': 'Initializing workspace',
+        'status.init': 'Frontend ready, connecting config, engines and runtime… ({s}s)',
+        'phase.timeout': 'Boot did not complete',
+        'status.timeout': 'The app has been waiting for a while. Try refreshing; if it keeps happening, check your runtime environment.',
+        'diag.timeout': '<strong>Things to try</strong> · refresh this window, restart SuperClaw, verify WebView2 Runtime.',
+        'btn.reload': 'Reload',
+        'btn.webview2': 'Check WebView2'
+      }
+    };
+
+    function pickLang() {
+      try {
+        var saved = localStorage.getItem('superclaw_lang');
+        if (saved && STRINGS[saved]) return saved;
+        var nav = (navigator.language || '').toLowerCase();
+        if (nav.indexOf('en') === 0) return 'en';
+      } catch (_) {}
+      return 'zh-CN';
+    }
+    var lang = pickLang();
+
+    function t(key, vars) {
+      var s = (STRINGS[lang] && STRINGS[lang][key]) != null ? STRINGS[lang][key] : (STRINGS['en'][key] || key);
+      if (vars) s = s.replace(/\{(\w+)\}/g, function (_, k) { return vars[k] != null ? vars[k] : '{' + k + '}'; });
+      return s;
+    }
+
+    function applyI18n() {
+      try { document.documentElement.setAttribute('lang', lang); } catch (_) {}
+      var els = document.querySelectorAll('#splash [data-i18n]');
+      for (var i = 0; i < els.length; i++) {
+        els[i].textContent = t(els[i].getAttribute('data-i18n'));
+      }
+      var btns = document.querySelectorAll('#sp-lang button');
+      for (var j = 0; j < btns.length; j++) {
+        btns[j].classList.toggle('is-on', btns[j].getAttribute('data-lang') === lang);
+      }
+      // re-render dynamic state if state machine has fired
+      if (window._splashLastState) window._setSplashState.apply(null, window._splashLastState);
+    }
+    function setLang(newLang) {
+      if (!STRINGS[newLang]) return;
+      lang = newLang;
+      try { localStorage.setItem('superclaw_lang', newLang); } catch (_) {}
+      applyI18n();
+      // 通知应用 i18n 模块（若已加载）同步切换语言
+      try { window.dispatchEvent(new CustomEvent('superclaw-lang-change', { detail: newLang })); } catch (_) {}
+    }
+
+    // ─── boot state machine ───
+    window._splashStart = Date.now();
+    window._jsLoaded = false;
+    window._bootDone = false;
+    window._splashLastState = null;
+
+    window._setSplashState = function (phaseKey, statusKey, statusVars, diagKey, showActions) {
+      window._splashLastState = [phaseKey, statusKey, statusVars, diagKey, showActions];
+      var splash = document.getElementById('splash');
+      if (!splash) return;
+      var phase = splash.querySelector('.sp-phase');
+      var status = splash.querySelector('.sp-status');
+      var diag = splash.querySelector('.sp-diagnostics');
+      var actions = splash.querySelector('.sp-actions');
+      if (phase) { phase.textContent = phaseKey ? t(phaseKey) : ''; phase.removeAttribute('data-i18n'); }
+      if (status) { status.textContent = statusKey ? t(statusKey, statusVars) : ''; status.removeAttribute('data-i18n'); }
+      if (diag) {
+        var hasDiag = !!diagKey;
+        diag.hidden = !hasDiag;
+        diag.innerHTML = hasDiag ? t(diagKey) : '';
+      }
+      if (actions) {
+        actions.hidden = !showActions;
+        actions.innerHTML = showActions
+          ? '<button class="sp-btn sp-btn-primary" onclick="location.reload()">' + t('btn.reload') + '</button>'
+            + '<a class="sp-btn" href="https://go.microsoft.com/fwlink/p/?LinkId=2124703" target="_blank" rel="noopener">' + t('btn.webview2') + '</a>'
+          : '';
+      }
+    };
+
+    // ─── language toggle init ───
+    var langEl = document.getElementById('sp-lang');
+    if (langEl) {
+      langEl.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-lang]');
+        if (btn) setLang(btn.getAttribute('data-lang'));
+      });
+    }
+    applyI18n();
+
+    // ─── boot watcher (15s / 20s / 90s 多阶段恢复) ───
+    window._splashTimer = setInterval(function () {
+      var s = document.getElementById('splash');
+      if (!s) { clearInterval(window._splashTimer); return; }
+      var content = document.getElementById('content');
+      if (content && content.children.length > 0) {
+        s.classList.add('hide');
+        setTimeout(function () { s.remove(); }, 500);
+        clearInterval(window._splashTimer);
+        return;
+      }
+      if (window._bootDone) { clearInterval(window._splashTimer); return; }
+      var elapsed = Date.now() - window._splashStart;
+      var sec = Math.floor(elapsed / 1000);
+      if (!window._jsLoaded && elapsed > 15000) {
+        window._setSplashState('phase.slow', 'status.slow', { s: sec }, 'diag.slow', true);
+      }
+      if (window._jsLoaded && elapsed > 20000) {
+        window._setSplashState('phase.init', 'status.init', { s: sec }, null, false);
+      }
+      if (elapsed > 90000) {
+        clearInterval(window._splashTimer);
+        window._setSplashState('phase.timeout', 'status.timeout', null, 'diag.timeout', true);
+      }
+    }, 3000);
+
+    // ─── 可见计时器：每秒更新 splash 右下角的已等待秒数 ───
+    var _spElapsedEl = document.getElementById('sp-elapsed');
+    if (_spElapsedEl) {
+      setInterval(function () {
+        var elapsed = Date.now() - window._splashStart;
+        var sec = Math.floor(elapsed / 1000);
+        var min = Math.floor(sec / 60);
+        _spElapsedEl.textContent = min > 0 ? (min + 'm ' + (sec % 60) + 's') : sec + 's';
+      }, 1000);
+    }
+  })();
+  </script>
+
+  <div id="app">
+    <aside id="sidebar"></aside>
+    <div id="main-col">
+      <div id="update-banner" class="update-banner update-banner-hidden"></div>
+      <div id="gw-banner" class="gw-banner gw-banner-hidden"></div>
+      <main id="content"></main>
+    </div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

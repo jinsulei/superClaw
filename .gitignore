@@ -1,0 +1,106 @@
+# 依赖
+node_modules/
+# 防止贡献者用 pnpm 安装依赖时误提 lock（本项目使用 npm / package-lock.json）
+pnpm-lock.yaml
+yarn.lock
+
+.cursor
+docs/issue-solutions.md
+# 构建产物
+dist/
+src-tauri/target/
+SuperClaw-Desktop-Client/
+SuperClaw_Desktop_Client/
+SuperClaw_DESKTOP_TEST_HANDOFF/
+SuperClaw_P2U_HANDOFF/
+SuperClaw_VALIDATION_HANDOFF/
+data/
+bin/
+uv-tools/
+src-tauri/resources/bin/
+src-tauri/resources/portable/
+src-tauri/resources/uv-python/
+src-tauri/resources/uv-tools/
+
+# Tauri build 自动生成的平台 schema（历史原因 desktop/macOS/windows 已 track；
+# Linux 平台的 schema 只在 Linux 上构建时才会生成，不同 Linux 机器产出也不一致，
+# 容易被贡献者误提到 PR 里）
+src-tauri/gen/schemas/linux-schema.json
+
+# 日志
+*.log
+tauri-dev.log
+api_doc_mcp.log
+__pycache__/
+*.pyc
+%TEMP%files.txt
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# 构建临时文件
+nul
+release_body.md
+release_body.md.bak
+
+# 本地临时文件 / 设计文档 / 构建脚本
+.tmp/
+scripts/build-r2-archive.sh
+r2-archives/
+
+# 内部开发文档（不入公开仓）
+AGENTS.md
+BLOCKING_ISSUES_REPORT.md
+__clawapp-chat-ref.js
+LOBSTER-LEGION-ARCHIVE.md
+
+# 大文件（宣传视频·原始版本）
+docs/promo-video.mp4
+
+# IDE / 编辑器
+.idea/
+*.iml
+.vscode/settings.json
+.vscode/launch.json
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rust 开发工具
+src-tauri/.cargo/
+.codex/
+
+# Tauri 生成的 schema 文件（Linux 平台特定）
+src-tauri/gen/schemas/linux-schema.json
+# AI 上下文记忆
+.context.md
+CONTEXT_STATE.md
+PROJECT_CONTRACT.md
+project.yaml
+
+# 内置依赖包（构建时下载，不入仓）
+src-tauri/resources/*.zip
+src-tauri/resources/*.tar.gz
+# 便携运行时（构建时下载，不入仓）
+src-tauri/resources/runtime/*
+!src-tauri/resources/runtime/
+!src-tauri/resources/runtime/claude-panel/
+!src-tauri/resources/runtime/claude-panel/**
+src-tauri/resources/runtime/claude-panel/*.log
+resources/runtime/
+# 保留占位文件以通过 Tauri 构建校验
+!src-tauri/resources/runtime/**/.gitkeep
+!resources/runtime/**/.gitkeep
+# 便携运行数据（运行时生成，不入仓）
+src-tauri/resources/data/
+resources/data/

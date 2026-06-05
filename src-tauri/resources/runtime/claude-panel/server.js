@@ -1,0 +1,2483 @@
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { spawn, spawnSync } = require("child_process");
+
+const PORT = Number(process.env.PORT || 3020);
+const ADMIN_PORT = Number(process.env.CLEAN_PANEL_ADMIN_PORT || 3021);
+const PUBLIC_DIR = path.join(__dirname, "public");
+const HOME = process.env.CLEAN_PANEL_HOME_DIR
+  ? path.resolve(process.env.CLEAN_PANEL_HOME_DIR)
+  : os.homedir();
+const APP_CONFIG_DIR = process.env.CLEAN_PANEL_DATA_DIR
+  ? path.resolve(process.env.CLEAN_PANEL_DATA_DIR)
+  : path.join(HOME, ".clean-claude-panel");
+const RELAY_CONFIG_PATH = path.join(APP_CONFIG_DIR, "relay-config.json");
+const CUSTOM_PROJECTS_PATH = path.join(APP_CONFIG_DIR, "projects.json");
+const PROJECT_FOLDERS_PATH = path.join(APP_CONFIG_DIR, "project-folders.json");
+const CONTACT_CARD_PATH =
+  process.env.CLEAN_PANEL_CONTACT_CARD_FILE || path.join(APP_CONFIG_DIR, "contact-card.json");
+const ANNOUNCEMENT_PATH =
+  process.env.CLEAN_PANEL_ANNOUNCEMENT_FILE || path.join(PUBLIC_DIR, "announcement.txt");
+const AUDIT_LOG_PATH = path.join(APP_CONFIG_DIR, "audit.log");
+const UPLOAD_DIR = path.join(APP_CONFIG_DIR, "uploads");
+const CLAUDE_SETTINGS_PATH =
+  process.env.CLEAN_PANEL_CLAUDE_SETTINGS_PATH || path.join(HOME, ".claude", "settings.json");
+const CLAUDE_PROJECTS_JSON_PATH =
+  process.env.CLEAN_PANEL_CLAUDE_PROJECTS_JSON_PATH || path.join(HOME, ".claude.json");
+const CLAUDE_SKILLS_DIR =
+  process.env.CLEAN_PANEL_CLAUDE_SKILLS_DIR || path.join(HOME, ".claude", "skills");
+const SUPERCLAW_PANEL_CONFIG_PATH = process.env.SUPERCLAW_PANEL_CONFIG_PATH || "";
+const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", "relay-test.err.log"];
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = 32 * 1024 * 1024;
+const RELAY_TEST_TIMEOUT_MS = 12000;
+const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const TOOL_PROFILES = {
+  none: [],
+  read: ["Glob", "Grep", "Read", "LS"],
+  edit: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit"],
+  command: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash"],
+};
+const BROWSER_AUTOMATION_TOOLS = [
+  "mcp__playwright__browser_navigate",
+  "mcp__playwright__browser_navigate_back",
+  "mcp__playwright__browser_click",
+  "mcp__playwright__browser_type",
+  "mcp__playwright__browser_press_key",
+  "mcp__playwright__browser_select_option",
+  "mcp__playwright__browser_hover",
+  "mcp__playwright__browser_snapshot",
+  "mcp__playwright__browser_take_screenshot",
+  "mcp__playwright__browser_tabs",
+  "mcp__playwright__browser_wait_for",
+  "mcp__playwright__browser_console_messages",
+  "mcp__playwright__browser_network_requests",
+];
+const BROWSER_AUTOMATION_DENIES = [
+  "mcp__playwright__browser_file_upload",
+  "mcp__playwright__browser_install",
+  "mcp__playwright__browser_handle_dialog",
+  "mcp__playwright__browser_evaluate",
+];
+const HIGH_RISK_TOOL_PROFILES = new Set(["edit", "command", "network", "admin", "expert"]);
+const SENSITIVE_FILE_PATTERNS = [
+  /^\.env(\..*)?$/i,
+  /^id_rsa$/i,
+  /^id_ed25519$/i,
+  /.*\.(pem|key|p12|pfx)$/i,
+  /^(credentials|token|config)\.json$/i,
+];
+const SENSITIVE_TOOL_DENIES = [
+  "Read(**/.env*)",
+  "Read(**/id_rsa)",
+  "Read(**/id_ed25519)",
+  "Read(**/*.pem)",
+  "Read(**/*.key)",
+  "Read(**/credentials.json)",
+  "Read(**/token.json)",
+  "Edit(**/.env*)",
+  "Write(**/.env*)",
+  "MultiEdit(**/.env*)",
+];
+const CHINESE_OUTPUT_SYSTEM_PROMPT = [
+  "你正在通过中文 Claude Code 控制面板与用户对话。",
+  "无论模型、工具或网页返回什么语言，你面向用户的回复必须始终使用简体中文。",
+  "如需用户授权工具，请把按钮含义写成：本次允许、始终允许、拒绝；不要只写英文 Yes/No。",
+  "如果用户回复“是”“允许”“同意”“确认”，应理解为允许继续上一步明确询问的操作。",
+  "执行结果、错误、下一步建议都要用中文说明。",
+].join("\n");
+const BROWSER_AUTOMATION_SYSTEM_PROMPT = [
+  "本次已获得用户对浏览器自动化的授权。",
+  "你可以使用 Playwright MCP 浏览器工具打开网页、点击、输入、搜索、查看页面内容和截图。",
+  "不要上传本地文件，不要安装浏览器组件，不要执行系统命令，不要读取本机敏感文件。",
+  "如果网页要求登录、扫码、支付、提交隐私信息或高风险操作，先用中文说明并等待用户确认。",
+  "用户已经授权浏览器访问网络时，不要重复询问同一个浏览器打开/搜索授权，直接继续执行。",
+].join("\n");
+const TAKEOVER_CAPABILITY_SYSTEM_PROMPT = [
+  "当前界面处于“电脑接管模式”，但这不是系统级远程桌面控制。",
+  "当用户询问“能不能接管电脑”时，不要简单回答不能；请用中文说明：可以在用户授权后接管浏览器/网页层面的操作，例如打开网页、搜索、点击、填表、读取页面；不能直接控制整台 Windows、删除文件、执行系统命令或绕过安全确认。",
+  "如果用户没有给出具体任务，请请用户给出明确目标，例如：打开哪个网站、搜索什么内容、点击哪个页面元素。",
+  "如果需要浏览器自动化授权，请请求用户选择“本次允许 / 始终允许 / 拒绝”。",
+].join("\n");
+const RESERVED_FEATURES = {
+  versionUpdate: {
+    label: "版本更新",
+    env: "CLEAN_PANEL_VERSION_UPDATE_ENABLED",
+    path: "/api/version-update",
+  },
+  upload: {
+    label: "附件上传",
+    env: "CLEAN_PANEL_UPLOAD_ENABLED",
+    path: "/api/upload",
+  },
+  screenshot: {
+    label: "截图",
+    env: "CLEAN_PANEL_SCREENSHOT_ENABLED",
+    path: "/api/screenshot",
+  },
+  adminAccess: {
+    label: "管理员授权高级访问模式",
+    env: "CLEAN_PANEL_ADMIN_ACCESS_ENABLED",
+    path: "/api/admin-access",
+  },
+  codexBridge: {
+    label: "Codex 控制面板接入",
+    env: "CLEAN_PANEL_CODEX_BRIDGE_ENABLED",
+    path: "/api/codex-bridge",
+  },
+};
+
+function readJson(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function publicContactCard() {
+  const configured = readJson(CONTACT_CARD_PATH) || {};
+  return {
+    name: String(process.env.CLEAN_PANEL_CONTACT_NAME || configured.name || "").trim(),
+    wechat: String(process.env.CLEAN_PANEL_CONTACT_WECHAT || configured.wechat || "").trim(),
+    email: String(process.env.CLEAN_PANEL_CONTACT_EMAIL || configured.email || "").trim(),
+    qrCode: String(process.env.CLEAN_PANEL_CONTACT_QR || configured.qrCode || "").trim(),
+    note: String(process.env.CLEAN_PANEL_CONTACT_NOTE || configured.note || "").trim(),
+  };
+}
+
+function handleContactCard(res) {
+  sendJson(res, 200, {
+    ok: true,
+    contact: publicContactCard(),
+    note: "联系方式接口已预留，可通过 contact-card.json 或环境变量配置二维码、微信号和邮箱。",
+  });
+}
+
+function ensureAppConfigDir() {
+  fs.mkdirSync(APP_CONFIG_DIR, { recursive: true });
+}
+
+function buildPortableEnv(extra = {}) {
+  const env = {
+    ...process.env,
+    ...extra,
+    CLEAN_PANEL_DATA_DIR: APP_CONFIG_DIR,
+    CLEAN_PANEL_HOME_DIR: HOME,
+  };
+
+  if (process.env.CLEAN_PANEL_HOME_DIR) {
+    const appData = path.join(HOME, "AppData", "Roaming");
+    const localAppData = path.join(HOME, "AppData", "Local");
+    fs.mkdirSync(appData, { recursive: true });
+    fs.mkdirSync(localAppData, { recursive: true });
+    env.HOME = HOME;
+    env.USERPROFILE = HOME;
+    env.APPDATA = appData;
+    env.LOCALAPPDATA = localAppData;
+  }
+
+  return env;
+}
+
+function isRelayConfigWritable() {
+  return process.env.CLEAN_PANEL_RELAY_CONFIG_ENABLED === "1";
+}
+
+function isAnnouncementWritable() {
+  return process.env.CLEAN_PANEL_ANNOUNCEMENT_WRITE_ENABLED === "1";
+}
+
+function isReservedFeatureEnabled(feature) {
+  return process.env[feature.env] === "1";
+}
+
+function isHighRiskToolsEnabled() {
+  return process.env.CLEAN_PANEL_HIGH_RISK_TOOLS_ENABLED === "1";
+}
+
+function hasAdminAuth(req) {
+  const token = process.env.CLEAN_PANEL_ADMIN_TOKEN || "";
+  if (!token) return false;
+  const authorization = String(req.headers.authorization || "");
+  const headerToken = String(req.headers["x-admin-token"] || "");
+  return authorization === `Bearer ${token}` || headerToken === token;
+}
+
+function appendAuditLog(entry) {
+  ensureAppConfigDir();
+  const safeEntry = {
+    time: new Date().toISOString(),
+    operator: entry.operator || "unknown",
+    source: entry.source || "local-panel",
+    action: entry.action || "reserved-action",
+    feature: entry.feature || "",
+    permissionMode: entry.permissionMode || "",
+    toolProfile: entry.toolProfile || "",
+    projectPath: entry.projectPath || "",
+    result: entry.result || "",
+  };
+  fs.appendFileSync(AUDIT_LOG_PATH, `${JSON.stringify(safeEntry)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function readAnnouncement() {
+  try {
+    return fs.readFileSync(ANNOUNCEMENT_PATH, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function validateAnnouncement(input) {
+  const text = String(input.text || "").replace(/\s+/g, " ").trim();
+  if (text.length > 1000) {
+    throw new Error("公告内容不能超过 1000 个字符");
+  }
+  return text;
+}
+
+function readRelayConfig() {
+  const config = readJson(RELAY_CONFIG_PATH);
+  return config && typeof config === "object" ? config : {};
+}
+
+function maskSecret(secret) {
+  const value = String(secret || "").trim();
+  if (!value) return "";
+  if (value.length <= 8) return "****";
+  return `${value.slice(0, 3)}-****${value.slice(-4)}`.replace("--", "-");
+}
+
+function normalizeBranchModels(input) {
+  const values = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(/[\n,;|]+/);
+  const seen = new Set();
+  return values
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 12);
+}
+
+function publicRelayConfig(config = readRelayConfig()) {
+  return {
+    enabled: Boolean(config.enabled),
+    interfaceType: typeof config.interfaceType === "string" ? config.interfaceType : "relay",
+    name: typeof config.name === "string" ? config.name : "",
+    provider: typeof config.provider === "string" ? config.provider : "",
+    baseUrl: typeof config.baseUrl === "string" ? config.baseUrl : "",
+    model: typeof config.model === "string" ? config.model : "",
+    branchModels: normalizeBranchModels(config.branchModels),
+    apiKeyConfigured: Boolean(config.apiKey),
+    apiKeyMasked: maskSecret(config.apiKey),
+    updatedAt: typeof config.updatedAt === "string" ? config.updatedAt : null,
+  };
+}
+
+function inferVoiceCapability() {
+  const relay = publicRelayConfig();
+  const settings = readClaudeSettings();
+  const model = relay.model || settings.model || "";
+  const provider = relay.provider || "anthropic-compatible";
+  const baseUrl = relay.baseUrl || settings.baseUrl || "";
+  const haystack = `${provider} ${baseUrl} ${model}`.toLowerCase();
+  const nativeVoiceLikely =
+    /(voice|speech|audio|realtime|omni|tts|stt|asr|doubao.*audio|minimax.*speech|abab.*audio)/i.test(haystack);
+  const minimaxTextModel = /minimax-m?2\.?7|m2\.?7/i.test(model);
+
+  return {
+    ok: true,
+    endpoint: "/api/voice-capabilities",
+    provider,
+    model,
+    baseUrlConfigured: Boolean(baseUrl),
+    apiKeyConfigured: Boolean(relay.apiKeyConfigured || settings.authConfigured),
+    browserVoice: {
+      speechToText: true,
+      textToSpeech: true,
+      note: "前端会优先使用浏览器 / 桌面运行环境的麦克风听写与本地朗读，不保存录音文件。",
+    },
+    providerVoice: {
+      available: nativeVoiceLikely && !minimaxTextModel,
+      confidence: nativeVoiceLikely ? "hint" : "none",
+      note:
+        nativeVoiceLikely && !minimaxTextModel
+          ? "当前模型或接口名称包含语音能力关键词，后续可从这里接入原生语音接口。"
+          : "当前主模型未检测到明确的原生语音接口，已回退为本地麦克风听写 + 文本模型对话。",
+    },
+    policy: {
+      savesAudio: false,
+      uploadsAudio: false,
+      exposesApiKey: false,
+      permissionProfile: "沿用当前对话权限模式，不因语音输入提升权限。",
+    },
+  };
+}
+
+function handleVoiceCapabilities(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  sendJson(res, 200, inferVoiceCapability());
+}
+
+function validateRelayConfig(input) {
+  const next = {
+    enabled: Boolean(input.enabled),
+    interfaceType: String(input.interfaceType || "relay").trim(),
+    name: String(input.name || "").trim(),
+    provider: String(input.provider || "anthropic-compatible").trim(),
+    baseUrl: String(input.baseUrl || "").trim(),
+    model: String(input.model || "").trim(),
+    branchModels: normalizeBranchModels(input.branchModels),
+    apiKey: String(input.apiKey || "").trim(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (next.name.length > 80) {
+    throw new Error("中转站名称不能超过 80 个字符");
+  }
+  if (!["official", "relay", "custom"].includes(next.interfaceType)) {
+    throw new Error("接口类型不正确");
+  }
+  if (!next.baseUrl) {
+    throw new Error("baseUrl 不能为空");
+  }
+  let parsed;
+  try {
+    parsed = new URL(next.baseUrl);
+  } catch {
+    throw new Error("baseUrl 必须是合法 URL");
+  }
+  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+    throw new Error("baseUrl 需要使用 https，除非是本机地址");
+  }
+  if (!next.model) {
+    throw new Error("model 不能为空");
+  }
+  return next;
+}
+
+function readSuperclawPanelConfig() {
+  if (!SUPERCLAW_PANEL_CONFIG_PATH) return null;
+  const cfg = readJson(SUPERCLAW_PANEL_CONFIG_PATH);
+  return cfg && typeof cfg === "object" ? cfg : {};
+}
+
+function writeSuperclawPanelConfig(cfg) {
+  if (!SUPERCLAW_PANEL_CONFIG_PATH) {
+    throw new Error("SuperClaw password config path is not configured");
+  }
+  fs.mkdirSync(path.dirname(SUPERCLAW_PANEL_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(SUPERCLAW_PANEL_CONFIG_PATH, JSON.stringify(cfg, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function validatePanelPassword(pw) {
+  const value = String(pw || "");
+  if (value.length < 6) return "密码至少 6 位";
+  if (value.length > 64) return "密码不能超过 64 位";
+  if (/^\d+$/.test(value)) return "密码不能是纯数字";
+  const weak = new Set(["123456", "654321", "password", "admin", "qwerty", "abc123", "111111", "000000", "letmein", "welcome", "clawpanel", "openclaw"]);
+  if (weak.has(value.toLowerCase())) return "密码太常见，请换一个更安全的密码";
+  return "";
+}
+
+function readClaudeSettings() {
+  const settingsPath = CLAUDE_SETTINGS_PATH;
+  const settings = readJson(settingsPath) || {};
+  const env = settings.env && typeof settings.env === "object" ? settings.env : {};
+  const relayConfig = readRelayConfig();
+  const relayEnv =
+    relayConfig.enabled && relayConfig.baseUrl && relayConfig.model && relayConfig.apiKey
+      ? {
+          ANTHROPIC_BASE_URL: relayConfig.baseUrl,
+          ANTHROPIC_AUTH_TOKEN: relayConfig.apiKey,
+          ANTHROPIC_API_KEY: relayConfig.apiKey,
+          ANTHROPIC_MODEL: relayConfig.model,
+          ANTHROPIC_DEFAULT_SONNET_MODEL: relayConfig.model,
+        }
+      : {};
+  const effectiveEnv = {
+    ...env,
+    ...relayEnv,
+  };
+  const baseUrl = effectiveEnv.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_BASE_URL || "";
+  const model =
+    effectiveEnv.ANTHROPIC_MODEL ||
+    effectiveEnv.ANTHROPIC_DEFAULT_SONNET_MODEL ||
+    process.env.ANTHROPIC_MODEL ||
+    "";
+
+  return {
+    env: effectiveEnv,
+    baseUrl,
+    model,
+    authConfigured: Boolean(
+      effectiveEnv.ANTHROPIC_AUTH_TOKEN ||
+        effectiveEnv.ANTHROPIC_API_KEY ||
+        process.env.ANTHROPIC_AUTH_TOKEN ||
+        process.env.ANTHROPIC_API_KEY
+    ),
+    settingsPath,
+  };
+}
+
+function readModelBranches(settings) {
+  const relayConfig = readRelayConfig();
+  const raw =
+    settings.env.CLEAN_PANEL_BRANCH_MODELS ||
+    settings.env.ANTHROPIC_BRANCH_MODELS ||
+    process.env.CLEAN_PANEL_BRANCH_MODELS ||
+    process.env.ANTHROPIC_BRANCH_MODELS ||
+    "";
+  const seen = new Set();
+  return String(raw)
+    .split(/[\n,;|]+/)
+    .concat(normalizeBranchModels(relayConfig.branchModels))
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .filter((model) => {
+      const key = model.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function getClaudeVersion() {
+  const result = spawnSync(resolveClaudeCommand(), ["--version"], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: buildPortableEnv(),
+    timeout: 5000,
+  });
+  if (result.error) return "";
+  return (result.stdout || result.stderr || "").trim();
+}
+
+function resolveClaudeCommand() {
+  const localCandidates = [
+    process.env.CLAUDE_CLI_PATH,
+    path.resolve(__dirname, "..", "..", "claude-code", "bin", "claude.exe"),
+    path.resolve(__dirname, "..", "claude-code", "bin", "claude.exe"),
+    path.resolve(__dirname, "claude-code", "bin", "claude.exe"),
+  ].filter(Boolean);
+  for (const candidate of localCandidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  if (process.platform !== "win32") return "claude";
+
+  const appDataClaudeExe = path.join(
+    process.env.APPDATA || path.join(HOME, "AppData", "Roaming"),
+    "npm",
+    "node_modules",
+    "@anthropic-ai",
+    "claude-code",
+    "bin",
+    "claude.exe"
+  );
+  if (fs.existsSync(appDataClaudeExe)) return appDataClaudeExe;
+
+  const result = spawnSync("where.exe", ["claude.cmd"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  const cmdMatch = (result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (cmdMatch) {
+    const exeFromCmd = path.join(
+      path.dirname(cmdMatch),
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "bin",
+      "claude.exe"
+    );
+    if (fs.existsSync(exeFromCmd)) return exeFromCmd;
+  }
+  return "claude";
+}
+
+function readCustomProjects() {
+  const data = readJson(CUSTOM_PROJECTS_PATH);
+  return Array.isArray(data?.projects) ? data.projects.filter(Boolean) : [];
+}
+
+function saveCustomProject(projectPath) {
+  if (typeof projectPath !== "string" || !projectPath.trim()) {
+    throw new Error("项目路径不能为空");
+  }
+
+  const resolved = path.resolve(projectPath.trim());
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error("项目路径必须是一个文件夹");
+  }
+  if (isUnsafeProjectRoot(resolved) || containsSensitivePathSegment(resolved)) {
+    throw new Error("该路径属于系统、用户根目录、桌面或敏感目录，不能作为项目工程路径");
+  }
+
+  const projects = readCustomProjects();
+  const nextProjects = [resolved, ...projects.filter((item) => path.resolve(item).toLowerCase() !== resolved.toLowerCase())];
+  ensureAppConfigDir();
+  fs.writeFileSync(CUSTOM_PROJECTS_PATH, JSON.stringify({ projects: nextProjects }, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return resolved;
+}
+
+function removeCustomProject(projectPath) {
+  const resolved = path.resolve(String(projectPath || ""));
+  const projects = readCustomProjects().filter(
+    (item) => path.resolve(item).toLowerCase() !== resolved.toLowerCase()
+  );
+  ensureAppConfigDir();
+  fs.writeFileSync(CUSTOM_PROJECTS_PATH, JSON.stringify({ projects }, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function getManagedProjectsRoot() {
+  const configured = String(process.env.CLEAN_PANEL_PROJECTS_ROOT || "").trim();
+  return path.resolve(configured || path.join(HOME, "Documents", "OpenClawProjects"));
+}
+
+function readManagedProjectFolders() {
+  const data = readJson(PROJECT_FOLDERS_PATH);
+  const folders = Array.isArray(data?.folders) ? data.folders : [];
+  return folders
+    .filter((item) => item && typeof item.path === "string" && typeof item.name === "string")
+    .map((item) => ({
+      path: path.resolve(item.path),
+      name: item.name.trim() || path.basename(item.path),
+      createdAt: item.createdAt || "",
+    }));
+}
+
+function writeManagedProjectFolders(folders) {
+  ensureAppConfigDir();
+  fs.writeFileSync(PROJECT_FOLDERS_PATH, JSON.stringify({ folders }, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function normalizeProjectFolderName(input) {
+  if (typeof input !== "string") {
+    throw new Error("工程文件名不能为空");
+  }
+  const displayName = input.replace(/\s+/g, " ").trim();
+  if (!displayName) {
+    throw new Error("工程文件名不能为空");
+  }
+  if (displayName.length > 60) {
+    throw new Error("工程文件名不能超过 60 个字符");
+  }
+
+  const reservedNames = new Set(["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]);
+  const folderName = displayName
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+    .replace(/[. ]+$/g, "")
+    .trim()
+    .slice(0, 60);
+
+  if (!folderName || folderName === "." || folderName === ".." || reservedNames.has(folderName.toUpperCase())) {
+    throw new Error("工程文件名不合法，请换一个名称");
+  }
+
+  return { displayName, folderName };
+}
+
+function createManagedProjectFolder(inputName) {
+  const { displayName, folderName } = normalizeProjectFolderName(inputName);
+  const root = getManagedProjectsRoot();
+  fs.mkdirSync(root, { recursive: true });
+  const rootReal = realPath(root);
+  if (isUnsafeProjectRoot(rootReal) || containsSensitivePathSegment(rootReal)) {
+    throw new Error("工程文件根目录不安全，请通过 CLEAN_PANEL_PROJECTS_ROOT 指定普通项目目录");
+  }
+
+  let candidate = path.join(rootReal, folderName);
+  let index = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(rootReal, `${folderName}-${index}`);
+    index += 1;
+  }
+
+  fs.mkdirSync(candidate, { recursive: false });
+  const resolved = saveCustomProject(candidate);
+  const folders = readManagedProjectFolders();
+  const nextFolders = [
+    { path: resolved, name: displayName, createdAt: new Date().toISOString() },
+    ...folders.filter((item) => path.resolve(item.path).toLowerCase() !== resolved.toLowerCase()),
+  ];
+  writeManagedProjectFolders(nextFolders);
+  return { path: resolved, name: displayName, createdAt: nextFolders[0].createdAt };
+}
+
+function deleteManagedProjectFolder(projectPath, confirmName) {
+  if (typeof projectPath !== "string" || !projectPath.trim()) {
+    throw new Error("工程文件路径不能为空");
+  }
+  const requested = path.resolve(projectPath.trim());
+  const folders = readManagedProjectFolders();
+  const record = folders.find((item) => path.resolve(item.path).toLowerCase() === requested.toLowerCase());
+  if (!record) {
+    const error = new Error("只能删除由本面板创建的工程文件夹；普通项目只会从列表移除，不会删除磁盘文件");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const root = getManagedProjectsRoot();
+  const rootReal = fs.existsSync(root) ? realPath(root) : path.resolve(root);
+  const target = fs.existsSync(requested) ? realPath(requested) : requested;
+  if (target.toLowerCase() === rootReal.toLowerCase() || !isSameOrInside(target, rootReal)) {
+    const error = new Error("工程文件夹不在受控目录内，已拒绝删除");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const typed = String(confirmName || "").trim();
+  const accepted = new Set([record.name, path.basename(record.path), "删除工程文件"]);
+  if (!accepted.has(typed)) {
+    const error = new Error("请二次确认工程文件名后再删除");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (fs.existsSync(target)) {
+    fs.rmSync(target, { recursive: true, force: false });
+  }
+  removeCustomProject(record.path);
+  const nextFolders = folders.filter((item) => path.resolve(item.path).toLowerCase() !== requested.toLowerCase());
+  writeManagedProjectFolders(nextFolders);
+  return { path: record.path, name: record.name };
+}
+
+function getKnownProjects() {
+  const orderedProjects = [];
+  const seen = new Set();
+  const addProject = (projectPath) => {
+    const resolved = path.resolve(projectPath);
+    const key = resolved.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      orderedProjects.push(resolved);
+    }
+  };
+
+  addProject(path.dirname(__dirname));
+  for (const projectPath of readCustomProjects()) {
+    addProject(projectPath);
+  }
+  const claudeJson = readJson(CLAUDE_PROJECTS_JSON_PATH);
+  if (claudeJson && claudeJson.projects && typeof claudeJson.projects === "object") {
+    for (const projectPath of Object.keys(claudeJson.projects).sort((a, b) => a.localeCompare(b))) {
+      addProject(projectPath);
+    }
+  }
+  addProject(process.cwd());
+  return orderedProjects
+    .filter((projectPath) => {
+      try {
+        return fs.statSync(projectPath).isDirectory() && !isUnsafeProjectRoot(projectPath);
+      } catch {
+        return false;
+      }
+    })
+    .map((projectPath) => ({
+      path: projectPath,
+      name: path.basename(projectPath) || projectPath,
+    }));
+}
+
+function listLocalSkills() {
+  const skillsDir = CLAUDE_SKILLS_DIR;
+  try {
+    return fs
+      .readdirSync(skillsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 80);
+  } catch {
+    return [];
+  }
+}
+
+function getPluginSummary() {
+  const result = spawnSync(resolveClaudeCommand(), ["plugin", "list"], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 8000,
+    env: buildPortableEnv(),
+  });
+  const output = (result.stdout || result.stderr || "").trim();
+  return {
+    available: result.status === 0,
+    summary: output ? redact(output).split(/\r?\n/).slice(0, 8).join("\n") : "未检测到插件信息",
+  };
+}
+
+function realPath(projectPath) {
+  return fs.realpathSync.native(path.resolve(projectPath));
+}
+
+function isSameOrInside(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isUnsafeProjectRoot(projectPath) {
+  const resolved = path.resolve(projectPath);
+  const normalized = resolved.toLowerCase();
+  const root = path.parse(resolved).root.toLowerCase();
+  const exactBlocked = [
+    path.parse(HOME).root,
+    HOME,
+  ]
+    .filter(Boolean)
+    .map((item) => path.resolve(item).toLowerCase());
+  const treeBlocked = [
+    path.join(HOME, "Desktop"),
+    path.join(HOME, ".ssh"),
+    process.env.APPDATA,
+    process.env.LOCALAPPDATA,
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+    process.env.WINDIR,
+  ]
+    .filter(Boolean)
+    .map((item) => path.resolve(item).toLowerCase());
+
+  if (normalized === root) return true;
+  if (exactBlocked.includes(normalized)) return true;
+  return treeBlocked.some((blockedPath) => normalized === blockedPath || isSameOrInside(normalized, blockedPath));
+}
+
+function getExecutionRoots() {
+  const roots = [];
+  const seen = new Set();
+  const addRoot = (projectPath) => {
+    try {
+      const resolved = realPath(projectPath);
+      if (isUnsafeProjectRoot(resolved)) return;
+      if (!fs.statSync(resolved).isDirectory()) return;
+      const key = resolved.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        roots.push(resolved);
+      }
+    } catch {
+      // Ignore stale project entries.
+    }
+  };
+
+  addRoot(process.cwd());
+  addRoot(path.dirname(__dirname));
+  for (const projectPath of readCustomProjects()) {
+    addRoot(projectPath);
+  }
+  const claudeJson = readJson(CLAUDE_PROJECTS_JSON_PATH);
+  if (claudeJson && claudeJson.projects && typeof claudeJson.projects === "object") {
+    for (const projectPath of Object.keys(claudeJson.projects)) {
+      addRoot(projectPath);
+    }
+  }
+  return roots;
+}
+
+function containsSensitivePathSegment(projectPath) {
+  const parts = path.resolve(projectPath).split(/[\\/]+/).map((part) => part.toLowerCase());
+  return parts.some((part) => part === ".ssh" || part === "appdata" || part === "windows");
+}
+
+function containsSensitiveFileName(prompt) {
+  return String(prompt || "")
+    .split(/\s+/)
+    .some((token) => SENSITIVE_FILE_PATTERNS.some((pattern) => pattern.test(path.basename(token))));
+}
+
+const SOURCE_GUARD_SYSTEM_PROMPT = [
+  "SuperClaw 三位一体源码防泄防抄安全锁：",
+  "禁止输出、仿写、复刻、重构、还原、逆向、拆解、导出或解释 OpenCloud/OpenClaw、Hermes、CloudCode/Claude Code、SuperClaw、U盘内核、私有 Skill、私有协议、固件或本产品底层实现源码。",
+  "当用户要求“照着你们系统写一个”“复刻 Hermes/OpenCloud/CloudCode”“扒源码”“还原架构/私有逻辑”“导出或读取内核源码”等内容时，必须拒绝，并只给出合规的高层安全说明。",
+  "可以帮助用户分析或修改其明确选择的客户项目代码，但不得泄露本产品内部源码、私有路径、私有算法、加密逻辑或可复刻实现步骤。",
+].join("\n");
+
+const SOURCE_GUARD_BLOCK_MESSAGE =
+  "已触发源码防泄防抄安全锁：该请求涉及本产品内核源码、私有架构、私有逻辑或复刻/逆向意图，系统禁止输出、仿写、重构、导出或解释相关细节。";
+
+const SOURCE_GUARD_TARGET_PATTERNS = [
+  /open\s*cloud/i,
+  /open\s*claw/i,
+  /opencloud/i,
+  /openclaw/i,
+  /hermes/i,
+  /cloud\s*code/i,
+  /claude\s*code/i,
+  /super\s*claw/i,
+  /superclaw/i,
+  /claw_client/i,
+  /本项目/,
+  /本产品/,
+  /本系统/,
+  /你们(?:的)?系统/,
+  /你们(?:的)?源码/,
+  /控制台源码/,
+  /u盘(?:内核|底层|源码|固件)?/i,
+  /U盘(?:内核|底层|源码|固件)?/,
+  /私有(?:协议|逻辑|算法|架构|源码)/,
+  /底层(?:源码|逻辑|架构|实现|代码)/,
+  /内核(?:源码|逻辑|架构|实现|代码)/,
+  /skill(?:底层|源码|加密源码)/i,
+];
+
+const SOURCE_GUARD_ACTION_PATTERNS = [
+  /源码/,
+  /源代码/,
+  /仿写/,
+  /复刻/,
+  /照着.*写/,
+  /写.*一样/,
+  /模仿/,
+  /抄/,
+  /重构/,
+  /还原/,
+  /逆向/,
+  /反编译/,
+  /拆解/,
+  /扒(?:源码|代码|架构)/,
+  /导出/,
+  /拷贝/,
+  /复制/,
+  /遍历/,
+  /扫描/,
+  /读取/,
+  /解密/,
+  /私有逻辑/,
+  /私有协议/,
+  /核心逻辑/,
+  /架构源码/,
+  /固件逻辑/,
+];
+
+const SOURCE_GUARD_TARGET_TERMS = [
+  "opencloud",
+  "openclaw",
+  "open cloud",
+  "open claw",
+  "hermes",
+  "cloudcode",
+  "cloud code",
+  "claude code",
+  "superclaw",
+  "super claw",
+  "claw_client",
+  "本项目",
+  "本产品",
+  "本系统",
+  "你们系统",
+  "你们源码",
+  "控制台源码",
+  "u盘",
+  "U盘",
+  "私有协议",
+  "私有逻辑",
+  "私有算法",
+  "私有架构",
+  "底层",
+  "内核",
+  "固件",
+  "skill",
+];
+
+const SOURCE_GUARD_ACTION_TERMS = [
+  "源码",
+  "源代码",
+  "source code",
+  "仿写",
+  "复刻",
+  "copy",
+  "clone",
+  "rebuild",
+  "recreate",
+  "replicate",
+  "imitate",
+  "reverse engineer",
+  "decompile",
+  "dump",
+  "export",
+  "scan",
+  "traverse",
+  "read",
+  "decrypt",
+  "照着",
+  "一样",
+  "模仿",
+  "重构",
+  "还原",
+  "逆向",
+  "反编译",
+  "拆解",
+  "扒",
+  "导出",
+  "拷贝",
+  "复制",
+  "遍历",
+  "扫描",
+  "读取",
+  "解密",
+  "核心逻辑",
+  "架构源码",
+  "固件逻辑",
+];
+
+function matchPatterns(text, patterns) {
+  return patterns.filter((pattern) => pattern.test(text)).map((pattern) => pattern.source).slice(0, 8);
+}
+
+function matchTerms(text, terms) {
+  const value = String(text || "").toLowerCase();
+  return terms.filter((term) => value.includes(String(term).toLowerCase())).slice(0, 8);
+}
+
+function detectSourceGuardViolation(text) {
+  const value = String(text || "");
+  const targets = [...new Set([...matchPatterns(value, SOURCE_GUARD_TARGET_PATTERNS), ...matchTerms(value, SOURCE_GUARD_TARGET_TERMS)])];
+  const actions = [...new Set([...matchPatterns(value, SOURCE_GUARD_ACTION_PATTERNS), ...matchTerms(value, SOURCE_GUARD_ACTION_TERMS)])];
+  if (!targets.length || !actions.length) return null;
+  return {
+    code: "SOURCE_GUARD_BLOCKED",
+    targets,
+    actions,
+    reason: SOURCE_GUARD_BLOCK_MESSAGE,
+  };
+}
+
+function looksLikeProtectedSourceOutput(text) {
+  const value = String(text || "");
+  if (!matchPatterns(value, SOURCE_GUARD_TARGET_PATTERNS).length) return false;
+  return /```|(?:^|\n)\s*(?:function|const|let|class|import|export|pub\s+fn|fn\s+|impl\s+|use\s+|def\s+)\b/.test(value)
+    || /(?:src-tauri|runtime[\\/]+claude-panel|scripts[\\/]+dev-api|openclaw\.json|hermes-source|私有源码|内核源码)/i.test(value);
+}
+
+function sanitizeModelOutput(text) {
+  const redacted = redact(text);
+  return looksLikeProtectedSourceOutput(redacted) ? SOURCE_GUARD_BLOCK_MESSAGE : redacted;
+}
+
+function resolveCwd(input) {
+  const cwd = input ? realPath(String(input)) : realPath(process.cwd());
+  const stat = fs.statSync(cwd);
+  if (!stat.isDirectory()) {
+    throw new Error("项目路径不是目录");
+  }
+  if (containsSensitivePathSegment(cwd) || isUnsafeProjectRoot(cwd)) {
+    throw new Error("禁止在系统目录、用户根目录、桌面、AppData、Windows 或敏感目录中执行");
+  }
+  const roots = getExecutionRoots();
+  if (!roots.some((root) => isSameOrInside(cwd, root))) {
+    throw new Error("项目路径未加入白名单，请先在左侧项目中添加该工程目录");
+  }
+  return cwd;
+}
+
+function sendJson(res, status, data) {
+  res.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify(data));
+}
+
+function sendStatic(res, urlPath) {
+  const cleanPath = urlPath === "/" ? "/index.html" : urlPath;
+  const filePath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
+  if (!filePath.startsWith(PUBLIC_DIR)) {
+    sendJson(res, 403, { error: "Forbidden" });
+    return;
+  }
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+
+  const ext = path.extname(filePath);
+  const types = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".txt": "text/plain; charset=utf-8",
+  };
+  res.writeHead(200, {
+    "content-type": types[ext] || "application/octet-stream",
+    "cache-control": "no-store",
+  });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function readRequestBody(req, maxBytes = 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      body += chunk;
+      if (size > maxBytes) {
+        reject(new Error("请求太大"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("JSON 格式错误"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function sanitizeFileName(name) {
+  const base = path.basename(String(name || "image"));
+  return (base.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/\s+/g, "_").slice(0, 90) || "image")
+    .replace(/^\.+$/, "image");
+}
+
+function extensionForMime(mimeType) {
+  if (mimeType === "image/jpeg") return ".jpg";
+  if (mimeType === "image/png") return ".png";
+  if (mimeType === "image/webp") return ".webp";
+  if (mimeType === "image/gif") return ".gif";
+  return "";
+}
+
+function parseDataUrl(dataUrl) {
+  const match = /^data:([^;,]+);base64,(.+)$/i.exec(String(dataUrl || ""));
+  if (!match) {
+    throw new Error("图片数据格式不正确");
+  }
+  return {
+    mimeType: match[1].toLowerCase(),
+    buffer: Buffer.from(match[2], "base64"),
+  };
+}
+
+function uploadContract() {
+  return {
+    feature: "本地图片上传",
+    path: "/api/upload",
+    enabled: true,
+    externalWriteLocked: !isReservedFeatureEnabled(RESERVED_FEATURES.upload),
+    maxFileMb: Math.round(MAX_UPLOAD_BYTES / 1024 / 1024),
+    allowedTypes: Array.from(ALLOWED_IMAGE_TYPES),
+    note: "页面内选择的图片会保存到本机用户目录，并把本地路径随对话发送给 Claude Code；外部后台推送仍需管理员开关和鉴权。",
+  };
+}
+
+async function handleUpload(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, uploadContract());
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const payload = await readRequestBody(req, MAX_UPLOAD_REQUEST_BYTES);
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    if (!files.length) {
+      sendJson(res, 400, { error: "没有收到图片文件" });
+      return;
+    }
+    if (files.length > 6) {
+      sendJson(res, 400, { error: "一次最多上传 6 张图片" });
+      return;
+    }
+
+    const dateDir = new Date().toISOString().slice(0, 10);
+    const targetDir = path.join(UPLOAD_DIR, dateDir);
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const saved = [];
+    for (const file of files) {
+      const parsed = parseDataUrl(file.dataUrl);
+      const mimeType = parsed.mimeType || String(file.type || "").toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+        throw new Error(`${file.name || "图片"} 的格式暂不支持`);
+      }
+      if (parsed.buffer.length > MAX_UPLOAD_BYTES) {
+        throw new Error(`${file.name || "图片"} 超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`);
+      }
+
+      const safeName = sanitizeFileName(file.name);
+      const ext = extensionForMime(mimeType) || path.extname(safeName) || ".png";
+      const stem = path.basename(safeName, path.extname(safeName)).slice(0, 64) || "image";
+      const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const storedName = `${id}-${stem}${ext}`;
+      const storedPath = path.join(targetDir, storedName);
+      fs.writeFileSync(storedPath, parsed.buffer, { mode: 0o600 });
+      saved.push({
+        id,
+        name: safeName,
+        mimeType,
+        size: parsed.buffer.length,
+        path: storedPath,
+      });
+    }
+
+    appendAuditLog({
+      feature: "本地图片上传",
+      action: "local-upload",
+      result: `success:${saved.length}`,
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 200, { success: true, files: saved, contract: uploadContract() });
+  } catch (error) {
+    appendAuditLog({
+      feature: "本地图片上传",
+      action: "local-upload",
+      result: `failed:${error.message}`,
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 400, { error: error.message || "图片上传失败" });
+  }
+}
+
+function redact(text) {
+  return String(text)
+    .replace(/Bearer\s+[A-Za-z0-9._-]{8,}/gi, "Bearer ***")
+    .replace(/(authorization)(["'\s:=]+)(Bearer\s+)?([^"',\s}]{8,})/gi, "$1$2***")
+    .replace(/(x-api-key)(["'\s:=]+)([^"',\s}]{8,})/gi, "$1$2***")
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-***")
+    .replace(/sk-cp-[A-Za-z0-9_-]{12,}/g, "sk-cp-***")
+    .replace(/(api[_-]?key|auth[_-]?token|token|secret|password)(["'\s:=]+)([^"',\s}]{8,})/gi, "$1$2***");
+}
+
+function writeEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function normalizeMode(mode) {
+  if (mode === "plan" || mode === "acceptEdits") return mode;
+  return "default";
+}
+
+function normalizeToolProfile(profile) {
+  if (profile === undefined || profile === null || profile === "") return "none";
+  if (typeof profile !== "string") return "";
+
+  const normalized = profile.trim();
+  if (Object.prototype.hasOwnProperty.call(TOOL_PROFILES, normalized)) return normalized;
+  return "";
+}
+
+function isHighRiskToolProfile(profile) {
+  return HIGH_RISK_TOOL_PROFILES.has(profile);
+}
+
+function normalizeBrowserAccess(value) {
+  if (value === "once" || value === "always") return value;
+  return "none";
+}
+
+function browserAutomationAllowed(payload, toolProfile) {
+  if (toolProfile !== "none") return false;
+  if (payload.permissionProfile !== "browser" && payload.permissionProfile !== "takeover") return false;
+  return normalizeBrowserAccess(payload.browserAccess) !== "none";
+}
+
+function appendToolArgs(args, profile, extraTools = [], options = {}) {
+  const tools = Array.from(new Set([...(TOOL_PROFILES[profile] || []), ...extraTools]));
+  if (!tools.length) {
+    args.push("--tools=");
+    return;
+  }
+  args.push("--tools", tools.join(","));
+
+  const denied = new Set();
+  for (const [candidateProfile, candidateTools] of Object.entries(TOOL_PROFILES)) {
+    if (candidateProfile === profile) continue;
+    for (const tool of candidateTools) {
+      if (!tools.includes(tool)) denied.add(tool);
+    }
+  }
+  if (profile === "read") {
+    ["Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash", "WebFetch", "WebSearch", "TodoWrite"].forEach((tool) =>
+      denied.add(tool)
+    );
+  }
+  if (!options.allowBrowserAutomation) {
+    for (const rule of BROWSER_AUTOMATION_TOOLS) denied.add(rule);
+  }
+  for (const rule of BROWSER_AUTOMATION_DENIES) denied.add(rule);
+  for (const rule of SENSITIVE_TOOL_DENIES) denied.add(rule);
+  if (denied.size) {
+    args.push("--disallowedTools", Array.from(denied).join(","));
+  }
+}
+
+function extractText(message) {
+  if (!message || !Array.isArray(message.content)) return "";
+  return message.content
+    .map((item) => {
+      if (item.type === "text") return item.text || "";
+      if (item.type === "tool_use") return `\n[工具] ${item.name || "tool"}\n`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+async function handleRun(req, res) {
+  let payload;
+  try {
+    payload = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  const prompt = String(payload.prompt || "").trim();
+  if (!prompt) {
+    sendJson(res, 400, { error: "请输入指令" });
+    return;
+  }
+
+  const sourceGuardViolation = detectSourceGuardViolation(prompt);
+  if (sourceGuardViolation) {
+    appendAuditLog({
+      feature: "/api/run",
+      action: "blocked-source-guard",
+      permissionMode: payload.permissionProfile || payload.mode || "default",
+      toolProfile: payload.toolProfile || "unknown",
+      projectPath: payload.cwd || "",
+      result: sourceGuardViolation.code,
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 403, {
+      error: sourceGuardViolation.reason,
+      code: sourceGuardViolation.code,
+      guard: {
+        policy: "superclaw-source-guard",
+        matchedTargets: sourceGuardViolation.targets,
+        matchedActions: sourceGuardViolation.actions,
+      },
+    });
+    return;
+  }
+
+  let cwd;
+  try {
+    cwd = resolveCwd(payload.cwd);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  const settings = readClaudeSettings();
+  const model = String(payload.model || settings.model || "").trim();
+  const mode = normalizeMode(payload.mode);
+  if (payload.allowTools === true) {
+    sendJson(res, 400, {
+      error: "allowTools 已废弃，请使用 toolProfile",
+      allowedToolProfiles: Object.keys(TOOL_PROFILES),
+    });
+    return;
+  }
+
+  const toolProfile = normalizeToolProfile(payload.toolProfile);
+  if (!toolProfile) {
+    sendJson(res, 400, { error: "toolProfile 只能是 none、read、edit 或 command" });
+    return;
+  }
+  const browserAccess = normalizeBrowserAccess(payload.browserAccess);
+  const allowBrowserAutomation = browserAutomationAllowed(payload, toolProfile);
+  const highRiskToolProfile = isHighRiskToolProfile(toolProfile);
+
+  if (containsSensitiveFileName(prompt) && toolProfile !== "none" && !payload.sensitiveFileAccepted) {
+    appendAuditLog({
+      feature: "/api/run",
+      action: "blocked-sensitive-file",
+      permissionMode: payload.permissionProfile || mode,
+      toolProfile,
+      projectPath: cwd,
+      result: "blocked",
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 409, {
+      error: "检测到敏感文件名，请先明确确认是否允许 AI 访问相关文件。",
+      sensitiveFiles: [".env", "id_rsa", "id_ed25519", "*.pem", "*.key", "credentials.json", "token.json"],
+    });
+    return;
+  }
+
+  if (highRiskToolProfile && !isHighRiskToolsEnabled()) {
+    appendAuditLog({
+      feature: "/api/run",
+      action: "blocked-high-risk-tools",
+      permissionMode: payload.permissionProfile || mode,
+      toolProfile,
+      projectPath: cwd,
+      result: "locked",
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 423, {
+      error: "高权限工具默认锁定。需要管理员启用 CLEAN_PANEL_HIGH_RISK_TOOLS_ENABLED=1 后才能使用。",
+      locked: true,
+    });
+    return;
+  }
+
+  if (highRiskToolProfile && payload.riskAccepted !== true) {
+    sendJson(res, 409, { error: "高权限操作需要完成二次风险确认。", riskConfirmationRequired: true });
+    return;
+  }
+
+  if (!settings.authConfigured) {
+    sendJson(res, 400, {
+      error: "当前还没有配置 API Key，暂时不能调用模型，请先在设置中填写 API Key 和接口地址",
+      code: "MISSING_API_KEY",
+    });
+    return;
+  }
+
+  const args = [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    mode,
+  ];
+
+  if (payload.continueSession) {
+    args.push("--continue");
+  }
+  if (model) {
+    args.push("--model", model);
+  }
+  const extraTools = allowBrowserAutomation ? BROWSER_AUTOMATION_TOOLS : [];
+  appendToolArgs(args, toolProfile, extraTools, { allowBrowserAutomation });
+  if (allowBrowserAutomation && extraTools.length) {
+    args.push("--allowedTools", extraTools.join(","));
+  }
+  args.push("--append-system-prompt", CHINESE_OUTPUT_SYSTEM_PROMPT);
+  args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
+  if (payload.permissionProfile === "browser" || payload.permissionProfile === "takeover") {
+    args.push("--append-system-prompt", TAKEOVER_CAPABILITY_SYSTEM_PROMPT);
+  }
+  if (allowBrowserAutomation) {
+    args.push("--append-system-prompt", BROWSER_AUTOMATION_SYSTEM_PROMPT);
+  }
+  if (toolProfile === "none") {
+    args.push(
+      "--append-system-prompt",
+      allowBrowserAutomation
+        ? "本次除已授权的浏览器自动化工具外，仍禁止读取本地文件、执行命令、写入文件或输出 tool_call/XML。"
+        : "本次运行禁用了所有工具。不要读取文件，不要执行命令，不要输出 tool_call/XML，只用普通文本直接回答用户。"
+    );
+  } else if (toolProfile === "read") {
+    args.push(
+      "--append-system-prompt",
+      `本次运行只允许读取当前项目目录：${cwd}。禁止写文件、删除文件、移动文件、执行命令、联网、上传文件或读取敏感文件。`
+    );
+  } else {
+    args.push(
+      "--append-system-prompt",
+      `本次运行限定在当前项目目录：${cwd}。删除、覆盖、批量写入、安装依赖、执行命令、联网或访问敏感文件前必须先向用户说明风险并等待确认。`
+    );
+  }
+  args.push(prompt);
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+
+  const child = spawn(resolveClaudeCommand(), args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: buildPortableEnv({
+      ...settings.env,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
+        settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
+    }),
+    windowsHide: true,
+  });
+
+  let closed = false;
+  let stdoutBuffer = "";
+  let stderrBuffer = "";
+  let assistantTextSeen = false;
+
+  writeEvent(res, "meta", {
+    cwd,
+    model: model || "default",
+    mode,
+    permissionProfile: payload.permissionProfile || mode,
+    toolProfile,
+    browserAccess,
+    continued: Boolean(payload.continueSession),
+  });
+
+  appendAuditLog({
+    feature: "/api/run",
+    action: "start-run",
+    permissionMode: payload.permissionProfile || mode,
+    toolProfile,
+    projectPath: cwd,
+    result: "started",
+    source: req.socket.remoteAddress,
+  });
+
+  req.on("close", () => {
+    closed = true;
+    if (!child.killed) {
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!child.killed) child.kill("SIGKILL");
+      }, 1200).unref();
+    }
+  });
+
+  function handleJsonLine(line) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      writeEvent(res, "log", { text: sanitizeModelOutput(line) });
+      return;
+    }
+
+    if (parsed.type === "system" && parsed.subtype === "init") {
+      writeEvent(res, "meta", {
+        sessionId: parsed.session_id,
+        model: parsed.model,
+        tools: Array.isArray(parsed.tools) ? parsed.tools.length : undefined,
+      });
+      return;
+    }
+
+    if (parsed.type === "assistant") {
+      const text = extractText(parsed.message);
+      if (text) {
+        assistantTextSeen = true;
+        writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+      }
+      return;
+    }
+
+    if (parsed.type === "result") {
+      if (!assistantTextSeen && parsed.result) {
+        writeEvent(res, "text", { text: sanitizeModelOutput(parsed.result) });
+      }
+      writeEvent(res, "done", {
+        subtype: parsed.subtype,
+        durationMs: parsed.duration_ms,
+        costUsd: parsed.total_cost_usd,
+      });
+      return;
+    }
+
+    if (parsed.type === "error") {
+      writeEvent(res, "error", { text: sanitizeModelOutput(parsed.error || "Claude 执行失败") });
+    }
+  }
+
+  child.stdout.on("data", (chunk) => {
+    stdoutBuffer += chunk.toString("utf8");
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) handleJsonLine(line.trim());
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderrBuffer += chunk.toString("utf8");
+    const lines = stderrBuffer.split(/\r?\n/);
+    stderrBuffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(line.trim()) });
+    }
+  });
+
+  child.on("error", (error) => {
+    if (!closed) writeEvent(res, "error", { text: error.message });
+  });
+
+  child.on("close", (code) => {
+    if (stdoutBuffer.trim()) handleJsonLine(stdoutBuffer.trim());
+    if (stderrBuffer.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(stderrBuffer.trim()) });
+    if (!closed) {
+      writeEvent(res, "exit", { code });
+      res.end();
+    }
+  });
+}
+
+function handleStatus(res) {
+  const settings = readClaudeSettings();
+  let baseHost = "";
+  try {
+    baseHost = settings.baseUrl ? new URL(settings.baseUrl).host : "";
+  } catch {
+    baseHost = settings.baseUrl;
+  }
+
+  sendJson(res, 200, {
+    claudeVersion: getClaudeVersion(),
+    model: settings.model,
+    modelBranches: readModelBranches(settings),
+    baseHost,
+    authConfigured: settings.authConfigured,
+    relayConfig: {
+      writable: isRelayConfigWritable(),
+      configured: Boolean(publicRelayConfig().baseUrl),
+    },
+    securityPolicy: {
+      defaultPermissionProfile: "safe",
+      highRiskLocked: !isHighRiskToolsEnabled(),
+      executionRoots: getExecutionRoots(),
+      toolProfiles: {
+        none: TOOL_PROFILES.none,
+        read: TOOL_PROFILES.read,
+        edit: TOOL_PROFILES.edit,
+        command: TOOL_PROFILES.command,
+      },
+      sensitiveFilePatterns: [".env*", "id_rsa", "id_ed25519", "*.pem", "*.key", "credentials.json", "token.json"],
+    },
+    reservedFeatures: {
+      versionUpdate: {
+        locked: !isReservedFeatureEnabled(RESERVED_FEATURES.versionUpdate),
+        path: RESERVED_FEATURES.versionUpdate.path,
+      },
+      upload: {
+        locked: false,
+        localEnabled: true,
+        externalWriteLocked: !isReservedFeatureEnabled(RESERVED_FEATURES.upload),
+        path: RESERVED_FEATURES.upload.path,
+      },
+      screenshot: {
+        locked: !isReservedFeatureEnabled(RESERVED_FEATURES.screenshot),
+        path: RESERVED_FEATURES.screenshot.path,
+      },
+      adminAccess: {
+        locked: !isReservedFeatureEnabled(RESERVED_FEATURES.adminAccess),
+        path: RESERVED_FEATURES.adminAccess.path,
+      },
+      codexBridge: {
+        locked: !isReservedFeatureEnabled(RESERVED_FEATURES.codexBridge),
+        path: RESERVED_FEATURES.codexBridge.path,
+      },
+    },
+    skills: listLocalSkills(),
+    plugins: getPluginSummary(),
+    projects: getKnownProjects(),
+  });
+}
+
+function resolveRelayTestConfig(payload) {
+  const existing = readRelayConfig();
+  const config = {
+    interfaceType: String(payload.interfaceType || existing.interfaceType || "relay").trim(),
+    provider: String(payload.provider || existing.provider || "anthropic-compatible").trim(),
+    baseUrl: String(payload.baseUrl || existing.baseUrl || "").trim(),
+    model: String(payload.model || existing.model || "").trim(),
+    apiKey: String(payload.apiKey || existing.apiKey || "").trim(),
+  };
+
+  if (!config.apiKey) {
+    throw Object.assign(new Error("当前还没有配置 API Key，暂时不能进行真实连接测试，请先临时输入 API Key"), {
+      code: "MISSING_API_KEY",
+    });
+  }
+  if (!config.baseUrl) {
+    throw Object.assign(new Error("接口地址不能为空"), { code: "MISSING_BASE_URL" });
+  }
+  if (!config.model) {
+    throw Object.assign(new Error("主模型不能为空"), { code: "MISSING_MODEL" });
+  }
+  let parsed;
+  try {
+    parsed = new URL(config.baseUrl);
+  } catch {
+    throw Object.assign(new Error("接口地址格式不正确，请填写完整 URL"), { code: "INVALID_BASE_URL" });
+  }
+  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+    throw Object.assign(new Error("接口地址需要使用 https，本机测试地址除外"), { code: "INVALID_BASE_URL" });
+  }
+  return config;
+}
+
+function relayMessagesUrl(baseUrl) {
+  const trimmed = String(baseUrl || "").replace(/\/+$/, "");
+  if (/\/v1\/messages$/i.test(trimmed)) return trimmed;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/messages`;
+  return `${trimmed}/v1/messages`;
+}
+
+const RELAY_ERROR_HELP = {
+  MISSING_API_KEY: {
+    title: "API Key 未填写",
+    message: "当前还没有配置 API Key，暂时不能进行真实连接测试。",
+    suggestion: "请临时输入 API Key 后再测试。测试不会保存或完整显示 API Key。",
+  },
+  MISSING_BASE_URL: {
+    title: "接口地址未填写",
+    message: "接口地址 / 中转站地址为空，无法发起测试请求。",
+    suggestion: "请填写服务商提供的接口地址，一般以 http:// 或 https:// 开头。",
+  },
+  MISSING_MODEL: {
+    title: "主模型未填写",
+    message: "当前没有填写主模型名称，无法判断要测试哪个模型。",
+    suggestion: "请填写服务商支持的模型名称。如果不确定，先使用服务商文档里的默认模型。",
+  },
+  INVALID_BASE_URL: {
+    title: "接口地址格式不正确",
+    message: "接口地址不是有效 URL，或者不是允许的协议。",
+    suggestion: "请检查地址是否完整，是否以 http:// 或 https:// 开头，不要填写官网登录页面地址。",
+  },
+  INVALID_API_KEY: {
+    title: "API Key 无效",
+    message: "当前 API Key 无法通过验证。",
+    suggestion: "请检查是否复制完整、前后是否有空格、Key 是否过期或额度不足。如果使用中转站，请确认填写的是中转站提供的 Key。",
+  },
+  BASE_URL_UNREACHABLE: {
+    title: "接口地址无法访问",
+    message: "当前接口地址路径不可用，服务端没有找到可测试的模型接口。",
+    suggestion: "请检查 Base URL 是否填写正确；如果服务商要求 /v1，请带上 /v1。",
+  },
+  MODEL_NOT_FOUND: {
+    title: "模型不可用",
+    message: "模型名称可能写错，或者当前 Key 没有该模型权限。",
+    suggestion: "请核对模型名称，或换成服务商支持的模型再试。",
+  },
+  TIMEOUT: {
+    title: "请求超时",
+    message: "连接测试等待时间过长，接口没有及时响应。",
+    suggestion: "请检查网络或中转站稳定性，稍后再试。",
+  },
+  RATE_LIMITED: {
+    title: "请求过于频繁",
+    message: "服务商限制了当前请求，可能是频率过高或额度不足。",
+    suggestion: "请稍后再试，或检查账号余额和限速规则。",
+  },
+  SERVER_ERROR: {
+    title: "服务端异常",
+    message: "接口服务返回了 5xx 错误。",
+    suggestion: "请稍后重试；如果一直失败，请联系接口服务商检查中转站状态。",
+  },
+  NETWORK_ERROR: {
+    title: "网络连接失败",
+    message: "本地服务无法访问该接口地址。",
+    suggestion: "请检查地址是否填写正确、网络是否可用，以及中转站服务是否在线。",
+  },
+  "400": {
+    title: "请求参数错误",
+    message: "通常是参数填写不完整或格式不正确。",
+    suggestion: "请检查接口地址、模型名称和接口类型是否符合服务商要求。",
+  },
+  "401": {
+    title: "认证失败",
+    message: "接口拒绝了当前 API Key。",
+    suggestion: "请重新复制 API Key，确认没有多余空格，或检查 Key 是否过期。",
+  },
+  "403": {
+    title: "无访问权限",
+    message: "当前 Key 没有访问该接口或模型的权限。",
+    suggestion: "请检查账号权限、模型授权和中转站套餐。",
+  },
+  "404": {
+    title: "接口路径不存在",
+    message: "接口地址路径不可用。",
+    suggestion: "请确认 Base URL，不要填写官网页面地址；如果服务商要求 /v1，请带上 /v1。",
+  },
+  "408": {
+    title: "请求超时",
+    message: "接口响应超时。",
+    suggestion: "请检查网络或中转站稳定性。",
+  },
+  "423": {
+    title: "功能已锁定",
+    message: "当前功能被安全策略锁定。",
+    suggestion: "这是保护机制，不是软件坏了。高权限和写入类接口需要管理员授权后才能开启。",
+  },
+  "429": {
+    title: "请求受限",
+    message: "当前请求过于频繁或额度不足。",
+    suggestion: "请稍后再试，或检查账号余额和接口限速。",
+  },
+  "500": {
+    title: "接口服务异常",
+    message: "接口服务内部错误。",
+    suggestion: "请稍后重试，或联系接口服务商。",
+  },
+  "502": {
+    title: "网关异常",
+    message: "中转站或上游模型服务不可用。",
+    suggestion: "请稍后重试，或检查中转站状态。",
+  },
+  "503": {
+    title: "服务暂不可用",
+    message: "接口服务暂时不可用。",
+    suggestion: "请稍后重试，或联系服务商确认状态。",
+  },
+  UNKNOWN_ERROR: {
+    title: "未知错误",
+    message: "连接测试失败，但没有识别出明确原因。",
+    suggestion: "请查看诊断报告，确认 API Key、接口地址和模型是否填写正确。",
+  },
+};
+
+function relayErrorHelp(code, overrides = {}) {
+  const help = RELAY_ERROR_HELP[code] || RELAY_ERROR_HELP.UNKNOWN_ERROR;
+  return {
+    code,
+    title: overrides.title || help.title,
+    message: overrides.message || help.message,
+    suggestion: overrides.suggestion || help.suggestion,
+  };
+}
+
+function classifyRelayFailure(status, bodyText) {
+  const text = String(bodyText || "").toLowerCase();
+  if (status === 401 || status === 403 || /api.?key|auth|unauthorized|forbidden|invalid.?key/.test(text)) {
+    return relayErrorHelp("INVALID_API_KEY", { message: "API Key 无效，请检查是否填写正确" });
+  }
+  if (/model|not found|does not exist|unknown model/.test(text)) {
+    return relayErrorHelp("MODEL_NOT_FOUND", { message: "当前模型不可用，请更换模型或检查权限" });
+  }
+  if (status === 400) {
+    return relayErrorHelp("400", { message: "接口返回参数错误，请检查接口地址是否为 Anthropic 兼容地址" });
+  }
+  if (status === 404) {
+    return relayErrorHelp("BASE_URL_UNREACHABLE", { message: "接口地址路径不可用，请检查 Base URL 是否填写正确" });
+  }
+  if (status === 408) {
+    return relayErrorHelp("TIMEOUT", { message: "请求超时，请检查网络或中转站稳定性" });
+  }
+  if (status === 429) {
+    return relayErrorHelp("RATE_LIMITED", { message: "当前请求过于频繁或额度不足，请稍后再试" });
+  }
+  if (status >= 500) {
+    return relayErrorHelp("SERVER_ERROR", { message: "接口暂时不可用，请检查中转站稳定性或稍后重试" });
+  }
+  return relayErrorHelp("UNKNOWN_ERROR", { message: "未知错误，请查看诊断日志" });
+}
+
+async function handleTestRelay(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload;
+  let config;
+  try {
+    payload = await readRequestBody(req);
+    config = resolveRelayTestConfig(payload);
+  } catch (error) {
+    const help = relayErrorHelp(error.code || "UNKNOWN_ERROR", {
+      message: error.message || "测试连接参数不完整",
+    });
+    sendJson(res, 400, {
+      ok: false,
+      ...help,
+    });
+    return;
+  }
+
+  try {
+    const response = await fetch(relayMessagesUrl(config.baseUrl), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+      signal: AbortSignal.timeout(RELAY_TEST_TIMEOUT_MS),
+    });
+    const text = await response.text();
+    if (response.ok) {
+      sendJson(res, 200, {
+        ok: true,
+        code: "OK",
+        message: "连接成功，可以正常使用",
+        checkedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const failure = classifyRelayFailure(response.status, redact(text.slice(0, 1200)));
+    sendJson(res, 200, {
+      ok: false,
+      httpStatus: response.status,
+      ...failure,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    const isTimeout = error.name === "AbortError" || /aborted|timeout/i.test(error.message);
+    const help = relayErrorHelp(isTimeout ? "TIMEOUT" : "NETWORK_ERROR", {
+      message: isTimeout ? "请求超时，请检查网络或中转站稳定性" : "接口地址无法访问，请检查中转站地址",
+    });
+    sendJson(res, 200, {
+      ok: false,
+      ...help,
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
+
+async function handleSetupConfig(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  const existing = readRelayConfig();
+  if (existing.apiKey || existing.baseUrl || existing.model) {
+    sendJson(res, 409, {
+      error: "已有接口配置。为保护客户配置，首次向导不会覆盖已有配置，请到右侧 API 中转站区域修改。",
+      config: publicRelayConfig(existing),
+    });
+    return;
+  }
+
+  if (!normalizeBranchModels(payload.branchModels).length) {
+    sendJson(res, 400, { error: "分支模型不能为空；如果没有分支模型，请填写与主模型相同的模型名" });
+    return;
+  }
+
+  try {
+    const config = validateRelayConfig({
+      ...payload,
+      enabled: true,
+      name: payload.name || "首次配置",
+      provider: payload.provider || "anthropic-compatible",
+    });
+    ensureAppConfigDir();
+    fs.writeFileSync(RELAY_CONFIG_PATH, JSON.stringify(config, null, 2), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    sendJson(res, 200, { success: true, config: publicRelayConfig(config) });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "首次配置保存失败" });
+  }
+}
+
+async function handlePanelPassword(req, res) {
+  if (req.method === "GET") {
+    const cfg = readSuperclawPanelConfig();
+    sendJson(res, cfg === null ? 501 : 200, {
+      configured: cfg !== null,
+      hasPassword: Boolean(cfg?.accessPassword),
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  const cfg = readSuperclawPanelConfig();
+  if (cfg === null) {
+    sendJson(res, 501, { error: "当前未接入 SuperClaw 密码配置" });
+    return;
+  }
+
+  try {
+    const payload = await readRequestBody(req);
+    const oldPassword = String(payload.oldPassword || "");
+    const newPassword = String(payload.newPassword || "");
+    const current = String(cfg.accessPassword || "");
+    if (current && oldPassword !== current) {
+      sendJson(res, 400, { error: "当前密码错误" });
+      return;
+    }
+    const strengthError = validatePanelPassword(newPassword);
+    if (strengthError) {
+      sendJson(res, 400, { error: strengthError });
+      return;
+    }
+    if (current && newPassword === current) {
+      sendJson(res, 400, { error: "新密码不能与旧密码相同" });
+      return;
+    }
+    cfg.accessPassword = newPassword;
+    delete cfg.mustChangePassword;
+    delete cfg.ignoreRisk;
+    writeSuperclawPanelConfig(cfg);
+    sendJson(res, 200, { success: true });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "密码修改失败" });
+  }
+}
+
+function recentAuditSummary(limit = 8) {
+  try {
+    return fs
+      .readFileSync(AUDIT_LOG_PATH, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-limit)
+      .map((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return {
+            time: entry.time,
+            feature: entry.feature,
+            action: entry.action,
+            permissionMode: entry.permissionMode,
+            toolProfile: entry.toolProfile,
+            result: redact(entry.result || ""),
+          };
+        } catch {
+          return { line: redact(line).slice(0, 240) };
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function readRecentLogLines(filePath, limit = 16) {
+  try {
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return [];
+    return fs
+      .readFileSync(filePath, "utf8")
+      .split(/\r?\n/)
+      .map((line) => redact(line.trim()))
+      .filter(Boolean)
+      .slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+function recentErrorSummary() {
+  const summaries = [];
+  for (const fileName of LOCAL_LOG_FILES) {
+    const lines = readRecentLogLines(path.join(__dirname, fileName));
+    if (lines.length) {
+      summaries.push({
+        file: fileName,
+        lines,
+      });
+    }
+  }
+  return summaries;
+}
+
+function diagnosticRecommendations({ relay, projects, settings }) {
+  const suggestions = [];
+  if (!(settings.authConfigured || relay.apiKeyConfigured)) {
+    suggestions.push("API Key 未配置；基础界面和诊断可继续使用，真实连接测试或调用模型前需要临时填写或保存 Key。");
+  }
+  if (!(settings.baseUrl || relay.baseUrl)) suggestions.push("请填写 Base URL（接口地址 / 中转站地址）。");
+  if (!(settings.model || relay.model)) suggestions.push("请填写主模型。");
+  if (!projects.length) suggestions.push("请在左侧项目中添加项目工程路径。");
+  if (!suggestions.length) suggestions.push("基础配置完整，可以继续做连接测试或运行自测。");
+  if (!isHighRiskToolsEnabled()) suggestions.push("高权限工具当前锁定，这是客户版推荐默认状态。");
+  return suggestions;
+}
+
+function handleDiagnostics(res) {
+  const settings = readClaudeSettings();
+  const relay = publicRelayConfig();
+  const projects = getKnownProjects();
+  sendJson(res, 200, {
+    generatedAt: new Date().toISOString(),
+    softwareVersion: "0.1.0",
+    service: {
+      ok: true,
+      port: PORT,
+      adminReservedPort: ADMIN_PORT,
+      url: `http://127.0.0.1:${PORT}`,
+    },
+    configuration: {
+      authConfigured: settings.authConfigured || relay.apiKeyConfigured,
+      apiKeyMasked:
+        relay.apiKeyMasked ||
+        maskSecret(
+          settings.env.ANTHROPIC_AUTH_TOKEN ||
+            settings.env.ANTHROPIC_API_KEY ||
+            process.env.ANTHROPIC_AUTH_TOKEN ||
+            process.env.ANTHROPIC_API_KEY ||
+            ""
+        ),
+      baseUrlConfigured: Boolean(settings.baseUrl || relay.baseUrl),
+      baseHost: (() => {
+        try {
+          return settings.baseUrl ? new URL(settings.baseUrl).host : "";
+        } catch {
+          return settings.baseUrl || "";
+        }
+      })(),
+      relay,
+      mainModel: settings.model || relay.model || "",
+      branchModels: readModelBranches(settings),
+      projectCount: projects.length,
+    },
+    security: {
+      defaultToolProfile: "none",
+      allowedToolProfiles: Object.keys(TOOL_PROFILES),
+      highRiskLocked: !isHighRiskToolsEnabled(),
+      allowToolsDeprecated: true,
+    },
+    recommendations: diagnosticRecommendations({ relay, projects, settings }),
+    recentAudit: recentAuditSummary(),
+    recentErrors: recentErrorSummary(),
+  });
+}
+
+async function handleRelayConfig(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      writable: isRelayConfigWritable(),
+      config: publicRelayConfig(),
+      contract: {
+        method: "POST",
+        path: "/api/relay-config",
+        body: {
+          enabled: "boolean",
+          interfaceType: "official | relay | custom",
+          name: "string",
+          provider: "anthropic-compatible",
+          baseUrl: "https://relay.example.com/anthropic",
+          model: "string",
+          branchModels: "string | string[]",
+          apiKey: "string",
+        },
+      },
+      note: isRelayConfigWritable()
+        ? "接口已启用，POST 会保存到本机用户配置。"
+        : "接口已预留，当前未启用写入。设置 CLEAN_PANEL_RELAY_CONFIG_ENABLED=1 后可保存配置。",
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  if (!isRelayConfigWritable()) {
+    sendJson(res, 423, {
+      error: "API 中转站配置接口已预留，但当前未启用写入",
+      enableHint: "启动面板前设置 CLEAN_PANEL_RELAY_CONFIG_ENABLED=1",
+    });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readRequestBody(req);
+    const existing = readRelayConfig();
+    const merged = {
+      ...existing,
+      ...payload,
+      apiKey: payload.apiKey ? payload.apiKey : existing.apiKey || "",
+    };
+    const config = validateRelayConfig(merged);
+    ensureAppConfigDir();
+    fs.writeFileSync(RELAY_CONFIG_PATH, JSON.stringify(config, null, 2), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    sendJson(res, 200, { success: true, config: publicRelayConfig(config) });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "配置保存失败" });
+  }
+}
+
+async function handleAnnouncement(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      text: readAnnouncement(),
+      source: path.basename(ANNOUNCEMENT_PATH),
+      writable: isAnnouncementWritable(),
+      ports: {
+        panel: PORT,
+        adminReserved: ADMIN_PORT,
+      },
+      contract: {
+        read: {
+          method: "GET",
+          path: "/api/announcement",
+        },
+        write: {
+          method: "POST",
+          path: "/api/announcement",
+          body: {
+            text: "公告文本",
+          },
+          enableHint: "启动面板前设置 CLEAN_PANEL_ANNOUNCEMENT_WRITE_ENABLED=1",
+          adminPortHint: "后续管理后台可使用 CLEAN_PANEL_ADMIN_PORT 指定端口，默认 3021",
+        },
+      },
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  if (!isAnnouncementWritable()) {
+    sendJson(res, 423, {
+      error: "公告管理接口已预留，但当前未启用写入",
+      enableHint: "启动面板前设置 CLEAN_PANEL_ANNOUNCEMENT_WRITE_ENABLED=1",
+      adminPort: ADMIN_PORT,
+    });
+    return;
+  }
+
+  try {
+    const payload = await readRequestBody(req);
+    const text = validateAnnouncement(payload);
+    fs.writeFileSync(ANNOUNCEMENT_PATH, `${text}\n`, "utf8");
+    sendJson(res, 200, {
+      success: true,
+      text,
+      source: path.basename(ANNOUNCEMENT_PATH),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "公告保存失败" });
+  }
+}
+
+async function handleProjects(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      projects: getKnownProjects(),
+      customProjects: readCustomProjects(),
+    });
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const payload = await readRequestBody(req);
+    const projectPath = saveCustomProject(payload.path);
+    appendAuditLog({
+      feature: "项目路径",
+      action: "add-project",
+      projectPath,
+      result: "success",
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 200, {
+      success: true,
+      project: {
+        path: projectPath,
+        name: path.basename(projectPath) || projectPath,
+      },
+      projects: getKnownProjects(),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "项目路径保存失败" });
+  }
+}
+
+async function handleProjectFolders(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      root: getManagedProjectsRoot(),
+      folders: readManagedProjectFolders(),
+    });
+    return;
+  }
+
+  if (req.method === "POST") {
+    try {
+      const payload = await readRequestBody(req);
+      const project = createManagedProjectFolder(payload.name);
+      appendAuditLog({
+        feature: "工程文件",
+        action: "create-project-folder",
+        projectPath: project.path,
+        result: "success",
+        source: req.socket.remoteAddress,
+      });
+      sendJson(res, 200, {
+        success: true,
+        root: getManagedProjectsRoot(),
+        project,
+        folders: readManagedProjectFolders(),
+        projects: getKnownProjects(),
+      });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message || "工程文件创建失败" });
+    }
+    return;
+  }
+
+  if (req.method === "DELETE") {
+    try {
+      const payload = await readRequestBody(req);
+      const project = deleteManagedProjectFolder(payload.path, payload.confirmName);
+      appendAuditLog({
+        feature: "工程文件",
+        action: "delete-project-folder",
+        projectPath: project.path,
+        result: "success",
+        source: req.socket.remoteAddress,
+      });
+      sendJson(res, 200, {
+        success: true,
+        project,
+        folders: readManagedProjectFolders(),
+        projects: getKnownProjects(),
+      });
+    } catch (error) {
+      sendJson(res, error.statusCode || 400, { error: error.message || "工程文件删除失败" });
+    }
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed" });
+}
+
+function reservedContract(featureKey) {
+  const feature = RESERVED_FEATURES[featureKey];
+  return {
+    feature: feature.label,
+    path: feature.path,
+    writable: isReservedFeatureEnabled(feature),
+    locked: !isReservedFeatureEnabled(feature),
+    ports: {
+      panel: PORT,
+      adminReserved: ADMIN_PORT,
+    },
+    auth: {
+      header: "Authorization: Bearer <admin-token>",
+      alternateHeader: "X-Admin-Token: <admin-token>",
+      tokenEnv: "CLEAN_PANEL_ADMIN_TOKEN",
+    },
+    enableHint: `启动面板前设置 ${feature.env}=1，并通过管理员鉴权调用。`,
+    safety: [
+      "不内置、不回显完整 API Key 或 Token",
+      "写入类接口默认关闭",
+      "删除、覆盖、安装依赖、联网推送、发送敏感数据前必须二次确认",
+      "命令执行限定在已选项目目录内，并记录审计日志",
+    ],
+  };
+}
+
+async function handleReservedFeature(req, res, featureKey) {
+  const feature = RESERVED_FEATURES[featureKey];
+  if (req.method === "GET") {
+    sendJson(res, 200, reservedContract(featureKey));
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  if (!isReservedFeatureEnabled(feature)) {
+    appendAuditLog({
+      feature: feature.label,
+      action: "blocked-write",
+      result: "locked",
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 423, {
+      error: `${feature.label}接口已预留，但当前未启用管理员写入。`,
+      contract: reservedContract(featureKey),
+    });
+    return;
+  }
+
+  if (!hasAdminAuth(req)) {
+    appendAuditLog({
+      feature: feature.label,
+      action: "blocked-write",
+      result: "unauthorized",
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 401, {
+      error: "管理员鉴权失败，拒绝执行。",
+      contract: reservedContract(featureKey),
+    });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  appendAuditLog({
+    operator: payload.operator || "admin",
+    source: req.socket.remoteAddress,
+    action: payload.action || "accepted-reserved-command",
+    feature: feature.label,
+    permissionMode: payload.permissionMode,
+    projectPath: payload.projectPath,
+    result: "accepted",
+  });
+
+  sendJson(res, 202, {
+    accepted: true,
+    message: `${feature.label}指令已通过鉴权并写入审计日志。当前程序仅预留执行层，实际执行器需由后续管理后台接入。`,
+  });
+}
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+
+  if (req.method === "GET" && url.pathname === "/api/status") {
+    handleStatus(res);
+    return;
+  }
+
+  if (url.pathname === "/api/relay-config") {
+    handleRelayConfig(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/setup-config") {
+    handleSetupConfig(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/panel-password") {
+    handlePanelPassword(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/test-relay") {
+    handleTestRelay(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/voice-capabilities") {
+    handleVoiceCapabilities(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/diagnostics") {
+    handleDiagnostics(res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/contact-card") {
+    handleContactCard(res);
+    return;
+  }
+
+  if (url.pathname === "/api/announcement") {
+    handleAnnouncement(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/projects") {
+    handleProjects(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/project-folders") {
+    handleProjectFolders(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/version-update") {
+    handleReservedFeature(req, res, "versionUpdate");
+    return;
+  }
+
+  if (url.pathname === "/api/upload") {
+    handleUpload(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/screenshot") {
+    handleReservedFeature(req, res, "screenshot");
+    return;
+  }
+
+  if (url.pathname === "/api/admin-access") {
+    handleReservedFeature(req, res, "adminAccess");
+    return;
+  }
+
+  if (url.pathname === "/api/codex-bridge") {
+    handleReservedFeature(req, res, "codexBridge");
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/run") {
+    handleRun(req, res);
+    return;
+  }
+
+  if (req.method === "GET") {
+    sendStatic(res, decodeURIComponent(url.pathname));
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed" });
+});
+
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`Clean Claude Panel: http://127.0.0.1:${PORT}`);
+});

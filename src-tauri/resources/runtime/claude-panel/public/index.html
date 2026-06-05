@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Claude 控制台</title>
+    <link rel="icon" type="image/jpeg" href="/console-icon.jpg" />
+    <link rel="stylesheet" href="/styles.css?v=20260604-chatjump1" />
+  </head>
+  <body>
+    <section id="introOverlay" class="intro-overlay" aria-label="开场动画" hidden>
+      <video id="introVideo" class="intro-video" src="/intro/opening-welcome-transparent.webm" muted playsinline preload="auto"></video>
+      <div class="intro-panel">
+        <strong>OpenClaw 正在启动</strong>
+        <span id="introStatus">正在载入开场动画</span>
+        <button id="introSkipBtn" type="button">跳过</button>
+      </div>
+    </section>
+
+    <div class="app-shell">
+      <aside class="context-panel">
+        <div class="brand-row">
+          <img class="brand-logo" src="/console-icon.jpg" alt="Claude 控制台" />
+          <div>
+            <h1>Claude 控制台</h1>
+            <p id="providerLine">正在检测本地配置</p>
+          </div>
+        </div>
+
+        <div class="status-strip">
+          <span id="authDot" class="dot"></span>
+          <span id="authText">等待状态</span>
+        </div>
+
+        <nav class="console-switch" aria-label="切换控制台">
+          <div class="console-switch-title">控制台</div>
+          <div class="console-switch-grid">
+            <a class="console-switch-link is-hermes" data-superclaw-route="/h/chat" href="http://127.0.0.1:1420/#/h/chat">Hermes</a>
+            <a class="console-switch-link is-openclaw" data-superclaw-route="/dashboard" href="http://127.0.0.1:1420/#/dashboard">OpenClaw</a>
+            <span class="console-switch-link is-active" aria-current="page">Claude</span>
+            <button class="console-switch-link is-reserved" type="button" aria-disabled="true" title="Codex 控制面板接口已预留，后续开放">
+              <span>Codex</span>
+              <small>待开放</small>
+            </button>
+          </div>
+        </nav>
+
+        <section class="panel-section workspace-section">
+          <div class="section-title">工作区</div>
+          <div id="workspaceTabs" class="workspace-tabs" role="tablist" aria-label="工作区菜单">
+            <button id="projectTabBtn" class="workspace-tab is-active" type="button" data-workspace-tab="project" title="点击增加项目工程路径">项目</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="automation">
+              自动化
+              <span id="automationCount" class="tab-badge">0</span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab="schedule">
+              定时
+              <span id="scheduleCount" class="tab-badge">0</span>
+            </button>
+          </div>
+
+          <div class="workspace-pane is-active" data-workspace-pane="project">
+            <button id="projectAddTrigger" class="field-label project-add-trigger" type="button" title="点击增加项目工程路径">项目</button>
+            <select id="projectSelect" class="control"></select>
+            <p id="projectPath" class="path-preview"></p>
+          </div>
+
+          <div class="workspace-pane" data-workspace-pane="automation">
+            <form id="automationForm" class="side-task-form">
+              <input id="automationName" class="control" autocomplete="off" placeholder="名称" />
+              <textarea id="automationPrompt" class="compact-textarea" rows="2" placeholder="自动化指令"></textarea>
+              <button class="secondary-button primary" type="submit">保存自动化</button>
+            </form>
+            <div id="automationList" class="automation-list"></div>
+          </div>
+
+          <div class="workspace-pane" data-workspace-pane="schedule">
+            <form id="scheduleForm" class="side-task-form">
+              <input id="scheduleName" class="control" autocomplete="off" placeholder="任务名称" />
+              <input id="scheduleAt" class="control" type="datetime-local" />
+              <textarea id="schedulePrompt" class="compact-textarea" rows="2" placeholder="定时执行的指令"></textarea>
+              <label class="toggle-row">
+                <input id="scheduleEnabled" type="checkbox" checked />
+                <span>启用</span>
+              </label>
+              <button class="secondary-button primary" type="submit">保存定时任务</button>
+            </form>
+            <div id="scheduleList" class="automation-list"></div>
+          </div>
+        </section>
+
+        <section class="panel-section">
+          <div class="section-title">会话</div>
+          <label class="toggle-row">
+            <input id="continueToggle" type="checkbox" />
+            <span>继续最近会话</span>
+          </label>
+          <div class="quiet-note">关闭时每次发送都会创建一次独立运行。</div>
+        </section>
+
+        <section class="panel-section conversation-section">
+          <div class="section-header">
+            <div class="section-title">工程文件</div>
+            <div class="conversation-header-actions">
+              <button id="newConversationBtn" class="mini-icon-button" type="button" title="新建对话" aria-label="新建对话">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 5v14" />
+                  <path d="M5 12h14" />
+                </svg>
+              </button>
+              <button id="conversationSearchToggleBtn" class="mini-icon-button" type="button" title="搜索工程文件" aria-label="搜索工程文件">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m16 16 4 4" />
+                </svg>
+              </button>
+              <label class="mini-toggle">
+                <input id="showArchivedToggle" type="checkbox" />
+                <span>归档</span>
+              </label>
+            </div>
+          </div>
+          <label id="conversationSearchWrap" class="side-search-box" for="conversationSearchInput" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <input id="conversationSearchInput" type="search" autocomplete="off" placeholder="搜索工程文件、输入或输出" />
+          </label>
+          <div id="conversationList" class="conversation-list"></div>
+          <section id="sidebarPetDock" class="sidebar-pet-dock" aria-label="桌面宠物展示" hidden>
+            <div class="sidebar-pet-stage">
+              <video id="sidebarPetVideo" class="sidebar-pet-video" src="/pet-videos/fun/idle-breathe.webm" muted playsinline loop autoplay preload="metadata"></video>
+            </div>
+            <div class="sidebar-pet-caption">
+              <strong id="sidebarPetTitle">休息提醒</strong>
+              <span id="sidebarPetText"></span>
+            </div>
+          </section>
+        </section>
+
+        <section class="account-dock" aria-label="账户菜单">
+          <div id="accountMenu" class="account-menu" role="menu" hidden>
+            <div class="account-menu-user">
+              <span class="account-menu-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 20a8 8 0 0 1 16 0" />
+                </svg>
+              </span>
+              <div>
+                <strong id="accountEmailLabel">本地账户</strong>
+                <small>账户信息接口已预留</small>
+              </div>
+            </div>
+            <button class="account-menu-item muted" type="button" data-account-action="profile" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+                <path d="M4 21a8 8 0 0 1 16 0" />
+              </svg>
+              <span>个人账户</span>
+            </button>
+            <div id="accountProfilePanel" class="account-profile-panel" hidden>
+              <label class="account-profile-field">
+                <span>名字</span>
+                <input id="accountDisplayNameInput" type="text" autocomplete="name" maxlength="32" placeholder="本地账户" />
+              </label>
+              <button id="accountSaveNameBtn" class="account-mini-button" type="button">保存名字</button>
+              <button id="accountChangePasswordBtn" class="account-mini-button ghost" type="button">修改密码</button>
+              <p>账号与密码接口已预留，客户版不会在前端保存真实密码。</p>
+            </div>
+            <button class="account-menu-item muted" type="button" data-account-action="contact" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" />
+                <path d="M8 9h8" />
+                <path d="M8 13h5" />
+              </svg>
+              <span>联系我们</span>
+            </button>
+            <div id="accountContactPanel" class="account-contact-panel" hidden>
+              <div class="account-contact-card">
+                <div class="account-contact-card-title">微信联系</div>
+                <div class="account-contact-wechat">
+                  <div class="account-contact-qr">
+                    <img id="contactQrImage" alt="联系二维码" hidden />
+                    <span id="contactQrPlaceholder">二维码接口已预留</span>
+                  </div>
+                  <div class="account-contact-info">
+                    <strong id="contactNameLabel">客服名称待配置</strong>
+                    <span id="contactWechatLabel">微信号待配置</span>
+                    <p id="contactNoteLabel">后续可接入售后二维码、微信名称和客户服务入口。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="account-contact-card">
+                <div class="account-contact-card-title">邮箱联系</div>
+                <div class="account-contact-mail">
+                  <strong id="contactEmailLabel">邮箱待配置</strong>
+                  <span>用于问题反馈、售后沟通和远程支持预约。</span>
+                </div>
+              </div>
+            </div>
+            <div class="account-menu-divider"></div>
+            <button class="account-menu-item" type="button" data-account-action="settings" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.05.05a2 2 0 0 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6l-.03.05a2 2 0 0 1-3.46-2l.03-.05A1.7 1.7 0 0 0 9 17.15a1.7 1.7 0 0 0-1.88-.34l-.05.02a2 2 0 0 1-2-3.46l.05-.03A1.7 1.7 0 0 0 5.6 12a1.7 1.7 0 0 0-.6-1l-.05-.03a2 2 0 0 1 2-3.46l.05.02A1.7 1.7 0 0 0 9 6.85a1.7 1.7 0 0 0 1-.6l.03-.05a2 2 0 0 1 3.46 2l-.03.05A1.7 1.7 0 0 0 15 6.85a1.7 1.7 0 0 0 1.88.34l.05-.02a2 2 0 0 1 2 3.46l-.05.03A1.7 1.7 0 0 0 18.4 12c0 .66.38 1.26 1 1.55Z" />
+              </svg>
+              <span>设置</span>
+            </button>
+            <button class="account-menu-item" type="button" data-account-action="usage" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3a9 9 0 1 0 9 9" />
+                <path d="M12 12 17 7" />
+              </svg>
+              <span>剩余用量</span>
+              <span class="account-menu-arrow">›</span>
+            </button>
+            <button class="account-menu-item" type="button" data-account-action="logout" role="menuitem">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 17 15 12 10 7" />
+                <path d="M15 12H3" />
+                <path d="M21 3v18" />
+              </svg>
+              <span>退出登录</span>
+            </button>
+          </div>
+          <button id="accountMenuButton" class="account-menu-button" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span class="account-avatar">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 20a8 8 0 0 1 16 0" />
+              </svg>
+            </span>
+            <span class="account-menu-text">
+              <strong>设置</strong>
+              <small id="accountMenuHint">账号与退出</small>
+            </span>
+          </button>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="title-block">
+            <div class="eyebrow">本地工作台</div>
+            <h2 id="currentProject">未选择项目</h2>
+            <div class="topbar-pet-zone" aria-label="顶部桌宠活动区">
+              <button id="topbarPet" class="topbar-pet" type="button" data-state="idle" aria-label="顶部桌宠，点击关闭" title="点击关闭桌宠">
+                <img id="topbarPetVideo" class="topbar-pet-video" src="/pet-videos/topbar/topbar-patrol-alpha.png?v=patrol3" alt="" aria-hidden="true" />
+                <span id="topbarPetLabel" class="topbar-pet-label">待机</span>
+              </button>
+            </div>
+          </div>
+          <div class="status-pills" aria-label="运行状态">
+            <span id="runStateChip" class="pill run-state idle">准备就绪</span>
+            <div class="model-switcher">
+              <button id="modelChip" class="pill model-chip-button" type="button" aria-expanded="false" aria-haspopup="menu">
+                <span class="model-chip-type">主模型</span>
+                <span id="mainModelLabel" class="model-chip-name">模型</span>
+                <span class="model-chip-chevron">⌄</span>
+              </button>
+              <div id="mainModelMenu" class="model-guide-menu" role="menu" hidden>
+                <div class="model-guide-title">主模型</div>
+                <p>主模型是 Claude Code 当前默认使用的基础模型。切换后会同步到右侧模型配置。</p>
+                <button id="useMainModelBtn" type="button" role="menuitem">使用主模型</button>
+              </div>
+            </div>
+            <div class="model-switcher">
+              <button id="hostChip" class="pill model-chip-button" type="button" aria-expanded="false" aria-haspopup="menu">
+                <span class="model-chip-type">分支模型</span>
+                <span id="branchModelLabel" class="model-chip-name">自动分支</span>
+                <span class="model-chip-chevron">⌄</span>
+              </button>
+              <div id="branchModelMenu" class="model-guide-menu branch-model-menu" role="menu" hidden>
+                <div class="model-guide-title">分支模型</div>
+                <p>分支模型用于在同一主模型体系下临时切换不同模型版本。可从配置接口扩展更多分支。</p>
+                <div id="branchModelOptions" class="model-guide-options"></div>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button id="selfTestBtn" class="text-button" type="button">自测</button>
+            <button id="launchBtn" class="text-button launch-toolbar" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14l11-7Z" />
+              </svg>
+              <span>启动</span>
+            </button>
+            <button id="versionUpdateBtn" class="version-update-button" type="button" disabled>
+              版本更新：等待外部指令
+            </button>
+            <button id="themeToggleBtn" class="text-button theme-toggle" type="button" title="切换深色 / 白色" aria-label="切换深色 / 白色">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3v2" />
+                <path d="M12 19v2" />
+                <path d="m4.22 4.22 1.42 1.42" />
+                <path d="m18.36 18.36 1.42 1.42" />
+                <path d="M3 12h2" />
+                <path d="M19 12h2" />
+                <path d="m4.22 19.78 1.42-1.42" />
+                <path d="m18.36 5.64 1.42-1.42" />
+                <circle cx="12" cy="12" r="4" />
+              </svg>
+              <span id="themeToggleLabel">深色</span>
+            </button>
+            <button id="refreshBtn" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+                <path d="M3 21v-5h5" />
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+                <path d="M16 8h5V3" />
+              </svg>
+            </button>
+            <button id="rightPanelToggleBtn" class="icon-button" type="button" title="隐藏右侧设置" aria-label="隐藏右侧设置">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="M15 4v16" />
+                <path d="m11 9-3 3 3 3" />
+              </svg>
+            </button>
+            <button id="stopBtn" class="stop-button danger" type="button" title="停止运行" aria-label="停止运行" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect width="14" height="14" x="5" y="5" rx="2" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <section id="announcementShell" class="announcement-shell" aria-label="全局公告" hidden>
+          <div class="announcement-meta">
+            <div class="announcement-label">公告</div>
+            <span id="announcementTimer" class="announcement-timer">60 秒后隐藏</span>
+          </div>
+          <div class="announcement-viewport">
+            <div id="announcementTrack" class="announcement-track"></div>
+          </div>
+        </section>
+
+        <section id="claudePet" class="claude-pet" aria-live="polite">
+          <div class="claude-pet-stage" aria-hidden="true">
+            <span class="pet-floor"></span>
+            <video id="claudePetVideo" class="pet-video" muted playsinline loop preload="metadata" hidden></video>
+            <span id="claudePetBubble" class="pet-bubble">我在这儿</span>
+          </div>
+          <div class="claude-pet-copy">
+            <strong>Claude Code 宠物</strong>
+            <span id="claudePetStatus">准备就绪，等待指令</span>
+          </div>
+          <span id="claudePetMood" class="claude-pet-mood">待命</span>
+          <button id="claudePetStartBtn" class="claude-pet-start" type="button">启动动画</button>
+        </section>
+
+        <section id="transcript" class="transcript" aria-live="polite"></section>
+
+        <form id="promptForm" class="composer">
+          <input id="imageUploadInput" type="file" accept="image/*" multiple hidden />
+          <button id="quickAttachBtn" class="attachment-entry" type="button" title="上传图片" aria-label="上传图片">
+            <span aria-hidden="true">+</span>
+          </button>
+          <button id="voiceModeBtn" class="attachment-entry voice-mode-button" type="button" title="语音对话" aria-label="语音对话" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
+              <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+          </button>
+          <div class="composer-input-wrap">
+            <div id="temporaryTaskBar" class="temporary-task-bar" hidden>
+              <div class="temporary-task-main">
+                <span class="temporary-task-badge">临时任务</span>
+                <strong id="temporaryTaskTitle">等待口述任务</strong>
+                <span id="temporaryTaskMeta">未设置</span>
+              </div>
+              <button id="temporaryTaskCancelBtn" class="temporary-task-cancel" type="button">取消</button>
+            </div>
+            <div id="attachmentPreview" class="attachment-preview" hidden></div>
+            <div id="slashCommandMenu" class="slash-command-menu" role="listbox" hidden></div>
+            <textarea id="promptInput" rows="1" placeholder="有问题，尽管问"></textarea>
+          </div>
+          <div id="composerPermission" class="composer-permission">
+            <button
+              id="composerPermissionButton"
+              class="composer-permission-trigger"
+              type="button"
+              data-active-mode="default"
+              aria-expanded="false"
+              aria-haspopup="menu"
+            >
+              <span id="composerPermissionIcon" class="composer-permission-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 11V6a2 2 0 0 1 4 0v4" />
+                  <path d="M11 10V5a2 2 0 0 1 4 0v6" />
+                  <path d="M15 11V7a2 2 0 0 1 4 0v6" />
+                  <path d="M7 11a2 2 0 0 0-4 0v2a8 8 0 0 0 8 8h2a6 6 0 0 0 6-6v-2" />
+                </svg>
+              </span>
+              <span id="composerPermissionLabel">默认权限</span>
+              <span class="composer-permission-chevron">⌄</span>
+            </button>
+            <div id="composerPermissionMenu" class="composer-permission-menu" role="menu" hidden>
+              <button class="composer-permission-item is-active" type="button" data-composer-mode="safe" role="menuitem">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 11V6a2 2 0 0 1 4 0v4" />
+                  <path d="M11 10V5a2 2 0 0 1 4 0v6" />
+                  <path d="M15 11V7a2 2 0 0 1 4 0v6" />
+                  <path d="M7 11a2 2 0 0 0-4 0v2a8 8 0 0 0 8 8h2a6 6 0 0 0 6-6v-2" />
+                </svg>
+                <span>安全对话</span>
+                <span class="composer-permission-check">✓</span>
+              </button>
+              <button class="composer-permission-item" type="button" data-composer-mode="browser" role="menuitem">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3 4 7v5c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7Z" />
+                  <path d="m9 12 2 2 4-5" />
+                </svg>
+                <span>浏览器自动化</span>
+                <span class="composer-permission-check">✓</span>
+              </button>
+              <button class="composer-permission-item" type="button" data-composer-mode="takeover" role="menuitem">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16" />
+                  <path d="M6 7v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" />
+                  <path d="M9 11h6" />
+                  <path d="M9 15h4" />
+                </svg>
+                <span>接管模式</span>
+                <span class="composer-permission-check">✓</span>
+              </button>
+            </div>
+          </div>
+          <button id="sendBtn" class="send-button" type="submit" title="发送" aria-label="发送">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5v14l11-7Z" />
+            </svg>
+            <span>发送</span>
+          </button>
+        </form>
+      </main>
+
+      <aside class="run-panel" data-active-run-section="install">
+        <section class="panel-section quick-section">
+          <details class="right-compact-details quick-command-details">
+            <summary>
+              <span>Claude Code 快捷指令</span>
+              <small>按需展开</small>
+            </summary>
+          <div id="quickCommands" class="quick-command-list">
+            <button class="quick-command" type="button" data-prompt="在当前项目中查询相关代码位置，说明文件、函数和调用关系，不要修改文件。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m9 8-4 4 4 4" />
+                <path d="m15 8 4 4-4 4" />
+                <path d="m14 5-4 14" />
+                <circle cx="17.5" cy="17.5" r="3.5" />
+                <path d="m20 20 2 2" />
+              </svg>
+              <span>代码查询</span>
+            </button>
+            <button class="quick-command" type="button" data-prompt="查看当前项目结构，只总结主要目录和入口文件，不要修改文件。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 6h6l2 2h8v10a2 2 0 0 1-2 2H4Z" />
+                <path d="M4 6v12a2 2 0 0 0 2 2" />
+                <path d="M8 12h8" />
+                <path d="M8 16h5" />
+              </svg>
+              <span>查看项目</span>
+            </button>
+            <button class="quick-command" type="button" data-prompt="审查当前改动，优先指出 bug、风险和缺少的测试，不要修改文件。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 5 6v5c0 5 3 8 7 10 4-2 7-5 7-10V6Z" />
+                <path d="M9 12h6" />
+                <path d="M9 16h4" />
+                <path d="m10 8 1.5 1.5L15 6" />
+              </svg>
+              <span>代码审计</span>
+            </button>
+            <button class="quick-command" type="button" data-prompt="根据最近错误信息定位问题，先解释原因，再给出最小修复方案。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="7" />
+                <path d="M12 8v4" />
+                <path d="M12 16h.01" />
+                <path d="M4 4 7 7" />
+                <path d="M20 4 17 7" />
+                <path d="M4 20 7 17" />
+                <path d="M20 20 17 17" />
+              </svg>
+              <span>定位错误</span>
+            </button>
+            <button class="quick-command" type="button" data-prompt="运行项目合适的测试命令，并总结结果。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M10 3v5l-5 9a3 3 0 0 0 2.6 4.5h8.8A3 3 0 0 0 19 17L14 8V3" />
+                <path d="M8 3h8" />
+                <path d="M7 17h10" />
+                <path d="m9 13 2 2 4-4" />
+              </svg>
+              <span>运行测试</span>
+            </button>
+            <button class="quick-command" type="button" data-prompt="总结本次改动，生成一段简洁的提交说明。">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="6" cy="6" r="2.5" />
+                <circle cx="18" cy="18" r="2.5" />
+                <circle cx="18" cy="6" r="2.5" />
+                <path d="M8.5 6H15" />
+                <path d="M6 8.5v5A4.5 4.5 0 0 0 10.5 18H15" />
+              </svg>
+              <span>提交说明</span>
+            </button>
+          </div>
+          </details>
+        </section>
+
+        <section class="panel-section run-control-section">
+          <div class="section-title">运行设置</div>
+          <div class="run-tab-bar" role="tablist" aria-label="运行设置分组">
+            <button class="run-tab-button" type="button" data-run-tab="permissions">1 权限</button>
+            <button class="run-tab-button" type="button" data-run-tab="environment">2 环境</button>
+            <button class="run-tab-button" type="button" data-run-tab="diagnostics">3 诊断</button>
+            <button class="run-tab-button is-active" type="button" data-run-tab="install">4 安装</button>
+          </div>
+          <p class="mode-note run-tab-hint">常用安装入口已提前放出；其它配置按需切换查看。</p>
+        </section>
+
+        <section class="panel-section model-section">
+          <div class="section-title">模型与配置</div>
+          <label class="field-label" for="modelInput">模型</label>
+          <input id="modelInput" class="control" autocomplete="off" />
+          <button id="setupOpenBtn" class="secondary-button" type="button">控制面板配置</button>
+          <div id="setupOpenHint" class="mode-note">接口、模型和项目配置已收起，需要时点击打开。</div>
+        </section>
+
+        <section class="panel-section permission-section" data-run-section="permissions">
+          <div class="section-title">权限模式</div>
+          <div id="permissionDropdown" class="permission-dropdown">
+            <button id="permissionMenuButton" class="permission-button" type="button" aria-expanded="false" aria-haspopup="menu">
+              <span id="permissionMenuLabel">默认权限</span>
+              <span class="permission-chevron">⋁</span>
+            </button>
+            <div id="permissionMenu" class="permission-menu" role="menu" hidden>
+              <button class="permission-menu-item is-active" type="button" data-mode="safe" role="menuitem">
+                <strong>安全对话模式</strong>
+                <span>AI 只能回答问题，不读取或修改本地文件。</span>
+              </button>
+              <button class="permission-menu-item" type="button" data-mode="browser" role="menuitem">
+                <strong>浏览器自动化模式</strong>
+                <span>授权后可打开网页、搜索、点击和读取页面。</span>
+              </button>
+              <button class="permission-menu-item" type="button" data-mode="takeover" role="menuitem">
+                <strong>接管模式</strong>
+                <span>管理员锁定。仅用于桌面辅助、打开文件和引导操作，不允许修改控制台源码或客户配置。</span>
+              </button>
+            </div>
+          </div>
+          <div id="modeNote" class="mode-note">安全对话模式不会读取或修改本地文件。</div>
+          <div id="modeDetails" class="mode-details"></div>
+          <div class="permission-summary">
+            <div><span>工具范围</span><strong id="toolAccessLabel">无工具</strong></div>
+            <div><span>风险等级</span><strong id="riskLevelLabel">低</strong></div>
+          </div>
+          <div class="quiet-note">高权限默认锁定；删除、覆盖、命令执行等操作必须再次确认。</div>
+        </section>
+
+        <section class="panel-section health-section" data-run-section="environment">
+          <div class="section-title">环境</div>
+          <dl class="health-list">
+            <div>
+              <dt>Claude Code</dt>
+              <dd id="versionLine">检测中</dd>
+            </div>
+            <div>
+              <dt>接口</dt>
+              <dd id="hostLine">检测中</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="panel-section relay-section" data-run-section="environment">
+          <div class="section-title">API 中转站</div>
+          <div id="relayBadge" class="relay-badge">接口预留</div>
+          <dl class="health-list">
+            <div>
+              <dt>接口</dt>
+              <dd>/api/relay-config</dd>
+            </div>
+            <div>
+              <dt>写入</dt>
+              <dd id="relayWriteState">未启用</dd>
+            </div>
+          </dl>
+          <div id="relayNote" class="mode-note">后续通过这个接口保存中转站配置。</div>
+          <button id="relayToggle" class="secondary-button" type="button">配置中转站</button>
+          <form id="relayForm" class="relay-form" hidden>
+            <label class="field-label" for="relayName">名称</label>
+            <input id="relayName" class="control" autocomplete="off" placeholder="例如：主中转站" />
+
+            <label class="field-label" for="relayProvider">Provider（接口服务商）</label>
+            <select id="relayProvider" class="control">
+              <option value="anthropic-compatible">Anthropic 兼容</option>
+            </select>
+
+            <label class="field-label" for="relayBaseUrl">Base URL（接口地址 / 中转站地址）</label>
+            <input id="relayBaseUrl" class="control" autocomplete="off" placeholder="https://relay.example.com/anthropic" />
+
+            <label class="field-label" for="relayModel">主模型</label>
+            <input id="relayModel" class="control" autocomplete="off" placeholder="模型名" />
+
+            <label class="field-label" for="relayApiKey">API Key（可选，测试连接或调用模型前需要）</label>
+            <input id="relayApiKey" class="control" autocomplete="off" type="password" placeholder="可选：技术测试时临时输入 API Key" />
+
+            <label class="toggle-row relay-enabled-row">
+              <input id="relayEnabled" type="checkbox" />
+              <span>启用这组配置</span>
+            </label>
+
+            <div class="relay-actions">
+              <button id="relayTestBtn" class="secondary-button" type="button">测试连接</button>
+              <button id="relaySaveBtn" class="secondary-button primary" type="submit">保存配置</button>
+            </div>
+            <div id="relayTestResult" class="mode-note"></div>
+            <div id="relayFormNote" class="mode-note"></div>
+          </form>
+        </section>
+
+        <section class="panel-section diagnostics-section" data-run-section="diagnostics">
+          <div class="section-title">诊断</div>
+          <div id="diagnosticsStatus" class="diagnostics-status" data-state="idle">
+            <strong>自检状态</strong>
+            <span>未运行</span>
+          </div>
+          <div class="diagnostics-actions">
+            <button id="diagnosticsBtn" class="secondary-button" type="button">生成诊断报告</button>
+            <button id="diagnosticsCopyBtn" class="secondary-button" type="button" disabled>复制</button>
+            <button id="diagnosticsDownloadBtn" class="secondary-button" type="button" disabled>下载</button>
+          </div>
+          <pre id="diagnosticsOutput" class="diagnostics-output" hidden></pre>
+        </section>
+
+        <section class="panel-section help-section" data-run-section="diagnostics">
+          <div class="section-title">帮助中心</div>
+          <div class="help-actions">
+            <button id="usageGuideBtn" class="secondary-button" type="button">使用说明</button>
+            <button id="faqBtn" class="secondary-button" type="button">FAQ</button>
+            <button id="permissionHelpBtn" class="secondary-button" type="button">权限说明</button>
+          </div>
+          <details class="right-compact-details" id="configChecklistPanel">
+            <summary>
+              <span>配置检查清单</span>
+              <small id="configChecklistSummary">检测中</small>
+            </summary>
+            <div id="configChecklist" class="config-checklist" aria-label="配置检查清单"></div>
+          </details>
+        </section>
+
+        <section class="panel-section extensions-section" data-run-section="install">
+          <div class="section-title">插件与 Skills</div>
+          <dl class="health-list">
+            <div>
+              <dt>插件</dt>
+              <dd id="pluginSummary">检测中</dd>
+            </div>
+            <div>
+              <dt>Skills</dt>
+              <dd id="skillsSummary">检测中</dd>
+            </div>
+          </dl>
+          <button id="installedExtensionsBtn" class="secondary-button extension-library-button" type="button">
+            查看已安装插件 / Skills
+          </button>
+          <details class="right-compact-details extensions-install-details">
+            <summary>
+              <span>安装插件 / Skills</span>
+              <small>按需展开</small>
+            </summary>
+            <div class="extension-card compact">
+              <label class="field-label" for="pluginInput">安装插件</label>
+              <input id="pluginInput" class="control" autocomplete="off" placeholder="plugin 或 plugin@marketplace" />
+              <button id="pluginPromptBtn" class="secondary-button" type="button">生成安装指令</button>
+            </div>
+            <div class="extension-card compact">
+              <label class="field-label" for="skillInput">安装 Skill</label>
+              <input id="skillInput" class="control" autocomplete="off" placeholder="skill 名称或仓库地址" />
+              <button id="skillPromptBtn" class="secondary-button" type="button">生成安装指令</button>
+            </div>
+          </details>
+        </section>
+      </aside>
+    </div>
+
+    <section id="setupWizard" class="setup-wizard" role="dialog" aria-modal="true" aria-labelledby="setupWizardTitle" hidden>
+      <div class="setup-dialog">
+        <div class="setup-head">
+          <div>
+            <p class="setup-kicker">首次配置</p>
+            <h2 id="setupWizardTitle">完成接口和项目配置</h2>
+          </div>
+          <button id="setupSkipBtn" class="mini-icon-button" type="button" aria-label="稍后配置">×</button>
+        </div>
+        <div id="setupMissingList" class="setup-missing"></div>
+
+        <div class="setup-grid">
+          <section class="setup-step">
+            <strong>1. 接口类型</strong>
+            <p>请选择你使用的接口类型。如果你购买的是第三方中转服务，请选择 API 中转站。</p>
+            <select id="setupInterfaceType" class="control">
+              <option value="official">官方 API</option>
+              <option value="relay" selected>API 中转站</option>
+              <option value="custom">自定义兼容接口</option>
+            </select>
+          </section>
+
+          <section class="setup-step">
+            <strong>2. 接口配置</strong>
+            <label class="field-label" for="setupApiKey">API Key（可选，测试连接或调用模型前需要）</label>
+            <input id="setupApiKey" class="control" type="password" autocomplete="off" placeholder="可选：技术测试时临时输入 API Key" />
+            <div id="setupSavedKeyState" class="quiet-note"></div>
+
+            <label class="field-label" for="setupBaseUrl">Base URL（接口地址 / 中转站地址）</label>
+            <input id="setupBaseUrl" class="control" autocomplete="off" placeholder="https://api.anthropic.com" />
+
+            <label class="field-label" for="setupMainModel">主模型</label>
+            <input id="setupMainModel" class="control" autocomplete="off" placeholder="例如 MiniMax-M2.7" />
+
+            <label class="field-label" for="setupBranchModel">分支模型</label>
+            <input id="setupBranchModel" class="control" autocomplete="off" placeholder="没有分支时可填写主模型名" />
+          </section>
+
+          <section class="setup-step">
+            <strong>3. 测试连接</strong>
+            <p>测试只验证当前填写的接口地址、API Key 和模型；API Key 可临时输入，不保存配置，不回显完整内容。</p>
+            <button id="setupTestBtn" class="secondary-button" type="button">测试连接</button>
+            <div id="setupTestResult" class="mode-note"></div>
+          </section>
+
+          <section class="setup-step">
+            <strong>4. 项目路径</strong>
+            <p>请填写要交给 Claude Code 分析的项目文件夹路径。路径必须通过后端白名单校验。</p>
+            <input id="setupProjectPath" class="control" autocomplete="off" placeholder="例如 C:\\Projects\\my-app" />
+          </section>
+        </div>
+
+        <div id="setupWizardError" class="setup-error" hidden></div>
+        <div class="setup-actions">
+          <button id="setupSaveBtn" class="secondary-button primary" type="button">保存并进入主界面</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="helpDialog" class="help-dialog" role="dialog" aria-modal="true" aria-labelledby="helpDialogTitle" hidden>
+      <div class="help-dialog-panel">
+        <div class="setup-head">
+          <div>
+            <p class="setup-kicker">帮助中心</p>
+            <h2 id="helpDialogTitle">使用说明</h2>
+          </div>
+          <button id="helpDialogClose" class="mini-icon-button" type="button" aria-label="关闭帮助">×</button>
+        </div>
+        <div id="helpDialogBody" class="help-dialog-body"></div>
+      </div>
+    </section>
+
+    <section id="projectNameDialog" class="project-name-dialog" role="dialog" aria-modal="true" aria-labelledby="projectNameTitle" hidden>
+      <div class="project-name-panel">
+        <div class="setup-head">
+          <div>
+            <p class="setup-kicker">新建工程文件</p>
+            <h2 id="projectNameTitle">请给您的工程文件命名</h2>
+          </div>
+          <button id="projectNameCancelBtn" class="mini-icon-button" type="button" aria-label="关闭">×</button>
+        </div>
+        <p class="quiet-note">创建后会在本机受控工程目录中新建一个独立文件夹，并在左侧生成一个可随时打开的对话上下文。</p>
+        <input id="projectNameInput" class="control" autocomplete="off" maxlength="60" placeholder="例如：直播话术对话" />
+        <div id="projectNameError" class="setup-error" hidden></div>
+        <div class="setup-actions">
+          <button id="projectNameCreateBtn" class="secondary-button primary" type="button">创建工程文件</button>
+        </div>
+      </div>
+    </section>
+
+    <script src="/app.js?v=20260604-chatjump1"></script>
+  </body>
+</html>

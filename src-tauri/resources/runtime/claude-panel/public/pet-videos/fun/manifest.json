@@ -1,0 +1,30 @@
+[
+  {
+    "emotion": "idle",
+    "title": "待机呼吸",
+    "file": "/pet-videos/fun/idle-breathe.webm",
+    "source": "/pet-videos/transparent/03-latte-boost.webm",
+    "triggers": ["继续", "加油", "推进", "开始"]
+  },
+  {
+    "emotion": "performance",
+    "title": "卡顿抖动",
+    "file": "/pet-videos/fun/stuck-jitter.webm",
+    "source": "/pet-videos/transparent/02-lag-check.webm",
+    "triggers": ["卡顿", "很慢", "无响应", "性能"]
+  },
+  {
+    "emotion": "rest",
+    "title": "休息弹跳",
+    "file": "/pet-videos/fun/rest-bounce.webm",
+    "source": "/pet-videos/transparent/01-work-rest.webm",
+    "triggers": ["休息", "困了", "累了", "45分钟"]
+  },
+  {
+    "emotion": "celebrate",
+    "title": "完成庆祝",
+    "file": "/pet-videos/fun/celebrate-pop.webm",
+    "source": "/pet-videos/transparent/04-celebrate.webm",
+    "triggers": ["完成", "成功", "搞定", "通过"]
+  }
+]
