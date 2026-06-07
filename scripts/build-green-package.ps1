@@ -1,5 +1,7 @@
 param(
-  [string]$OutRoot = "F:\OpenCloud-Hermes-Green",
+  [string]$OutRoot = "",
+  [string]$ZipPath = "",
+  [string]$TestExtract = "",
   [switch]$SkipBuild,
   [switch]$SkipZip
 )
@@ -7,8 +9,6 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DateStamp = Get-Date -Format "yyyyMMdd"
-$ZipPath = "F:\OpenCloud-Hermes-Win10-Win11-Green-$DateStamp.zip"
-$TestExtract = "F:\OpenCloud-Hermes-Green-TestExtract"
 
 function Step([string]$Message) {
   Write-Host ""
@@ -22,8 +22,9 @@ function Fail([string]$Message) {
 
 function Assert-UnderF([string]$Path) {
   $full = [System.IO.Path]::GetFullPath($Path)
-  if (-not $full.StartsWith("F:\", [System.StringComparison]::OrdinalIgnoreCase)) {
-    Fail "Output path must stay under F:\. Current: $full"
+  $drive = [System.IO.Path]::GetPathRoot($full)
+  if ($drive -and -not (Test-Path -LiteralPath $drive)) {
+    Fail "Output drive does not exist: $drive"
   }
   return $full
 }
@@ -63,29 +64,54 @@ function Write-OpenClawConfig([string]$Dir) {
     meta = [ordered]@{ lastTouchedVersion = "YY1.0.1"; package = "OpenCloud-Hermes-Green" }
     models = [ordered]@{
       providers = [ordered]@{
-        yyapi = [ordered]@{
-          baseUrl = "http://124.222.21.44:3002/v1"
-          apiKey = '${YYAPI_API_KEY}'
-          api = "openai"
-          models = @([ordered]@{ id = "gpt-4.1-mini"; name = "YYAPI default model"; input = @("text") })
+        minimax = [ordered]@{
+          baseUrl = "https://api.minimaxi.com/anthropic/v1"
+          apiKey = '${MINIMAX_API_KEY}'
+          api = "anthropic-messages"
+          models = @(
+            [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
+            [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+          )
         }
       }
     }
     agents = [ordered]@{
       defaults = [ordered]@{
-        workspace = '${OPENCLAW_HOME}\workspace'
-        model = [ordered]@{ primary = "yyapi/gpt-4.1-mini"; fallbacks = @() }
-        models = [ordered]@{ "yyapi/gpt-4.1-mini" = [ordered]@{} }
+        workspace = 'workspace'
+        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
+        models = [ordered]@{
+          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
+          "minimax/MiniMax-M2.7" = [ordered]@{}
+        }
+        skills = @()
+        contextInjection = "continuation-skip"
+        bootstrapMaxChars = 300
+        bootstrapTotalMaxChars = 800
+        thinkingDefault = "off"
+        verboseDefault = "off"
       }
-      list = @([ordered]@{ id = "main"; name = "OpenCloud"; workspace = '${OPENCLAW_HOME}\workspace' })
+      list = @([ordered]@{
+        id = "main"
+        name = "OpenCloud"
+        workspace = "workspace"
+        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
+        skills = @()
+        skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
+        tools = [ordered]@{
+          profile = "minimal"
+          alsoAllow = @("browser", "desktop_control")
+        }
+        thinkingDefault = "off"
+        verboseDefault = "off"
+      })
     }
     bindings = @()
     channels = [ordered]@{}
     commands = [ordered]@{ native = "auto"; nativeSkills = "auto"; ownerDisplay = "raw"; restart = $true }
-    plugins = [ordered]@{ entries = [ordered]@{} }
+    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
-    skills = [ordered]@{ entries = [ordered]@{} }
-    tools = [ordered]@{ profile = "minimal"; sessions = [ordered]@{ visibility = "all" } }
+    skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
+    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control"); sessions = [ordered]@{ visibility = "agent" } }
     gateway = [ordered]@{
       mode = "local"
       bind = "loopback"
@@ -100,10 +126,17 @@ function Write-OpenClawConfig([string]$Dir) {
   }
   $config | ConvertTo-Json -Depth 30 | Set-Content -Path (Join-Path $Dir "openclaw.json") -Encoding UTF8
   $models = [ordered]@{
-    provider = "yyapi"
-    model = "gpt-4.1-mini"
-    apiKeyEnv = "YYAPI_API_KEY"
-    baseUrl = "http://124.222.21.44:3002/v1"
+    providers = [ordered]@{
+      minimax = [ordered]@{
+        baseUrl = "https://api.minimaxi.com/anthropic/v1"
+        apiKey = '${MINIMAX_API_KEY}'
+        api = "anthropic-messages"
+        models = @(
+          [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
+          [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+        )
+      }
+    }
   }
   $models | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $Dir "agents\main\agent\models.json") -Encoding UTF8
 }
@@ -116,12 +149,19 @@ function Write-HermesConfig([string]$Dir) {
   Write-Utf8File (Join-Path $Dir "config.yaml") @"
 # Hermes Agent portable configuration.
 model:
-  default: deepseek-chat
-  provider: deepseek
-  base_url: https://api.deepseek.com
+  default: MiniMax-M2.7-highspeed
+  provider: minimax
+  base_url: https://api.minimaxi.com/v1
 platform_toolsets:
   api_server:
     - hermes-api-server
+    - desktop_control
+plugins:
+  enabled:
+    - desktop_control_bridge
+known_plugin_toolsets:
+  api_server:
+    - desktop_control
 terminal:
   backend: local
 platforms:
@@ -290,6 +330,21 @@ pause
 "@
 }
 
+$DefaultOutBase = if (Test-Path -LiteralPath "F:\") {
+  "F:\"
+} else {
+  [Environment]::GetFolderPath("Desktop")
+}
+if ([string]::IsNullOrWhiteSpace($OutRoot)) {
+  $OutRoot = Join-Path $DefaultOutBase "OpenCloud-Hermes-Green"
+}
+if ([string]::IsNullOrWhiteSpace($ZipPath)) {
+  $ZipPath = Join-Path $DefaultOutBase "OpenCloud-Hermes-Win10-Win11-Green-$DateStamp.zip"
+}
+if ([string]::IsNullOrWhiteSpace($TestExtract)) {
+  $TestExtract = Join-Path $DefaultOutBase "OpenCloud-Hermes-Green-TestExtract"
+}
+
 $OutRoot = Assert-UnderF $OutRoot
 $ZipPath = Assert-UnderF $ZipPath
 $TestExtract = Assert-UnderF $TestExtract
@@ -357,14 +412,18 @@ if (Test-Path -LiteralPath $skillsSrc) {
   Copy-Dir $skillsSrc (Join-Path $OpenCloud "resources\data\hermes\skills") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
   Copy-Dir $skillsSrc (Join-Path $Hermes "skills") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 }
+$hermesPluginsSrc = Join-Path $Root "src-tauri\resources\data\hermes\plugins"
+if (Test-Path -LiteralPath $hermesPluginsSrc) {
+  Copy-Dir $hermesPluginsSrc (Join-Path $OpenCloud "resources\data\hermes\plugins") -XD @("__pycache__", ".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp", "*.pyc")
+}
 Copy-FileIfExists (Join-Path $Root "src-tauri\resources\data\hermes\SOUL.md") (Join-Path $Hermes "docs")
 
 Write-Utf8File (Join-Path $ConfigTemplate "OpenCloud-openclaw.json.template") (Get-Content -Raw -LiteralPath (Join-Path $OpenCloud "resources\data\.openclaw\openclaw.json"))
 Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+MINIMAX_API_KEY=
+MINIMAX_BASE_URL=https://api.minimaxi.com/v1
 API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@

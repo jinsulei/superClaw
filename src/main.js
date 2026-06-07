@@ -297,13 +297,84 @@ async function renderLocalAccessPage(app) {
 
 // YYApi 常量
 const YYAPI_BASE_URL = 'http://124.222.21.44:3002'
+const YYAPI_API_BASE_URL = `${YYAPI_BASE_URL}/v1`
 const YYAPI_PROVIDER_KEY = 'yyapi'
+const YYAPI_DEFAULT_MODEL = 'gpt-5.4-mini'
+
+function normalizeYyapiModelRows(raw) {
+  const rows = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : [])
+  return rows
+    .map(m => (typeof m === 'string' ? m : m?.id))
+    .filter(Boolean)
+    .map(id => ({ id, name: id, input: ['text', 'image'] }))
+}
+
+function pickYyapiDefaultModel(modelIds = []) {
+  const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
+  return ids.find(id => id === YYAPI_DEFAULT_MODEL)
+    || ids.find(id => /gpt-?5\.?4.*mini/i.test(id))
+    || ids[0]
+    || YYAPI_DEFAULT_MODEL
+}
+
+async function getDefaultYyapiProfile() {
+  if (!isLoggedIn()) return null
+
+  let fullKey = ''
+
+  try {
+    const { getTokenList, getFullTokenKey } = await import('./lib/user-api.js')
+    const tokenList = await getTokenList()
+    const tokens = Array.isArray(tokenList)
+      ? tokenList
+      : (Array.isArray(tokenList?.items) ? tokenList.items : (Array.isArray(tokenList?.tokens) ? tokenList.tokens : []))
+    const token = tokens.find(t => t?.is_default || t?.isDefault || t?.default)
+      || tokens.find(t => t?.enabled !== false && t?.status !== 'disabled')
+      || tokens[0]
+
+    if (token?.id) {
+      const keyData = await getFullTokenKey(token.id)
+      fullKey = typeof keyData === 'string'
+        ? keyData
+        : (keyData?.key || keyData?.apiKey || keyData?.api_key || '')
+    } else {
+      fullKey = token?.key || token?.apiKey || token?.api_key || ''
+    }
+
+    if (fullKey && !fullKey.includes('*')) {
+      try { localStorage.setItem('superclaw_yyapi_key', fullKey) } catch {}
+    }
+  } catch (err) {
+    console.warn('[yyapi] default key fetch failed, falling back to local cache:', err.message)
+  }
+
+  if (!fullKey) fullKey = localStorage.getItem('superclaw_yyapi_key') || ''
+  if (!fullKey || fullKey.includes('*')) return null
+
+  const modelResp = await fetch(`${YYAPI_API_BASE_URL}/models`, {
+    headers: { Authorization: `Bearer ${fullKey}` },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!modelResp.ok) throw new Error(`YYAPI models HTTP ${modelResp.status}`)
+
+  const modelData = await modelResp.json()
+  const modelIds = normalizeYyapiModelRows(modelData)
+  if (!modelIds.length) return null
+
+  return {
+    apiKey: fullKey,
+    baseUrl: YYAPI_API_BASE_URL,
+    models: modelIds,
+    defaultModel: pickYyapiDefaultModel(modelIds),
+  }
+}
 
 /**
  * 从远程 v2 API 同步 YYApi 可用模型列表到本地配置
  * 自动创建/更新 yyapi provider（managed: true），不覆盖用户主动删除的状态
  */
 async function syncYYApiKeys() {
+  return syncDefaultModelSettings()
   // 只有在已登录的情况下才同步
   if (!isLoggedIn()) return
 
@@ -473,6 +544,55 @@ async function syncHermesModel() {
   }
 }
 
+async function syncDefaultModelSettings() {
+  try {
+    const profile = await getDefaultYyapiProfile()
+    if (!profile) {
+      await syncHermesModel()
+      return
+    }
+
+    const { api } = await import('./lib/tauri-api.js')
+
+    const config = await api.readOpenclawConfig()
+    if (!config.models) config.models = {}
+    if (!config.models.providers) config.models.providers = {}
+
+    const previous = config.models.providers[YYAPI_PROVIDER_KEY] || {}
+    const previousModels = Array.isArray(previous.models) ? previous.models : []
+    const existingIds = new Set(previousModels.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean))
+    const mergedModels = [...previousModels]
+    for (const model of profile.models) {
+      if (!existingIds.has(model.id)) mergedModels.push(model)
+    }
+
+    config.models.providers[YYAPI_PROVIDER_KEY] = {
+      ...previous,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+      api: previous.api || 'openai-completions',
+      managed: true,
+      models: mergedModels.length ? mergedModels : profile.models,
+    }
+
+    if (!config.agents) config.agents = {}
+    if (!config.agents.defaults) config.agents.defaults = {}
+    if (!config.agents.defaults.model) config.agents.defaults.model = {}
+    const openclawPrimary = `${YYAPI_PROVIDER_KEY}/${profile.defaultModel}`
+    config.agents.defaults.model.primary = openclawPrimary
+    try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
+
+    await api.writeOpenclawConfig(config)
+
+    await api.configureHermes('custom', profile.apiKey, profile.defaultModel, profile.baseUrl)
+    saveHermesPrimary(profile.defaultModel)
+    console.log(`[model-sync] default provider synced: ${openclawPrimary}`)
+  } catch (err) {
+    console.warn('[model-sync] default model sync failed:', err.message)
+    await syncHermesModel()
+  }
+}
+
 // localStorage 读写 Hermes 主模型
 function saveHermesPrimary(model) {
   if (!model) return
@@ -599,6 +719,13 @@ async function boot() {
   onEngineChange((engine) => {
     bindEngineListeners(engine)
     renderSidebar(sidebar)
+    if (engine?.id === 'openclaw') {
+      bindOpenClawRuntimeHooks()
+      setTimeout(async () => {
+        await detectOpenclawStatus().catch(() => {})
+        if (isGatewayRunning()) autoConnectWebSocket()
+      }, 500)
+    }
   })
 
   console.time('[boot] ensureWebSession+loadInstance')
@@ -646,13 +773,11 @@ async function boot() {
     bindEngineListeners(engine)
 
     // 引导时自动同步模型列表 + 验证主模型（非阻塞，不阻塞 engine boot）
-    syncYYApiKeys()
-    syncHermesModel()
+    syncDefaultModelSettings()
 
     // 登录/重新登录后自动触发同步
     window.addEventListener('superclaw:login', () => {
-      syncYYApiKeys()
-      syncHermesModel()
+      syncDefaultModelSettings()
     }, { once: true })
 
     // 自动隔离系统 PATH 中的外部 OpenClaw（非阻塞）
@@ -832,6 +957,56 @@ async function autoConnectWebSocket() {
   } catch (e) {
     console.error('[main] 自动连接 WebSocket 失败:', e)
   }
+}
+
+let _openclawRuntimeHooksBound = false
+
+function bindOpenClawRuntimeHooks() {
+  if (getActiveEngineId() !== 'openclaw') return
+
+  setupGatewayBanner()
+
+  if (isGatewayRunning()) {
+    autoConnectWebSocket()
+  }
+
+  if (_openclawRuntimeHooksBound) return
+  _openclawRuntimeHooksBound = true
+
+  onGatewayChange((running) => {
+    if (getActiveEngineId() !== 'openclaw') return
+    if (running) {
+      autoConnectWebSocket()
+    } else {
+      wsClient.disconnect()
+    }
+  })
+
+  if (isTauriRuntime()) {
+    import('@tauri-apps/api/event').then(async ({ listen }) => {
+      await listen('guardian-event', (e) => {
+        if (e.payload?.kind === 'give_up') showGuardianRecovery()
+        else if (e.payload?.kind === 'auto_fix_start') toast(t('dashboard.fixing'), 'info')
+        else if (e.payload?.kind === 'auto_fix_retry') toast(t('dashboard.fixDoneRestarting'), 'info')
+        else if (e.payload?.kind === 'auto_fix_success') toast(t('dashboard.fixDoneRestarted'), 'success')
+        else if (e.payload?.kind === 'auto_fix_failure') toast(String(e.payload?.message || t('dashboard.fixDoneRestartFail')).slice(0, 240), 'error')
+      })
+    }).catch(() => {})
+    api.guardianStatus().then(status => {
+      if (status?.giveUp && getActiveEngineId() === 'openclaw') showGuardianRecovery()
+    }).catch(() => {})
+  } else {
+    onGuardianGiveUp(() => {
+      if (getActiveEngineId() === 'openclaw') showGuardianRecovery()
+    })
+  }
+
+  onInstanceChange(async () => {
+    if (getActiveEngineId() !== 'openclaw') return
+    wsClient.disconnect()
+    await detectOpenclawStatus()
+    if (isGatewayRunning()) autoConnectWebSocket()
+  })
 }
 
 function setupGatewayBanner() {
@@ -1062,8 +1237,9 @@ async function checkGlobalUpdate() {
     if (dismissed === ver) return
 
     const changelog = info.manifest?.changelog || ''
+    const downloadUrl = info.manifest?.downloadUrl || info.manifest?.url || ''
     const canHotUpdate = isTauriRuntime()
-      && info.manifest?.downloadUrl
+      && downloadUrl
       && info.manifest?.hash
 
     banner.classList.remove('update-banner-hidden')
@@ -1090,10 +1266,10 @@ async function checkGlobalUpdate() {
     if (hotUpdateBtn && canHotUpdate) {
       hotUpdateBtn.addEventListener('click', async () => {
         hotUpdateBtn.disabled = true
-        hotUpdateBtn.textContent = t('about.hotUpdateDownloading')
+          hotUpdateBtn.textContent = t('about.hotUpdateDownloading')
         try {
           await api.downloadFrontendUpdate(
-            info.manifest.downloadUrl,
+            downloadUrl,
             info.manifest.hash,
             ver
           )

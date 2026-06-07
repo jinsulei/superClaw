@@ -2946,6 +2946,7 @@ const CALIBRATION_RESET_INHERIT_KEYS = [
   'plugins',
   'session',
   'skills',
+  'tools',
   'wizard',
 ]
 
@@ -3036,8 +3037,30 @@ function buildCalibrationBaseline() {
     meta: { lastTouchedVersion: calibrationLastTouchedVersion() },
     models: { providers: {} },
     agents: {
-      defaults: { workspace: calibrationDefaultWorkspace() },
-      list: [],
+      defaults: {
+        workspace: calibrationDefaultWorkspace(),
+        skills: [],
+        contextInjection: 'never',
+        bootstrapMaxChars: 300,
+        bootstrapTotalMaxChars: 800,
+        thinkingDefault: 'off',
+        verboseDefault: 'off',
+      },
+      list: [
+        {
+          id: 'main',
+          name: 'Main Agent',
+          workspace: 'workspace',
+          skills: [],
+          skillsLimits: { maxSkillsPromptChars: 0 },
+          tools: {
+            profile: 'minimal',
+            alsoAllow: ['browser', 'desktop_control'],
+          },
+          thinkingDefault: 'off',
+          verboseDefault: 'off',
+        },
+      ],
     },
     bindings: [],
     channels: {},
@@ -3047,12 +3070,21 @@ function buildCalibrationBaseline() {
       ownerDisplay: 'raw',
       restart: true,
     },
-    plugins: {},
+    plugins: {
+      entries: {
+        browser: { enabled: true },
+        'desktop-control': { enabled: true },
+      },
+    },
     session: { dmScope: 'per-channel-peer' },
-    skills: { entries: {} },
+    skills: {
+      entries: {},
+      limits: { maxSkillsPromptChars: 0 },
+    },
     tools: {
-      profile: 'full',
-      sessions: { visibility: 'all' },
+      profile: 'minimal',
+      alsoAllow: ['browser', 'desktop_control'],
+      sessions: { visibility: 'agent' },
     },
     gateway: {
       mode: 'local',
@@ -3069,6 +3101,55 @@ function buildCalibrationBaseline() {
       },
     },
   }
+}
+
+function ensurePortableDesktopToolDefaults(config) {
+  config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins) ? config.plugins : {}
+  config.plugins.entries = config.plugins.entries && typeof config.plugins.entries === 'object' && !Array.isArray(config.plugins.entries)
+    ? config.plugins.entries
+    : {}
+  config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
+  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
+
+  config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
+  config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
+  config.skills.limits = config.skills.limits && typeof config.skills.limits === 'object' && !Array.isArray(config.skills.limits) ? config.skills.limits : {}
+  config.skills.limits.maxSkillsPromptChars = 0
+
+  config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
+  config.tools.profile = 'minimal'
+  config.tools.alsoAllow = ['browser', 'desktop_control']
+  config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
+  config.tools.sessions.visibility = 'agent'
+
+  config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
+  config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
+  config.agents.defaults.skills = []
+  config.agents.defaults.contextInjection = 'never'
+  config.agents.defaults.bootstrapMaxChars = 300
+  config.agents.defaults.bootstrapTotalMaxChars = 800
+  config.agents.defaults.thinkingDefault = 'off'
+  config.agents.defaults.verboseDefault = 'off'
+  config.agents.list = Array.isArray(config.agents.list) ? config.agents.list : []
+
+  let mainAgent = config.agents.list.find(agent => String(agent?.id || 'main') === 'main')
+  if (!mainAgent) {
+    mainAgent = {
+      id: 'main',
+      name: 'Main Agent',
+      workspace: 'workspace',
+    }
+    config.agents.list.unshift(mainAgent)
+  }
+  mainAgent.skills = []
+  mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 0 }
+  mainAgent.tools = mainAgent.tools && typeof mainAgent.tools === 'object' && !Array.isArray(mainAgent.tools) ? mainAgent.tools : {}
+  mainAgent.tools.profile = 'minimal'
+  mainAgent.tools.alsoAllow = ['browser', 'desktop_control']
+  mainAgent.thinkingDefault = 'off'
+  mainAgent.verboseDefault = 'off'
+
+  return config
 }
 
 function applyResetInheritance(baseConfig, seed) {
@@ -3119,9 +3200,9 @@ function normalizeCalibratedConfig(input) {
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
-  if (!String(config.tools.profile || '').trim()) config.tools.profile = 'full'
+  if (!String(config.tools.profile || '').trim()) config.tools.profile = 'minimal'
   config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
-  if (!String(config.tools.sessions.visibility || '').trim()) config.tools.sessions.visibility = 'all'
+  if (!String(config.tools.sessions.visibility || '').trim()) config.tools.sessions.visibility = 'agent'
 
   config.gateway = config.gateway && typeof config.gateway === 'object' && !Array.isArray(config.gateway) ? config.gateway : {}
   if (!String(config.gateway.mode || '').trim()) config.gateway.mode = 'local'
@@ -3140,7 +3221,7 @@ function normalizeCalibratedConfig(input) {
   config.gateway.controlUi.enabled = true
   config.gateway.controlUi.allowInsecureAuth = true
 
-  return config
+  return ensurePortableDesktopToolDefaults(config)
 }
 
 function calibrateOpenclawConfig(mode = 'inherit') {

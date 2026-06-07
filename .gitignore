@@ -18,6 +18,8 @@ data/
 bin/
 uv-tools/
 src-tauri/resources/bin/
+!src-tauri/resources/bin/
+!src-tauri/resources/bin/desktop-control-agent.exe
 src-tauri/resources/portable/
 src-tauri/resources/uv-python/
 src-tauri/resources/uv-tools/
@@ -97,10 +99,29 @@ src-tauri/resources/runtime/*
 !src-tauri/resources/runtime/claude-panel/
 !src-tauri/resources/runtime/claude-panel/**
 src-tauri/resources/runtime/claude-panel/*.log
+!src-tauri/resources/runtime/openclaw/
+src-tauri/resources/runtime/openclaw/*
+!src-tauri/resources/runtime/openclaw/dist/
+src-tauri/resources/runtime/openclaw/dist/*
+!src-tauri/resources/runtime/openclaw/dist/extensions/
+src-tauri/resources/runtime/openclaw/dist/extensions/*
+!src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/
+!src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/**
 resources/runtime/
 # 保留占位文件以通过 Tauri 构建校验
 !src-tauri/resources/runtime/**/.gitkeep
 !resources/runtime/**/.gitkeep
 # 便携运行数据（运行时生成，不入仓）
 src-tauri/resources/data/
+!src-tauri/resources/data/
+src-tauri/resources/data/*
+!src-tauri/resources/data/hermes/
+src-tauri/resources/data/hermes/*
+!src-tauri/resources/data/hermes/plugins/
+src-tauri/resources/data/hermes/plugins/*
+!src-tauri/resources/data/hermes/plugins/desktop_control_bridge/
+!src-tauri/resources/data/hermes/plugins/desktop_control_bridge/**
 resources/data/
+
+# Local Rust build cache for bundled helper tools
+tools/**/target/

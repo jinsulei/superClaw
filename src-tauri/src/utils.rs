@@ -64,13 +64,13 @@ fn configured_cli_candidates() -> Vec<std::path::PathBuf> {
 /// "\"node\"" is not recognized 错误
 #[cfg(target_os = "windows")]
 fn find_openclaw_cmd() -> Option<std::path::PathBuf> {
-    // 优先使用用户绑定的路径
-    if let Some(bound) = bound_cli_path() {
-        return Some(bound);
-    }
-    // 便携模式：内置 OpenClaw CLI
+    // Portable packages should prefer the bundled CLI so they work from USB drives
+    // and do not accidentally attach to a stale global OpenClaw install.
     if let Some(bundled) = bundled_cli_path() {
         return Some(bundled);
+    }
+    if let Some(bound) = bound_cli_path() {
+        return Some(bound);
     }
     for candidate in configured_cli_candidates() {
         if candidate.exists() {
@@ -106,13 +106,13 @@ fn common_non_windows_cli_candidates() -> Vec<std::path::PathBuf> {
 
 /// 解析当前实际使用的 openclaw CLI 完整路径（跨平台）
 pub fn resolve_openclaw_cli_path() -> Option<String> {
-    // 优先使用用户绑定的路径
-    if let Some(bound) = bound_cli_path() {
-        return Some(bound.to_string_lossy().to_string());
-    }
-    // 便携模式：内置 OpenClaw CLI
+    // Portable packages should prefer the bundled CLI so they work from USB drives
+    // and do not accidentally attach to a stale global OpenClaw install.
     if let Some(bundled) = bundled_cli_path() {
         return Some(bundled.to_string_lossy().to_string());
+    }
+    if let Some(bound) = bound_cli_path() {
+        return Some(bound.to_string_lossy().to_string());
     }
     for candidate in configured_cli_candidates() {
         if candidate.exists() {

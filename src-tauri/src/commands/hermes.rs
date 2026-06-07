@@ -7292,7 +7292,7 @@ mod guardian_tests {
     fn detects_enabled_variants() {
         let yaml = "\
 model:
-  default: deepseek-chat
+  default: MiniMax-M2.7-highspeed
 platforms:
   api_server:
     enabled: true

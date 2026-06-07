@@ -114,8 +114,11 @@ function Ensure-ResourceDir([string]$RelativePath) {
 
 function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
-  $workspace = Join-Path $OpenClawDataDir "workspace"
-  New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+  # Keep the packaged template path-relative. Absolute paths under Chinese
+  # directories have been observed to get mojibake-corrupted and break JSON
+  # parsing after the desktop client copies resources at startup.
+  $workspace = "workspace"
+  New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "workspace") -Force | Out-Null
 
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
@@ -125,13 +128,13 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     }
     models = [ordered]@{
       providers = [ordered]@{
-        deepseek = [ordered]@{
-          baseUrl = "https://api.deepseek.com"
-          apiKey = '${DEEPSEEK_API_KEY}'
-          api = "openai-completions"
+        minimax = [ordered]@{
+          baseUrl = "https://api.minimaxi.com/anthropic/v1"
+          apiKey = '${MINIMAX_API_KEY}'
+          api = "anthropic-messages"
           models = @(
-            [ordered]@{ id = "deepseek-chat"; name = "deepseek-chat"; input = @("text") },
-            [ordered]@{ id = "deepseek-reasoner"; name = "deepseek-reasoner"; input = @("text") }
+            [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
+            [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
           )
         }
       }
@@ -140,15 +143,37 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       defaults = [ordered]@{
         workspace = $workspace
         model = [ordered]@{
-          primary = "deepseek/deepseek-chat"
-          fallbacks = @("deepseek/deepseek-reasoner")
+          primary = "minimax/MiniMax-M2.7-highspeed"
+          fallbacks = @("minimax/MiniMax-M2.7")
         }
         models = [ordered]@{
-          "deepseek/deepseek-chat" = [ordered]@{}
-          "deepseek/deepseek-reasoner" = [ordered]@{}
+          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
+          "minimax/MiniMax-M2.7" = [ordered]@{}
         }
+        skills = @()
+        contextInjection = "continuation-skip"
+        bootstrapMaxChars = 300
+        bootstrapTotalMaxChars = 800
+        thinkingDefault = "off"
+        verboseDefault = "off"
       }
-      list = @()
+      list = @([ordered]@{
+        id = "main"
+        name = "Main Agent"
+        workspace = $workspace
+        model = [ordered]@{
+          primary = "minimax/MiniMax-M2.7-highspeed"
+          fallbacks = @("minimax/MiniMax-M2.7")
+        }
+        skills = @()
+        skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
+        tools = [ordered]@{
+          profile = "minimal"
+          alsoAllow = @("browser", "desktop_control")
+        }
+        thinkingDefault = "off"
+        verboseDefault = "off"
+      })
     }
     bindings = @()
     channels = [ordered]@{}
@@ -158,12 +183,13 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       ownerDisplay = "raw"
       restart = $true
     }
-    plugins = [ordered]@{ entries = [ordered]@{} }
+    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
-    skills = [ordered]@{ entries = [ordered]@{} }
+    skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
     tools = [ordered]@{
-      profile = "full"
-      sessions = [ordered]@{ visibility = "all" }
+      profile = "minimal"
+      alsoAllow = @("browser", "desktop_control")
+      sessions = [ordered]@{ visibility = "agent" }
     }
     gateway = [ordered]@{
       mode = "local"
@@ -180,9 +206,13 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
           "https://tauri.localhost",
           "http://tauri.localhost",
           "http://localhost",
+          "http://127.0.0.1",
           "http://localhost:1420",
           "http://127.0.0.1:1420",
-          "http://127.0.0.1:18777"
+          "http://127.0.0.1:18777",
+          "app://localhost",
+          "app://",
+          "null"
         )
         allowInsecureAuth = $true
       }

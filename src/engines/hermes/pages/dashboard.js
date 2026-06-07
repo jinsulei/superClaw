@@ -375,7 +375,7 @@ export function render() {
           <div class="hm-field-row">
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
-              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.deepseek.com/v1">
+              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimaxi.com/v1">
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiKey')}</span>
@@ -386,7 +386,7 @@ export function render() {
             <label class="hm-field" style="flex:1">
               <span class="hm-field-label">${t('engine.configModel')}</span>
               <div style="position:relative">
-                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="deepseek-chat">
+                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="MiniMax-M2.7-highspeed">
                 ${dropdownHtml}
               </div>
             </label>

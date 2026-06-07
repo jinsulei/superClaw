@@ -1,0 +1,19 @@
+{
+  "id": "desktop-control",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "desktop_control"
+    ]
+  },
+  "name": "Desktop Control",
+  "description": "Control already-open Windows desktop applications through the portable SuperClaw sidecar.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

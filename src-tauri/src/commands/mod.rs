@@ -202,7 +202,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         if !gateway.get("auth").is_some_and(|v| v.is_object()) {
             gateway.insert(
                 "auth".into(),
-                serde_json::json!({ "token": "superclaw-portable-local" }),
+                serde_json::json!({ "mode": "token", "token": "superclaw-portable-local" }),
             );
             changed = true;
         }
@@ -213,9 +213,18 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "enabled": true,
                     "allowedOrigins": [
                         "tauri://localhost",
+                        "https://tauri.localhost",
+                        "http://tauri.localhost",
                         "http://localhost",
-                        "http://127.0.0.1"
-                    ]
+                        "http://127.0.0.1",
+                        "http://localhost:1420",
+                        "http://127.0.0.1:1420",
+                        "http://127.0.0.1:18777",
+                        "app://localhost",
+                        "app://",
+                        "null"
+                    ],
+                    "allowInsecureAuth": true
                 }),
             );
             changed = true;
@@ -232,7 +241,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             changed = true;
         }
         if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-            let workspace_value = serde_json::json!(workspace.to_string_lossy().to_string());
+            let workspace_value = serde_json::json!("workspace");
             if defaults.get("workspace") != Some(&workspace_value) {
                 defaults.insert("workspace".into(), workspace_value);
                 changed = true;
@@ -241,8 +250,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 defaults.insert(
                     "model".into(),
                     serde_json::json!({
-                        "primary": "deepseek/deepseek-chat",
-                        "fallbacks": ["deepseek/deepseek-reasoner"]
+                        "primary": "minimax/MiniMax-M2.7-highspeed",
+                        "fallbacks": ["minimax/MiniMax-M2.7"]
                     }),
                 );
                 changed = true;
@@ -255,13 +264,29 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "models".into(),
             serde_json::json!({
                 "providers": {
-                    "deepseek": {
-                        "baseUrl": "https://api.deepseek.com",
-                        "apiKey": "${DEEPSEEK_API_KEY}",
-                        "api": "openai-completions",
+                    "minimax": {
+                        "baseUrl": "https://api.minimaxi.com/anthropic",
+                        "apiKey": "${MINIMAX_API_KEY}",
+                        "api": "anthropic-messages",
                         "models": [
-                            { "id": "deepseek-chat", "name": "deepseek-chat", "input": ["text"] },
-                            { "id": "deepseek-reasoner", "name": "deepseek-reasoner", "input": ["text"] }
+                            {
+                                "id": "MiniMax-M2.7-highspeed",
+                                "name": "MiniMax M2.7 Highspeed",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            },
+                            {
+                                "id": "MiniMax-M2.7",
+                                "name": "MiniMax M2.7",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            }
                         ]
                     }
                 }

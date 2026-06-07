@@ -10,9 +10,34 @@ pub fn update_dir() -> PathBuf {
 }
 // 注：clawpanel 目录名保留不动（OpenClaw 自身路径），仅修改应用层面品牌名
 
-/// 更新清单 URL
-const LATEST_JSON_URL: &str = "https://claw.qt.cool/update/latest.json";
+/// 默认更新清单 URL。可用环境变量覆盖：
+/// - SUPERCLAW_UPDATE_MANIFEST_URL：完整 latest.json 地址
+/// - SUPERCLAW_UPDATE_URL：完整 latest.json 地址
+/// - SUPERCLAW_ADMIN_BASE_URL：管理端根地址，自动拼接 /update/latest.json
+const DEFAULT_LATEST_JSON_URL: &str = "https://claw.qt.cool/update/latest.json";
 // 注：更新 URL 保留，实际不依赖网络检查（离线模式）
+
+fn latest_json_url() -> String {
+    if let Ok(url) = std::env::var("SUPERCLAW_UPDATE_MANIFEST_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    if let Ok(url) = std::env::var("SUPERCLAW_UPDATE_URL") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    if let Ok(base) = std::env::var("SUPERCLAW_ADMIN_BASE_URL") {
+        let base = base.trim().trim_end_matches('/');
+        if !base.is_empty() {
+            return format!("{base}/update/latest.json");
+        }
+    }
+    DEFAULT_LATEST_JSON_URL.to_string()
+}
 
 /// 检查前端是否有新版本可用
 #[tauri::command]
@@ -20,8 +45,9 @@ pub async fn check_frontend_update() -> Result<Value, String> {
     let client = super::build_http_client(std::time::Duration::from_secs(10), Some("SuperClaw"))
         .map_err(|e| format!("HTTP 客户端错误: {e}"))?;
 
+    let manifest_url = latest_json_url();
     let resp = client
-        .get(LATEST_JSON_URL)
+        .get(&manifest_url)
         .send()
         .await
         .map_err(|e| format!("请求失败: {e}"))?;
@@ -65,6 +91,7 @@ pub async fn check_frontend_update() -> Result<Value, String> {
         "hasUpdate": has_update,
         "compatible": compatible,
         "updateReady": update_ready,
+        "manifestUrl": manifest_url,
         "manifest": manifest
     }))
 }

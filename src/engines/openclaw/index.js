@@ -3,9 +3,55 @@
  * 包装现有 OpenClaw 逻辑为统一的 Engine 接口，不改动原有代码
  */
 import { detectOpenclawStatus, isOpenclawReady, isGatewayRunning, isGatewayForeign,
-         onGatewayChange, startGatewayPoll, stopGatewayPoll, onReadyChange } from '../../lib/app-state.js'
+          onGatewayChange, startGatewayPoll, stopGatewayPoll, onReadyChange } from '../../lib/app-state.js'
 import { initFeatureGates, isFeatureAvailable } from '../../lib/feature-gates.js'
 import { t } from '../../lib/i18n.js'
+import { api } from '../../lib/tauri-api.js'
+
+const isTauriRuntime = () => !!window.__TAURI_INTERNALS__
+let _gatewayBootPromise = null
+
+async function ensureGatewayReadyOnBoot() {
+  if (_gatewayBootPromise) return _gatewayBootPromise
+  _gatewayBootPromise = (async () => {
+    if (!isTauriRuntime() || !isOpenclawReady()) return
+
+    try {
+      await api.autoPairDevice()
+    } catch (e) {
+      console.warn('[openclaw] autoPairDevice failed before gateway boot:', e)
+    }
+
+    try {
+      if (isGatewayForeign()) {
+        await api.claimGateway().catch((e) => {
+          console.warn('[openclaw] claim gateway failed:', e)
+        })
+      }
+
+      const services = await api.getServicesStatus().catch(() => [])
+      const gateway = services?.find?.(s => s.label === 'ai.openclaw.gateway') || services?.[0]
+
+      if (gateway?.running) {
+        try {
+          await api.reloadGateway()
+        } catch (reloadError) {
+          console.warn('[openclaw] reload gateway failed, restarting:', reloadError)
+          await api.restartService('ai.openclaw.gateway')
+        }
+      } else {
+        await api.startService('ai.openclaw.gateway')
+      }
+
+      await detectOpenclawStatus()
+    } catch (e) {
+      console.warn('[openclaw] automatic gateway boot failed:', e)
+    }
+  })().finally(() => {
+    _gatewayBootPromise = null
+  })
+  return _gatewayBootPromise
+}
 
 export default {
   id: 'openclaw',
@@ -24,6 +70,7 @@ export default {
     await detectOpenclawStatus()
     await initFeatureGates().catch(() => {})
     startGatewayPoll()
+    await ensureGatewayReadyOnBoot()
   },
 
   /** 清理（停止轮询等） */

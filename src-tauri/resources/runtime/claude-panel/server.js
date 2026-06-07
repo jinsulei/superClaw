@@ -20,6 +20,8 @@ const CONTACT_CARD_PATH =
   process.env.CLEAN_PANEL_CONTACT_CARD_FILE || path.join(APP_CONFIG_DIR, "contact-card.json");
 const ANNOUNCEMENT_PATH =
   process.env.CLEAN_PANEL_ANNOUNCEMENT_FILE || path.join(PUBLIC_DIR, "announcement.txt");
+const REMOTE_ADMIN_BASE_URL = String(process.env.CLEAN_PANEL_REMOTE_ADMIN_BASE_URL || process.env.SUPERCLAW_ADMIN_BASE_URL || "")
+  .replace(/\/+$/, "");
 const AUDIT_LOG_PATH = path.join(APP_CONFIG_DIR, "audit.log");
 const UPLOAD_DIR = path.join(APP_CONFIG_DIR, "uploads");
 const CLAUDE_SETTINGS_PATH =
@@ -148,11 +150,55 @@ function publicContactCard() {
   };
 }
 
-function handleContactCard(res) {
+function remoteAdminUrl(endpoint) {
+  if (!REMOTE_ADMIN_BASE_URL) return "";
+  return `${REMOTE_ADMIN_BASE_URL}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
+}
+
+async function fetchRemoteAdminJson(endpoint) {
+  const remoteUrl = remoteAdminUrl(endpoint);
+  if (!remoteUrl) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const resp = await fetch(remoteUrl, { cache: "no-store", signal: controller.signal });
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleContactCard(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  const remote = await fetchRemoteAdminJson("/api/public/contact-card");
+  if (remote && remote.contact) {
+    sendJson(res, 200, {
+      ok: true,
+      contact: {
+        name: String(remote.contact.name || "").trim(),
+        wechat: String(remote.contact.wechat || "").trim(),
+        email: String(remote.contact.email || "").trim(),
+        qrCode: String(remote.contact.qrCode || remote.contact.qrCodeUrl || "").trim(),
+        note: String(remote.contact.note || remote.note || "").trim(),
+      },
+      remote: true,
+      note: remote.note || "联系方式来自远程管理端。",
+    });
+    return;
+  }
+
   sendJson(res, 200, {
     ok: true,
     contact: publicContactCard(),
-    note: "联系方式接口已预留，可通过 contact-card.json 或环境变量配置二维码、微信号和邮箱。",
+    remote: false,
+    note: "联系方式接口已预留，可通过 contact-card.json、环境变量或远程管理端配置二维码、微信号和邮箱。",
   });
 }
 
@@ -2141,6 +2187,17 @@ async function handleRelayConfig(req, res) {
 
 async function handleAnnouncement(req, res) {
   if (req.method === "GET") {
+    const remote = await fetchRemoteAdminJson("/api/public/announcement");
+    if (remote && typeof remote.text === "string") {
+      sendJson(res, 200, {
+        text: remote.enabled === false ? "" : remote.text,
+        source: "remote-admin",
+        writable: false,
+        remote: true,
+      });
+      return;
+    }
+
     sendJson(res, 200, {
       text: readAnnouncement(),
       source: path.basename(ANNOUNCEMENT_PATH),
@@ -2421,7 +2478,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && url.pathname === "/api/contact-card") {
-    handleContactCard(res);
+    handleContactCard(req, res);
     return;
   }
 
