@@ -105,7 +105,10 @@ pub fn create_connect_frame(
     let platform = std::env::consts::OS; // "windows" | "macos" | "linux"
     let device_family = "desktop";
 
-    // v3 签名 payload 中 token 字段：优先 token，其次 password，最后空串
+    // Handshake negotiates Gateway protocol v4, while device auth still signs
+    // the documented v3 payload that binds platform and device family.
+    let protocol_version = 4;
+    let signature_payload_version = 3;
     let auth_secret = if !gateway_token.is_empty() {
         &gateway_token
     } else {
@@ -113,11 +116,11 @@ pub fn create_connect_frame(
     };
 
     let scopes_str = SCOPES.join(",");
-    // v3 格式：v3|deviceId|clientId|clientMode|role|scopes|signedAt|token|nonce|platform|deviceFamily
+    // v3 签名格式：v3|deviceId|clientId|clientMode|role|scopes|signedAt|token|nonce|platform|deviceFamily
     // 使用 openclaw-control-ui + ui 模式，使 Gateway 识别为 Control UI 客户端，
     // 本地连接时触发静默自动配对（shouldAllowSilentLocalPairing = true）
     let payload_str = format!(
-        "v3|{device_id}|openclaw-control-ui|ui|operator|{scopes_str}|{signed_at}|{auth_secret}|{nonce}|{platform}|{device_family}"
+        "v{signature_payload_version}|{device_id}|openclaw-control-ui|ui|operator|{scopes_str}|{signed_at}|{auth_secret}|{nonce}|{platform}|{device_family}"
     );
 
     let signature = signing_key.sign(payload_str.as_bytes());
@@ -138,8 +141,8 @@ pub fn create_connect_frame(
         "id": format!("connect-{:08x}-{:04x}", signed_at as u32, rand::random::<u16>()),
         "method": "connect",
         "params": {
-            "minProtocol": 3,
-            "maxProtocol": 3,
+            "minProtocol": protocol_version,
+            "maxProtocol": protocol_version,
             "client": {
                 "id": "openclaw-control-ui",
                 "version": env!("CARGO_PKG_VERSION"),

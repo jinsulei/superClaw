@@ -70,18 +70,8 @@ async function checkRemoteAuth() {
   // Desktop portable mode must be locally usable even when the remote account
   // service or YYApi token sync is unavailable.
   if (isTauri) {
-    try {
-      const { api } = await import('./lib/tauri-api.js')
-      const cfg = await api.readPanelConfig().catch(() => ({}))
-      if (!cfg?.accessPassword || sessionStorage.getItem('superclaw_authed') === '1') {
-        sessionStorage.setItem('superclaw_authed', '1')
-        return { ok: true }
-      }
-      return { ok: false, local: true }
-    } catch {
-      sessionStorage.setItem('superclaw_authed', '1')
-      return { ok: true }
-    }
+    sessionStorage.setItem('superclaw_authed', '1')
+    return { ok: true }
   }
 
   // 已有 JWT token 则认为已登录
@@ -299,7 +289,6 @@ async function renderLocalAccessPage(app) {
 const YYAPI_BASE_URL = 'http://124.222.21.44:3002'
 const YYAPI_API_BASE_URL = `${YYAPI_BASE_URL}/v1`
 const YYAPI_PROVIDER_KEY = 'yyapi'
-const YYAPI_DEFAULT_MODEL = 'gpt-5.4-mini'
 
 function normalizeYyapiModelRows(raw) {
   const rows = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : [])
@@ -311,10 +300,26 @@ function normalizeYyapiModelRows(raw) {
 
 function pickYyapiDefaultModel(modelIds = []) {
   const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
-  return ids.find(id => id === YYAPI_DEFAULT_MODEL)
-    || ids.find(id => /gpt-?5\.?4.*mini/i.test(id))
-    || ids[0]
-    || YYAPI_DEFAULT_MODEL
+  return ids[0] || ''
+}
+
+function modelIdFromRef(ref = '') {
+  const value = String(ref || '').trim()
+  if (!value) return ''
+  const slash = value.indexOf('/')
+  return slash >= 0 ? value.slice(slash + 1) : value
+}
+
+function yyapiModelRef(modelId = '') {
+  const id = String(modelId || '').trim()
+  return id ? `${YYAPI_PROVIDER_KEY}/${id}` : ''
+}
+
+function isYyapiPrimary(ref = '', yyapiModelIds = []) {
+  const value = String(ref || '').trim()
+  if (!value) return true
+  if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
+  return yyapiModelIds.includes(value)
 }
 
 async function getDefaultYyapiProfile() {
@@ -371,7 +376,7 @@ async function getDefaultYyapiProfile() {
 
 /**
  * 从远程 v2 API 同步 YYApi 可用模型列表到本地配置
- * 自动创建/更新 yyapi provider（managed: true），不覆盖用户主动删除的状态
+ * 自动创建/更新 yyapi provider，不覆盖用户主动删除的状态
  */
 async function syncYYApiKeys() {
   return syncDefaultModelSettings()
@@ -451,12 +456,10 @@ async function syncYYApiKeys() {
         baseUrl: `${YYAPI_BASE_URL}/v1`,
         apiKey: fullKey,
         api: 'openai-completions',
-        managed: true,
         models: modelIds,
       }
     } else {
-      // 只更新 managed、baseUrl、apiKey，保留用户自定义的模型顺序
-      existing.managed = true
+      // 只更新 baseUrl、apiKey，保留用户自定义的模型顺序
       existing.baseUrl = `${YYAPI_BASE_URL}/v1`
       existing.apiKey = fullKey
       existing.api = existing.api || 'openai-completions'
@@ -558,40 +561,65 @@ async function syncDefaultModelSettings() {
     if (!config.models) config.models = {}
     if (!config.models.providers) config.models.providers = {}
 
-    const previous = config.models.providers[YYAPI_PROVIDER_KEY] || {}
-    const previousModels = Array.isArray(previous.models) ? previous.models : []
-    const existingIds = new Set(previousModels.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean))
-    const mergedModels = [...previousModels]
-    for (const model of profile.models) {
-      if (!existingIds.has(model.id)) mergedModels.push(model)
+    const yyapiModelIds = profile.models.map(m => m.id).filter(Boolean)
+    if (!yyapiModelIds.length || !profile.defaultModel) {
+      await syncHermesModel()
+      return
     }
 
+    const previous = config.models.providers[YYAPI_PROVIDER_KEY] || {}
     config.models.providers[YYAPI_PROVIDER_KEY] = {
       ...previous,
       baseUrl: profile.baseUrl,
       apiKey: profile.apiKey,
       api: previous.api || 'openai-completions',
-      managed: true,
-      models: mergedModels.length ? mergedModels : profile.models,
+      models: profile.models,
     }
 
     if (!config.agents) config.agents = {}
     if (!config.agents.defaults) config.agents.defaults = {}
     if (!config.agents.defaults.model) config.agents.defaults.model = {}
-    const openclawPrimary = `${YYAPI_PROVIDER_KEY}/${profile.defaultModel}`
-    config.agents.defaults.model.primary = openclawPrimary
-    try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
+    const currentPrimary = String(config.agents.defaults.model.primary || '').trim()
+    let openclawPrimary = currentPrimary
+    const yyapiPrimaryManaged = isYyapiPrimary(currentPrimary, yyapiModelIds)
+    if (yyapiPrimaryManaged) {
+      const currentModelId = modelIdFromRef(currentPrimary)
+      openclawPrimary = yyapiModelIds.includes(currentModelId)
+        ? yyapiModelRef(currentModelId)
+        : yyapiModelRef(profile.defaultModel)
+      config.agents.defaults.model.primary = openclawPrimary
+      try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
+    }
 
     await api.writeOpenclawConfig(config)
 
-    await api.configureHermes('custom', profile.apiKey, profile.defaultModel, profile.baseUrl)
-    saveHermesPrimary(profile.defaultModel)
-    console.log(`[model-sync] default provider synced: ${openclawPrimary}`)
+    const hermesConfig = await api.hermesReadConfig().catch(() => null)
+    const hermesSaved = loadHermesPrimary()
+    const hermesCurrent = hermesConfig?.model || ''
+    const hermesModel = yyapiModelIds.includes(hermesSaved)
+      ? hermesSaved
+      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
+    await api.configureHermes('openai-api', profile.apiKey, hermesModel, profile.baseUrl)
+    saveHermesPrimary(hermesModel)
+
+    if (yyapiPrimaryManaged && typeof api.configureClaudeCodeRelay === 'function') {
+      await api.configureClaudeCodeRelay({
+        baseUrl: profile.baseUrl,
+        apiKey: profile.apiKey,
+        model: modelIdFromRef(openclawPrimary) || profile.defaultModel,
+        models: yyapiModelIds,
+        force: false,
+      }).catch(err => console.warn('[model-sync] Claude Code relay sync failed:', err.message))
+    }
+
+    console.log(`[model-sync] yyapi synced: openclaw=${openclawPrimary || 'unchanged'}, hermes=${hermesModel}`)
   } catch (err) {
     console.warn('[model-sync] default model sync failed:', err.message)
     await syncHermesModel()
   }
 }
+
+window.__superclaw_sync_default_model_settings = syncDefaultModelSettings
 
 // localStorage 读写 Hermes 主模型
 function saveHermesPrimary(model) {

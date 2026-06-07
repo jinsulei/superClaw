@@ -342,6 +342,7 @@ pub fn run() {
             claude_code::claude_code_start,
             claude_code::claude_code_stop,
             claude_code::claude_code_status,
+            claude_code::configure_claude_code_relay,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时最小化到托盘，不退出应用

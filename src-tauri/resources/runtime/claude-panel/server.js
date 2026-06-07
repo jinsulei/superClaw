@@ -292,6 +292,15 @@ function readRelayConfig() {
   return config && typeof config === "object" ? config : {};
 }
 
+function isOpenAiCompatibleRelay(config = readRelayConfig()) {
+  const provider = String(config.provider || "").toLowerCase();
+  return provider.includes("openai") || provider.includes("yyapi");
+}
+
+function localOpenAiCompatBaseUrl() {
+  return `http://127.0.0.1:${PORT}/api/openai-compatible`;
+}
+
 function maskSecret(secret) {
   const value = String(secret || "").trim();
   if (!value) return "";
@@ -408,8 +417,8 @@ function validateRelayConfig(input) {
   } catch {
     throw new Error("baseUrl 必须是合法 URL");
   }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-    throw new Error("baseUrl 需要使用 https，除非是本机地址");
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("baseUrl 需要使用 http/https");
   }
   if (!next.model) {
     throw new Error("model 不能为空");
@@ -452,7 +461,9 @@ function readClaudeSettings() {
   const relayEnv =
     relayConfig.enabled && relayConfig.baseUrl && relayConfig.model && relayConfig.apiKey
       ? {
-          ANTHROPIC_BASE_URL: relayConfig.baseUrl,
+          ANTHROPIC_BASE_URL: isOpenAiCompatibleRelay(relayConfig)
+            ? localOpenAiCompatBaseUrl()
+            : relayConfig.baseUrl,
           ANTHROPIC_AUTH_TOKEN: relayConfig.apiKey,
           ANTHROPIC_API_KEY: relayConfig.apiKey,
           ANTHROPIC_MODEL: relayConfig.model,
@@ -482,6 +493,172 @@ function readClaudeSettings() {
     ),
     settingsPath,
   };
+}
+
+function anthropicContentToText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content || "");
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!part || typeof part !== "object") return "";
+      if (part.type === "text") return String(part.text || "");
+      if (part.type === "tool_result") return anthropicContentToText(part.content);
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function openAiChatUrl(baseUrl) {
+  const root = String(baseUrl || "").replace(/\/+$/, "");
+  if (root.endsWith("/chat/completions")) return root;
+  if (root.endsWith("/v1")) return `${root}/chat/completions`;
+  return `${root}/v1/chat/completions`;
+}
+
+function convertAnthropicToOpenAi(body, relayConfig) {
+  const messages = [];
+  const systemText = Array.isArray(body.system)
+    ? body.system.map((part) => anthropicContentToText(part?.text || part)).filter(Boolean).join("\n")
+    : String(body.system || "").trim();
+  if (systemText) messages.push({ role: "system", content: systemText });
+  for (const message of Array.isArray(body.messages) ? body.messages : []) {
+    messages.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: anthropicContentToText(message.content),
+    });
+  }
+  return {
+    model: body.model || relayConfig.model,
+    messages,
+    temperature: typeof body.temperature === "number" ? body.temperature : undefined,
+    max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
+    stream: Boolean(body.stream),
+  };
+}
+
+function sendAnthropicSse(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+async function handleOpenAiCompatibleMessages(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  const relayConfig = readRelayConfig();
+  if (!relayConfig.enabled || !relayConfig.baseUrl || !relayConfig.model || !relayConfig.apiKey) {
+    sendJson(res, 400, { error: "OpenAI-compatible relay is not configured." });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readRequestBody(req);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  const openAiBody = convertAnthropicToOpenAi(body, relayConfig);
+  const upstreamResp = await fetch(openAiChatUrl(relayConfig.baseUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${relayConfig.apiKey}`,
+    },
+    body: JSON.stringify(openAiBody),
+  }).catch((error) => ({ ok: false, status: 502, text: async () => error.message }));
+
+  if (!upstreamResp.ok) {
+    const text = await upstreamResp.text().catch(() => "");
+    sendJson(res, upstreamResp.status || 502, { error: text || "OpenAI-compatible relay request failed." });
+    return;
+  }
+
+  if (!openAiBody.stream) {
+    const data = await upstreamResp.json();
+    const text = data?.choices?.[0]?.message?.content || "";
+    sendJson(res, 200, {
+      id: data.id || `msg_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      model: data.model || openAiBody.model,
+      content: [{ type: "text", text }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: data?.usage?.prompt_tokens || 0,
+        output_tokens: data?.usage?.completion_tokens || 0,
+      },
+    });
+    return;
+  }
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+  });
+  sendAnthropicSse(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: `msg_${Date.now()}`,
+      type: "message",
+      role: "assistant",
+      model: openAiBody.model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  });
+  sendAnthropicSse(res, "content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" },
+  });
+
+  const reader = upstreamResp.body?.getReader?.();
+  if (reader) {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(payload);
+          const text = chunk?.choices?.[0]?.delta?.content || "";
+          if (text) {
+            sendAnthropicSse(res, "content_block_delta", {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text },
+            });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  sendAnthropicSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+  sendAnthropicSse(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: 0 },
+  });
+  sendAnthropicSse(res, "message_stop", { type: "message_stop" });
+  res.end();
 }
 
 function readModelBranches(settings) {
@@ -1682,8 +1859,8 @@ function resolveRelayTestConfig(payload) {
   } catch {
     throw Object.assign(new Error("接口地址格式不正确，请填写完整 URL"), { code: "INVALID_BASE_URL" });
   }
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-    throw Object.assign(new Error("接口地址需要使用 https，本机测试地址除外"), { code: "INVALID_BASE_URL" });
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw Object.assign(new Error("接口地址需要使用 http/https"), { code: "INVALID_BASE_URL" });
   }
   return config;
 }
@@ -2449,6 +2626,11 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/relay-config") {
     handleRelayConfig(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/openai-compatible/v1/messages" || url.pathname === "/api/openai-compatible/messages") {
+    handleOpenAiCompatibleMessages(req, res);
     return;
   }
 

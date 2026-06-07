@@ -3055,7 +3055,7 @@ function buildCalibrationBaseline() {
           skillsLimits: { maxSkillsPromptChars: 0 },
           tools: {
             profile: 'minimal',
-            alsoAllow: ['browser', 'desktop_control'],
+            alsoAllow: ['browser'],
           },
           thinkingDefault: 'off',
           verboseDefault: 'off',
@@ -3073,7 +3073,6 @@ function buildCalibrationBaseline() {
     plugins: {
       entries: {
         browser: { enabled: true },
-        'desktop-control': { enabled: true },
       },
     },
     session: { dmScope: 'per-channel-peer' },
@@ -3083,7 +3082,7 @@ function buildCalibrationBaseline() {
     },
     tools: {
       profile: 'minimal',
-      alsoAllow: ['browser', 'desktop_control'],
+      alsoAllow: ['browser'],
       sessions: { visibility: 'agent' },
     },
     gateway: {
@@ -3109,7 +3108,7 @@ function ensurePortableDesktopToolDefaults(config) {
     ? config.plugins.entries
     : {}
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
-  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
+  delete config.plugins.entries['desktop-control']
 
   config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
@@ -3118,7 +3117,7 @@ function ensurePortableDesktopToolDefaults(config) {
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
   config.tools.profile = 'minimal'
-  config.tools.alsoAllow = ['browser', 'desktop_control']
+  config.tools.alsoAllow = ['browser']
   config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
   config.tools.sessions.visibility = 'agent'
 
@@ -3145,7 +3144,7 @@ function ensurePortableDesktopToolDefaults(config) {
   mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 0 }
   mainAgent.tools = mainAgent.tools && typeof mainAgent.tools === 'object' && !Array.isArray(mainAgent.tools) ? mainAgent.tools : {}
   mainAgent.tools.profile = 'minimal'
-  mainAgent.tools.alsoAllow = ['browser', 'desktop_control']
+  mainAgent.tools.alsoAllow = ['browser']
   mainAgent.thinkingDefault = 'off'
   mainAgent.verboseDefault = 'off'
 
@@ -8561,7 +8560,7 @@ const handlers = {
         : envProvider === 'deepseek'
           ? 'deepseek-chat'
           : 'gpt-4o')
-    const providerLine = providerName && providerName !== 'custom' ? `  provider: ${providerName}\n` : ''
+    const providerLine = providerName ? `  provider: ${providerName}\n` : ''
     const baseUrlLine = baseUrl && baseUrl.trim() ? `  base_url: ${baseUrl.trim()}\n` : ''
     // config.yaml
     const configPath = path.join(home, 'config.yaml')
@@ -8724,6 +8723,10 @@ const handlers = {
 
   async hermes_agent_run({ input, sessionId, conversationHistory, instructions } = {}) {
     // Web 模式下简化实现：POST /v1/runs 然后轮询或直接返回
+    const repaired = handlers._hermesRepairYyapiEnvFromOpenclaw()
+    if (repaired && await _tcpProbe('127.0.0.1', hermesGatewayPort(), 300)) {
+      await handlers.hermes_gateway_action({ action: 'restart' }).catch(() => {})
+    }
     await handlers._hermesEnsureGatewayReady()
     const gwUrl = hermesGatewayUrl()
     const home = hermesHome()
@@ -8748,6 +8751,7 @@ const handlers = {
   },
 
   hermes_read_config() {
+    handlers._hermesRepairYyapiEnvFromOpenclaw()
     const home = hermesHome()
     const configPath = path.join(home, 'config.yaml')
     const envPath = path.join(home, '.env')
@@ -8784,7 +8788,7 @@ const handlers = {
       if (p === 'deepseek') apiKey = env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY || apiKey
       else if (p === 'anthropic') apiKey = env.ANTHROPIC_API_KEY || apiKey
       else if (p === 'openrouter') apiKey = env.OPENROUTER_API_KEY || apiKey
-      else apiKey = env.OPENAI_API_KEY || env.DEEPSEEK_API_KEY || env.ANTHROPIC_API_KEY || env.OPENROUTER_API_KEY || apiKey
+      else apiKey = env.OPENAI_API_KEY || env.CUSTOM_API_KEY || env.DEEPSEEK_API_KEY || env.ANTHROPIC_API_KEY || env.OPENROUTER_API_KEY || apiKey
 
       if (!baseUrl) {
         if (p === 'deepseek') baseUrl = env.DEEPSEEK_BASE_URL || env.OPENAI_BASE_URL || ''
@@ -8896,6 +8900,64 @@ const handlers = {
     const patched = handlers._hermesPatchYamlEnsureApiServer(raw)
     fs.writeFileSync(configPath, patched)
     console.warn(`[hermes guardian] patched config.yaml (api_server.enabled). Backup: ${backupPath}`)
+  },
+
+  _hermesRepairYyapiEnvFromOpenclaw() {
+    const cfg = readOpenclawConfigOptional()
+    const providers = cfg?.models?.providers && typeof cfg.models.providers === 'object'
+      ? cfg.models.providers
+      : {}
+    const provider = providers.yyapi || Object.values(providers).find(p => String(p?.baseUrl || '').includes('124.222.21.44:3002'))
+    const apiKey = String(provider?.apiKey || '').trim()
+    if (!apiKey || apiKey === 'YYAPI' || apiKey === 'superclaw-login-required' || apiKey.includes('*')) return false
+    const baseUrl = String(provider?.baseUrl || 'http://124.222.21.44:3002/v1').trim()
+    const home = hermesHome()
+    fs.mkdirSync(home, { recursive: true })
+    const envPath = path.join(home, '.env')
+    const configPath = path.join(home, 'config.yaml')
+    const envRaw = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
+    const env = {}
+    for (const line of envRaw.split(/\r?\n/)) {
+      const t = line.trim()
+      if (!t || t.startsWith('#')) continue
+      const eq = t.indexOf('=')
+      if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim()
+    }
+
+    let changed = false
+    const openaiKeyCount = (envRaw.match(/^OPENAI_API_KEY=/gm) || []).length
+    if (env.OPENAI_API_KEY !== apiKey || openaiKeyCount !== 1 || env.OPENAI_BASE_URL !== baseUrl) {
+      const managed = handlers._hermesManagedEnvKeys()
+      const pairs = [
+        ['OPENAI_API_KEY', apiKey],
+        ['OPENAI_BASE_URL', baseUrl],
+        ['GATEWAY_ALLOW_ALL_USERS', 'true'],
+        ['API_SERVER_KEY', env.API_SERVER_KEY || 'clawpanel-local'],
+      ]
+      fs.writeFileSync(envPath, _mergeEnvFile(envRaw, managed, pairs))
+      changed = true
+    }
+
+    const configRaw = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
+    let model = ''
+    for (const line of configRaw.split(/\r?\n/)) {
+      const t = line.trim()
+      if (t.startsWith('default:')) {
+        model = t.slice(8).trim().replace(/^["']|["']$/g, '')
+        break
+      }
+    }
+    if (!model) {
+      model = String(cfg?.agents?.defaults?.model?.primary || '').split('/').pop() || ''
+    }
+    const nextConfig = configRaw.trim()
+      ? _mergeHermesConfigYaml(configRaw, model, `  base_url: ${baseUrl}\n`, '  provider: openai-api\n')
+      : `# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: ${model}\n  provider: openai-api\n  base_url: ${baseUrl}\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n`
+    if (nextConfig !== configRaw) {
+      fs.writeFileSync(configPath, nextConfig)
+      changed = true
+    }
+    return changed
   },
 
   // =========================================================================
@@ -10428,13 +10490,12 @@ async function claudeCodeStatus() {
 function _initApi() {
   const cfg = readPanelConfig()
   if (!cfg.accessPassword && !cfg.ignoreRisk) {
-    cfg.accessPassword = '123456'
-    cfg.mustChangePassword = true
+    cfg.ignoreRisk = true
+    delete cfg.mustChangePassword
     if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
     fs.writeFileSync(panelConfigFilePath(), JSON.stringify(cfg, null, 2))
     invalidateConfigCache()
-    console.log('[api] ⚠️  首次启动，默认访问密码: 123456')
-    console.log('[api] ⚠️  首次登录后将强制要求修改密码')
+    console.log('[api] 首次启动：已跳过本地访问密码')
   }
   const pw = getAccessPassword()
   console.log('[api] API 已启动，配置目录:', OPENCLAW_DIR)

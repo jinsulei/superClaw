@@ -422,24 +422,50 @@ fn hermes_home() -> PathBuf {
     if let Ok(h) = std::env::var("HERMES_HOME") {
         return PathBuf::from(h);
     }
-    // 新结构优先：resources/data/hermes/
-    let new_path = app_root_dir().join("resources").join("data").join("hermes");
-    if new_path.exists() {
-        return new_path;
-    }
-    let fallback = app_root_dir().join("data").join("hermes");
-    // Dev 模式兜底：如果项目内路径不存在，检查用户目录下已有的 Hermes 配置
-    // 这样 dev 环境可以复用打包版已经安装好的 Hermes，避免重复安装
+
     #[cfg(debug_assertions)]
-    if !fallback.exists() {
-        if let Some(user_home) = dirs::home_dir() {
-            let user_path = user_home.join(".hermes");
-            if user_path.join("config.yaml").exists() {
-                return user_path;
-            }
+    {
+        let dev_home = app_root_dir().join(".dev-data").join("hermes");
+        ensure_dev_hermes_home(&dev_home);
+        return dev_home;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        // 新结构优先：resources/data/hermes/
+        let new_path = app_root_dir().join("resources").join("data").join("hermes");
+        if new_path.exists() {
+            return new_path;
+        }
+        app_root_dir().join("data").join("hermes")
+    }
+}
+
+#[cfg(debug_assertions)]
+fn ensure_dev_hermes_home(dev_home: &Path) {
+    let _ = std::fs::create_dir_all(dev_home);
+    let seed = app_root_dir()
+        .join("src-tauri")
+        .join("resources")
+        .join("data")
+        .join("hermes");
+
+    for name in ["config.yaml", ".env", "SOUL.md", "channel_directory.json"] {
+        let from = seed.join(name);
+        let to = dev_home.join(name);
+        if from.is_file() && !to.exists() {
+            let _ = std::fs::copy(from, to);
         }
     }
-    fallback
+
+    for name in ["skills", "plugins", "dashboard-themes"] {
+        let from = seed.join(name);
+        let to = dev_home.join(name);
+        if from.is_dir() && !to.exists() {
+            let mut stats = CopyMissingStats::default();
+            let _ = copy_dir_missing_recursively(&from, &to, &mut stats);
+        }
+    }
 }
 
 /// 应用根目录（便携/Dev 模式）
@@ -2845,7 +2871,7 @@ pub async fn configure_hermes(
     };
     // Provider 字段：Hermes v0.14+ 的 model_switch 依赖该字段决定 env_var。
     // `custom` 不写 provider 行，让 Hermes 从 base_url 自动推断。
-    let provider_line = if provider == "custom" || provider.is_empty() {
+    let provider_line = if provider.is_empty() {
         String::new()
     } else {
         format!("  provider: {provider}\n")
@@ -3066,6 +3092,161 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
     content
 }
 
+fn env_value(raw: &str, key: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return None;
+        }
+        trimmed
+            .split_once('=')
+            .and_then(|(k, v)| (k.trim() == key).then(|| v.trim().to_string()))
+    })
+}
+
+fn env_key_count(raw: &str, key: &str) -> usize {
+    raw.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return false;
+            }
+            trimmed
+                .split_once('=')
+                .map(|(k, _)| k.trim() == key)
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+fn is_placeholder_token(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("YYAPI")
+        || trimmed.eq_ignore_ascii_case("superclaw-login-required")
+        || trimmed.contains('*')
+}
+
+fn strip_provider_prefix(value: &str) -> String {
+    value
+        .split_once('/')
+        .map(|(_, model)| model)
+        .unwrap_or(value)
+        .trim()
+        .to_string()
+}
+
+fn read_hermes_model_from_config(raw: &str) -> String {
+    let mut in_model = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("model:") {
+            in_model = true;
+            continue;
+        }
+        if in_model {
+            if let Some(v) = trimmed.strip_prefix("default:") {
+                return strip_provider_prefix(v.trim().trim_matches('"'));
+            }
+            if !trimmed.is_empty() && !line.starts_with("  ") && !line.starts_with('\t') {
+                break;
+            }
+        }
+    }
+    String::new()
+}
+
+fn yyapi_profile_from_openclaw() -> Option<(String, String, String)> {
+    let raw = std::fs::read_to_string(super::openclaw_dir().join("openclaw.json")).ok()?;
+    let cfg: Value = serde_json::from_str(&raw).ok()?;
+    let providers = cfg.get("models")?.get("providers")?.as_object()?;
+    let provider = providers.get("yyapi").or_else(|| {
+        providers.values().find(|p| {
+            p.get("baseUrl")
+                .and_then(|v| v.as_str())
+                .map(|url| url.contains("124.222.21.44:3002"))
+                .unwrap_or(false)
+        })
+    })?;
+    let api_key = provider.get("apiKey")?.as_str()?.trim().to_string();
+    if is_placeholder_token(&api_key) {
+        return None;
+    }
+    let base_url = provider
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://124.222.21.44:3002/v1")
+        .trim()
+        .to_string();
+    let model = cfg
+        .pointer("/agents/defaults/model/primary")
+        .and_then(|v| v.as_str())
+        .map(strip_provider_prefix)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            provider
+                .get("models")
+                .and_then(|v| v.as_array())
+                .and_then(|items| items.first())
+                .and_then(|item| {
+                    item.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| item.get("id").and_then(|v| v.as_str()).map(String::from))
+                })
+        })
+        .unwrap_or_default();
+    Some((api_key, base_url, model))
+}
+
+fn repair_hermes_yyapi_env_from_openclaw() -> Result<bool, String> {
+    let Some((api_key, base_url, openclaw_model)) = yyapi_profile_from_openclaw() else {
+        return Ok(false);
+    };
+
+    let home = hermes_home();
+    let env_path = home.join(".env");
+    let config_path = home.join("config.yaml");
+    let env_raw = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let config_raw = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let api_server_key =
+        env_value(&env_raw, "API_SERVER_KEY").unwrap_or_else(|| "clawpanel-local".to_string());
+
+    let mut changed = false;
+    if env_value(&env_raw, "OPENAI_API_KEY").as_deref() != Some(api_key.as_str())
+        || env_key_count(&env_raw, "OPENAI_API_KEY") != 1
+        || env_value(&env_raw, "OPENAI_BASE_URL").as_deref() != Some(base_url.as_str())
+    {
+        use super::hermes_providers;
+        let managed = hermes_providers::all_managed_env_keys();
+        let pairs = vec![
+            ("OPENAI_API_KEY".to_string(), api_key.clone()),
+            ("OPENAI_BASE_URL".to_string(), base_url.clone()),
+            ("GATEWAY_ALLOW_ALL_USERS".to_string(), "true".to_string()),
+            ("API_SERVER_KEY".to_string(), api_server_key),
+        ];
+        let merged = merge_env_file(&env_raw, &managed, &pairs);
+        std::fs::write(&env_path, merged).map_err(|e| format!("写入 Hermes .env 失败: {e}"))?;
+        changed = true;
+    }
+
+    let hermes_model = read_hermes_model_from_config(&config_raw);
+    let model = if hermes_model.is_empty() { openclaw_model } else { hermes_model };
+    let provider_line = "  provider: openai-api\n".to_string();
+    let base_url_line = format!("  base_url: {base_url}\n");
+    let next_config = if config_raw.trim().is_empty() {
+        format!("# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: {model}\n{provider_line}{base_url_line}platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n")
+    } else {
+        merge_hermes_config_yaml(&config_raw, &model, &base_url_line, &provider_line)
+    };
+    if next_config != config_raw {
+        std::fs::write(&config_path, next_config)
+            .map_err(|e| format!("写入 Hermes config.yaml 失败: {e}"))?;
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
 // ---------------------------------------------------------------------------
 // hermes_read_config — 读取 Hermes config.yaml + .env
 // ---------------------------------------------------------------------------
@@ -3073,6 +3254,8 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
 #[tauri::command]
 pub async fn hermes_read_config() -> Result<Value, String> {
     use super::hermes_providers;
+
+    let _ = repair_hermes_yyapi_env_from_openclaw();
 
     let home = hermes_home();
     let config_path = home.join("config.yaml");
@@ -4345,6 +4528,11 @@ pub async fn hermes_agent_run(
 ) -> Result<String, String> {
     let gw_url = hermes_gateway_url();
     let runs_url = format!("{gw_url}/v1/runs");
+
+    let repaired = repair_hermes_yyapi_env_from_openclaw()?;
+    if repaired && gateway_quick_health_check().await {
+        let _ = hermes_gateway_action(app.clone(), "restart".into()).await;
+    }
 
     ensure_managed_gateway_ready(&app, &gw_url).await?;
 

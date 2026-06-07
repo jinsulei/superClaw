@@ -548,6 +548,7 @@ export const api = {
   claudeCodeStart: () => { invalidate('claude_code_status'); return invoke('claude_code_start') },
   claudeCodeStop: () => { invalidate('claude_code_status'); return invoke('claude_code_stop') },
   claudeCodeStatus: () => cachedInvoke('claude_code_status', {}, 5000),
+  configureClaudeCodeRelay: (config) => invoke('configure_claude_code_relay', { config }),
   hermesSkillsList: () => invoke('hermes_skills_list'),
   hermesSkillDetail: (filePath) => invoke('hermes_skill_detail', { filePath }),
   hermesSkillToggle: (name, enabled) => invoke('hermes_skill_toggle', { name, enabled }),

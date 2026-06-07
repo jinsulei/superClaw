@@ -250,8 +250,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 defaults.insert(
                     "model".into(),
                     serde_json::json!({
-                        "primary": "minimax/MiniMax-M2.7-highspeed",
-                        "fallbacks": ["minimax/MiniMax-M2.7"]
+                        "primary": "",
+                        "fallbacks": []
                     }),
                 );
                 changed = true;
@@ -264,30 +264,11 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "models".into(),
             serde_json::json!({
                 "providers": {
-                    "minimax": {
-                        "baseUrl": "https://api.minimaxi.com/anthropic",
-                        "apiKey": "${MINIMAX_API_KEY}",
-                        "api": "anthropic-messages",
-                        "models": [
-                            {
-                                "id": "MiniMax-M2.7-highspeed",
-                                "name": "MiniMax M2.7 Highspeed",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            },
-                            {
-                                "id": "MiniMax-M2.7",
-                                "name": "MiniMax M2.7",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            }
-                        ]
+                    "yyapi": {
+                        "baseUrl": "http://124.222.21.44:3002/v1",
+                        "apiKey": "superclaw-login-required",
+                        "api": "openai-completions",
+                        "models": []
                     }
                 }
             }),
