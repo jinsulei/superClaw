@@ -341,7 +341,6 @@ const P_AI_GATEWAY: HermesProvider = HermesProvider {
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5",
         "openai/gpt-4.1",
-        "openai/gpt-4.1-mini",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash",
         "google/gemini-2.5-pro",

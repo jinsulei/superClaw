@@ -54,6 +54,16 @@ export default defineConfig({
         '**/data/**',           // 便携数据目录（hermes-source 解压等），避免 Vite 触发页面刷新
         '**/uv-python/**',      // Python 缓存目录
         '**/uv-tools/**',       // uv tool 安装目录
+        '**/SuperClaw_Desktop_Client/**',
+        '**/src-tauri/resources/bin/**',
+        '**/src-tauri/resources/data/**',
+        '**/src-tauri/resources/portable/**',
+        '**/src-tauri/resources/runtime/**',
+        '**/src-tauri/target/**',
+        '**/resources/bin/**',
+        '**/resources/data/**',
+        '**/resources/portable/**',
+        '**/resources/runtime/**',
       ],
     },
     proxy: {

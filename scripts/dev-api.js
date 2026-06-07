@@ -3371,13 +3371,29 @@ function patchGatewayOrigins() {
 }
 
 function readOpenclawConfigOptional() {
+  ensureOpenclawConfigFile()
   if (!fs.existsSync(CONFIG_PATH)) return {}
   return cleanLoadedConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')))
 }
 
 function readOpenclawConfigRequired() {
+  ensureOpenclawConfigFile()
   if (!fs.existsSync(CONFIG_PATH)) throw new Error('openclaw.json 不存在')
   return cleanLoadedConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')))
+}
+
+function ensureOpenclawConfigFile() {
+  if (fs.existsSync(CONFIG_PATH)) return false
+  if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
+  const backupPath = CONFIG_PATH + '.bak'
+  if (fs.existsSync(backupPath)) {
+    const backupContent = fs.readFileSync(backupPath, 'utf8')
+    writeOpenclawConfigFile(JSON.parse(backupContent), { preserveExisting: false })
+    return true
+  }
+  const defaultConfig = stripUiFields(normalizeCalibratedConfig(buildCalibrationBaseline()))
+  writeOpenclawConfigFile(defaultConfig, { preserveExisting: false })
+  return true
 }
 
 function mergeConfigsPreservingFields(existing, next) {
@@ -3396,6 +3412,7 @@ function mergeConfigsPreservingFields(existing, next) {
 }
 
 function writeOpenclawConfigFile(config, options = {}) {
+  if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
   const preserveExisting = options.preserveExisting !== false
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')), config)
@@ -4017,7 +4034,7 @@ async function getLocalGatewayRuntime(label = 'ai.openclaw.gateway') {
   return winCheckGateway()
 }
 
-async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 10000) {
+async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const status = await getLocalGatewayRuntime(label)
@@ -7629,16 +7646,11 @@ const handlers = {
   // 自动初始化配置文件（CLI 已装但 openclaw.json 不存在时）
   init_openclaw_config() {
     if (fs.existsSync(CONFIG_PATH)) return { created: false, message: '配置文件已存在' }
-    if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
-    const backupPath = CONFIG_PATH + '.bak'
-    if (fs.existsSync(backupPath)) {
-      const backupContent = fs.readFileSync(backupPath, 'utf8')
-      writeOpenclawConfigFile(JSON.parse(backupContent))
-      return { created: false, restored: true, message: '已从 openclaw.json.bak 恢复配置文件' }
-    }
-    const defaultConfig = stripUiFields(normalizeCalibratedConfig(buildCalibrationBaseline()))
-    writeOpenclawConfigFile(defaultConfig)
-    return { created: true, restored: false, message: '配置文件已创建' }
+    const restored = fs.existsSync(CONFIG_PATH + '.bak')
+    ensureOpenclawConfigFile()
+    return restored
+      ? { created: false, restored: true, message: '已从 openclaw.json.bak 恢复配置文件' }
+      : { created: true, restored: false, message: '配置文件已创建' }
   },
 
   get_deploy_config() {
