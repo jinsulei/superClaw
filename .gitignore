@@ -103,6 +103,7 @@ src-tauri/resources/runtime/claude-panel/*.log
 src-tauri/resources/runtime/openclaw/*
 !src-tauri/resources/runtime/openclaw/dist/
 src-tauri/resources/runtime/openclaw/dist/*
+!src-tauri/resources/runtime/openclaw/dist/plugin-service-BUzQoUMQ.js
 !src-tauri/resources/runtime/openclaw/dist/extensions/
 src-tauri/resources/runtime/openclaw/dist/extensions/*
 !src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/
