@@ -64,25 +64,19 @@ function Write-OpenClawConfig([string]$Dir) {
     meta = [ordered]@{ lastTouchedVersion = "YY1.0.1"; package = "OpenCloud-Hermes-Green" }
     models = [ordered]@{
       providers = [ordered]@{
-        minimax = [ordered]@{
-          baseUrl = "https://api.minimaxi.com/anthropic/v1"
-          apiKey = '${MINIMAX_API_KEY}'
-          api = "anthropic-messages"
-          models = @(
-            [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
-            [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
-          )
+        yyapi = [ordered]@{
+          baseUrl = "http://124.222.21.44:3002/v1"
+          apiKey = "superclaw-login-required"
+          api = "openai-completions"
+          models = @()
         }
       }
     }
     agents = [ordered]@{
       defaults = [ordered]@{
         workspace = 'workspace'
-        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
-        models = [ordered]@{
-          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
-          "minimax/MiniMax-M2.7" = [ordered]@{}
-        }
+        model = [ordered]@{ primary = ""; fallbacks = @() }
+        models = [ordered]@{}
         skills = @()
         contextInjection = "continuation-skip"
         bootstrapMaxChars = 300
@@ -94,12 +88,12 @@ function Write-OpenClawConfig([string]$Dir) {
         id = "main"
         name = "OpenCloud"
         workspace = "workspace"
-        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
+        model = [ordered]@{ primary = ""; fallbacks = @() }
         skills = @()
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control")
+          alsoAllow = @("browser")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -108,10 +102,10 @@ function Write-OpenClawConfig([string]$Dir) {
     bindings = @()
     channels = [ordered]@{}
     commands = [ordered]@{ native = "auto"; nativeSkills = "auto"; ownerDisplay = "raw"; restart = $true }
-    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
+    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
-    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control"); sessions = [ordered]@{ visibility = "agent" } }
+    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser"); sessions = [ordered]@{ visibility = "agent" } }
     gateway = [ordered]@{
       mode = "local"
       bind = "loopback"
@@ -127,14 +121,11 @@ function Write-OpenClawConfig([string]$Dir) {
   $config | ConvertTo-Json -Depth 30 | Set-Content -Path (Join-Path $Dir "openclaw.json") -Encoding UTF8
   $models = [ordered]@{
     providers = [ordered]@{
-      minimax = [ordered]@{
-        baseUrl = "https://api.minimaxi.com/anthropic/v1"
-        apiKey = '${MINIMAX_API_KEY}'
-        api = "anthropic-messages"
-        models = @(
-          [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
-          [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
-        )
+      yyapi = [ordered]@{
+        baseUrl = "http://124.222.21.44:3002/v1"
+        apiKey = "superclaw-login-required"
+        api = "openai-completions"
+        models = @()
       }
     }
   }
@@ -149,9 +140,9 @@ function Write-HermesConfig([string]$Dir) {
   Write-Utf8File (Join-Path $Dir "config.yaml") @"
 # Hermes Agent portable configuration.
 model:
-  default: MiniMax-M2.7-highspeed
-  provider: minimax
-  base_url: https://api.minimaxi.com/v1
+  default: ""
+  provider: openai-api
+  base_url: http://124.222.21.44:3002/v1
 platform_toolsets:
   api_server:
     - hermes-api-server
@@ -422,8 +413,8 @@ Write-Utf8File (Join-Path $ConfigTemplate "OpenCloud-openclaw.json.template") (G
 Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
-MINIMAX_API_KEY=
-MINIMAX_BASE_URL=https://api.minimaxi.com/v1
+OPENAI_API_KEY=superclaw-login-required
+OPENAI_BASE_URL=http://124.222.21.44:3002/v1
 API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@

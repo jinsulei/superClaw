@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 模型配置页面
  * 服务商管理 + 模型增删改查 + 主模型选择
  */
@@ -15,7 +15,21 @@ const YYAPI_CONSOLE_URL = 'http://124.222.21.44:3002/console'
 const YYAPI_PROVIDER_KEY = 'yyapi'
 
 function modelRefForProvider(providerKey, modelId) {
-  return providerKey === YYAPI_PROVIDER_KEY ? modelId : `${providerKey}/${modelId}`
+  return `${providerKey}/${modelId}`
+}
+
+function modelIdFromRef(ref = '') {
+  const value = String(ref || '').trim()
+  if (!value) return ''
+  const slash = value.indexOf('/')
+  return slash >= 0 ? value.slice(slash + 1) : value
+}
+
+function isYyapiPrimary(ref = '', yyapiModels = []) {
+  const value = String(ref || '').trim()
+  if (!value) return true
+  if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
+  return yyapiModels.includes(value)
 }
 
 // 主模型 localStorage 持久化键名
@@ -46,6 +60,7 @@ export async function render() {
     <div class="form-hint" style="margin-bottom:var(--space-md)">
       ${t('models.providerHint')}
     </div>
+    <div id="yyapi-token-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
     <div id="default-model-bar"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
@@ -92,6 +107,7 @@ async function loadConfig(page, state) {
 
     renderDefaultBar(page, state)
     renderProviders(page, state)
+    renderYyapiTokenPanel(page).catch(err => console.warn('[models] yyapi token panel failed:', err))
 
     // 自动初始化：如果 YYAPI 服务商不存在且有用户令牌，自动创建
     autoInitYYApi(page, state).catch(err => {
@@ -152,6 +168,76 @@ function collectAllModels(config) {
 
 function getApiTypeLabel(apiType) {
   return API_TYPES.find(at => at.value === apiType)?.label || apiType || t('common.unknown')
+}
+
+function maskApiKey(key = '') {
+  const value = String(key || '').trim()
+  if (!value) return ''
+  if (value.length <= 10) return `${value.slice(0, 2)}****`
+  return `${value.slice(0, 6)}****${value.slice(-4)}`
+}
+
+async function renderYyapiTokenPanel(page) {
+  const panel = page.querySelector('#yyapi-token-panel')
+  if (!panel) return
+  try {
+    const { getTokenList, getFullTokenKey } = await import('../lib/user-api.js')
+    const tokens = await getTokenList()
+    const token = (tokens || []).find(t => t?.is_default || t?.isDefault || t?.default)
+      || (tokens || []).find(t => t?.enabled !== false && t?.status !== 'disabled')
+      || (tokens || [])[0]
+    if (!token) {
+      panel.style.display = ''
+      panel.innerHTML = `
+        <div class="config-section-title">YYApi API Key</div>
+        <div style="color:var(--text-tertiary);font-size:13px">当前账号暂无可用令牌</div>
+      `
+      return
+    }
+
+    let fullKey = token.key || token.apiKey || token.api_key || ''
+    if (token.id && (!fullKey || fullKey.includes('*'))) {
+      const keyData = await getFullTokenKey(token.id)
+      fullKey = typeof keyData === 'string' ? keyData : (keyData?.key || keyData?.apiKey || keyData?.api_key || fullKey)
+    }
+    if (fullKey && !fullKey.includes('*')) {
+      try { localStorage.setItem('superclaw_yyapi_key', fullKey) } catch {}
+    }
+    const noKeyText = '未获取到明文 Key'
+    const safeKey = escapeHtml(fullKey || noKeyText)
+    const masked = escapeHtml(maskApiKey(fullKey) || noKeyText)
+    panel.style.display = ''
+    panel.innerHTML = `
+      <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span>YYApi API Key</span>
+        <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">${escapeHtml(String(token.name || token.id || '默认令牌'))}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;min-width:0">
+        <code id="yyapi-token-value" data-full="${safeKey}" data-masked="${masked}" data-visible="0" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg-tertiary);border:1px solid var(--border-primary);border-radius:6px;padding:8px 10px;font-size:12px">${masked}</code>
+        <button class="btn btn-sm btn-secondary" id="btn-toggle-yyapi-token">显示</button>
+        <button class="btn btn-sm btn-secondary" id="btn-copy-yyapi-token">复制</button>
+      </div>
+    `
+    panel.querySelector('#btn-toggle-yyapi-token')?.addEventListener('click', () => {
+      const valueEl = panel.querySelector('#yyapi-token-value')
+      const visible = valueEl.dataset.visible === '1'
+      valueEl.dataset.visible = visible ? '0' : '1'
+      valueEl.textContent = visible ? valueEl.dataset.masked : valueEl.dataset.full
+      panel.querySelector('#btn-toggle-yyapi-token').textContent = visible ? '显示' : '隐藏'
+    })
+    panel.querySelector('#btn-copy-yyapi-token')?.addEventListener('click', async () => {
+      const value = panel.querySelector('#yyapi-token-value')?.dataset.full || ''
+      if (!value || value === noKeyText) return toast('没有可复制的 API Key', 'warning')
+      await navigator.clipboard?.writeText(value)
+      toast('API Key 已复制', 'success')
+    })
+  } catch (err) {
+    panel.style.display = ''
+    panel.innerHTML = `
+      <div class="config-section-title">YYApi API Key</div>
+      <div style="color:var(--text-tertiary);font-size:13px">令牌读取失败：${escapeHtml(err.message || err)}</div>
+    `
+  }
 }
 
 // 渲染当前主模型状态栏
@@ -1330,10 +1416,7 @@ async function autoInitYYApi(page, state) {
     baseUrl: 'http://124.222.21.44:3002/v1',
     apiKey: firstKey,
     api: 'openai-completions',
-    managed: true,
-    models: primaryModelId
-      ? [{ id: primaryModelId, name: primaryModelId, input: ['text', 'image'] }]
-      : [],
+    models: modelIds,
   }
 
   // 自动设置主模型
@@ -1341,14 +1424,14 @@ async function autoInitYYApi(page, state) {
     if (!state.config.agents) state.config.agents = {}
     if (!state.config.agents.defaults) state.config.agents.defaults = {}
     if (!state.config.agents.defaults.model) state.config.agents.defaults.model = {}
-    state.config.agents.defaults.model.primary = primaryModelId
+    state.config.agents.defaults.model.primary = modelRefForProvider(YYAPI_PROVIDER_KEY, primaryModelId)
   }
 
   renderProviders(page, state)
   renderDefaultBar(page, state)
   updateUndoBtn(page, state)
   autoSave(state)
-  console.log(`[autoInitYYApi] 已自动添加 YYAPI 服务商（${modelIds.length} 个模型可用，已写入主模型 ${primaryModelId}）`)
+  console.log(`[autoInitYYApi] YYAPI provider added, models=${modelIds.length}, primary=${primaryModelId || ''}`)
 }
 
 // 编辑服务商
@@ -1840,24 +1923,24 @@ async function refreshYYApiKeys(page, state) {
         baseUrl: 'http://124.222.21.44:3002/v1',
         apiKey: fullKey,
         api: 'openai-completions',
-        managed: true,
         models: modelIds,
       }
     } else {
-      existing.managed = true
       existing.baseUrl = 'http://124.222.21.44:3002/v1'
       existing.apiKey = fullKey
       existing.api = existing.api || 'openai-completions'
-      const existingIds = new Set((existing.models || []).map(m => typeof m === 'string' ? m : m.id))
-      for (const m of modelIds) {
-        if (!existingIds.has(m.id)) {
-          existing.models.push(m)
-        }
-      }
+      existing.models = modelIds
     }
 
-    // 主模型不存在或未被设置时，自动切换到第一个可用模型
-    ensureValidPrimary(state)
+    const yyapiIds = modelIds.map(m => m.id).filter(Boolean)
+    const currentPrimary = getCurrentPrimary(state.config)
+    if (yyapiIds.length && isYyapiPrimary(currentPrimary, yyapiIds)) {
+      const currentModelId = modelIdFromRef(currentPrimary)
+      const nextModelId = yyapiIds.includes(currentModelId) ? currentModelId : yyapiIds[0]
+      const nextPrimary = modelRefForProvider(YYAPI_PROVIDER_KEY, nextModelId)
+      ensureDefaultModelConfig(state).primary = nextPrimary
+      try { localStorage.setItem(STORAGE_PRIMARY_MODEL_KEY, nextPrimary) } catch {}
+    }
 
     renderProviders(page, state)
     renderDefaultBar(page, state)

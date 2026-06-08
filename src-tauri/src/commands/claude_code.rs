@@ -53,6 +53,10 @@ fn claude_panel_data_dir(resources: &Path) -> PathBuf {
     resources.join("data").join("claude-panel")
 }
 
+fn claude_relay_config_path(resources: &Path) -> PathBuf {
+    claude_panel_data_dir(resources).join("relay-config.json")
+}
+
 fn panel_config_path(resources: &Path) -> PathBuf {
     resources
         .join("data")
@@ -145,6 +149,7 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
             "CLEAN_PANEL_CLAUDE_SKILLS_DIR",
             home.join(".claude").join("skills"),
         )
+        .env("CLEAN_PANEL_RELAY_CONFIG_ENABLED", "1")
         .env("CLAUDE_CLI_PATH", claude_cli_path(resources))
         .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
         .env("CLAUDE_CODE_PROJECTS_DIR", projects)
@@ -343,4 +348,102 @@ pub async fn claude_code_stop() -> Result<Value, String> {
 #[tauri::command]
 pub async fn claude_code_status() -> Result<Value, String> {
     status_impl()
+}
+
+#[tauri::command]
+pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String> {
+    let resources = resources_dir()?;
+    let data_dir = claude_panel_data_dir(&resources);
+    fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let config_path = claude_relay_config_path(&resources);
+
+    let existing = fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let force = config.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let managed = existing
+        .get("managedBy")
+        .and_then(|v| v.as_str())
+        .is_some_and(|v| v == "superclaw-yyapi");
+    let has_existing_user_config = existing
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        && existing
+            .get("baseUrl")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| !v.trim().is_empty())
+        && existing
+            .get("apiKey")
+            .and_then(|v| v.as_str())
+            .is_some_and(|v| !v.trim().is_empty());
+
+    if has_existing_user_config && !managed && !force {
+        return Ok(json!({
+            "configured": false,
+            "skipped": true,
+            "reason": "existing-user-relay-config",
+            "path": config_path
+        }));
+    }
+
+    let base_url = config
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let api_key = config
+        .get("apiKey")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let model = config
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
+        return Ok(json!({
+            "configured": false,
+            "skipped": true,
+            "reason": "missing-base-url-api-key-or-model",
+            "path": config_path
+        }));
+    }
+
+    let branch_models = config
+        .get("models")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    let next = json!({
+        "enabled": true,
+        "interfaceType": "relay",
+        "name": "YYApi",
+        "provider": "openai-compatible",
+        "baseUrl": base_url,
+        "model": model,
+        "branchModels": branch_models,
+        "apiKey": api_key,
+        "managedBy": "superclaw-yyapi",
+        "updatedAt": format!("{:?}", std::time::SystemTime::now())
+    });
+    let content = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
+    fs::write(&config_path, content).map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "configured": true,
+        "skipped": false,
+        "provider": "openai-compatible",
+        "model": model,
+        "path": config_path
+    }))
 }

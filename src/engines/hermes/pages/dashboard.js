@@ -47,6 +47,11 @@ async function tauriListen(event, cb) {
 }
 
 const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
+const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
+
+function normalizeUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '')
+}
 
 /**
  * Open `url` in the user's system browser. Tauri desktop uses the shell
@@ -109,6 +114,17 @@ export function render() {
     if (u) formBaseUrl = u.value
     if (k) formApiKey = k.value
     if (m) formModel = m.value
+  }
+
+  function applyYyapiManagedFormGuard() {
+    if (normalizeUrl(formBaseUrl || hermesConfig?.base_url) !== normalizeUrl(YYAPI_BASE_URL)) return false
+    formBaseUrl = YYAPI_BASE_URL
+    try {
+      const yyapiKey = localStorage.getItem('superclaw_yyapi_key') || ''
+      if (yyapiKey) formApiKey = yyapiKey
+    } catch {}
+    if (!formApiKey && hermesConfig?.api_key) formApiKey = hermesConfig.api_key
+    return true
   }
 
   function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') }
@@ -235,6 +251,7 @@ export function render() {
 
     // 服务商高亮匹配
     const activePreset = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
+    const yyapiManaged = normalizeUrl(formBaseUrl || hermesConfig?.base_url) === normalizeUrl(YYAPI_BASE_URL)
 
     // 模型下拉 HTML（data-dense）
     const dropdownHtml = showDropdown && models.length
@@ -375,11 +392,11 @@ export function render() {
           <div class="hm-field-row">
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
-              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimaxi.com/v1">
+              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimaxi.com/v1" ${yyapiManaged ? 'readonly aria-readonly="true"' : ''}>
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiKey')}</span>
-              <input type="password" id="hm-cfg-apikey" class="hm-input" value="${esc(formApiKey)}" placeholder="sk-…">
+              <input type="password" id="hm-cfg-apikey" class="hm-input" value="${esc(formApiKey)}" placeholder="sk-…" ${yyapiManaged ? 'readonly aria-readonly="true"' : ''}>
             </label>
           </div>
           <div style="display:flex;gap:10px;align-items:flex-end;margin-top:12px">
@@ -928,6 +945,7 @@ export function render() {
 
   async function doFetchModels() {
     syncFormFromDom()
+    const yyapiManaged = applyYyapiManagedFormGuard()
     if (!formBaseUrl) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedUrl')}</span>`; draw(); return }
     if (!formApiKey) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedKey')}</span>`; draw(); return }
 
@@ -937,10 +955,11 @@ export function render() {
         : matched.transport === 'google_gemini' ? 'google-generative-ai'
         : 'openai-completions')
       : 'openai-completions'
+    const nextApiType = yyapiManaged ? 'openai-completions' : apiType
 
     fetchBusy = true; cfgMsg = ''; draw()
     try {
-      const fetchedModels = await api.hermesFetchModels(formBaseUrl, formApiKey, apiType)
+      const fetchedModels = await api.hermesFetchModels(formBaseUrl, formApiKey, nextApiType)
       models = fetchedModels || []
 
       // 模型列表刷新后，验证主模型是否仍然存在，不存在则自动切换到第一个
@@ -971,11 +990,12 @@ export function render() {
 
   async function doSaveModel() {
     syncFormFromDom()
+    const yyapiManaged = applyYyapiManagedFormGuard()
     if (!formApiKey) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedKey')}</span>`; draw(); return }
     if (!formModel) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configModelRequired')}</span>`; draw(); return }
 
     const matched = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    const provider = matched?.id || 'custom'
+    const provider = yyapiManaged ? 'custom' : (matched?.id || 'custom')
 
     modelBusy = true; cfgMsg = ''; draw()
     try {

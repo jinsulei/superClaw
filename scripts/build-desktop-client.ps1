@@ -128,14 +128,11 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     }
     models = [ordered]@{
       providers = [ordered]@{
-        minimax = [ordered]@{
-          baseUrl = "https://api.minimaxi.com/anthropic/v1"
-          apiKey = '${MINIMAX_API_KEY}'
-          api = "anthropic-messages"
-          models = @(
-            [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
-            [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
-          )
+        yyapi = [ordered]@{
+          baseUrl = "http://124.222.21.44:3002/v1"
+          apiKey = "superclaw-login-required"
+          api = "openai-completions"
+          models = @()
         }
       }
     }
@@ -143,13 +140,10 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       defaults = [ordered]@{
         workspace = $workspace
         model = [ordered]@{
-          primary = "minimax/MiniMax-M2.7-highspeed"
-          fallbacks = @("minimax/MiniMax-M2.7")
+          primary = ""
+          fallbacks = @()
         }
-        models = [ordered]@{
-          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
-          "minimax/MiniMax-M2.7" = [ordered]@{}
-        }
+        models = [ordered]@{}
         skills = @()
         contextInjection = "continuation-skip"
         bootstrapMaxChars = 300
@@ -162,14 +156,14 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         name = "Main Agent"
         workspace = $workspace
         model = [ordered]@{
-          primary = "minimax/MiniMax-M2.7-highspeed"
-          fallbacks = @("minimax/MiniMax-M2.7")
+          primary = ""
+          fallbacks = @()
         }
         skills = @()
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control")
+          alsoAllow = @("browser")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -183,12 +177,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       ownerDisplay = "raw"
       restart = $true
     }
-    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
+    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
     tools = [ordered]@{
       profile = "minimal"
-      alsoAllow = @("browser", "desktop_control")
+      alsoAllow = @("browser")
       sessions = [ordered]@{ visibility = "agent" }
     }
     gateway = [ordered]@{
@@ -220,6 +214,64 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   }
 
   $config | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $OpenClawDataDir "openclaw.json") -Encoding UTF8
+}
+
+function Write-PortablePanelConfig([string]$OpenClawDataDir) {
+  New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
+  $config = [ordered]@{
+    ignoreRisk = $true
+    accessPassword = ""
+    engineMode = "hermes"
+  }
+  $config | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $OpenClawDataDir "clawpanel.json") -Encoding UTF8
+}
+
+function Repair-HermesConfig([string]$HermesDataDir) {
+  New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
+  $configPath = Join-Path $HermesDataDir "config.yaml"
+  $envPath = Join-Path $HermesDataDir ".env"
+
+  if (-not (Test-Path $configPath)) {
+    Set-Content -Path $configPath -Encoding UTF8 -Value @"
+# Hermes Agent configuration (managed by SuperClaw)
+model:
+  default:
+  provider: openai-api
+  base_url: http://124.222.21.44:3002/v1
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+terminal:
+  backend: local
+platforms:
+  api_server:
+    enabled: true
+api_server:
+  host: 127.0.0.1
+  port: 8642
+skills:
+  disabled: []
+"@
+  } else {
+    $text = Get-Content -Raw -Path $configPath
+    if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+provider:\s*\S+') {
+      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
+    }
+    $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
+    if ($text -notmatch '(?m)^\s+base_url:\s*\S+') {
+      $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: http://124.222.21.44:3002/v1`n"
+    }
+    Set-Content -Path $configPath -Encoding UTF8 -Value $text
+  }
+
+  $envText = if (Test-Path $envPath) { Get-Content -Raw -Path $envPath } else { "" }
+  $envText = $envText -replace '(?m)^OPENAI_API_KEY=.*$', 'OPENAI_API_KEY=superclaw-login-required'
+  $envText = $envText -replace '(?m)^OPENAI_BASE_URL=.*$', 'OPENAI_BASE_URL=http://124.222.21.44:3002/v1'
+  if ($envText -notmatch '(?m)^OPENAI_API_KEY=') { $envText += "`nOPENAI_API_KEY=superclaw-login-required" }
+  if ($envText -notmatch '(?m)^OPENAI_BASE_URL=') { $envText += "`nOPENAI_BASE_URL=http://124.222.21.44:3002/v1" }
+  if ($envText -notmatch '(?m)^GATEWAY_ALLOW_ALL_USERS=') { $envText += "`nGATEWAY_ALLOW_ALL_USERS=true" }
+  if ($envText -notmatch '(?m)^API_SERVER_KEY=') { $envText += "`nAPI_SERVER_KEY=clawpanel-local" }
+  Set-Content -Path $envPath -Encoding UTF8 -Value ($envText.Trim() + "`n")
 }
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -355,6 +407,8 @@ foreach ($name in @("agents", "canvas", "devices", "identity", "logs", "tasks", 
   Remove-IfExists (Join-Path $DotOpenClaw $name)
 }
 Write-PortableOpenClawConfig $DotOpenClaw
+Write-PortablePanelConfig $DotOpenClaw
+Repair-HermesConfig $HermesData
 Ok "Removed local sessions, logs, locks, and machine-specific OpenClaw state"
 
 Step "Fixing portable uv virtualenv paths"

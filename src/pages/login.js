@@ -140,6 +140,14 @@ function bindLoginEvents(page) {
           localStorage.setItem('superclaw_remaining_tokens', String(result.tokenInfo.remaining_tokens))
         }
 
+        if (typeof window.__superclaw_sync_default_model_settings === 'function') {
+          try {
+            await window.__superclaw_sync_default_model_settings()
+          } catch (err) {
+            console.warn('[login] default model sync failed:', err)
+          }
+        }
+
         // 登录成功，全量刷新触发 boot 流程（JWT 已存，会直接进 dashboard）
         console.log('[login] 准备跳转到 dashboard')
         navigateTo('dashboard')
