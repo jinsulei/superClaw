@@ -59,7 +59,8 @@ const parameters = {
     },
     query: {
       type: "string",
-      description: "Window title or class substring, for example 抖音, 飞书, 钉钉, QQ, Chrome.",
+      description:
+        "Window title or class substring, for example Douyin/\u6296\u97f3, Feishu/\u98de\u4e66, DingTalk/\u9489\u9489, QQ, Chrome.",
     },
     text: {
       type: "string",
@@ -95,8 +96,11 @@ export default definePluginEntry({
       label: "Desktop Control",
       description: [
         "Control already-open Windows desktop applications via the bundled SuperClaw sidecar.",
-        "Use only when the user explicitly asks to operate a desktop app such as 抖音, 飞书, 钉钉, QQ, or an already-open app.",
+        "Use this when the user asks to operate a desktop client, local app, native app, already-open app, or a local logged-in app.",
+        "For desktop-client tasks involving Douyin/\u6296\u97f3, Kuaishou/\u5feb\u624b, Xiaohongshu/\u5c0f\u7ea2\u4e66, Feishu/\u98de\u4e66, DingTalk/\u9489\u9489, QQ, WeChat/\u5fae\u4fe1, or other installed apps, prefer desktop_control over browser.",
+        "When the user asks to search or inspect a platform that may have a desktop client, call action=list_windows first; if the target app is present, use desktop_control. If the app is not present or cannot be activated, then fall back to the browser tool.",
         "Start with list_windows to find the exact window title, then activate/click/type_text/press_key.",
+        "Use browser only when the user explicitly asks for a web page, website, browser tab, or browser automation.",
         "Do not use for normal chat, tables, copywriting, or browser-only tasks.",
       ].join(" "),
       parameters,
