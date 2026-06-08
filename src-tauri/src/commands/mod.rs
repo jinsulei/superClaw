@@ -250,12 +250,43 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 defaults.insert(
                     "model".into(),
                     serde_json::json!({
-                        "primary": "",
-                        "fallbacks": []
+                        "primary": "minimax/MiniMax-M2.7-highspeed",
+                        "fallbacks": ["minimax/MiniMax-M2.7"]
                     }),
                 );
                 changed = true;
             }
+            if !defaults.get("skills").is_some_and(|v| v.is_array()) {
+                defaults.insert("skills".into(), serde_json::json!([]));
+                changed = true;
+            }
+            if defaults.get("contextInjection").and_then(|v| v.as_str()) != Some("never") {
+                defaults.insert("contextInjection".into(), serde_json::json!("never"));
+                changed = true;
+            }
+        }
+        if !agents.get("list").is_some_and(|v| v.is_array()) {
+            agents.insert(
+                "list".into(),
+                serde_json::json!([{
+                    "id": "main",
+                    "name": "Main Agent",
+                    "workspace": "workspace",
+                    "model": {
+                        "primary": "minimax/MiniMax-M2.7-highspeed",
+                        "fallbacks": ["minimax/MiniMax-M2.7"]
+                    },
+                    "skills": [],
+                    "skillsLimits": { "maxSkillsPromptChars": 0 },
+                    "tools": {
+                        "profile": "minimal",
+                        "alsoAllow": ["browser", "desktop_control"]
+                    },
+                    "thinkingDefault": "off",
+                    "verboseDefault": "off"
+                }]),
+            );
+            changed = true;
         }
     }
 
@@ -264,16 +295,130 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "models".into(),
             serde_json::json!({
                 "providers": {
-                    "yyapi": {
-                        "baseUrl": "http://124.222.21.44:3002/v1",
-                        "apiKey": "superclaw-login-required",
-                        "api": "openai-completions",
-                        "models": []
+                    "minimax": {
+                        "baseUrl": "https://api.minimaxi.com/anthropic/v1",
+                        "apiKey": "${MINIMAX_API_KEY}",
+                        "api": "anthropic-messages",
+                        "models": [
+                            {
+                                "id": "MiniMax-M2.7-highspeed",
+                                "name": "MiniMax M2.7 Highspeed",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            },
+                            {
+                                "id": "MiniMax-M2.7",
+                                "name": "MiniMax M2.7",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            }
+                        ]
                     }
                 }
             }),
         );
         changed = true;
+    }
+    if let Some(models) = obj.get_mut("models").and_then(|v| v.as_object_mut()) {
+        let providers = models
+            .entry("providers")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(providers_obj) = providers.as_object_mut() {
+            if !providers_obj.contains_key("minimax") {
+                providers_obj.insert(
+                    "minimax".into(),
+                    serde_json::json!({
+                        "baseUrl": "https://api.minimaxi.com/anthropic/v1",
+                        "apiKey": "${MINIMAX_API_KEY}",
+                        "api": "anthropic-messages",
+                        "models": [
+                            {
+                                "id": "MiniMax-M2.7-highspeed",
+                                "name": "MiniMax M2.7 Highspeed",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            },
+                            {
+                                "id": "MiniMax-M2.7",
+                                "name": "MiniMax M2.7",
+                                "api": "anthropic-messages",
+                                "reasoning": false,
+                                "input": ["text"],
+                                "contextWindow": 204800,
+                                "maxTokens": 8192
+                            }
+                        ]
+                    }),
+                );
+                changed = true;
+            }
+        }
+    }
+
+    if !obj.get("plugins").is_some_and(|v| v.is_object()) {
+        obj.insert("plugins".into(), serde_json::json!({}));
+        changed = true;
+    }
+    if let Some(plugins) = obj.get_mut("plugins").and_then(|v| v.as_object_mut()) {
+        let entries = plugins
+            .entry("entries")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(entries_obj) = entries.as_object_mut() {
+            for key in ["browser", "desktop-control", "minimax"] {
+                let enabled = entries_obj
+                    .get(key)
+                    .and_then(|v| v.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !enabled {
+                    entries_obj.insert(key.into(), serde_json::json!({ "enabled": true }));
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !obj.get("skills").is_some_and(|v| v.is_object()) {
+        obj.insert(
+            "skills".into(),
+            serde_json::json!({ "entries": {}, "limits": { "maxSkillsPromptChars": 0 } }),
+        );
+        changed = true;
+    }
+
+    if !obj.get("tools").is_some_and(|v| v.is_object()) {
+        obj.insert(
+            "tools".into(),
+            serde_json::json!({
+                "profile": "minimal",
+                "alsoAllow": ["browser", "desktop_control"],
+                "sessions": { "visibility": "agent" }
+            }),
+        );
+        changed = true;
+    } else if let Some(tools) = obj.get_mut("tools").and_then(|v| v.as_object_mut()) {
+        if tools.get("profile").and_then(|v| v.as_str()) != Some("minimal") {
+            tools.insert("profile".into(), serde_json::json!("minimal"));
+            changed = true;
+        }
+        let allow = serde_json::json!(["browser", "desktop_control"]);
+        if tools.get("alsoAllow") != Some(&allow) {
+            tools.insert("alsoAllow".into(), allow);
+            changed = true;
+        }
+        if !tools.get("sessions").is_some_and(|v| v.is_object()) {
+            tools.insert("sessions".into(), serde_json::json!({ "visibility": "agent" }));
+            changed = true;
+        }
     }
 
     if changed {

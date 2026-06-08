@@ -87,6 +87,11 @@ function Remove-IfExists([string]$Path) {
   }
 }
 
+function Write-Utf8NoBom([string]$Path, [string]$Value) {
+  $encoding = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 function Assert-File([string]$Path, [string]$Label) {
   if (-not (Test-Path $Path -PathType Leaf)) {
     Fail "$Label not found: $Path"
@@ -128,11 +133,30 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     }
     models = [ordered]@{
       providers = [ordered]@{
-        yyapi = [ordered]@{
-          baseUrl = "http://124.222.21.44:3002/v1"
-          apiKey = "superclaw-login-required"
-          api = "openai-completions"
-          models = @()
+        minimax = [ordered]@{
+          baseUrl = "https://api.minimaxi.com/anthropic/v1"
+          apiKey = '${MINIMAX_API_KEY}'
+          api = "anthropic-messages"
+          models = @(
+            [ordered]@{
+              id = "MiniMax-M2.7-highspeed"
+              name = "MiniMax M2.7 Highspeed"
+              api = "anthropic-messages"
+              reasoning = $false
+              input = @("text")
+              contextWindow = 204800
+              maxTokens = 8192
+            },
+            [ordered]@{
+              id = "MiniMax-M2.7"
+              name = "MiniMax M2.7"
+              api = "anthropic-messages"
+              reasoning = $false
+              input = @("text")
+              contextWindow = 204800
+              maxTokens = 8192
+            }
+          )
         }
       }
     }
@@ -140,12 +164,15 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       defaults = [ordered]@{
         workspace = $workspace
         model = [ordered]@{
-          primary = ""
-          fallbacks = @()
+          primary = "minimax/MiniMax-M2.7-highspeed"
+          fallbacks = @("minimax/MiniMax-M2.7")
         }
-        models = [ordered]@{}
+        models = [ordered]@{
+          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
+          "minimax/MiniMax-M2.7" = [ordered]@{}
+        }
         skills = @()
-        contextInjection = "continuation-skip"
+        contextInjection = "never"
         bootstrapMaxChars = 300
         bootstrapTotalMaxChars = 800
         thinkingDefault = "off"
@@ -156,14 +183,14 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         name = "Main Agent"
         workspace = $workspace
         model = [ordered]@{
-          primary = ""
-          fallbacks = @()
+          primary = "minimax/MiniMax-M2.7-highspeed"
+          fallbacks = @("minimax/MiniMax-M2.7")
         }
         skills = @()
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser")
+          alsoAllow = @("browser", "desktop_control")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -177,12 +204,18 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       ownerDisplay = "raw"
       restart = $true
     }
-    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true } } }
+    plugins = [ordered]@{
+      entries = [ordered]@{
+        browser = [ordered]@{ enabled = $true }
+        "desktop-control" = [ordered]@{ enabled = $true }
+        minimax = [ordered]@{ enabled = $true }
+      }
+    }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
     tools = [ordered]@{
       profile = "minimal"
-      alsoAllow = @("browser")
+      alsoAllow = @("browser", "desktop_control")
       sessions = [ordered]@{ visibility = "agent" }
     }
     gateway = [ordered]@{
@@ -213,7 +246,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     }
   }
 
-  $config | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $OpenClawDataDir "openclaw.json") -Encoding UTF8
+  Write-Utf8NoBom (Join-Path $OpenClawDataDir "openclaw.json") ($config | ConvertTo-Json -Depth 20)
 }
 
 function Write-PortablePanelConfig([string]$OpenClawDataDir) {
@@ -223,7 +256,7 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir) {
     accessPassword = ""
     engineMode = "hermes"
   }
-  $config | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $OpenClawDataDir "clawpanel.json") -Encoding UTF8
+  Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
 
 function Repair-HermesConfig([string]$HermesDataDir) {

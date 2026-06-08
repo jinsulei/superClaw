@@ -427,7 +427,7 @@ function setupVoiceControls() {
     onInterimText: (text) => syncVoiceDraft(text),
     onFinalText: (text) => {
       syncVoiceDraft(text)
-      if (_sendBtn && !_sendBtn.disabled) _sendBtn.click()
+      if (text && text.trim()) toast('语音已写入输入框，可修改后发送', 'success')
     },
     onUnsupported: () => toast(t('chat.voiceUnsupported'), 'warning'),
     onError: (code) => {
@@ -2051,6 +2051,7 @@ async function doSend(text, attachments = []) {
     toast(t('chat.gatewayNotReadySend'), 'warning')
     return
   }
+  const sendText = buildAttachmentTriggeredPrompt(text, attachments)
   appendUserMessage(text, attachments)
   saveMessage({
     id: uuid(), sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
@@ -2060,7 +2061,7 @@ async function doSend(text, attachments = []) {
   _isSending = true
   _startResponseWatchdog()
   try {
-    await wsClient.chatSend(_sessionKey, text, attachments.length ? attachments : undefined)
+    await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined)
   } catch (err) {
     showTyping(false)
     _cancelResponseWatchdog()
@@ -2070,6 +2071,75 @@ async function doSend(text, attachments = []) {
     _isSending = false
     updateSendState()
   }
+}
+
+function buildAttachmentTriggeredPrompt(text, attachments = []) {
+  const base = String(text || '').trim() || '请分析我刚才粘贴或上传的图片。'
+  const toolPrompt = buildIntentTriggeredToolPrompt(base)
+  const hasImage = attachments.some(item => {
+    const category = String(item?.category || item?.type || '').toLowerCase()
+    const mime = String(item?.mimeType || item?.mime || '').toLowerCase()
+    return category === 'image' || mime.startsWith('image/')
+  })
+  if (!hasImage) return toolPrompt
+  return [
+    toolPrompt,
+    '',
+    '[图片识别触发]',
+    '本轮用户粘贴或上传了图片附件。请直接调用可用的视觉/图片识别工具读取图片，并基于图片内容回答；不要等待用户再次确认。',
+    '这个能力只在本轮图片输入时触发，普通文字聊天不要加载视觉工具。若当前工具链无法读取图片，请用中文明确说明。',
+    '[/图片识别触发]',
+  ].join('\n')
+}
+
+function buildIntentTriggeredToolPrompt(text) {
+  const base = String(text || '').trim()
+  if (!base) return base
+  const lower = base.toLowerCase()
+  const capabilityAuditIntent =
+    /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
+  const hasUrl = /https?:\/\//i.test(base)
+  const desktopIntent =
+    /(桌面端|客户端|本地应用|应用程序|桌面应用|app)\s*(里|上|中)?\s*(打开|搜索|点击|输入|查看|读取|采集|操作)/i.test(base) ||
+    /(打开|搜索|点击|输入|查看|读取|采集|操作).{0,18}(桌面端|客户端|本地应用|应用程序|桌面应用|app)/i.test(base) ||
+    /(抖音|快手|小红书|飞书|钉钉|微信|qq).{0,18}(客户端|桌面端|app|应用|打开|搜索|点击|输入|查看|采集)/i.test(base)
+  const browserIntent =
+    hasUrl ||
+    /(浏览器|网页|网站|网址|链接|页面|打开网页|打开网站|搜索网页|网上搜索|联网搜索|网页搜索|抓取|读取链接|浏览)/i.test(base) ||
+    /\b(browser|website|web page|url|search web|open url|navigate|scrape)\b/i.test(lower)
+  const blocks = [base]
+  if (capabilityAuditIntent) {
+    blocks.push(
+      '',
+      '[CAPABILITY_AUDIT_TRIGGER]',
+      'The user is asking whether a task can be done or what tool/plugin/skill is needed. Before promising execution, inspect the currently available tools, plugins, and skills from this runtime/tool list.',
+      'Reply in Simplified Chinese with: 1) current available capability, 2) missing tool/plugin/skill if any, 3) whether web search is needed, 4) security risks, 5) a clear question asking for user consent before searching, downloading, installing, enabling, or changing configuration.',
+      'Do not install, download, enable plugins, edit config, run shell commands, or browse the web until the user explicitly agrees in the next message. If the required capability is not native, say that clearly instead of outputting fake tool_call/XML text.',
+      'If the task can be done with existing tools, say which exact tool/plugin/skill will be used and what result you will report after execution.',
+      '[/CAPABILITY_AUDIT_TRIGGER]',
+    )
+  }
+  if (desktopIntent) {
+    blocks.push(
+      '',
+      '[DESKTOP_CONTROL_TRIGGER]',
+      '本轮用户明确要求操作桌面端/客户端/本地应用。若工具列表里有 desktop_control，请优先调用 desktop_control，不要改用浏览器，也不要把 <tool_call>、XML 或伪代码当作文字输出。',
+      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要搜索时再 click/type_text/press_key。若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
+      '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
+      '[/DESKTOP_CONTROL_TRIGGER]',
+    )
+  }
+  if (browserIntent && !desktopIntent) {
+    blocks.push(
+      '',
+      '[BROWSER_TOOL_TRIGGER]',
+      '本轮用户明确要求浏览器/网页/链接/搜索/抓取。若工具列表里有 browser，请调用真实 browser 工具完成打开、搜索、读取、点击或页面快照；不要输出 <tool_call>、XML 或伪工具文本。',
+      '基础顺序：open/navigate -> snapshot/read visible text -> click/type/wait when needed；失败时用中文说明具体失败原因和下一步。',
+      '普通聊天不要触发 browser 工具。',
+      '[/BROWSER_TOOL_TRIGGER]',
+    )
+  }
+  return blocks.join('\n')
 }
 
 function ensureReadySessionKey() {
@@ -2085,6 +2155,39 @@ function processMessageQueue() {
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
   else doSend(msg.text, msg.attachments || [])
+}
+
+function previewToolValue(value, maxLen = 180) {
+  if (value == null) return ''
+  let text = ''
+  if (typeof value === 'string') text = value
+  else {
+    try { text = JSON.stringify(value) } catch { text = String(value) }
+  }
+  text = text.replace(/\s+/g, ' ').trim()
+  return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text
+}
+
+function buildToolOnlyAssistantReply(tools = []) {
+  const list = Array.isArray(tools) ? tools.filter(Boolean) : []
+  if (!list.length) return ''
+  const last = list[list.length - 1] || {}
+  const name = last.name || last.toolName || last.id || '工具'
+  const failed = last.status === 'error' || last.isError
+  const statusText = failed ? '执行时遇到错误' : '已经执行完成'
+  const output = previewToolValue(last.output ?? last.result ?? last.content ?? last.error)
+  if (failed) {
+    return [
+      `我根据刚才的上下文去执行了 ${name}，但工具返回了错误。`,
+      output ? `错误信息：${output}` : '当前没有拿到可展开的错误详情。',
+      '我会基于这个结果继续排查原因；如果你给的是要操作桌面或网页的指令，下一步应先确认对应工具权限和目标窗口是否可用。',
+    ].join('\n')
+  }
+  return [
+    `我根据刚才的上下文执行了 ${name}，${statusText}。`,
+    output ? `我读到的结果是：${output}` : '这次工具没有返回可展开的正文结果，我会继续按当前问题补充判断，而不是停在“我看看”。',
+    '如果这是排查任务，我会继续给出原因、影响和下一步处理；如果是执行任务，我会继续完成后汇报结果。',
+  ].join('\n')
 }
 
 function stopGeneration() {
@@ -2299,6 +2402,9 @@ function handleChatEvent(payload) {
     if (finalAudios.length) _currentAiAudios = finalAudios
     if (finalFiles.length) _currentAiFiles = finalFiles
     if (finalTools.length) _currentAiTools = finalTools
+    if (!finalText && !_currentAiText && finalTools.length) {
+      _currentAiText = buildToolOnlyAssistantReply(finalTools)
+    }
     const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
     if (!_currentAiBubble && !hasContent) return
@@ -2314,7 +2420,7 @@ function handleChatEvent(payload) {
     // 如果流式阶段没有创建 bubble，从 final message 中提取
     if (!_currentAiBubble && hasContent) {
       _currentAiBubble = createStreamBubble()
-      _currentAiText = finalText
+      _currentAiText = finalText || _currentAiText
     }
     if (_currentAiBubble) {
       if (_currentAiText && _currentAiText !== _lastRenderedAiText) {

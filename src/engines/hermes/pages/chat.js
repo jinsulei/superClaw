@@ -308,6 +308,53 @@ function appendUserSupplement(block, supplement) {
   ].join('\n')
 }
 
+function buildIntentTriggeredToolInstructions(text) {
+  const base = String(text || '').trim()
+  if (!base) return ''
+  const lower = base.toLowerCase()
+  const capabilityAuditIntent =
+    /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
+  const hasUrl = /https?:\/\//i.test(base)
+  const desktopIntent =
+    /(桌面端|客户端|本地应用|应用程序|桌面应用|app)\s*(里|上|中)?\s*(打开|搜索|点击|输入|查看|读取|采集|操作)/i.test(base) ||
+    /(打开|搜索|点击|输入|查看|读取|采集|操作).{0,18}(桌面端|客户端|本地应用|应用程序|桌面应用|app)/i.test(base) ||
+    /(抖音|快手|小红书|飞书|钉钉|微信|qq).{0,18}(客户端|桌面端|app|应用|打开|搜索|点击|输入|查看|采集)/i.test(base)
+  const browserIntent =
+    hasUrl ||
+    /(浏览器|网页|网站|网址|链接|页面|打开网页|打开网站|搜索网页|网上搜索|联网搜索|网页搜索|抓取|读取链接|浏览)/i.test(base) ||
+    /\b(browser|website|web page|url|search web|open url|navigate|scrape)\b/i.test(lower)
+  const lines = []
+  if (capabilityAuditIntent) {
+    lines.push(
+      '[CAPABILITY_AUDIT_TRIGGER]',
+      'The user is asking whether a task can be done or what tool/plugin/skill is needed. Before promising execution, inspect the currently available tools, plugins, and skills from this runtime/tool list.',
+      'Reply in Simplified Chinese with: 1) current available capability, 2) missing tool/plugin/skill if any, 3) whether web search is needed, 4) security risks, 5) a clear question asking for user consent before searching, downloading, installing, enabling, or changing configuration.',
+      'Do not install, download, enable plugins, edit config, run shell commands, or browse the web until the user explicitly agrees in the next message. If the required capability is not native, say that clearly instead of outputting fake tool_call/XML text.',
+      'If the task can be done with existing tools, say which exact tool/plugin/skill will be used and what result you will report after execution.',
+      '[/CAPABILITY_AUDIT_TRIGGER]',
+    )
+  }
+  if (desktopIntent) {
+    lines.push(
+      '[DESKTOP_CONTROL_TRIGGER]',
+      '本轮用户明确要求操作桌面端/客户端/本地应用。若工具列表里有 desktop_control，请优先调用 desktop_control，不要改用浏览器，也不要把 <tool_call>、XML 或伪代码当作文字输出。',
+      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要搜索时再 click/type_text/press_key。若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
+      '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
+      '[/DESKTOP_CONTROL_TRIGGER]',
+    )
+  }
+  if (browserIntent && !desktopIntent) {
+    lines.push(
+      '[BROWSER_TOOL_TRIGGER]',
+      '本轮用户明确要求浏览器/网页/链接/搜索/抓取。若工具列表里有 browser、web、browser_navigate、browser_snapshot 等工具，请调用真实工具完成打开、搜索、读取、点击或页面快照；不要输出 <tool_call>、XML 或伪工具文本。',
+      '基础顺序：navigate/open -> snapshot/read visible text -> click/type/wait when needed；失败时用中文说明具体失败原因和下一步。',
+      '普通聊天不要触发 browser/web 工具。',
+      '[/BROWSER_TOOL_TRIGGER]',
+    )
+  }
+  return lines.join('\n')
+}
+
 function stripFirstHttpUrl(text) {
   return String(text || '').replace(/https?:\/\/[^\s"'<>，。；、]+/i, '').trim()
 }
@@ -544,7 +591,8 @@ function formatSelectedImageForPrompt(file, savedPath) {
     `类型: ${file?.type || 'image/*'}`,
     `大小: ${file?.size || 0} bytes`,
     `本地路径: ${savedPath}`,
-    '请只在本轮需要看图时分析这张图片；如果当前模型或工具不支持视觉，请明确说明。',
+    '本轮已触发图片识别。请直接调用可用的视觉/图片读取能力分析这张图片，不要等待用户再次确认；该能力只在本轮图片输入时触发。',
+    '如果当前模型或工具链不支持图片识别，请用中文明确说明当前无法看图。',
     '[/图片/视觉输入]',
   ].join('\n')
 }
@@ -842,7 +890,7 @@ export function render() {
       inputCaret = inputValue.length
       inputFocused = true
       draw()
-      handleSend()
+      if (text && text.trim()) toast('语音已写入输入框，可修改后发送', 'success')
     },
     onUnsupported: () => toast(t('engine.chatVoiceUnsupported'), 'warning'),
     onError: (code) => {
@@ -1345,8 +1393,8 @@ export function render() {
             ${linkBusy ? '处理中...' : '读取链接'}
           </button>
         </div>
+        <p class="hm-chat-link-hint">支持抓取并分析抖音、快手、小红书等 http/https 链接；读取后会先整理素材，再询问是否继续拆解、仿写或优化。</p>
         <div class="hm-chat-link-actions">
-          <button class="hm-chat-link-clip" id="hm-chat-link-clip" ${linkBusy ? 'disabled' : ''}>从剪贴板</button>
           <button class="hm-chat-link-close" id="hm-chat-link-close" ${linkBusy ? 'disabled' : ''}>关闭</button>
         </div>
         ${linkError ? `<div class="hm-chat-link-error">${escHtml(linkError)}</div>` : ''}
@@ -1427,12 +1475,6 @@ export function render() {
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
-            <button class="hm-chat-attachment-btn" id="hm-chat-file-pick"
-                    type="button"
-                    aria-label="添加文件或图片"
-                    title="添加文件或图片">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-            </button>
             <input id="hm-chat-file-input" type="file" hidden>
           </div>
         </div>
@@ -1945,21 +1987,6 @@ export function render() {
       inputFocused = true
       draw()
     })
-    el.querySelector('#hm-chat-link-clip')?.addEventListener('click', async () => {
-      try {
-        const clip = await navigator.clipboard?.readText?.()
-        const url = extractFirstHttpUrl(clip)
-        if (!url) {
-          linkError = '剪贴板里没有可读取的 http/https 链接'
-        } else {
-          linkDraft = url
-          linkError = ''
-        }
-      } catch {
-        linkError = '无法读取剪贴板，请手动粘贴链接'
-      }
-      draw()
-    })
     const linkInput = el.querySelector('#hm-chat-link-input')
     if (linkInput) {
       linkInput.addEventListener('input', () => {
@@ -1979,9 +2006,6 @@ export function render() {
     }
     el.querySelector('#hm-chat-link-read')?.addEventListener('click', handleReadLink)
     const fileInput = el.querySelector('#hm-chat-file-input')
-    el.querySelector('#hm-chat-file-pick')?.addEventListener('click', () => {
-      fileInput?.click()
-    })
     fileInput?.addEventListener('change', async () => {
       const file = fileInput.files?.[0]
       fileInput.value = ''
@@ -2114,8 +2138,8 @@ export function render() {
         const savedPath = await api.saveImage(imageId, dataUrl)
         block = formatSelectedImageForPrompt(file, savedPath)
         nextInstructions = [
-          '本轮用户通过输入框右侧的曲别针按钮主动添加了图片。',
-          '只有本轮需要图片/视觉分析时才处理该图片；普通文本对话不要主动启用视觉。',
+          '本轮用户通过输入框右侧的曲别针按钮主动添加了图片，已经触发图片/视觉识别。',
+          '请直接调用可用的视觉/图片读取能力分析该图片，不要等待用户再次确认；普通文本对话不要主动启用视觉。',
           '如果当前模型或工具链不支持图片识别，请用中文明确说明当前无法看图。',
         ].join('\n')
       } else {
@@ -2316,7 +2340,10 @@ export function render() {
       resetInput(); draw(); return
     }
 
-    let sendInstructions = pendingAttachmentInstructions
+    let sendInstructions = [
+      pendingAttachmentInstructions,
+      buildIntentTriggeredToolInstructions(text),
+    ].filter(Boolean).join('\n\n')
 
     // Normal user message → start agent run.
     forceScrollBottom = true

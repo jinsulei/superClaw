@@ -335,6 +335,39 @@ function createStore() {
       setTimeout(flushNotify, 0)
     }
   }
+
+  function previewToolValue(value, maxLen = 180) {
+    if (value == null) return ''
+    let text = ''
+    if (typeof value === 'string') text = value
+    else {
+      try { text = JSON.stringify(value) } catch { text = String(value) }
+    }
+    text = text.replace(/\s+/g, ' ').trim()
+    return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text
+  }
+
+  function summarizeToolOnlyReply(tools = []) {
+    const list = Array.isArray(tools) ? tools.filter(Boolean) : []
+    if (!list.length) return ''
+    const last = list[list.length - 1] || {}
+    const name = last.name || last.toolName || last.id || '工具'
+    const failed = last.status === 'error' || !!last.error
+    const output = previewToolValue(last.result ?? last.output ?? last.content ?? last.error)
+    if (failed) {
+      return [
+        `我根据刚才的上下文去执行了 ${name}，但工具返回了错误。`,
+        output ? `错误信息：${output}` : '当前没有拿到可展开的错误详情。',
+        '我会基于这个结果继续排查原因；如果你给的是要操作桌面或网页的指令，下一步应先确认对应工具权限和目标窗口是否可用。',
+      ].join('\n')
+    }
+    return [
+      `我根据刚才的上下文执行了 ${name}，已经执行完成。`,
+      output ? `我读到的结果是：${output}` : '这次工具没有返回可展开的正文结果，我会继续按当前问题补充判断，而不是停在“我看看”。',
+      '如果这是排查任务，我会继续给出原因、影响和下一步处理；如果是执行任务，我会继续完成后汇报结果。',
+    ].join('\n')
+  }
+
   /** Force an immediate, unbatched notification (used by deterministic tests). */
   function notifySync() {
     scheduled = false
@@ -782,10 +815,11 @@ function createStore() {
     const u3 = await tauriListen('hermes-run-done', () => {
       const s = runSession()
       if (!s) { cleanupAfterRun(); return }
+      const runTools = [...state.liveTools]
 
       // Commit finished tool calls as messages in the transcript.
-      if (state.liveTools.length) {
-        for (const t of state.liveTools) {
+      if (runTools.length) {
+        for (const t of runTools) {
           s.messages.push({
             id: uid(),
             role: 'tool',
@@ -801,10 +835,14 @@ function createStore() {
       }
 
       // Finalize the streaming assistant message.
-      const msg = s.messages.find(m => m.id === state.pendingAssistantId)
+      let msg = s.messages.find(m => m.id === state.pendingAssistantId)
+      if (!msg && runTools.length) {
+        msg = { id: uid(), role: 'assistant', content: '', timestamp: Date.now() }
+        s.messages.push(msg)
+      }
       if (msg) {
         delete msg.isStreaming
-        if (!msg.content.trim()) msg.content = '(empty)'
+        if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
       }
 
       // Update session metadata.
@@ -905,8 +943,9 @@ function createStore() {
   function completeStreamRun(runSessionId, output = '') {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) { cleanupAfterRun(); return }
-    if (state.liveTools.length) {
-      for (const t of state.liveTools) {
+    const runTools = [...state.liveTools]
+    if (runTools.length) {
+      for (const t of runTools) {
         s.messages.push({
           id: uid(),
           role: 'tool',
@@ -922,7 +961,7 @@ function createStore() {
     }
     let msg = s.messages.find(m => m.id === state.pendingAssistantId)
     const finalOutput = typeof output === 'string' ? output : ''
-    if (!msg && finalOutput.trim()) {
+    if (!msg && (finalOutput.trim() || runTools.length)) {
       msg = { id: uid(), role: 'assistant', content: finalOutput, timestamp: Date.now(), isStreaming: true }
       s.messages.push(msg)
       state.pendingAssistantId = msg.id
@@ -930,7 +969,7 @@ function createStore() {
     if (msg) {
       delete msg.isStreaming
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
-      if (!msg.content.trim()) msg.content = '(empty)'
+      if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
     }
     s.updatedAt = Date.now()
     s.lastActiveAt = Date.now()

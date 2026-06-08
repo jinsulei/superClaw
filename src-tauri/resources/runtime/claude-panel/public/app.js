@@ -173,7 +173,6 @@ const composerPermissionMenu = $("#composerPermissionMenu");
 const toolAccessLabel = $("#toolAccessLabel");
 const riskLevelLabel = $("#riskLevelLabel");
 const imageUploadInput = $("#imageUploadInput");
-const quickAttachBtn = $("#quickAttachBtn");
 const voiceModeBtn = $("#voiceModeBtn");
 const attachmentPreview = $("#attachmentPreview");
 const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
@@ -197,6 +196,7 @@ const superclawBaseStorageKey = "cleanClaude.superclawBase.v1";
 const fallbackSuperclawBase = "http://127.0.0.1:1420";
 let consoleSwitchProgressFrame = null;
 let consoleSwitchProgressTimer = null;
+let nativeClaudeRunning = false;
 const accountNameStorageKey = "cleanClaude.accountName.v1";
 const petSyncStorageKey = "cleanClaude.petSyncEnabled.v1";
 const petWorkStartedStorageKey = "cleanClaude.petWorkStartedAt.v1";
@@ -252,6 +252,14 @@ function resolveSuperclawBase() {
 
 function getSuperclawTargetCopy(route) {
   const normalizedRoute = String(route || "").startsWith("/") ? String(route || "") : `/${route || ""}`;
+  if (normalizedRoute === "/h/claude-code" || normalizedRoute.startsWith("/h/claude-code")) {
+    return {
+      name: "Claude Code",
+      kicker: "Claude 到原生面板",
+      title: "正在进入 Claude Code 原生面板",
+      subtitle: "启动并切换到 Claude Code 本地控制台",
+    };
+  }
   if (normalizedRoute.startsWith("/h/")) {
     return {
       name: "Hermes",
@@ -348,6 +356,13 @@ function handleSuperclawConsoleLinkClick(event) {
   event.preventDefault();
   const route = link.dataset.superclawRoute || "/h/chat";
   const overlay = showConsoleSwitchProgress(route);
+  if (route === "/h/claude-code" || route.startsWith("/h/claude-code")) {
+    startNativeClaudeTerminal({ overlay }).catch((error) => {
+      clearConsoleSwitchProgress();
+      addMessage("error", "Claude Code 原生终端", error.message || String(error));
+    });
+    return;
+  }
   consoleSwitchProgressTimer = setTimeout(() => {
     setConsoleSwitchProgress(overlay, 100);
     window.location.assign(href);
@@ -1423,6 +1438,29 @@ function isBrowserAuthorizationRequest(text) {
   return mentionsBrowserTool && asksAuthorization;
 }
 
+function isExplicitBrowserTask(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (/(桌面端|客户端|本地应用|应用程序|桌面应用|app).{0,18}(打开|搜索|点击|输入|查看|读取|采集|操作)|(?:打开|搜索|点击|输入|查看|读取|采集|操作).{0,18}(桌面端|客户端|本地应用|应用程序|桌面应用|app)/i.test(value)) {
+    return false;
+  }
+  return /https?:\/\//i.test(value) ||
+    /(浏览器|网页|网站|网址|链接|页面|打开网页|打开网站|搜索网页|网上搜索|联网搜索|网页搜索|抓取|读取链接|浏览)/i.test(value) ||
+    /\b(browser|website|web page|url|search web|open url|navigate|scrape)\b/i.test(value);
+}
+
+function implicitBrowserRunOverrides(prompt, overrides = {}) {
+  if (overrides.permissionProfile || overrides.toolProfile || overrides.browserAccess) return overrides;
+  if (!isExplicitBrowserTask(prompt)) return overrides;
+  browserModeAccepted = true;
+  return {
+    ...overrides,
+    permissionProfile: "browser",
+    toolProfile: "none",
+    browserAccess: window.sessionStorage.getItem(browserAccessAlwaysKey) === "true" ? "always" : "once",
+  };
+}
+
 function authorizationRequestType(text) {
   const value = String(text || "");
   if (!value.trim()) return "";
@@ -1843,7 +1881,7 @@ function setRunning(running) {
   sendBtn.disabled = running;
   launchBtn.disabled = running;
   selfTestBtn.disabled = running;
-  stopBtn.disabled = !running;
+  stopBtn.disabled = !running && !nativeClaudeRunning;
   promptInput.disabled = running;
   projectSelect.disabled = running;
   modelInput.disabled = running;
@@ -3796,12 +3834,7 @@ async function handleVoiceTranscript(text) {
   const transcriptText = String(text || "").trim();
   if (!transcriptText) return;
   appendVoiceText(transcriptText);
-  if (runController) {
-    addMessage("system", "语音对话", "已识别语音，但上一条请求还在运行。文字已先放入输入框，稍后可以发送。");
-    return;
-  }
-  addMessage("system", "语音对话", `已识别：${transcriptText}\n正在发送给 Claude Code。`);
-  await submitPromptText(transcriptText, { source: "voice" });
+  addMessage("system", "语音对话", `已识别：${transcriptText}\n文字已放入输入框，可修改后手动发送。`);
 }
 
 function stopVoiceMode() {
@@ -3832,7 +3865,7 @@ async function toggleVoiceMode() {
   voiceRecognition.maxAlternatives = 1;
   voiceRecognition.onstart = () => {
     setVoiceListening(true);
-    addMessage("system", "语音对话", "正在听你说话。识别完成后会自动发送给 Claude Code，权限沿用当前模式。");
+    addMessage("system", "语音对话", "正在听你说话。停止后会把文字放入输入框，可修改后再发送。");
   };
   voiceRecognition.onresult = (event) => {
     const result = event.results?.[0]?.[0]?.transcript || "";
@@ -4002,6 +4035,42 @@ function startNewConversation() {
 
 function submitPromptFromButton() {
   promptForm.requestSubmit();
+}
+
+async function startNativeClaudeTerminal({ overlay } = {}) {
+  if (overlay) setConsoleSwitchProgress(overlay, 35);
+  const cwd = projectSelect?.value || "";
+  const response = await fetch("/api/native-claude/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cwd }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || payload.message || "Claude Code 原生终端启动失败");
+  }
+  nativeClaudeRunning = true;
+  setRunning(Boolean(runController));
+  if (overlay) {
+    setConsoleSwitchProgress(overlay, 100);
+    consoleSwitchProgressTimer = setTimeout(clearConsoleSwitchProgress, 520);
+  }
+  addMessage("system", "Claude Code 原生终端", payload.message || "已打开 Claude Code 原生终端。");
+  return payload;
+}
+
+async function stopNativeClaudeTerminal({ silent = false } = {}) {
+  const response = await fetch("/api/native-claude/stop", { method: "POST" });
+  const payload = await response.json().catch(() => ({}));
+  nativeClaudeRunning = false;
+  setRunning(Boolean(runController));
+  if (!response.ok || payload.ok === false) {
+    const message = payload.error || payload.message || "Claude Code 原生终端关闭失败";
+    if (!silent) addMessage("error", "Claude Code 原生终端", message);
+    throw new Error(message);
+  }
+  if (!silent) addMessage("system", "Claude Code 原生终端", payload.message || "Claude Code 原生终端已关闭。");
+  return payload;
 }
 
 function scheduleNextDefaultTime() {
@@ -4436,7 +4505,7 @@ function attachmentSummary() {
     "",
     "[本次对话包含图片附件，已保存到本机路径：",
     paths,
-    "请把这些路径作为本次对话的图片附件处理。若需要读取或查看图片，请遵循当前权限模式先说明操作。]",
+    "本轮已触发图片识别，请直接调用可用的视觉/图片读取能力分析这些图片，不要等待用户再次确认；该能力只在本轮图片输入时触发。若当前工具链无法看图，请明确说明无法读取图片。]",
   ].join("\n");
 }
 
@@ -4468,6 +4537,7 @@ function confirmHighRiskRun(config) {
 
 async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
+  overrides = implicitBrowserRunOverrides(prompt, overrides);
   if (!projectSelect.value) {
     addMessage("error", "请选择对话", "请先在左侧选择一个对话，或点击左上角 + 新建对话后再发送。");
     openProjectNameDialog();
@@ -4829,8 +4899,14 @@ selfTestBtn.addEventListener("click", () => {
     mode: "plan",
   });
 });
-stopBtn.addEventListener("click", () => {
+stopBtn.addEventListener("click", async () => {
+  const hadRun = Boolean(runController);
   if (runController) runController.abort();
+  try {
+    await stopNativeClaudeTerminal({ silent: hadRun && !nativeClaudeRunning });
+  } catch {
+    // stopNativeClaudeTerminal already reports the visible error.
+  }
 });
 newConversationBtn.addEventListener("click", openProjectNameDialog);
 launchBtn.addEventListener("click", submitPromptFromButton);
@@ -4953,15 +5029,9 @@ skillPromptBtn.addEventListener("click", () => {
 });
 installedExtensionsBtn?.addEventListener("click", openInstalledExtensionsView);
 extensionsPageCloseBtn?.addEventListener("click", closeInstalledExtensionsPage);
-quickAttachBtn.addEventListener("click", () => {
-  const confirmed = window.confirm(
-    "图片将仅保存在本机配置目录，用于当前会话分析，不会自动上传到外部服务器。是否继续选择图片？"
-  );
-  if (confirmed) imageUploadInput.click();
-});
 voiceModeBtn?.addEventListener("click", toggleVoiceMode);
 temporaryTaskCancelBtn?.addEventListener("click", cancelTemporaryTask);
-imageUploadInput.addEventListener("change", handleImageUpload);
+imageUploadInput?.addEventListener("change", handleImageUpload);
 
 for (const button of modeButtons) {
   button.addEventListener("click", () => {

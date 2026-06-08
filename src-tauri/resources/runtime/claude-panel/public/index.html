@@ -160,15 +160,6 @@
               </svg>
               <span>个人账户</span>
             </button>
-            <div id="accountProfilePanel" class="account-profile-panel" hidden>
-              <label class="account-profile-field">
-                <span>名字</span>
-                <input id="accountDisplayNameInput" type="text" autocomplete="name" maxlength="32" placeholder="本地账户" />
-              </label>
-              <button id="accountSaveNameBtn" class="account-mini-button" type="button">保存名字</button>
-              <button id="accountChangePasswordBtn" class="account-mini-button ghost" type="button">修改密码</button>
-              <p>账号与密码接口已预留，客户版不会在前端保存真实密码。</p>
-            </div>
             <button class="account-menu-item muted" type="button" data-account-action="contact" role="menuitem">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" />
@@ -177,29 +168,6 @@
               </svg>
               <span>联系我们</span>
             </button>
-            <div id="accountContactPanel" class="account-contact-panel" hidden>
-              <div class="account-contact-card">
-                <div class="account-contact-card-title">微信联系</div>
-                <div class="account-contact-wechat">
-                  <div class="account-contact-qr">
-                    <img id="contactQrImage" alt="联系二维码" hidden />
-                    <span id="contactQrPlaceholder">二维码接口已预留</span>
-                  </div>
-                  <div class="account-contact-info">
-                    <strong id="contactNameLabel">客服名称待配置</strong>
-                    <span id="contactWechatLabel">微信号待配置</span>
-                    <p id="contactNoteLabel">后续可接入售后二维码、微信名称和客户服务入口。</p>
-                  </div>
-                </div>
-              </div>
-              <div class="account-contact-card">
-                <div class="account-contact-card-title">邮箱联系</div>
-                <div class="account-contact-mail">
-                  <strong id="contactEmailLabel">邮箱待配置</strong>
-                  <span>用于问题反馈、售后沟通和远程支持预约。</span>
-                </div>
-              </div>
-            </div>
             <div class="account-menu-divider"></div>
             <button class="account-menu-item" type="button" data-account-action="settings" role="menuitem">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -355,9 +323,6 @@
 
         <form id="promptForm" class="composer">
           <input id="imageUploadInput" type="file" accept="image/*" multiple hidden />
-          <button id="quickAttachBtn" class="attachment-entry" type="button" title="上传图片" aria-label="上传图片">
-            <span aria-hidden="true">+</span>
-          </button>
           <button id="voiceModeBtn" class="attachment-entry voice-mode-button" type="button" title="语音对话" aria-label="语音对话" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
@@ -506,6 +471,16 @@
               </svg>
               <span>提交说明</span>
             </button>
+            <a class="quick-command quick-native-link" data-superclaw-route="/h/claude-code" href="http://127.0.0.1:1420/#/h/claude-code">
+              <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h16v12H4Z" />
+                <path d="M8 21h8" />
+                <path d="M12 17v4" />
+                <path d="m9 9-3 3 3 3" />
+                <path d="m15 9 3 3-3 3" />
+              </svg>
+              <span>Claude 原生</span>
+            </a>
           </div>
           </details>
         </section>
@@ -758,6 +733,53 @@
       </div>
     </section>
 
+    <section id="accountInfoDialog" class="account-info-dialog" role="dialog" aria-modal="true" aria-labelledby="accountInfoDialogTitle" hidden>
+      <div class="account-info-panel">
+        <div class="setup-head">
+          <div>
+            <p class="setup-kicker">账户中心</p>
+            <h2 id="accountInfoDialogTitle">个人账户</h2>
+          </div>
+          <button id="accountInfoDialogClose" class="mini-icon-button" type="button" aria-label="关闭账户面板">×</button>
+        </div>
+        <div id="accountProfilePanel" class="account-profile-panel" hidden>
+          <label class="account-profile-field">
+            <span>名字</span>
+            <input id="accountDisplayNameInput" type="text" autocomplete="name" maxlength="32" placeholder="本地账户" />
+          </label>
+          <div class="account-dialog-actions">
+            <button id="accountSaveNameBtn" class="account-mini-button" type="button">保存名字</button>
+            <button id="accountChangePasswordBtn" class="account-mini-button ghost" type="button">修改密码</button>
+          </div>
+          <p>账号与密码接口已预留，客户版不会在前端保存真实密码。</p>
+        </div>
+        <div id="accountContactPanel" class="account-contact-panel" hidden>
+          <div class="account-contact-card">
+            <div class="account-contact-card-title">微信联系</div>
+            <div class="account-contact-wechat">
+              <div class="account-contact-qr">
+                <img id="contactQrImage" alt="联系二维码" hidden />
+                <span id="contactQrPlaceholder">二维码接口已预留</span>
+              </div>
+              <div class="account-contact-info">
+                <strong id="contactNameLabel">客服名称待配置</strong>
+                <span id="contactWechatLabel">微信号待配置</span>
+                <p id="contactNoteLabel">后续可接入售后二维码、微信名称和客户服务入口。</p>
+              </div>
+            </div>
+          </div>
+          <div class="account-contact-card">
+            <div class="account-contact-card-title">邮箱联系</div>
+            <div class="account-contact-mail">
+              <strong id="contactEmailLabel">邮箱待配置</strong>
+              <span>用于问题反馈、售后沟通和远程支持预约。</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
     <section id="projectNameDialog" class="project-name-dialog" role="dialog" aria-modal="true" aria-labelledby="projectNameTitle" hidden>
       <div class="project-name-panel">
         <div class="setup-head">
@@ -776,6 +798,6 @@
       </div>
     </section>
 
-    <script src="/app.js?v=20260604-chatjump1"></script>
+    <script src="/app.js?v=20260608-account-sync1"></script>
   </body>
 </html>

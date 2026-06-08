@@ -5756,27 +5756,6 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   border-color: var(--hm-accent);
 }
 
-[data-engine="hermes"] .hm-chat-attachment-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  margin-left: 8px;
-  border: 1px solid var(--hm-border);
-  border-radius: 50%;
-  background: var(--hm-surface-0);
-  color: var(--hm-text-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: all 0.15s ease;
-}
-[data-engine="hermes"] .hm-chat-attachment-btn:hover {
-  background: var(--hm-accent-soft);
-  border-color: var(--hm-accent);
-  color: var(--hm-accent);
-}
-
 [data-engine="hermes"] .hm-chat-voice-btn {
   display: inline-flex;
   align-items: center;
@@ -5836,7 +5815,6 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   box-shadow: 0 0 0 2px rgba(202, 138, 4, 0.12);
 }
 [data-engine="hermes"] .hm-chat-link-read,
-[data-engine="hermes"] .hm-chat-link-clip,
 [data-engine="hermes"] .hm-chat-link-close {
   height: 34px;
   border: 1px solid var(--hm-border);
@@ -5851,6 +5829,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   background: var(--hm-accent);
   border-color: var(--hm-accent);
   color: #fff;
+}
+[data-engine="hermes"] .hm-chat-link-hint {
+  margin: 8px 4px 0;
+  color: var(--hm-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 [data-engine="hermes"] .hm-chat-link-actions {
   display: flex;

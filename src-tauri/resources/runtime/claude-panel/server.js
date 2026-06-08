@@ -35,6 +35,7 @@ const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_REQUEST_BYTES = 32 * 1024 * 1024;
 const RELAY_TEST_TIMEOUT_MS = 12000;
+const NATIVE_CLAUDE_WINDOW_TITLE = "SuperClaw Claude Code Native";
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const TOOL_PROFILES = {
   none: [],
@@ -102,6 +103,14 @@ const TAKEOVER_CAPABILITY_SYSTEM_PROMPT = [
   "当用户询问“能不能接管电脑”时，不要简单回答不能；请用中文说明：可以在用户授权后接管浏览器/网页层面的操作，例如打开网页、搜索、点击、填表、读取页面；不能直接控制整台 Windows、删除文件、执行系统命令或绕过安全确认。",
   "如果用户没有给出具体任务，请请用户给出明确目标，例如：打开哪个网站、搜索什么内容、点击哪个页面元素。",
   "如果需要浏览器自动化授权，请请求用户选择“本次允许 / 始终允许 / 拒绝”。",
+].join("\n");
+const CAPABILITY_AUDIT_BASE_PROMPT = [
+  "Capability audit mode is active for this user request.",
+  "The user is asking whether a task can be done, which tool/plugin/skill is needed, or whether something should be installed.",
+  "Before promising execution, inspect the currently available tool profile, browser automation status, local skills, and plugin summary provided below.",
+  "Reply in Simplified Chinese with: 1) available capability, 2) missing tool/plugin/skill if any, 3) whether web search is needed, 4) security risks, 5) a clear consent question before searching, downloading, installing, enabling, or changing configuration.",
+  "Do not install, download, enable plugins, edit config, run commands, or browse the web until the user explicitly agrees in the next message.",
+  "If the required capability is not native, say that clearly. Do not output fake tool_call/XML text.",
 ].join("\n");
 const RESERVED_FEATURES = {
   versionUpdate: {
@@ -739,6 +748,99 @@ function resolveClaudeCommand() {
   return "claude";
 }
 
+function quoteCmd(value) {
+  return `"${String(value || "").replace(/"/g, '\\"')}"`;
+}
+
+async function handleNativeClaudeStart(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readRequestBody(req);
+  } catch {
+    payload = {};
+  }
+
+  let cwd = path.resolve(String(payload.cwd || process.cwd()));
+  try {
+    const stat = fs.statSync(cwd);
+    if (!stat.isDirectory()) cwd = process.cwd();
+  } catch {
+    cwd = process.cwd();
+  }
+
+  const claudeCommand = resolveClaudeCommand();
+  const commandLine = [
+    `title ${NATIVE_CLAUDE_WINDOW_TITLE}`,
+    `cd /d ${quoteCmd(cwd)}`,
+    quoteCmd(claudeCommand),
+  ].join(" && ");
+
+  try {
+    spawn("cmd.exe", ["/c", "start", NATIVE_CLAUDE_WINDOW_TITLE, "cmd.exe", "/k", commandLine], {
+      cwd,
+      stdio: "ignore",
+      env: buildPortableEnv(),
+      windowsHide: false,
+      detached: true,
+    }).unref();
+
+    sendJson(res, 200, {
+      ok: true,
+      message: "Claude Code 原生终端已启动。",
+      cwd,
+      command: claudeCommand,
+      windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: `启动 Claude Code 原生终端失败：${error.message || error}`,
+      command: claudeCommand,
+      cwd,
+    });
+  }
+}
+
+function handleNativeClaudeStop(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  if (process.platform !== "win32") {
+    sendJson(res, 501, { ok: false, error: "当前停止原生 Claude 终端的功能仅支持 Windows。" });
+    return;
+  }
+
+  const result = spawnSync("taskkill.exe", ["/F", "/T", "/FI", `WINDOWTITLE eq ${NATIVE_CLAUDE_WINDOW_TITLE}*`], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+
+  const output = `${result.stdout || ""}${result.stderr || ""}`.trim();
+  const noTask = /no tasks|没有运行|找不到|not found/i.test(output);
+  if (result.status === 0 || noTask) {
+    sendJson(res, 200, {
+      ok: true,
+      message: noTask ? "没有发现正在运行的 Claude Code 原生终端。" : "Claude Code 原生终端已关闭。",
+      output,
+      windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+    });
+    return;
+  }
+
+  sendJson(res, 500, {
+    ok: false,
+    error: output || "关闭 Claude Code 原生终端失败。",
+    windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+  });
+}
+
 function readCustomProjects() {
   const data = readJson(CUSTOM_PROJECTS_PATH);
   return Array.isArray(data?.projects) ? data.projects.filter(Boolean) : [];
@@ -960,6 +1062,34 @@ function getPluginSummary() {
     available: result.status === 0,
     summary: output ? redact(output).split(/\r?\n/).slice(0, 8).join("\n") : "未检测到插件信息",
   };
+}
+
+function isCapabilityAuditPrompt(prompt) {
+  const value = String(prompt || "").trim();
+  if (!value) return false;
+  return /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(value);
+}
+
+function buildCapabilityAuditPrompt({ toolProfile, allowBrowserAutomation, extraTools }) {
+  const skills = listLocalSkills();
+  const plugins = getPluginSummary();
+  const profileTools = TOOL_PROFILES[toolProfile] || [];
+  const browserTools = allowBrowserAutomation ? extraTools : [];
+  return [
+    CAPABILITY_AUDIT_BASE_PROMPT,
+    "",
+    "[CURRENT_RUNTIME_CAPABILITY]",
+    `toolProfile: ${toolProfile}`,
+    `profileTools: ${profileTools.length ? profileTools.join(", ") : "none"}`,
+    `browserAutomationAuthorized: ${allowBrowserAutomation ? "yes" : "no"}`,
+    `browserTools: ${browserTools.length ? browserTools.join(", ") : "none"}`,
+    `localSkills: ${skills.length ? skills.join(", ") : "none"}`,
+    `pluginsAvailable: ${plugins.available ? "yes" : "no"}`,
+    `pluginsSummary: ${plugins.summary || "none"}`,
+    "desktopControlNativeTool: no",
+    "installPolicy: require explicit user consent before web search, download, plugin install, skill install, config change, or command execution.",
+    "[/CURRENT_RUNTIME_CAPABILITY]",
+  ].join("\n");
 }
 
 function realPath(projectPath) {
@@ -1621,6 +1751,12 @@ async function handleRun(req, res) {
   }
   if (allowBrowserAutomation) {
     args.push("--append-system-prompt", BROWSER_AUTOMATION_SYSTEM_PROMPT);
+  }
+  if (isCapabilityAuditPrompt(prompt)) {
+    args.push(
+      "--append-system-prompt",
+      buildCapabilityAuditPrompt({ toolProfile, allowBrowserAutomation, extraTools })
+    );
   }
   if (toolProfile === "none") {
     args.push(
@@ -2651,6 +2787,16 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/voice-capabilities") {
     handleVoiceCapabilities(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/native-claude/start") {
+    handleNativeClaudeStart(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/native-claude/stop") {
+    handleNativeClaudeStop(req, res);
     return;
   }
 
