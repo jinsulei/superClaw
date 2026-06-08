@@ -5,17 +5,12 @@
  */
 
 const REMOTE_API_ORIGIN = 'http://124.222.21.44:3001'
-const LOCAL_API_ORIGIN = 'http://127.0.0.1:3001'
 const API_BASE_OVERRIDE_KEY = 'superclaw_api_base_url'
 
 function getApiOrigin() {
   const override = localStorage.getItem(API_BASE_OVERRIDE_KEY)
   if (override) return override.replace(/\/+$/, '')
 
-  const host = window.location.hostname
-  if (host === 'localhost' || host === '127.0.0.1') {
-    return LOCAL_API_ORIGIN
-  }
   return REMOTE_API_ORIGIN
 }
 
