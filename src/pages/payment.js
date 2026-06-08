@@ -3,7 +3,7 @@
  * 对接好收米支付 + YYAPI V2 后端
  * 展示折扣金额 + 支付方式 + 二维码扫码支付
  */
-import { getTopupInfo, createPaymentOrder, getUserQuota } from '../lib/user-api.js'
+import { getTopupInfo, createPaymentOrder, getUserQuota, getPaymentOrderStatus } from '../lib/user-api.js'
 import { icon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { toast } from '../components/toast.js'
@@ -18,6 +18,7 @@ let _quotaData = null    // { quota, used_quota }
 let _orderState = null  // { orderId, qrCode, payUrl, amount, quotaAmount, paymentType }
 let _orderCreatedAt = null  // Date.now() 订单创建时间戳
 let _orderExpired = false   // 倒计时是否已过期
+let _tokenRatio = 500000
 const ORDER_TTL = 30 * 60 * 1000  // 订单有效期 30 分钟
 
 export async function render() {
@@ -66,6 +67,7 @@ async function loadTopupConfig(page) {
 
   // 解析折扣映射和金额列表
   _discountMap = info.discount || {}
+  _tokenRatio = Number(info.tokenRatio || info.token_ratio || _tokenRatio) || 500000
   _amounts = Object.keys(_discountMap).map(Number).sort((a, b) => a - b)
   _payMethods = info.pay_methods || []
   _selectedAmount = _amounts[0] || null
@@ -122,7 +124,7 @@ function renderPaymentPage(page, quota) {
     <div class="card">
       <div class="card-header">
         <span class="card-header-title">${t('payment.selectAmount') || '选择充值金额'}</span>
-        <small style="color:var(--text-secondary);font-size:12px;font-weight:400;margin-left:8px">￥1 = 500000 Token</small>
+        <small style="color:var(--text-secondary);font-size:12px;font-weight:400;margin-left:8px">￥1 = ${_tokenRatio.toLocaleString()} Token</small>
       </div>
       <div class="card-body">
         <div class="pay-amount-grid">
@@ -270,7 +272,7 @@ async function handleConfirmPay(page) {
     btn.disabled = true
     btn.innerHTML = '<span class="btn-spinner"></span> 处理中...'
 
-    const result = await createPaymentOrder(_selectedAmount)
+    const result = await createPaymentOrder(_selectedAmount, _selectedMethod)
 
     // 保存订单状态
     _orderState = {
@@ -394,9 +396,13 @@ async function startPolling(page, overlay) {
   const timerEl = overlay.querySelector('#pay-qrcode-timer')
   const orderNo = _orderState?.orderId
 
-  // 轮询用户余额变化（每 3 秒一次）
+  // 额度接口依赖 YYApi 用户同步。老用户未同步时会 400，所以只作为兜底。
   const initialQuota = await getUserQuota().catch(() => null)
   const initialBalance = initialQuota?.balance ?? initialQuota?.remaining_tokens ?? null
+  let quotaPollingDisabled = initialBalance == null
+  let orderStatusAvailable = true
+  let pollAttempts = 0
+  const maxAttempts = Math.ceil(ORDER_TTL / 3000)
 
   const pollInterval = setInterval(async () => {
     if (!_orderState || _orderState.orderId !== orderNo) {
@@ -404,34 +410,112 @@ async function startPolling(page, overlay) {
       return
     }
 
+    pollAttempts += 1
+    if (pollAttempts > maxAttempts) {
+      clearInterval(pollInterval)
+      return
+    }
+
     try {
-      const quota = await getUserQuota()
-      const currentBalance = quota?.balance ?? quota?.remaining_tokens ?? null
+      if (orderStatusAvailable) {
+        try {
+          const order = await getPaymentOrderStatus(orderNo)
+          const status = order?.status || order?.data?.status
+          if (status === 'completed' || status === 'paid' || status === 'success') {
+            clearInterval(pollInterval)
+            markPaymentSuccess(page, overlay, statusEl, timerEl)
+            return
+          }
+        } catch (err) {
+          if (/404|not found|Cannot GET/i.test(err?.message || '')) {
+            orderStatusAvailable = false
+          }
+        }
+      }
 
-      // 检测到余额变化 = 支付成功
-      if (initialBalance != null && currentBalance != null && currentBalance > initialBalance) {
-        clearInterval(pollInterval)
-        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null }
-
-        // 显示成功状态
-        statusEl.style.display = ''
-        timerEl.textContent = t('payment.paid') || '已支付'
-
-        const descEl = overlay.querySelector('#pay-qrcode-status-desc')
-        descEl.textContent = `${t('payment.recharged') || '充值成功'}：${_orderState.amount} ${t('payment.yuan') || '元'}（${_orderState.quotaAmount?.toLocaleString() || ''}）`
-
-        toast(t('payment.paySuccess') || '支付成功！', 'success')
-
-        // 3秒后关闭二维码
-        setTimeout(() => closeQRCode(page), 3000)
+      if (!quotaPollingDisabled) {
+        try {
+          const quota = await getUserQuota()
+          const currentBalance = quota?.balance ?? quota?.remaining_tokens ?? null
+          if (initialBalance != null && currentBalance != null && currentBalance > initialBalance) {
+            clearInterval(pollInterval)
+            markPaymentSuccess(page, overlay, statusEl, timerEl)
+          }
+        } catch {
+          quotaPollingDisabled = true
+        }
       }
     } catch {
-      // 忽略轮询错误，继续
+      // 忽略瞬时轮询错误，二维码倒计时负责过期控制。
     }
   }, 3000)
 
   // 保存轮询引用以便清理
   page._pollInterval = pollInterval
+}
+
+function markPaymentSuccess(page, overlay, statusEl, timerEl) {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null }
+
+  const successState = {
+    amount: _orderState?.amount,
+    quotaAmount: _orderState?.quotaAmount,
+  }
+
+  statusEl.style.display = ''
+  timerEl.textContent = t('payment.paid') || '已支付'
+
+  const descEl = overlay.querySelector('#pay-qrcode-status-desc')
+  if (descEl) {
+    descEl.textContent = `${t('payment.recharged') || '充值成功'}：${successState.amount} ${t('payment.yuan') || '元'}（${successState.quotaAmount?.toLocaleString() || ''} Token）`
+  }
+
+  toast(t('payment.paySuccess') || '支付成功！', 'success')
+  getUserQuota().then(quota => { _quotaData = quota }).catch(() => {})
+  setTimeout(() => {
+    closeQRCode(page)
+    resetPaymentState(page)
+    showRechargeSuccessDialog(page, successState)
+    loadTopupConfig(page).catch(err => console.error('[payment] 刷新充值页失败:', err))
+  }, 1200)
+}
+
+function resetPaymentState(page) {
+  _orderState = null
+  _orderCreatedAt = null
+  _orderExpired = false
+
+  const btn = page.querySelector('#btn-pay-confirm')
+  if (btn) {
+    btn.disabled = false
+    btn.textContent = t('payment.confirmPay') || '确认支付'
+  }
+}
+
+function showRechargeSuccessDialog(page, state) {
+  const existing = document.getElementById('pay-success-overlay')
+  if (existing) existing.remove()
+
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay pay-success-overlay'
+  overlay.id = 'pay-success-overlay'
+  overlay.innerHTML = `
+    <div class="modal pay-qrcode-modal">
+      <div class="pay-qrcode-status" style="display:flex">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="2.5" width="48" height="48"><polyline points="20 6 9 17 4 12"/></svg>
+        <div class="pay-qrcode-status-text">${t('payment.paySuccess') || '充值成功'}</div>
+        <div class="pay-qrcode-status-desc">
+          ${state.amount ?? '-'} ${t('payment.yuan') || '元'} · ${state.quotaAmount?.toLocaleString() || ''} Token
+        </div>
+      </div>
+      <button class="btn btn-primary pay-qrcode-close" id="btn-pay-success-close">${t('common.confirm') || '确定'}</button>
+    </div>
+  `
+  document.body.appendChild(overlay)
+  overlay.querySelector('#btn-pay-success-close')?.addEventListener('click', () => overlay.remove())
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove()
+  })
 }
 
 function closeQRCode(page) {

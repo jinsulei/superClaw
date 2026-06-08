@@ -123,10 +123,19 @@ async function loadProfile(page) {
       <div class="profile-error">
         ${statusIcon('err', 24)}
         <p>${t('common.loadFailed')}: ${escapeHtml(err.message)}</p>
-        <button class="btn btn-secondary" id="btn-profile-retry">${t('common.retry')}</button>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button class="btn btn-secondary" id="btn-profile-retry">${t('common.retry')}</button>
+          <button class="btn btn-secondary btn-danger" id="btn-profile-logout">
+            ${icon('log-out', 14)} ${t('profile.logout')}
+          </button>
+        </div>
       </div>
     `
     body.querySelector('#btn-profile-retry')?.addEventListener('click', () => loadProfile(page))
+    body.querySelector('#btn-profile-logout')?.addEventListener('click', () => {
+      clearAuth()
+      navigateTo('login')
+    })
   }
 }
 

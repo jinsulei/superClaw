@@ -4,7 +4,28 @@
  * 处理 激活 → 注册（含登录）→ 领证 → 登录 流程
  */
 
-const BASE_URL = 'http://124.222.21.44:3001/api'
+const REMOTE_API_ORIGIN = 'http://124.222.21.44:3001'
+const LOCAL_API_ORIGIN = 'http://127.0.0.1:3001'
+const API_BASE_OVERRIDE_KEY = 'superclaw_api_base_url'
+
+function getApiOrigin() {
+  const override = localStorage.getItem(API_BASE_OVERRIDE_KEY)
+  if (override) return override.replace(/\/+$/, '')
+
+  const host = window.location.hostname
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return LOCAL_API_ORIGIN
+  }
+  return REMOTE_API_ORIGIN
+}
+
+function getBaseUrl() {
+  return `${getApiOrigin()}/api`
+}
+
+function getBaseUrlV2() {
+  return `${getApiOrigin()}/api/v2`
+}
 
 /**
  * 导航到指定页面（全量刷新，触发 boot 流程中的 JWT 检查）
@@ -78,6 +99,11 @@ export function clearAuth() {
   localStorage.removeItem('superclaw_user')
 }
 
+function isAuthInvalidError(status, message = '') {
+  return status === 401
+    || /令牌|未登录|unauthorized|forbidden|invalid\s*token|用户不存在/i.test(message)
+}
+
 // ========== 认证请求 ==========
 
 /**
@@ -90,7 +116,7 @@ async function request(path, options = {}) {
     const token = getToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
-  const resp = await fetch(`${BASE_URL}${path}`, {
+  const resp = await fetch(`${getBaseUrl()}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -99,7 +125,7 @@ async function request(path, options = {}) {
   if (!resp.ok) {
     const msg = data.error || data.message || `HTTP ${resp.status}`
     // 令牌失效 / 未登录 → 全局跳转登录页
-    if (resp.status === 401 || /(令牌|未登录|unauthorized)/i.test(msg)) {
+    if (isAuthInvalidError(resp.status, msg)) {
       clearAuth()
       navigateTo('login')
     }
@@ -118,7 +144,16 @@ async function request(path, options = {}) {
  * @param {string} code - 32位激活码
  * @returns {{ amount: number }}
  */
-export async function activateCode(code) {
+export async function activateCode(code, options = {}) {
+  if (options.endpoint === 'v2') {
+    return requestV2('/license/activate', {
+      body: {
+        code,
+        usbId: options.usb?.usbId || null,
+        usb: options.usb || null,
+      },
+    })
+  }
   return request('/redemption/activate', { body: { code } })
 }
 
@@ -186,21 +221,20 @@ export async function redeemCode(code) {
 
 // ========== v2 API（YYApi 中转站集成） ==========
 
-const BASE_URL_V2 = 'http://124.222.21.44:3001/api/v2'
-
 async function requestV2(path, options = {}) {
-  const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false } = options
+  const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false, cache } = options
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
-  let url = `${BASE_URL_V2}${path}`
+  let url = `${getBaseUrlV2()}${path}`
   const qs = new URLSearchParams(params).toString()
   if (qs) url += '?' + qs
   const resp = await fetch(url, {
     method,
     headers,
+    cache,
     body: body ? JSON.stringify(body) : undefined,
   })
   let data
@@ -212,7 +246,7 @@ async function requestV2(path, options = {}) {
   if (!resp.ok || data.success === false) {
     const msg = data.message || data.error || `HTTP ${resp.status}`
     // 令牌失效 / 未登录 → 全局跳转登录页
-    if (resp.status === 401 || /(令牌|未登录|unauthorized)/i.test(msg)) {
+    if (isAuthInvalidError(resp.status, msg)) {
       if (!suppressAuthRedirect) {
         clearAuth()
         navigateTo('login')
@@ -298,8 +332,19 @@ export async function getTopupInfo() {
  * @param {number} amount - 充值金额（元）
  * @returns {{ orderId: string, amount: number, quotaAmount: number, paymentType: string, qrCode: string, payUrl: string|null }}
  */
-export async function createPaymentOrder(amount) {
-  return requestV2('/payment/create-order', { auth: true, body: { amount } })
+export async function createPaymentOrder(amount, type) {
+  return requestV2('/payment/create-order', { auth: true, body: { amount, type } })
+}
+
+/** Query local payment order status. */
+export async function getPaymentOrderStatus(orderId) {
+  return requestV2(`/payment/order/${encodeURIComponent(orderId)}`, {
+    auth: true,
+    method: 'GET',
+    params: { _: Date.now() },
+    cache: 'no-store',
+    suppressAuthRedirect: true,
+  })
 }
 
 /** 获取 YYApi 控制台登录会话（通过本地代理或 Tauri 命令）

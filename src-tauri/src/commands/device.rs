@@ -3,6 +3,10 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use std::process::Command;
 
 const DEVICE_KEY_FILE: &str = "clawpanel-device-key.json";
 const SCOPES: &[&str] = &[
@@ -167,4 +171,123 @@ pub fn create_connect_frame(
     });
 
     Ok(frame)
+}
+
+#[tauri::command]
+pub fn get_usb_binding_context() -> Result<Value, String> {
+    let exe_path = std::env::current_exe().map_err(|e| format!("读取程序路径失败: {e}"))?;
+    let app_root = exe_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| exe_path.clone());
+
+    #[cfg(target_os = "windows")]
+    {
+        let drive_id = windows_drive_id(&app_root)
+            .ok_or_else(|| format!("无法识别程序所在盘符: {}", app_root.display()))?;
+        let disk = windows_logical_disk_info(&drive_id)?;
+        let serial = disk
+            .get("VolumeSerialNumber")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let label = disk
+            .get("VolumeName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let drive_type = disk.get("DriveType").and_then(|v| v.as_u64()).unwrap_or(0);
+        let is_removable = drive_type == 2;
+        let usb_id = if serial.is_empty() {
+            String::new()
+        } else {
+            let mut hasher = Sha256::new();
+            hasher.update(format!("superclaw-usb|{drive_id}|{serial}|{label}").as_bytes());
+            hex::encode(hasher.finalize())
+        };
+
+        return Ok(serde_json::json!({
+            "platform": std::env::consts::OS,
+            "available": !serial.is_empty(),
+            "enforcementReady": is_removable && !serial.is_empty(),
+            "appRoot": app_root.to_string_lossy(),
+            "driveId": drive_id,
+            "driveType": drive_type,
+            "driveTypeName": windows_drive_type_name(drive_type),
+            "isRemovable": is_removable,
+            "volumeSerial": serial,
+            "volumeLabel": label,
+            "usbId": usb_id,
+        }));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(serde_json::json!({
+            "platform": std::env::consts::OS,
+            "available": false,
+            "enforcementReady": false,
+            "appRoot": app_root.to_string_lossy(),
+            "reason": "USB binding is currently implemented for Windows portable builds.",
+        }))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_drive_id(path: &std::path::Path) -> Option<String> {
+    let raw = path.to_string_lossy();
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        Some(raw[0..2].to_ascii_uppercase())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_logical_disk_info(drive_id: &str) -> Result<Value, String> {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let script = format!(
+        "$d='{drive_id}'; $v=Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='$d'\"; if ($v) {{ $v | Select-Object DeviceID,VolumeSerialNumber,VolumeName,DriveType | ConvertTo-Json -Compress }}"
+    );
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("读取磁盘信息失败: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "读取磁盘信息失败".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err(format!("未找到磁盘信息: {drive_id}"));
+    }
+    serde_json::from_str::<Value>(&stdout).map_err(|e| format!("解析磁盘信息失败: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_drive_type_name(drive_type: u64) -> &'static str {
+    match drive_type {
+        2 => "removable",
+        3 => "fixed",
+        4 => "network",
+        5 => "cdrom",
+        6 => "ramdisk",
+        _ => "unknown",
+    }
 }

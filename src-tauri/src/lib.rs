@@ -173,6 +173,7 @@ pub fn run() {
             config::relaunch_app,
             // 设备密钥 + Gateway 握手
             device::create_connect_frame,
+            device::get_usb_binding_context,
             // 设备配对
             pairing::auto_pair_device,
             pairing::check_pairing_status,

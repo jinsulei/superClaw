@@ -428,6 +428,7 @@ export const api = {
 
   // 设备密钥 + Gateway 握手
   createConnectFrame: (nonce, gatewayToken, gatewayPassword) => invoke('create_connect_frame', { nonce, gatewayToken, gatewayPassword: gatewayPassword || null }),
+  getUsbBindingContext: () => invoke('get_usb_binding_context'),
 
   // 设备配对
   autoPairDevice: () => invoke('auto_pair_device'),

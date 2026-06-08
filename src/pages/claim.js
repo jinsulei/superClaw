@@ -2,9 +2,11 @@
  * 领证页面 — 展示初始额度和用户信息
  * 注册成功后自动跳转至此页
  */
-import { getUserInfo, isLoggedIn, getStoredUser, clearAuth, navigateTo, navigateToAuth } from '../lib/user-api.js'
+import { getUserInfo, getUserInfoV2, getUserQuota, isLoggedIn, getStoredUser, navigateTo, navigateToAuth } from '../lib/user-api.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
+
+const DEFAULT_REGISTER_QUOTA = 2000000
 
 export async function render() {
   const page = document.createElement('div')
@@ -37,10 +39,10 @@ async function loadClaimData(page) {
       return
     }
 
-    const data = await getUserInfo()
+    const data = await loadClaimUserInfo()
     const user = data.user || getStoredUser()
-    const amount = data.amount || 0
-    const remainingTokens = data.tokenInfo?.remaining_tokens ?? amount
+    const amount = resolveClaimAmount(data)
+    const remainingTokens = resolveRemainingTokens(data, amount)
 
     // 读取注册时保存的 YYApi API Key
     const yyapiKey = localStorage.getItem('superclaw_yyapi_key') || ''
@@ -93,7 +95,6 @@ async function loadClaimData(page) {
 
       <div style="margin-top:24px;display:flex;flex-direction:column;gap:10px">
         <button class="auth-btn" id="btn-go-dashboard">${t('auth.goToDashboard')}</button>
-        <button class="auth-btn auth-btn-secondary" id="btn-go-login">${t('auth.goToLogin')}</button>
       </div>
     `
 
@@ -121,10 +122,6 @@ async function loadClaimData(page) {
     contentEl.querySelector('#btn-go-dashboard').addEventListener('click', () => {
       navigateTo('dashboard')
     })
-    contentEl.querySelector('#btn-go-login').addEventListener('click', () => {
-      clearAuth()
-      navigateToAuth('login')
-    })
 
   } catch (err) {
     loadingEl.style.display = 'none'
@@ -140,6 +137,56 @@ async function loadClaimData(page) {
       loadClaimData(page)
     })
   }
+}
+
+async function loadClaimUserInfo() {
+  const [v2Info, v2Quota] = await Promise.all([
+    getUserInfoV2().catch(() => null),
+    getUserQuota().catch(() => null),
+  ])
+
+  if (v2Info || v2Quota) {
+    return {
+      ...(v2Info || {}),
+      amount: pickPositiveNumber(
+        v2Quota?.quota,
+        v2Quota?.balance,
+        v2Quota?.remaining_tokens,
+        v2Info?.amount,
+        v2Info?.balance,
+        v2Info?.tokenInfo?.remaining_tokens
+      ),
+      tokenInfo: {
+        ...(v2Info?.tokenInfo || {}),
+        remaining_tokens: pickPositiveNumber(
+          v2Quota?.quota,
+          v2Quota?.balance,
+          v2Quota?.remaining_tokens,
+          v2Info?.tokenInfo?.remaining_tokens,
+          v2Info?.amount,
+          v2Info?.balance
+        ),
+      },
+    }
+  }
+
+  return getUserInfo()
+}
+
+function resolveClaimAmount(data) {
+  return pickPositiveNumber(data?.amount, data?.balance, data?.tokenInfo?.remaining_tokens) || DEFAULT_REGISTER_QUOTA
+}
+
+function resolveRemainingTokens(data, amount) {
+  return pickPositiveNumber(data?.tokenInfo?.remaining_tokens, data?.balance, data?.amount) || amount || DEFAULT_REGISTER_QUOTA
+}
+
+function pickPositiveNumber(...values) {
+  for (const value of values) {
+    const numberValue = Number(value)
+    if (Number.isFinite(numberValue) && numberValue > 0) return numberValue
+  }
+  return 0
 }
 
 function escapeHtml(str) {
