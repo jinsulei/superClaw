@@ -637,6 +637,13 @@ function isReadableTextFile(file) {
   return /\.(txt|md|markdown|json|csv|log|yaml|yml|toml|ini|xml|html|css|js|jsx|ts|tsx|py|rs|go|java|sql|sh|bat|cmd|ps1)$/i.test(file?.name || '')
 }
 
+function clipboardImageFiles(event) {
+  return Array.from(event?.clipboardData?.items || [])
+    .filter(item => String(item.type || '').startsWith('image/'))
+    .map(item => item.getAsFile())
+    .filter(Boolean)
+}
+
 // ----------------------------------------------------------- icons
 
 const ICONS = {
@@ -930,6 +937,15 @@ export function render() {
   // Session search modal state. `null` means closed.
   // { query: string, selectedIdx: number }
   let searchState = null
+
+  const onPasteImage = async (event) => {
+    if (!el.isConnected || !el.contains(event.target)) return
+    const files = clipboardImageFiles(event)
+    if (!files.length) return
+    event.preventDefault()
+    for (const file of files) await handlePickAttachment(file)
+  }
+  document.addEventListener('paste', onPasteImage, true)
 
   function scheduleDraw(mode = 'full') {
     if (mode === 'full') drawMode = 'full'
@@ -2542,6 +2558,7 @@ export function render() {
   const teardown = () => {
     document.removeEventListener('keydown', onGlobalKey)
     document.removeEventListener('click', onGlobalClick)
+    document.removeEventListener('paste', onPasteImage, true)
     if (drawFrame != null) {
       cancelAnimationFrame(drawFrame)
       drawFrame = null

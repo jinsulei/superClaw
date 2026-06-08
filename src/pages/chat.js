@@ -91,6 +91,7 @@ let _errorTimer = null, _lastErrorMsg = null
 let _responseWatchdog = null, _postFinalCheck = null
 let _ultimateTimer = null, _sendTimestamp = 0
 let _attachments = []
+let _pasteHandler = null
 let _hasEverConnected = false
 let _availableModels = []
 let _primaryModel = ''
@@ -594,6 +595,7 @@ function bindEvents(page) {
   // 文件上传
   page.querySelector('#chat-attach-btn').addEventListener('click', () => _fileInputEl.click())
   _fileInputEl.addEventListener('change', handleFileSelect)
+  bindImagePasteHandlers()
   // 粘贴图片（Ctrl+V）
   _textarea.addEventListener('paste', handlePaste)
 
@@ -1375,6 +1377,20 @@ async function handlePaste(e) {
       renderAttachments()
     } catch (_) { toast(t('chat.readFileFailed'), 'error') }
   }
+}
+
+function clipboardHasImage(e) {
+  return Array.from(e?.clipboardData?.items || []).some(item => String(item.type || '').startsWith('image/'))
+}
+
+function bindImagePasteHandlers() {
+  if (_pasteHandler) document.removeEventListener('paste', _pasteHandler, true)
+  _pasteHandler = (e) => {
+    if (!_pageActive || !_page?.isConnected || !_page.contains(e.target)) return
+    if (!clipboardHasImage(e)) return
+    handlePaste(e)
+  }
+  document.addEventListener('paste', _pasteHandler, true)
 }
 
 function fileToBase64(file) {
@@ -3903,6 +3919,10 @@ function appendHostedOutput(text) {
 
 export function cleanup() {
   _pageActive = false
+  if (_pasteHandler) {
+    document.removeEventListener('paste', _pasteHandler, true)
+    _pasteHandler = null
+  }
   if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
   if (_unsubReady) { _unsubReady(); _unsubReady = null }
   if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }

@@ -4777,6 +4777,13 @@ function fileToDataUrl(file) {
   });
 }
 
+function clipboardImageFiles(event) {
+  return Array.from(event?.clipboardData?.items || [])
+    .filter((item) => String(item.type || "").startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
 async function uploadImageFile(file) {
   const dataUrl = await fileToDataUrl(file);
   const response = await fetch("/api/upload", {
@@ -4828,6 +4835,36 @@ async function handleImageUpload() {
     }
   }
   imageUploadInput.value = "";
+  renderAttachmentPreview();
+}
+
+async function handleImagePaste(event) {
+  const files = clipboardImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    if (file.size > maxUploadBytes) {
+      addMessage("error", "\u56fe\u7247\u8fc7\u5927", "\u526a\u8d34\u677f\u56fe\u7247\u8d85\u8fc7 8MB\uff0c\u8bf7\u538b\u7f29\u540e\u518d\u7c98\u8d34\u3002");
+      continue;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const uploaded = await uploadImageFile(file);
+      selectedAttachments.push({
+        id: uploaded.id || makeId(),
+        name: uploaded.name || file.name || "clipboard-image.png",
+        size: uploaded.size || file.size,
+        type: uploaded.mimeType || file.type || "image/png",
+        path: uploaded.path,
+        previewUrl,
+      });
+      addMessage("system", "\u56fe\u7247", "\u5df2\u4ece\u526a\u8d34\u677f\u6dfb\u52a0\u56fe\u7247\uff0c\u53ef\u4ee5\u7ee7\u7eed\u8f93\u5165\u8981\u5206\u6790\u7684\u95ee\u9898\u3002");
+    } catch (error) {
+      URL.revokeObjectURL(previewUrl);
+      addMessage("error", "\u56fe\u7247\u7c98\u8d34\u5931\u8d25", error.message || "\u56fe\u7247\u7c98\u8d34\u5931\u8d25");
+    }
+  }
   renderAttachmentPreview();
 }
 
@@ -5032,6 +5069,7 @@ extensionsPageCloseBtn?.addEventListener("click", closeInstalledExtensionsPage);
 voiceModeBtn?.addEventListener("click", toggleVoiceMode);
 temporaryTaskCancelBtn?.addEventListener("click", cancelTemporaryTask);
 imageUploadInput?.addEventListener("change", handleImageUpload);
+document.addEventListener("paste", handleImagePaste, true);
 
 for (const button of modeButtons) {
   button.addEventListener("click", () => {
