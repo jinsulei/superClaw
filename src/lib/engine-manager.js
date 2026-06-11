@@ -9,6 +9,33 @@ const _engines = {}
 let _activeEngine = null
 let _listeners = []
 
+const OPENCLAW_ENTRY_ROUTES = new Set([
+  '/dashboard',
+  '/chat',
+  '/route-map',
+  '/logs',
+  '/models',
+  '/agents',
+  '/gateway',
+  '/channels',
+  '/memory',
+  '/dreaming',
+  '/cron',
+  '/usage',
+  '/skills',
+  '/plugin-hub',
+  '/setup',
+  '/chat-debug',
+  '/diagnose',
+])
+
+function inferEngineFromRoute(route) {
+  if (!route) return null
+  if (route.startsWith('/h/')) return 'hermes'
+  if (route.startsWith('/x/')) return 'xintian'
+  return OPENCLAW_ENTRY_ROUTES.has(route) ? 'openclaw' : null
+}
+
 /** 注册引擎 */
 export function registerEngine(engine) {
   _engines[engine.id] = engine
@@ -59,10 +86,7 @@ export async function initEngineManager() {
   } catch {}
   try {
     const route = (window.location.hash.slice(1) || '').split('?')[0]
-    const routeMode =
-      route.startsWith('/h/') ? 'hermes'
-        : route.startsWith('/x/') ? 'xintian'
-          : null
+    const routeMode = inferEngineFromRoute(route)
     if (routeMode && _engines[routeMode]) {
       mode = routeMode
     }

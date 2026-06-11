@@ -4930,12 +4930,20 @@ const handlers = {
     return startClaudePanel()
   },
 
+  async claude_code_native_start({ cwd } = {}) {
+    return startNativeClaudeTerminal(cwd)
+  },
+
   claude_code_stop() {
     return {
       stopped: true,
       mode: 'cli',
       message: 'No Claude Code panel process is managed by SuperClaw.',
     }
+  },
+
+  claude_code_native_stop() {
+    return stopNativeClaudeTerminal()
   },
 
   // 服务管理（10s 服务端缓存 + in-flight 去重，ARM 设备关键优化）
@@ -10350,6 +10358,7 @@ function claudeCodePaths() {
 }
 
 let _claudePanelChild = null
+const NATIVE_CLAUDE_WINDOW_TITLE = 'SuperClaw Claude Code Native'
 
 function claudePanelPaths(paths = claudeCodePaths()) {
   const port = Number(process.env.CLEAN_PANEL_PORT || process.env.CLAUDE_PANEL_PORT || 3020)
@@ -10433,6 +10442,120 @@ async function startClaudePanel() {
   }
   const nextStatus = await claudeCodeStatus()
   return { started: true, mode: 'panel', url: panel.url, panelUrl: panel.url, status: nextStatus }
+}
+
+function quoteCmd(value) {
+  return `"${String(value || '').replace(/"/g, '""')}"`
+}
+
+function writeNativeClaudeLauncher({ paths, runCwd }) {
+  const launcherPath = path.join(paths.homeDir, 'run-claude-native.cmd')
+  const lines = [
+    '@echo off',
+    'chcp 65001 >nul',
+    `title ${NATIVE_CLAUDE_WINDOW_TITLE}`,
+    `cd /d ${quoteCmd(runCwd)}`,
+    `set "HOME=${paths.homeDir}"`,
+    `set "USERPROFILE=${paths.homeDir}"`,
+    `set "APPDATA=${path.join(paths.homeDir, 'AppData', 'Roaming')}"`,
+    `set "LOCALAPPDATA=${path.join(paths.homeDir, 'AppData', 'Local')}"`,
+    `set "CLAUDE_CONFIG_DIR=${path.join(paths.homeDir, 'claude-config')}"`,
+    `set "CLAUDE_CODE_PROJECTS_DIR=${paths.projectsDir}"`,
+    'set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"',
+    `set "PATH=${path.dirname(paths.claude)};%PATH%"`,
+    quoteCmd(paths.claude),
+  ]
+  fs.writeFileSync(launcherPath, lines.join('\r\n'), 'utf8')
+  return launcherPath
+}
+
+function resolveNativeClaudeCwd(cwd, fallback) {
+  const requested = String(cwd || '').trim()
+  if (requested) {
+    try {
+      const resolved = path.resolve(requested)
+      if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) return resolved
+    } catch {}
+  }
+  return fallback
+}
+
+async function startNativeClaudeTerminal(cwd) {
+  const status = await claudeCodeStatus()
+  const paths = status.paths || claudeCodePaths()
+  if (!fs.existsSync(paths.claude)) {
+    throw new Error(`Claude Code CLI 缺失：${paths.claude}`)
+  }
+
+  const runCwd = resolveNativeClaudeCwd(cwd, paths.projectsDir)
+  const env = {
+    ...process.env,
+    HOME: paths.homeDir,
+    USERPROFILE: paths.homeDir,
+    APPDATA: path.join(paths.homeDir, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.join(paths.homeDir, 'AppData', 'Local'),
+    CLAUDE_CONFIG_DIR: path.join(paths.homeDir, 'claude-config'),
+    CLAUDE_CODE_PROJECTS_DIR: paths.projectsDir,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    PATH: `${path.dirname(paths.claude)}${path.delimiter}${process.env.PATH || ''}`,
+  }
+  fs.mkdirSync(env.APPDATA, { recursive: true })
+  fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
+  fs.mkdirSync(path.join(paths.homeDir, '.claude'), { recursive: true })
+
+  if (!isWindows) {
+    const child = spawn(paths.claude, [], {
+      cwd: runCwd,
+      env,
+      detached: true,
+      stdio: 'ignore',
+    })
+    if (typeof child.unref === 'function') child.unref()
+    return { ok: true, started: true, mode: 'native', cwd: runCwd, command: paths.claude }
+  }
+
+  const launcherPath = writeNativeClaudeLauncher({ paths, runCwd })
+  const child = spawn('cmd.exe', ['/d', '/c', 'start', '', 'cmd.exe', '/k', launcherPath], {
+    cwd: runCwd,
+    env,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  })
+  if (typeof child.unref === 'function') child.unref()
+  return {
+    ok: true,
+    started: true,
+    mode: 'native',
+    message: 'Claude Code 原生终端已启动。',
+    cwd: runCwd,
+    command: paths.claude,
+    launcher: launcherPath,
+    windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+    status,
+  }
+}
+
+function stopNativeClaudeTerminal() {
+  if (!isWindows) {
+    return { ok: true, stopped: false, message: '当前平台未绑定 Claude Code 原生终端关闭动作。' }
+  }
+  const result = spawnSync('taskkill.exe', ['/F', '/T', '/FI', `WINDOWTITLE eq ${NATIVE_CLAUDE_WINDOW_TITLE}*`], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+  const output = `${result.stdout || ''}${result.stderr || ''}`.trim()
+  const noTask = /no tasks|没有运行|找不到|not found/i.test(output)
+  if (result.status === 0 || noTask) {
+    return {
+      ok: true,
+      stopped: !noTask,
+      message: noTask ? '没有发现正在运行的 Claude Code 原生终端。' : 'Claude Code 原生终端已关闭。',
+      output,
+      windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+    }
+  }
+  throw new Error(output || '关闭 Claude Code 原生终端失败。')
 }
 
 async function claudeCodeStatus() {

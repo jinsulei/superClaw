@@ -4,7 +4,7 @@
 import { navigate, getCurrentRoute, reloadCurrentRoute } from '../router.js'
 import { toggleTheme, getTheme } from '../lib/theme.js'
 import { isOpenclawReady } from '../lib/app-state.js'
-import { api, ensureClaudeCodeStarted } from '../lib/tauri-api.js'
+import { api } from '../lib/tauri-api.js'
 import { toast } from './toast.js'
 import { APP_BUILD_VERSION, PRODUCT_DISPLAY_VERSION } from '../lib/product-version.js'
 import { t, getLang, setLang, getAvailableLangs } from '../lib/i18n.js'
@@ -617,18 +617,13 @@ export function renderSidebar(el) {
         }
         if (action === 'claude-code') {
           engineOpt.style.opacity = '0.5'
-          ensureClaudeCodeStarted().then(async (res) => {
+          api.claudeCodeNativeStart().then(async (res) => {
             const status = res?.status || res || {}
-            const panelUrl = res?.panelUrl || res?.url || status?.panelUrl || status?.url || status?.panel?.url || ''
             await switchEngine('hermes')
             renderSidebar(el)
-            if (panelUrl) {
-              window.location.assign(panelUrl)
-            } else {
-              navigate('/h/claude-code')
-            }
-            const version = status?.version ? `：${status.version}` : ''
-            toast(`正在进入 Claude Code${version}`, 'success')
+            navigate('/h/claude-code')
+            const nativeVersion = status?.version ? `（${status.version}）` : ''
+            toast(`Claude Code 原生终端已打开${nativeVersion}`, 'success')
           }).catch(err => {
             console.error('[sidebar] Claude Code 接通失败:', err)
             toast(`Claude Code 接通失败：${err?.message || err}`, 'error')

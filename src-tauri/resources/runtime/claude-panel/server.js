@@ -749,7 +749,36 @@ function resolveClaudeCommand() {
 }
 
 function quoteCmd(value) {
-  return `"${String(value || "").replace(/"/g, '\\"')}"`;
+  return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+function writeNativeClaudeLauncher({ cwd, claudeCommand }) {
+  const env = buildPortableEnv();
+  const appData = env.APPDATA || path.join(HOME, "AppData", "Roaming");
+  const localAppData = env.LOCALAPPDATA || path.join(HOME, "AppData", "Local");
+  const configDir = env.CLAUDE_CONFIG_DIR || path.join(HOME, "claude-config");
+  const projectsDir = env.CLAUDE_CODE_PROJECTS_DIR || path.join(HOME, ".claude", "projects");
+  fs.mkdirSync(HOME, { recursive: true });
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(localAppData, { recursive: true });
+  const launcherPath = path.join(HOME, "run-claude-native.cmd");
+  const lines = [
+    "@echo off",
+    "chcp 65001 >nul",
+    `title ${NATIVE_CLAUDE_WINDOW_TITLE}`,
+    `cd /d ${quoteCmd(cwd)}`,
+    `set "HOME=${env.HOME || HOME}"`,
+    `set "USERPROFILE=${env.USERPROFILE || HOME}"`,
+    `set "APPDATA=${appData}"`,
+    `set "LOCALAPPDATA=${localAppData}"`,
+    `set "CLAUDE_CONFIG_DIR=${configDir}"`,
+    `set "CLAUDE_CODE_PROJECTS_DIR=${projectsDir}"`,
+    'set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"',
+    `set "PATH=${path.dirname(claudeCommand)};%PATH%"`,
+    quoteCmd(claudeCommand),
+  ];
+  fs.writeFileSync(launcherPath, lines.join("\r\n"), "utf8");
+  return { launcherPath, env };
 }
 
 async function handleNativeClaudeStart(req, res) {
@@ -774,17 +803,13 @@ async function handleNativeClaudeStart(req, res) {
   }
 
   const claudeCommand = resolveClaudeCommand();
-  const commandLine = [
-    `title ${NATIVE_CLAUDE_WINDOW_TITLE}`,
-    `cd /d ${quoteCmd(cwd)}`,
-    quoteCmd(claudeCommand),
-  ].join(" && ");
+  const { launcherPath, env } = writeNativeClaudeLauncher({ cwd, claudeCommand });
 
   try {
-    spawn("cmd.exe", ["/c", "start", NATIVE_CLAUDE_WINDOW_TITLE, "cmd.exe", "/k", commandLine], {
+    spawn("cmd.exe", ["/d", "/c", "start", "", "cmd.exe", "/k", launcherPath], {
       cwd,
       stdio: "ignore",
-      env: buildPortableEnv(),
+      env,
       windowsHide: false,
       detached: true,
     }).unref();
@@ -794,6 +819,7 @@ async function handleNativeClaudeStart(req, res) {
       message: "Claude Code 原生终端已启动。",
       cwd,
       command: claudeCommand,
+      launcher: launcherPath,
       windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
     });
   } catch (error) {
@@ -1572,7 +1598,7 @@ function browserAutomationAllowed(payload, toolProfile) {
 function appendToolArgs(args, profile, extraTools = [], options = {}) {
   const tools = Array.from(new Set([...(TOOL_PROFILES[profile] || []), ...extraTools]));
   if (!tools.length) {
-    args.push("--tools=");
+    args.push("--tools", "");
     return;
   }
   args.push("--tools", tools.join(","));
@@ -1611,6 +1637,48 @@ function extractText(message) {
     .join("");
 }
 
+function isPathInside(childPath, parentPath) {
+  const child = path.resolve(String(childPath || ""));
+  const parent = path.resolve(String(parentPath || ""));
+  const relative = path.relative(parent, child);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function normalizeRunAttachments(rawAttachments) {
+  const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+  const normalized = [];
+  for (const item of attachments.slice(0, 6)) {
+    const filePath = path.resolve(String(item?.path || ""));
+    if (!filePath || !isPathInside(filePath, UPLOAD_DIR)) continue;
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue;
+    const ext = path.extname(filePath).toLowerCase();
+    const looksLikeImage = [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
+    if (!looksLikeImage) continue;
+    normalized.push({
+      name: sanitizeFileName(item?.name || path.basename(filePath)),
+      path: filePath,
+      type: String(item?.type || "").toLowerCase(),
+      size: Number(item?.size || fs.statSync(filePath).size || 0),
+    });
+  }
+  return normalized;
+}
+
+function attachmentPromptBlock(attachments) {
+  if (!attachments.length) return "";
+  const lines = attachments.map((item, index) => `${index + 1}. ${item.name}: ${item.path}`);
+  return [
+    "",
+    "",
+    "[Claude Code native attachment bridge]",
+    "The user attached image files in this turn. Read and analyze these local files as image inputs.",
+    "Only access the listed attachment files unless the user explicitly asks for broader project work.",
+    "If the image cannot be decoded directly, explain that clearly and summarize any useful file metadata.",
+    ...lines,
+    "[/Claude Code native attachment bridge]",
+  ].join("\n");
+}
+
 async function handleRun(req, res) {
   let payload;
   try {
@@ -1620,10 +1688,15 @@ async function handleRun(req, res) {
     return;
   }
 
-  const prompt = String(payload.prompt || "").trim();
+  let prompt = String(payload.prompt || "").trim();
   if (!prompt) {
     sendJson(res, 400, { error: "请输入指令" });
     return;
+  }
+
+  const runAttachments = normalizeRunAttachments(payload.attachments);
+  if (runAttachments.length) {
+    prompt += attachmentPromptBlock(runAttachments);
   }
 
   const sourceGuardViolation = detectSourceGuardViolation(prompt);
@@ -1668,10 +1741,13 @@ async function handleRun(req, res) {
     return;
   }
 
-  const toolProfile = normalizeToolProfile(payload.toolProfile);
+  let toolProfile = normalizeToolProfile(payload.toolProfile);
   if (!toolProfile) {
     sendJson(res, 400, { error: "toolProfile 只能是 none、read、edit 或 command" });
     return;
+  }
+  if (runAttachments.length && toolProfile === "none") {
+    toolProfile = "read";
   }
   const browserAccess = normalizeBrowserAccess(payload.browserAccess);
   const allowBrowserAutomation = browserAutomationAllowed(payload, toolProfile);
@@ -1726,6 +1802,7 @@ async function handleRun(req, res) {
 
   const args = [
     "-p",
+    prompt,
     "--output-format",
     "stream-json",
     "--verbose",
@@ -1733,11 +1810,22 @@ async function handleRun(req, res) {
     mode,
   ];
 
+  if (!allowBrowserAutomation) {
+    args.push("--strict-mcp-config");
+  }
+  if (!allowBrowserAutomation && (toolProfile === "none" || runAttachments.length)) {
+    args.push("--disable-slash-commands");
+  }
+
   if (payload.continueSession) {
     args.push("--continue");
   }
   if (model) {
     args.push("--model", model);
+  }
+  const attachmentDirs = Array.from(new Set(runAttachments.map((item) => path.dirname(item.path))));
+  if (attachmentDirs.length) {
+    args.push("--add-dir", ...attachmentDirs);
   }
   const extraTools = allowBrowserAutomation ? BROWSER_AUTOMATION_TOOLS : [];
   appendToolArgs(args, toolProfile, extraTools, { allowBrowserAutomation });
@@ -1746,6 +1834,12 @@ async function handleRun(req, res) {
   }
   args.push("--append-system-prompt", CHINESE_OUTPUT_SYSTEM_PROMPT);
   args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
+  if (runAttachments.length) {
+    args.push(
+      "--append-system-prompt",
+      "This run includes image attachments saved as local files. You may use read-only file tools only to inspect the listed attachments. Do not modify files, run shell commands, browse the web, or access unrelated paths unless the user explicitly asks and grants permission."
+    );
+  }
   if (payload.permissionProfile === "browser" || payload.permissionProfile === "takeover") {
     args.push("--append-system-prompt", TAKEOVER_CAPABILITY_SYSTEM_PROMPT);
   }
@@ -1776,8 +1870,6 @@ async function handleRun(req, res) {
       `本次运行限定在当前项目目录：${cwd}。删除、覆盖、批量写入、安装依赖、执行命令、联网或访问敏感文件前必须先向用户说明风险并等待确认。`
     );
   }
-  args.push(prompt);
-
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -1808,6 +1900,7 @@ async function handleRun(req, res) {
     permissionProfile: payload.permissionProfile || mode,
     toolProfile,
     browserAccess,
+    attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
     continued: Boolean(payload.continueSession),
   });
 

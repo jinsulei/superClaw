@@ -109,9 +109,10 @@ pub fn create_connect_frame(
     let platform = std::env::consts::OS; // "windows" | "macos" | "linux"
     let device_family = "desktop";
 
-    // Handshake negotiates Gateway protocol v4, while device auth still signs
-    // the documented v3 payload that binds platform and device family.
-    let protocol_version = 4;
+    // Bundled OpenClaw 2026.5.6 speaks Gateway protocol v3. Keep the
+    // negotiated protocol aligned with the runtime; otherwise the Gateway
+    // rejects the control UI with "protocol mismatch" before chat can attach.
+    let protocol_version = 3;
     let signature_payload_version = 3;
     let auth_secret = if !gateway_token.is_empty() {
         &gateway_token

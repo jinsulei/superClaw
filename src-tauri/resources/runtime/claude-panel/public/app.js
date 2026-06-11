@@ -4562,6 +4562,13 @@ async function startRun(prompt, overrides = {}) {
     assistantTextFlushTimer = null;
   }
   const finalPrompt = `${prompt}${attachmentSummary()}`;
+  const outgoingAttachments = selectedAttachments.map((item) => ({
+    id: item.id,
+    name: item.name,
+    size: item.size,
+    type: item.type,
+    path: item.path,
+  }));
   inspectPromptForPetMood(prompt);
   createOrUpdateProjectConversation(finalPrompt, prompt);
   addMessage("user", "你", finalPrompt);
@@ -4613,6 +4620,7 @@ async function startRun(prompt, overrides = {}) {
         browserAccess,
         riskAccepted,
         continueSession: continueToggle.checked,
+        attachments: outgoingAttachments,
         ...overrides,
       }),
       signal: runController.signal,

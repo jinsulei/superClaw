@@ -341,6 +341,8 @@ pub fn run() {
             hermes::hermes_toolsets_list,
             hermes::hermes_cron_jobs_list,
             claude_code::claude_code_start,
+            claude_code::claude_code_native_start,
+            claude_code::claude_code_native_stop,
             claude_code::claude_code_stop,
             claude_code::claude_code_status,
             claude_code::configure_claude_code_relay,

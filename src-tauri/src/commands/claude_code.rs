@@ -12,6 +12,7 @@ use std::os::windows::process::CommandExt;
 static CLAUDE_PANEL_CHILD: LazyLock<Mutex<Option<Child>>> = LazyLock::new(|| Mutex::new(None));
 
 const CLAUDE_PANEL_PORT: u16 = 3020;
+const NATIVE_CLAUDE_WINDOW_TITLE: &str = "SuperClaw Claude Code Native";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -326,9 +327,128 @@ fn start_cli_impl() -> Result<Value, String> {
     }))
 }
 
+fn quote_cmd(value: &Path) -> String {
+    format!("\"{}\"", value.display().to_string().replace('"', "\"\""))
+}
+
+#[cfg(target_os = "windows")]
+fn write_native_launcher(
+    home: &Path,
+    projects: &Path,
+    run_cwd: &Path,
+    claude: &Path,
+) -> Result<PathBuf, String> {
+    let appdata = home.join("AppData").join("Roaming");
+    let localappdata = home.join("AppData").join("Local");
+    let config_dir = home.join("claude-config");
+    let launcher = home.join("run-claude-native.cmd");
+    let claude_dir = claude.parent().unwrap_or_else(|| Path::new(""));
+    let lines = vec![
+        "@echo off".to_string(),
+        "chcp 65001 >nul".to_string(),
+        format!("title {}", NATIVE_CLAUDE_WINDOW_TITLE),
+        format!("cd /d {}", quote_cmd(run_cwd)),
+        format!("set \"HOME={}\"", home.display()),
+        format!("set \"USERPROFILE={}\"", home.display()),
+        format!("set \"APPDATA={}\"", appdata.display()),
+        format!("set \"LOCALAPPDATA={}\"", localappdata.display()),
+        format!("set \"CLAUDE_CONFIG_DIR={}\"", config_dir.display()),
+        format!("set \"CLAUDE_CODE_PROJECTS_DIR={}\"", projects.display()),
+        "set \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\"".to_string(),
+        format!("set \"PATH={};%PATH%\"", claude_dir.display()),
+        quote_cmd(claude),
+    ];
+    fs::write(&launcher, lines.join("\r\n")).map_err(|e| e.to_string())?;
+    Ok(launcher)
+}
+
+fn native_cwd(cwd: Option<String>, fallback: &Path) -> PathBuf {
+    cwd.as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .and_then(|path| {
+            let resolved = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir().ok()?.join(path)
+            };
+            if resolved.is_dir() {
+                Some(resolved)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| fallback.to_path_buf())
+}
+
+fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
+    let resources = resources_dir()?;
+    let home = claude_home_path(&resources);
+    let projects = claude_projects_path(&resources);
+    ensure_portable_dirs(&home, &projects)?;
+
+    let claude = claude_cli_path(&resources);
+    if !claude.is_file() {
+        return Err(format!("Claude Code CLI 缺失：{}", claude.display()));
+    }
+
+    let run_cwd = native_cwd(cwd, &projects);
+
+    #[cfg(target_os = "windows")]
+    let launcher_path: Option<PathBuf>;
+    #[cfg(not(target_os = "windows"))]
+    let launcher_path: Option<PathBuf> = None;
+
+    #[cfg(target_os = "windows")]
+    {
+        let launcher = write_native_launcher(&home, &projects, &run_cwd, &claude)?;
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/d", "/c", "start", "", "cmd.exe", "/k"])
+            .arg(&launcher)
+        .current_dir(&run_cwd)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("APPDATA", home.join("AppData").join("Roaming"))
+        .env("LOCALAPPDATA", home.join("AppData").join("Local"))
+        .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
+        .env("CLAUDE_CODE_PROJECTS_DIR", &projects)
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        launcher_path = Some(launcher);
+        cmd.spawn()
+            .map_err(|e| format!("启动 Claude Code 原生终端失败：{e}"))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new(&claude);
+        cmd.current_dir(&run_cwd);
+        apply_portable_env(&mut cmd, &home, &projects);
+        cmd.spawn()
+            .map_err(|e| format!("启动 Claude Code 原生终端失败：{e}"))?;
+    }
+
+    Ok(json!({
+        "ok": true,
+        "started": true,
+        "mode": "native",
+        "message": "Claude Code 原生终端已启动。",
+        "cwd": run_cwd,
+        "command": claude,
+        "launcher": launcher_path,
+        "windowTitle": NATIVE_CLAUDE_WINDOW_TITLE,
+        "status": status_impl()?
+    }))
+}
+
 #[tauri::command]
 pub async fn claude_code_start() -> Result<Value, String> {
     start_cli_impl()
+}
+
+#[tauri::command]
+pub async fn claude_code_native_start(cwd: Option<String>) -> Result<Value, String> {
+    start_native_impl(cwd)
 }
 
 #[tauri::command]
@@ -343,6 +463,56 @@ pub async fn claude_code_stop() -> Result<Value, String> {
         "mode": "panel",
         "message": "Claude Code panel process was stopped if it was started by SuperClaw."
     }))
+}
+
+#[tauri::command]
+pub async fn claude_code_native_stop() -> Result<Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("taskkill.exe")
+            .args([
+                "/F",
+                "/T",
+                "/FI",
+                &format!("WINDOWTITLE eq {}*", NATIVE_CLAUDE_WINDOW_TITLE),
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .trim()
+        .to_string();
+        let no_task = text.contains("no tasks")
+            || text.contains("没有运行")
+            || text.contains("找不到")
+            || text.to_lowercase().contains("not found");
+        if output.status.success() || no_task {
+            return Ok(json!({
+                "ok": true,
+                "stopped": !no_task,
+                "message": if no_task { "没有发现正在运行的 Claude Code 原生终端。" } else { "Claude Code 原生终端已关闭。" },
+                "output": text,
+                "windowTitle": NATIVE_CLAUDE_WINDOW_TITLE
+            }));
+        }
+        return Err(if text.is_empty() {
+            "关闭 Claude Code 原生终端失败。".to_string()
+        } else {
+            text
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(json!({
+            "ok": true,
+            "stopped": false,
+            "message": "当前平台未绑定 Claude Code 原生终端关闭动作。"
+        }))
+    }
 }
 
 #[tauri::command]
