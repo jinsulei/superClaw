@@ -2895,6 +2895,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === "/api/native-claude-terminal") {
+    handleNativeClaudeStart(req, res);
+    return;
+  }
+
   if (url.pathname === "/api/native-claude/stop") {
     handleNativeClaudeStop(req, res);
     return;
