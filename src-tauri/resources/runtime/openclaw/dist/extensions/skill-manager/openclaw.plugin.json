@@ -1,0 +1,19 @@
+{
+  "id": "skill-manager",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "skill_manager"
+    ]
+  },
+  "name": "Skill Manager",
+  "description": "Audit, search, and install OpenClaw skills with explicit user consent. It never executes shell commands or installs system dependencies.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

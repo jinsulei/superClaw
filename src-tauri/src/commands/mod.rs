@@ -280,7 +280,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
                         "profile": "minimal",
-                        "alsoAllow": ["browser", "desktop_control"]
+                        "alsoAllow": ["browser", "desktop_control", "skill_manager"]
                     },
                     "thinkingDefault": "off",
                     "verboseDefault": "off"
@@ -373,7 +373,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            for key in ["browser", "desktop-control", "minimax"] {
+            for key in ["browser", "desktop-control", "skill-manager", "minimax"] {
                 let enabled = entries_obj
                     .get(key)
                     .and_then(|v| v.get("enabled"))
@@ -400,7 +400,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "tools".into(),
             serde_json::json!({
                 "profile": "minimal",
-                "alsoAllow": ["browser", "desktop_control"],
+                "alsoAllow": ["browser", "desktop_control", "skill_manager"],
                 "sessions": { "visibility": "agent" }
             }),
         );
@@ -410,7 +410,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             tools.insert("profile".into(), serde_json::json!("minimal"));
             changed = true;
         }
-        let allow = serde_json::json!(["browser", "desktop_control"]);
+        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager"]);
         if tools.get("alsoAllow") != Some(&allow) {
             tools.insert("alsoAllow".into(), allow);
             changed = true;

@@ -190,7 +190,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control")
+          alsoAllow = @("browser", "desktop_control", "skill_manager")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -208,6 +208,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       entries = [ordered]@{
         browser = [ordered]@{ enabled = $true }
         "desktop-control" = [ordered]@{ enabled = $true }
+        "skill-manager" = [ordered]@{ enabled = $true }
         minimax = [ordered]@{ enabled = $true }
       }
     }
@@ -215,7 +216,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
     tools = [ordered]@{
       profile = "minimal"
-      alsoAllow = @("browser", "desktop_control")
+      alsoAllow = @("browser", "desktop_control", "skill_manager")
       sessions = [ordered]@{ visibility = "agent" }
     }
     gateway = [ordered]@{

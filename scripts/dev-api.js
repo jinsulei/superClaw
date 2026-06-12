@@ -3055,7 +3055,7 @@ function buildCalibrationBaseline() {
           skillsLimits: { maxSkillsPromptChars: 0 },
           tools: {
             profile: 'minimal',
-            alsoAllow: ['browser', 'desktop_control'],
+            alsoAllow: ['browser', 'desktop_control', 'skill_manager'],
           },
           thinkingDefault: 'off',
           verboseDefault: 'off',
@@ -3073,6 +3073,8 @@ function buildCalibrationBaseline() {
     plugins: {
       entries: {
         browser: { enabled: true },
+        'desktop-control': { enabled: true },
+        'skill-manager': { enabled: true },
       },
     },
     session: { dmScope: 'per-channel-peer' },
@@ -3082,7 +3084,7 @@ function buildCalibrationBaseline() {
     },
     tools: {
       profile: 'minimal',
-      alsoAllow: ['browser', 'desktop_control'],
+      alsoAllow: ['browser', 'desktop_control', 'skill_manager'],
       sessions: { visibility: 'agent' },
     },
     gateway: {
@@ -3109,6 +3111,7 @@ function ensurePortableDesktopToolDefaults(config) {
     : {}
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
+  config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
 
   config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
@@ -3117,7 +3120,7 @@ function ensurePortableDesktopToolDefaults(config) {
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
   config.tools.profile = 'minimal'
-  config.tools.alsoAllow = ['browser', 'desktop_control']
+  config.tools.alsoAllow = ['browser', 'desktop_control', 'skill_manager']
   config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
   config.tools.sessions.visibility = 'agent'
 
@@ -3144,7 +3147,7 @@ function ensurePortableDesktopToolDefaults(config) {
   mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 0 }
   mainAgent.tools = mainAgent.tools && typeof mainAgent.tools === 'object' && !Array.isArray(mainAgent.tools) ? mainAgent.tools : {}
   mainAgent.tools.profile = 'minimal'
-  mainAgent.tools.alsoAllow = ['browser', 'desktop_control']
+  mainAgent.tools.alsoAllow = ['browser', 'desktop_control', 'skill_manager']
   mainAgent.thinkingDefault = 'off'
   mainAgent.verboseDefault = 'off'
 

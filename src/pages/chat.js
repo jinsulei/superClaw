@@ -2210,8 +2210,11 @@ function buildIntentTriggeredToolPrompt(text) {
       '',
       '[CAPABILITY_AUDIT_TRIGGER]',
       'The user is asking whether a task can be done or what tool/plugin/skill is needed. Before promising execution, inspect the currently available tools, plugins, and skills from this runtime/tool list.',
+      'If the tool list contains skill_manager, use skill_manager action=audit for local capability checks, and action=search for SkillHub lookup when the user asks what skill is needed.',
+      'Only call skill_manager action=install after the latest user message explicitly agrees to install that exact skill. Set consent=true only after that explicit approval.',
       'Reply in Simplified Chinese with: 1) current available capability, 2) missing tool/plugin/skill if any, 3) whether web search is needed, 4) security risks, 5) a clear question asking for user consent before searching, downloading, installing, enabling, or changing configuration.',
       'Do not install, download, enable plugins, edit config, run shell commands, or browse the web until the user explicitly agrees in the next message. If the required capability is not native, say that clearly instead of outputting fake tool_call/XML text.',
+      'Do not ask for raw exec unless there is no safer dedicated tool. Skills are prompt packs; installing a skill does not install system binaries or grant shell access.',
       'If the task can be done with existing tools, say which exact tool/plugin/skill will be used and what result you will report after execution.',
       '[/CAPABILITY_AUDIT_TRIGGER]',
     )

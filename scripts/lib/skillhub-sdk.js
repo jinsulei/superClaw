@@ -1,7 +1,12 @@
 /**
- * SkillHub SDK — Node.js 版
- * 纯 HTTP + zip 操作，API 接口与 Rust SDK (skillhub.rs) 完全对齐。
- * 供 dev-api.js Web/Docker 端调用。
+ * SkillHub SDK for the local dev API.
+ *
+ * Current public installs are served by ClawHub:
+ *   1. GET /api/v1/skills/{slug}/install
+ *   2. Download the archive.downloadUrl returned by that response.
+ *
+ * Older SkillHub mirrors are kept as a fallback because some existing UI
+ * screens still surface their search results.
  */
 import fs from 'fs'
 import path from 'path'
@@ -11,73 +16,64 @@ import { promisify } from 'util'
 const inflateRawAsync = promisify(inflateRaw)
 
 const COS_BASE = 'https://skillhub-1388575217.cos.ap-guangzhou.myqcloud.com'
-const API_BASE = 'https://lightmake.site/api/v1'
-const INDEX_TTL = 10 * 60 * 1000 // 10 分钟缓存
+const LEGACY_API_BASE = 'https://lightmake.site/api/v1'
+const CLAWHUB_API_BASE = 'https://clawhub.ai/api/v1'
+const INDEX_TTL = 10 * 60 * 1000
 
-let _indexCache = null // { ts: number, items: Array }
+let _indexCache = null
 
-// ── 公开接口 ──────────────────────────────────────────────
-
-/**
- * 搜索 SkillHub
- * @param {string} query
- * @param {number} [limit=20]
- * @returns {Promise<Array<{slug, displayName, summary, version}>>}
- */
 export async function search(query, limit = 20) {
   const q = (query || '').trim()
   if (!q) return []
-  const url = `${API_BASE}/search?q=${encodeURIComponent(q)}&limit=${limit}`
-  const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
-  if (!resp.ok) throw new Error(`SkillHub 搜索失败: HTTP ${resp.status}`)
-  const data = await resp.json()
-  return data.results || []
+  const max = Math.max(1, Math.min(50, Number(limit) || 20))
+  const [legacy, current] = await Promise.allSettled([
+    searchLegacy(q, max),
+    searchClawHub(q, max),
+  ])
+  const items = []
+  if (legacy.status === 'fulfilled') items.push(...legacy.value)
+  if (current.status === 'fulfilled') items.push(...current.value)
+  const merged = dedupeSkills(items)
+  if (!merged.length) {
+    const errors = [legacy, current]
+      .filter((r) => r.status === 'rejected')
+      .map((r) => r.reason?.message || String(r.reason))
+      .join('; ')
+    if (errors) throw new Error(`SkillHub search failed: ${errors}`)
+  }
+  return merged.slice(0, max)
 }
 
-/**
- * 拉取全量索引（带 10 分钟内存缓存）
- * @returns {Promise<Array<{slug, displayName, summary, version}>>}
- */
 export async function fetchIndex() {
   if (_indexCache && Date.now() - _indexCache.ts < INDEX_TTL) {
     return _indexCache.items
   }
-  const url = `${COS_BASE}/skills.json`
-  const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
-  if (!resp.ok) throw new Error(`拉取技能索引失败: HTTP ${resp.status}`)
+  const resp = await fetch(`${COS_BASE}/skills.json`, { signal: AbortSignal.timeout(15000) })
+  if (!resp.ok) throw new Error(`SkillHub index failed: HTTP ${resp.status}`)
   const data = await resp.json()
-  const items = data.skills || data // 兼容 {total, skills} 包装和裸数组
+  const items = Array.isArray(data) ? data : (Array.isArray(data.skills) ? data.skills : [])
   _indexCache = { ts: Date.now(), items }
   return items
 }
 
-/**
- * 下载 Skill zip（COS 镜像优先，回退主站 API）
- * @param {string} slug
- * @returns {Promise<Buffer>}
- */
 export async function downloadZip(slug) {
-  // 1. 优先 COS 镜像（国内 CDN）
-  try {
-    const resp = await fetch(`${COS_BASE}/skills/${slug}.zip`, {
-      signal: AbortSignal.timeout(30000)
-    })
-    if (resp.ok) return Buffer.from(await resp.arrayBuffer())
-  } catch { /* COS 失败，回退主站 */ }
-  // 2. 回退主站 API
-  const resp = await fetch(`${API_BASE}/download?slug=${encodeURIComponent(slug)}`, {
-    signal: AbortSignal.timeout(30000)
-  })
-  if (!resp.ok) throw new Error(`下载失败: HTTP ${resp.status}`)
-  return Buffer.from(await resp.arrayBuffer())
+  validateSlug(slug)
+  const errors = []
+  const attempts = [
+    () => downloadFromClawHub(slug),
+    () => downloadFromUrl(`${COS_BASE}/skills/${encodeURIComponent(slug)}.zip`, 'legacy-cos'),
+    () => downloadFromUrl(`${LEGACY_API_BASE}/download?slug=${encodeURIComponent(slug)}`, 'legacy-api'),
+  ]
+  for (const attempt of attempts) {
+    try {
+      return await attempt()
+    } catch (error) {
+      errors.push(error?.message || String(error))
+    }
+  }
+  throw new Error(`SkillHub download failed: ${errors.join('; ')}`)
 }
 
-/**
- * 下载并安装 Skill：zip → 解压到 skillsDir/{slug}/
- * @param {string} slug
- * @param {string} skillsDir - 如 ~/.openclaw/skills/
- * @returns {Promise<string>} 安装路径
- */
 export async function install(slug, skillsDir) {
   validateSlug(slug)
   const targetDir = path.join(skillsDir, slug)
@@ -86,62 +82,142 @@ export async function install(slug, skillsDir) {
   return targetDir
 }
 
-// ── 内部工具 ──────────────────────────────────────────────
+async function searchLegacy(query, limit) {
+  const url = `${LEGACY_API_BASE}/search?q=${encodeURIComponent(query)}&limit=${limit}`
+  const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
+  if (!resp.ok) throw new Error(`legacy search HTTP ${resp.status}`)
+  const data = await resp.json()
+  return (Array.isArray(data.results) ? data.results : []).map((item) => ({
+    ...item,
+    source: item.source || 'legacy-skillhub',
+  }))
+}
 
-function validateSlug(slug) {
-  if (!slug) throw new Error('Skill slug 不能为空')
-  if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
-    throw new Error(`无效的 Skill slug: ${slug}`)
+async function searchClawHub(query, limit) {
+  const url = `${CLAWHUB_API_BASE}/skills?search=${encodeURIComponent(query)}&limit=${limit}`
+  const resp = await fetch(url, { signal: AbortSignal.timeout(15000) })
+  if (!resp.ok) throw new Error(`clawhub search HTTP ${resp.status}`)
+  const data = await resp.json()
+  return (Array.isArray(data.items) ? data.items : []).map(normalizeClawHubItem)
+}
+
+function normalizeClawHubItem(item) {
+  return {
+    ...item,
+    name: item.name || item.displayName,
+    displayName: item.displayName || item.name || item.slug,
+    version: item.latestVersion?.version || item.tags?.latest || item.version,
+    source: 'clawhub',
   }
 }
 
-/**
- * 纯 Node.js zip 解压（无外部依赖）
- * 支持 Deflate (method 8) 和 Stored (method 0)
- * @param {Buffer} zipBuf
- * @param {string} targetDir
- */
+function dedupeSkills(items) {
+  const seen = new Set()
+  const merged = []
+  for (const item of items) {
+    const slug = String(item?.slug || '').trim()
+    if (!slug || seen.has(slug)) continue
+    seen.add(slug)
+    merged.push(item)
+  }
+  return merged
+}
+
+async function downloadFromClawHub(slug) {
+  const installUrl = `${CLAWHUB_API_BASE}/skills/${encodeURIComponent(slug)}/install`
+  const resp = await fetch(installUrl, {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!resp.ok) {
+    const text = await safeResponseText(resp)
+    throw new Error(`clawhub install HTTP ${resp.status}${text ? `: ${text}` : ''}`)
+  }
+  const data = await resp.json()
+  const downloadUrl = data?.archive?.downloadUrl
+  if (data?.installKind !== 'archive' || typeof downloadUrl !== 'string' || !downloadUrl) {
+    throw new Error('clawhub install did not return an archive download URL')
+  }
+  return await downloadFromUrl(downloadUrl, 'clawhub')
+}
+
+async function downloadFromUrl(url, source) {
+  const resp = await fetch(url, {
+    headers: { accept: 'application/zip,application/octet-stream,*/*' },
+    signal: AbortSignal.timeout(30000),
+  })
+  const buf = Buffer.from(await resp.arrayBuffer())
+  if (!resp.ok) {
+    throw new Error(`${source} HTTP ${resp.status}: ${bufferPreview(buf)}`)
+  }
+  if (!isZip(buf)) {
+    throw new Error(`${source} response is not a zip: ${bufferPreview(buf)}`)
+  }
+  return buf
+}
+
+async function safeResponseText(resp) {
+  try {
+    return (await resp.text()).slice(0, 200)
+  } catch {
+    return ''
+  }
+}
+
+function bufferPreview(buf) {
+  return buf.subarray(0, 120).toString('utf8').replace(/\s+/g, ' ').trim()
+}
+
+function isZip(buf) {
+  return Buffer.isBuffer(buf) && buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b
+}
+
+function validateSlug(slug) {
+  if (!slug) throw new Error('Skill slug is required')
+  if (slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+    throw new Error(`Invalid Skill slug: ${slug}`)
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(slug)) {
+    throw new Error(`Invalid Skill slug: ${slug}`)
+  }
+}
+
 async function extractZip(zipBuf, targetDir) {
-  // 清理旧目录
   if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true })
   fs.mkdirSync(targetDir, { recursive: true })
 
   const entries = parseZipEntries(zipBuf)
-  if (!entries.length) throw new Error('zip 文件为空或无法解析')
+  if (!entries.length) throw new Error('zip is empty or unsupported')
 
-  // 检测单一根目录（常见打包方式），需要剥掉
   const stripPrefix = detectSingleRootDir(entries)
+  const targetRoot = path.resolve(targetDir)
 
   for (const entry of entries) {
-    let name = entry.name
-    // 安全检查
-    if (name.includes('..')) continue
+    let name = String(entry.name || '').replace(/\\/g, '/')
+    if (!name || name.includes('..')) continue
 
-    // 剥掉单一根目录
     if (stripPrefix) {
       if (!name.startsWith(stripPrefix)) continue
       name = name.slice(stripPrefix.length)
       if (!name) continue
     }
 
-    const outPath = path.join(targetDir, name)
+    const outPath = path.resolve(targetRoot, name)
+    if (outPath !== targetRoot && !outPath.startsWith(`${targetRoot}${path.sep}`)) continue
 
     if (entry.isDir) {
       fs.mkdirSync(outPath, { recursive: true })
     } else {
-      const dir = path.dirname(outPath)
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
       let data
       if (entry.method === 0) {
-        // Stored
         data = zipBuf.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize)
       } else if (entry.method === 8) {
-        // Deflate
         const compressed = zipBuf.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize)
         data = await inflateRawAsync(compressed)
       } else {
-        console.warn(`[skillhub-sdk] 跳过不支持的压缩方法 ${entry.method}: ${name}`)
+        console.warn(`[skillhub-sdk] skipped unsupported compression method ${entry.method}: ${name}`)
         continue
       }
       fs.writeFileSync(outPath, data)
@@ -149,11 +225,6 @@ async function extractZip(zipBuf, targetDir) {
   }
 }
 
-/**
- * 解析 zip 文件的 Local File Header 条目
- * @param {Buffer} buf
- * @returns {Array<{name, isDir, method, compressedSize, dataOffset}>}
- */
 function parseZipEntries(buf) {
   const entries = []
   let offset = 0
@@ -163,6 +234,7 @@ function parseZipEntries(buf) {
     const sig = buf.readUInt32LE(offset)
     if (sig !== LOCAL_FILE_HEADER_SIG) break
 
+    const gpFlag = buf.readUInt16LE(offset + 6)
     const method = buf.readUInt16LE(offset + 8)
     const compressedSize = buf.readUInt32LE(offset + 18)
     const uncompressedSize = buf.readUInt32LE(offset + 22)
@@ -180,36 +252,23 @@ function parseZipEntries(buf) {
       dataOffset,
     })
 
-    // 处理 data descriptor (bit 3 of general purpose bit flag)
-    const gpFlag = buf.readUInt16LE(offset + 6)
-    let dataSize = compressedSize
-    if ((gpFlag & 0x08) && compressedSize === 0) {
-      // Data descriptor 跟在压缩数据后面，需要查找
-      // 简化处理：跳过这种情况（极少见）
-      break
-    }
-
-    offset = dataOffset + dataSize
+    if ((gpFlag & 0x08) && compressedSize === 0) break
+    offset = dataOffset + compressedSize
   }
 
   return entries
 }
 
-/**
- * 检测 zip 是否有单一顶层目录
- * @param {Array<{name}>} entries
- * @returns {string|null}
- */
 function detectSingleRootDir(entries) {
   let root = null
   for (const entry of entries) {
-    const firstSeg = entry.name.split('/')[0]
+    const firstSeg = String(entry.name || '').split('/')[0]
     if (!firstSeg) continue
     const prefix = firstSeg + '/'
     if (root === null) {
       root = prefix
     } else if (!entry.name.startsWith(root)) {
-      return null // 多个顶层目录
+      return null
     }
   }
   return root

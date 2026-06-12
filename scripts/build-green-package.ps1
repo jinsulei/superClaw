@@ -96,7 +96,7 @@ function Write-OpenClawConfig([string]$Dir) {
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control")
+          alsoAllow = @("browser", "desktop_control", "skill_manager")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -105,10 +105,10 @@ function Write-OpenClawConfig([string]$Dir) {
     bindings = @()
     channels = [ordered]@{}
     commands = [ordered]@{ native = "auto"; nativeSkills = "auto"; ownerDisplay = "raw"; restart = $true }
-    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
+    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; "skill-manager" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
-    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control"); sessions = [ordered]@{ visibility = "agent" } }
+    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control", "skill_manager"); sessions = [ordered]@{ visibility = "agent" } }
     gateway = [ordered]@{
       mode = "local"
       bind = "loopback"
