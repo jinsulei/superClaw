@@ -2980,6 +2980,20 @@ function generateCalibrationToken() {
   return `cp-${crypto.randomBytes(16).toString('hex')}`
 }
 
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
+const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
+
+function normalizeOpenClawDirectTools(tools, { includeExecConfig = false } = {}) {
+  const next = tools && typeof tools === 'object' && !Array.isArray(tools) ? tools : {}
+  next.profile = 'minimal'
+  next.alsoAllow = [...OPENCLAW_DIRECT_TOOL_ALLOWLIST]
+  if (includeExecConfig) next.exec = { ...(next.exec && typeof next.exec === 'object' && !Array.isArray(next.exec) ? next.exec : {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
+  for (const denyKey of ['deny', 'alsoDeny']) {
+    if (Array.isArray(next[denyKey])) next[denyKey] = next[denyKey].filter(tool => String(tool || '').trim() !== 'exec')
+  }
+  return next
+}
+
 function decodeJsonFileContent(filePath) {
   const raw = fs.readFileSync(filePath)
   if (raw.length >= 3 && raw[0] === 0xEF && raw[1] === 0xBB && raw[2] === 0xBF) {
@@ -3055,7 +3069,7 @@ function buildCalibrationBaseline() {
           skillsLimits: { maxSkillsPromptChars: 0 },
           tools: {
             profile: 'minimal',
-            alsoAllow: ['browser', 'desktop_control', 'skill_manager'],
+            alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
           },
           thinkingDefault: 'off',
           verboseDefault: 'off',
@@ -3084,7 +3098,8 @@ function buildCalibrationBaseline() {
     },
     tools: {
       profile: 'minimal',
-      alsoAllow: ['browser', 'desktop_control', 'skill_manager'],
+      alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
+      exec: { ...OPENCLAW_DIRECT_EXEC_CONFIG },
       sessions: { visibility: 'agent' },
     },
     gateway: {
@@ -3119,8 +3134,7 @@ function ensurePortableDesktopToolDefaults(config) {
   config.skills.limits.maxSkillsPromptChars = 0
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
-  config.tools.profile = 'minimal'
-  config.tools.alsoAllow = ['browser', 'desktop_control', 'skill_manager']
+  config.tools = normalizeOpenClawDirectTools(config.tools, { includeExecConfig: true })
   config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
   config.tools.sessions.visibility = 'agent'
 
@@ -3146,8 +3160,7 @@ function ensurePortableDesktopToolDefaults(config) {
   mainAgent.skills = []
   mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 0 }
   mainAgent.tools = mainAgent.tools && typeof mainAgent.tools === 'object' && !Array.isArray(mainAgent.tools) ? mainAgent.tools : {}
-  mainAgent.tools.profile = 'minimal'
-  mainAgent.tools.alsoAllow = ['browser', 'desktop_control', 'skill_manager']
+  mainAgent.tools = normalizeOpenClawDirectTools(mainAgent.tools)
   mainAgent.thinkingDefault = 'off'
   mainAgent.verboseDefault = 'off'
 
@@ -3386,7 +3399,10 @@ function readOpenclawConfigRequired() {
 }
 
 function ensureOpenclawConfigFile() {
-  if (fs.existsSync(CONFIG_PATH)) return false
+  if (fs.existsSync(CONFIG_PATH)) {
+    ensureOpenClawExecApprovalsFile()
+    return false
+  }
   if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
   const backupPath = CONFIG_PATH + '.bak'
   if (fs.existsSync(backupPath)) {
@@ -3416,6 +3432,7 @@ function mergeConfigsPreservingFields(existing, next) {
 
 function writeOpenclawConfigFile(config, options = {}) {
   if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
+  ensureOpenClawExecApprovalsFile()
   const preserveExisting = options.preserveExisting !== false
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')), config)
@@ -3423,6 +3440,17 @@ function writeOpenclawConfigFile(config, options = {}) {
   const cleaned = stripUiFields(base)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
+}
+
+function ensureOpenClawExecApprovalsFile() {
+  if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
+  const approvalsPath = path.join(OPENCLAW_DIR, 'exec-approvals.json')
+  const desired = { version: 1, defaults: { security: 'full', ask: 'off', askFallback: 'full' } }
+  const current = readJsonFileRelaxed(approvalsPath) || {}
+  const next = mergeConfigsPreservingFields(current, desired)
+  if (JSON.stringify(current) !== JSON.stringify(next)) {
+    fs.writeFileSync(approvalsPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  }
 }
 
 function ensureAgentsList(config) {

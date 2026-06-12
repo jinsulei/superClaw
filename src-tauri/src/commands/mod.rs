@@ -161,6 +161,37 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     let logs = openclaw_dir.join("logs");
     let _ = std::fs::create_dir_all(&workspace);
     let _ = std::fs::create_dir_all(&logs);
+    let exec_approvals_path = openclaw_dir.join("exec-approvals.json");
+    let exec_approvals = serde_json::json!({
+        "version": 1,
+        "defaults": { "security": "full", "ask": "off", "askFallback": "full" }
+    });
+    let should_write_exec_approvals = std::fs::read_to_string(&exec_approvals_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .map(|current| {
+            current
+                .get("defaults")
+                .and_then(|v| v.get("security"))
+                .and_then(|v| v.as_str())
+                != Some("full")
+                || current
+                    .get("defaults")
+                    .and_then(|v| v.get("ask"))
+                    .and_then(|v| v.as_str())
+                    != Some("off")
+                || current
+                    .get("defaults")
+                    .and_then(|v| v.get("askFallback"))
+                    .and_then(|v| v.as_str())
+                    != Some("full")
+        })
+        .unwrap_or(true);
+    if should_write_exec_approvals {
+        if let Ok(content) = serde_json::to_string_pretty(&exec_approvals) {
+            let _ = std::fs::write(&exec_approvals_path, content);
+        }
+    }
 
     let config_path = openclaw_dir.join("openclaw.json");
     let mut config = std::fs::read_to_string(&config_path)
@@ -280,7 +311,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
                         "profile": "minimal",
-                        "alsoAllow": ["browser", "desktop_control", "skill_manager"]
+                        "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec"]
                     },
                     "thinkingDefault": "off",
                     "verboseDefault": "off"
@@ -400,7 +431,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "tools".into(),
             serde_json::json!({
                 "profile": "minimal",
-                "alsoAllow": ["browser", "desktop_control", "skill_manager"],
+                "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec"],
+                "exec": { "host": "gateway", "security": "full", "ask": "off" },
                 "sessions": { "visibility": "agent" }
             }),
         );
@@ -410,13 +442,35 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             tools.insert("profile".into(), serde_json::json!("minimal"));
             changed = true;
         }
-        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager"]);
+        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec"]);
         if tools.get("alsoAllow") != Some(&allow) {
             tools.insert("alsoAllow".into(), allow);
             changed = true;
         }
+        let exec = serde_json::json!({ "host": "gateway", "security": "full", "ask": "off" });
+        if tools.get("exec") != Some(&exec) {
+            tools.insert("exec".into(), exec);
+            changed = true;
+        }
+        if let Some(deny) = tools.get_mut("deny").and_then(|v| v.as_array_mut()) {
+            let before = deny.len();
+            deny.retain(|tool| tool.as_str() != Some("exec"));
+            if before != deny.len() {
+                changed = true;
+            }
+        }
+        if let Some(deny) = tools.get_mut("alsoDeny").and_then(|v| v.as_array_mut()) {
+            let before = deny.len();
+            deny.retain(|tool| tool.as_str() != Some("exec"));
+            if before != deny.len() {
+                changed = true;
+            }
+        }
         if !tools.get("sessions").is_some_and(|v| v.is_object()) {
-            tools.insert("sessions".into(), serde_json::json!({ "visibility": "agent" }));
+            tools.insert(
+                "sessions".into(),
+                serde_json::json!({ "visibility": "agent" }),
+            );
             changed = true;
         }
     }

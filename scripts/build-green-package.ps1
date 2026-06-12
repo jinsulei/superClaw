@@ -96,7 +96,7 @@ function Write-OpenClawConfig([string]$Dir) {
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control", "skill_manager")
+          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -108,7 +108,7 @@ function Write-OpenClawConfig([string]$Dir) {
     plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; "skill-manager" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
-    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control", "skill_manager"); sessions = [ordered]@{ visibility = "agent" } }
+    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control", "skill_manager", "exec"); exec = [ordered]@{ host = "gateway"; security = "full"; ask = "off" }; sessions = [ordered]@{ visibility = "agent" } }
     gateway = [ordered]@{
       mode = "local"
       bind = "loopback"
@@ -122,6 +122,7 @@ function Write-OpenClawConfig([string]$Dir) {
     }
   }
   Write-Utf8File (Join-Path $Dir "openclaw.json") ($config | ConvertTo-Json -Depth 30)
+  Write-Utf8File (Join-Path $Dir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
   $models = [ordered]@{
     providers = [ordered]@{
       minimax = [ordered]@{
@@ -261,6 +262,7 @@ async function startOpenClaw() {
       env: {
         ...process.env,
         OPENCLAW_HOME: home,
+        OPENCLAW_STATE_DIR: home,
         OPENCLAW_CONFIG: path.join(home, 'openclaw.json'),
         OPENCLAW_CONFIG_PATH: path.join(home, 'openclaw.json'),
         PATH: `${path.dirname(openclaw)};${process.env.PATH || ''}`,

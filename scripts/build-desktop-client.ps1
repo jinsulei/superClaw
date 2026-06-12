@@ -190,7 +190,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control", "skill_manager")
+          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -216,7 +216,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
     tools = [ordered]@{
       profile = "minimal"
-      alsoAllow = @("browser", "desktop_control", "skill_manager")
+      alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
+      exec = [ordered]@{
+        host = "gateway"
+        security = "full"
+        ask = "off"
+      }
       sessions = [ordered]@{ visibility = "agent" }
     }
     gateway = [ordered]@{
@@ -248,6 +253,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   }
 
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "openclaw.json") ($config | ConvertTo-Json -Depth 20)
+  Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
 }
 
 function Write-PortablePanelConfig([string]$OpenClawDataDir) {
