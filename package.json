@@ -13,6 +13,7 @@
     "tauri:build": "tauri build",
     "build:pack": "pwsh ./build.ps1",
     "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-desktop-client.ps1 -SkipRuntimeDownload",
+    "audit:package": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/preflight-package-audit.ps1",
     "download:uv": "node scripts/download-uv.js",
     "download:openclaw": "node scripts/download-openclaw.js",
     "version:sync": "node scripts/sync-version.js",

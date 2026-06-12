@@ -6497,7 +6497,6 @@ const handlers = {
   async probe_gateway_port() {
     const port = readGatewayPort()
     return new Promise(resolve => {
-      const net = require('net')
       const sock = net.createConnection({ host: '127.0.0.1', port, timeout: 3000 })
       sock.on('connect', () => { sock.destroy(); resolve(true) })
       sock.on('error', () => resolve(false))
@@ -6530,7 +6529,7 @@ const handlers = {
 
   async diagnose_gateway_connection() {
     const steps = []
-    const ocDir = openclawDir()
+    const ocDir = OPENCLAW_DIR
     const configPath = path.join(ocDir, 'openclaw.json')
     const port = readGatewayPort()
 
@@ -6567,7 +6566,6 @@ const handlers = {
     // 4. TCP 端口
     const t4 = Date.now()
     const tcpOk = await new Promise(resolve => {
-      const net = require('net')
       const sock = net.createConnection({ host: '127.0.0.1', port, timeout: 3000 })
       sock.on('connect', () => { sock.destroy(); resolve(true) })
       sock.on('error', () => resolve(false))
@@ -8565,12 +8563,15 @@ const handlers = {
     for (const d of ['cron','sessions','logs','memories','skills','pairing','hooks','image_cache','audio_cache']) {
       fs.mkdirSync(path.join(home, d), { recursive: true })
     }
-    const providerName = 'custom'
+    const providerName = String(provider || 'custom').trim() || 'custom'
     const modelStr = model || 'gpt-5.5'
     const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
-    const providerLine = `  provider: ${providerName}\n  api_mode: chat_completions\n`
+    const lowerProvider = providerName.toLowerCase()
+    const isYyapi = lowerProvider === 'custom' || lowerProvider === 'yyapi'
+    const isOpenAiChat = isYyapi || ['openai', 'openrouter', 'deepseek'].includes(lowerProvider)
+    const providerLine = `  provider: ${isYyapi ? 'custom' : providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`
     const baseUrlLine = baseUrlValue ? `  base_url: ${baseUrlValue}\n` : ''
-    const customProvidersBlock = baseUrlValue
+    const customProvidersBlock = isYyapi && baseUrlValue
       ? `custom_providers:\n  - name: yyapi\n    base_url: ${baseUrlValue}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr}\n`
       : ''
     // config.yaml
@@ -8584,11 +8585,32 @@ const handlers = {
     }
     fs.writeFileSync(configPath, configContent)
     // .env
-    const envKey = 'OPENAI_API_KEY'
+    const envKey = lowerProvider === 'minimax-cn'
+      ? 'MINIMAX_CN_API_KEY'
+      : lowerProvider === 'minimax'
+        ? 'MINIMAX_API_KEY'
+        : lowerProvider === 'deepseek'
+          ? 'DEEPSEEK_API_KEY'
+          : lowerProvider === 'anthropic'
+            ? 'ANTHROPIC_API_KEY'
+            : lowerProvider === 'openrouter'
+              ? 'OPENROUTER_API_KEY'
+              : 'OPENAI_API_KEY'
+    const baseEnvKey = lowerProvider === 'minimax-cn'
+      ? 'MINIMAX_CN_BASE_URL'
+      : lowerProvider === 'minimax'
+        ? 'MINIMAX_BASE_URL'
+        : lowerProvider === 'deepseek'
+          ? 'DEEPSEEK_BASE_URL'
+          : lowerProvider === 'anthropic'
+            ? 'ANTHROPIC_BASE_URL'
+            : lowerProvider === 'openrouter'
+              ? 'OPENROUTER_BASE_URL'
+              : 'OPENAI_BASE_URL'
     const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','MINIMAX_API_KEY','MINIMAX_CN_API_KEY','CUSTOM_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','MINIMAX_BASE_URL','MINIMAX_CN_BASE_URL','CUSTOM_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY']
     const newPairs = [[envKey, apiKey], ['GATEWAY_ALLOW_ALL_USERS', 'true'], ['API_SERVER_KEY', 'clawpanel-local']]
     if (baseUrlValue) {
-      newPairs.push(['OPENAI_BASE_URL', baseUrlValue])
+      newPairs.push([baseEnvKey, baseUrlValue])
     }
     const envPath = path.join(home, '.env')
     let envContent
@@ -8749,7 +8771,8 @@ const handlers = {
     } catch {}
     const payload = { input: _buildHermesRunInput(input, attachments) }
     if (sessionId) payload.session_id = sessionId
-    if (conversationHistory) payload.conversation_history = conversationHistory
+    const bridgedHistory = conversationHistory || _buildHermesConversationHistoryFromSession(sessionId, input || '')
+    if (Array.isArray(bridgedHistory) && bridgedHistory.length) payload.conversation_history = bridgedHistory
     if (instructions) payload.instructions = instructions
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
@@ -8797,12 +8820,16 @@ const handlers = {
       }
       const p = String(provider || '').toLowerCase()
       if (p === 'deepseek') apiKey = env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY || apiKey
+      else if (p === 'minimax-cn') apiKey = env.MINIMAX_CN_API_KEY || env.MINIMAX_API_KEY || apiKey
+      else if (p === 'minimax') apiKey = env.MINIMAX_API_KEY || env.MINIMAX_CN_API_KEY || apiKey
       else if (p === 'anthropic') apiKey = env.ANTHROPIC_API_KEY || apiKey
       else if (p === 'openrouter') apiKey = env.OPENROUTER_API_KEY || apiKey
       else apiKey = env.OPENAI_API_KEY || env.CUSTOM_API_KEY || env.DEEPSEEK_API_KEY || env.ANTHROPIC_API_KEY || env.OPENROUTER_API_KEY || apiKey
 
       if (!baseUrl) {
         if (p === 'deepseek') baseUrl = env.DEEPSEEK_BASE_URL || env.OPENAI_BASE_URL || ''
+        else if (p === 'minimax-cn') baseUrl = env.MINIMAX_CN_BASE_URL || env.MINIMAX_BASE_URL || ''
+        else if (p === 'minimax') baseUrl = env.MINIMAX_BASE_URL || env.MINIMAX_CN_BASE_URL || ''
         else if (p === 'anthropic') baseUrl = env.ANTHROPIC_BASE_URL || ''
         else if (p === 'openrouter') baseUrl = env.OPENROUTER_BASE_URL || env.OPENAI_BASE_URL || ''
         else baseUrl = env.OPENAI_BASE_URL || env.DEEPSEEK_BASE_URL || env.ANTHROPIC_BASE_URL || env.OPENROUTER_BASE_URL || ''
@@ -8923,6 +8950,30 @@ const handlers = {
   },
 
   _hermesRepairYyapiEnvFromOpenclaw() {
+    const home = hermesHome()
+    const envPath = path.join(home, '.env')
+    const configPath = path.join(home, 'config.yaml')
+    const configRaw = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
+    if (configRaw.trim()) {
+      let currentProvider = ''
+      let currentBaseUrl = ''
+      for (const line of configRaw.split(/\r?\n/)) {
+        const t = line.trim()
+        if (t.startsWith('provider:')) currentProvider = t.slice(9).trim().replace(/^["']|["']$/g, '')
+        if (t.startsWith('base_url:')) currentBaseUrl = t.slice(9).trim().replace(/^["']|["']$/g, '')
+      }
+      const providerLower = currentProvider.toLowerCase()
+      const baseLower = currentBaseUrl.toLowerCase()
+      const wantsYyapi = providerLower === 'custom'
+        || providerLower === 'yyapi'
+        || baseLower.includes('124.222.21.44:3002')
+        || configRaw.includes('custom_providers:')
+      const isMiniMax = providerLower === 'minimax'
+        || providerLower === 'minimax-cn'
+        || baseLower.includes('minimax')
+        || baseLower.includes('minimaxi')
+      if (isMiniMax || !wantsYyapi) return false
+    }
     const cfg = readOpenclawConfigOptional()
     const providers = cfg?.models?.providers && typeof cfg.models.providers === 'object'
       ? cfg.models.providers
@@ -8931,10 +8982,7 @@ const handlers = {
     const apiKey = String(provider?.apiKey || '').trim()
     if (!apiKey || apiKey === 'YYAPI' || apiKey === 'superclaw-login-required' || apiKey.includes('*')) return false
     const baseUrl = String(provider?.baseUrl || 'http://124.222.21.44:3002/v1').trim()
-    const home = hermesHome()
     fs.mkdirSync(home, { recursive: true })
-    const envPath = path.join(home, '.env')
-    const configPath = path.join(home, 'config.yaml')
     const envRaw = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
     const env = {}
     for (const line of envRaw.split(/\r?\n/)) {
@@ -8958,7 +9006,6 @@ const handlers = {
       changed = true
     }
 
-    const configRaw = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
     let model = ''
     for (const line of configRaw.split(/\r?\n/)) {
       const t = line.trim()
@@ -10726,6 +10773,9 @@ function _buildHermesRunInput(input, attachments = []) {
   return [{ role: 'user', content: parts }]
 }
 
+const HERMES_HISTORY_MAX_MESSAGES = 24
+const HERMES_HISTORY_MAX_CHARS = 12000
+
 function _safeHermesSessionId(sessionId) {
   return String(sessionId || '').replace(/[^A-Za-z0-9._-]/g, '')
 }
@@ -10740,6 +10790,73 @@ function _readHermesSessionMessages(sessionId) {
   } catch {
     return []
   }
+}
+
+function _normalizeHermesHistoryText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim()
+}
+
+function _sameHermesHistoryText(left, right) {
+  const a = _normalizeHermesHistoryText(left)
+  const b = _normalizeHermesHistoryText(right)
+  return !!a && !!b && (a === b || a.includes(b) || b.includes(a))
+}
+
+function _compactHermesHistoryContent(content) {
+  if (typeof content === 'string') return content.trim()
+  if (Array.isArray(content)) {
+    const parts = []
+    for (const item of content) {
+      if (typeof item === 'string') {
+        if (item.trim()) parts.push(item.trim())
+        continue
+      }
+      if (!item || typeof item !== 'object') continue
+      const type = String(item.type || '').toLowerCase()
+      if ((type === 'text' || type === 'input_text' || !type) && typeof item.text === 'string') {
+        if (item.text.trim()) parts.push(item.text.trim())
+        continue
+      }
+      if (type === 'image' || type === 'input_image' || type === 'image_url' || item.image_url || item.source?.data) {
+        parts.push('[image]')
+      }
+    }
+    return parts.join('\n').trim()
+  }
+  if (content && typeof content === 'object') {
+    return String(content.text || content.content || content.output || content.message || '').trim()
+  }
+  return ''
+}
+
+function _buildHermesConversationHistoryFromSession(sessionId, currentInput = '') {
+  const messages = _readHermesSessionMessages(sessionId)
+  if (!messages.length) return []
+
+  const history = []
+  let totalChars = 0
+  for (const msg of messages) {
+    const role = String(msg?.role || '').toLowerCase()
+    if (!['system', 'user', 'assistant'].includes(role)) continue
+    const content = _compactHermesHistoryContent(msg?.content)
+    if (!content) continue
+    history.push({ role, content })
+  }
+
+  while (history.length && history[history.length - 1].role === 'user' && _sameHermesHistoryText(history[history.length - 1].content, currentInput)) {
+    history.pop()
+  }
+
+  const selected = []
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const item = history[i]
+    const size = String(item.content || '').length
+    if (selected.length >= HERMES_HISTORY_MAX_MESSAGES) break
+    if (selected.length && totalChars + size > HERMES_HISTORY_MAX_CHARS) break
+    selected.push(item)
+    totalChars += size
+  }
+  return selected.reverse()
 }
 
 function _readHermesExportSession(sessionId, timeout = 60000) {
@@ -10966,7 +11083,8 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
 
     const payload = { input: _buildHermesRunInput(args.input || '', args.attachments || []) }
     if (args.sessionId) payload.session_id = args.sessionId
-    if (args.conversationHistory) payload.conversation_history = args.conversationHistory
+    const bridgedHistory = args.conversationHistory || _buildHermesConversationHistoryFromSession(args.sessionId, args.input || '')
+    if (Array.isArray(bridgedHistory) && bridgedHistory.length) payload.conversation_history = bridgedHistory
     if (args.instructions) payload.instructions = args.instructions
 
     const startedResp = await globalThis.fetch(`${gwUrl}/v1/runs`, {

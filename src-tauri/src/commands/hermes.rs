@@ -2874,12 +2874,15 @@ pub async fn configure_hermes(
     } else {
         String::new()
     };
-    let api_mode_line = if !base_url_value.is_empty() {
+    let transport = pcfg.map(|p| p.transport).unwrap_or(hermes_providers::TRANSPORT_OPENAI_CHAT);
+    let openai_chat_transport = transport == hermes_providers::TRANSPORT_OPENAI_CHAT;
+    let custom_provider = provider == "custom";
+    let api_mode_line = if custom_provider || (!base_url_value.is_empty() && openai_chat_transport) {
         "  api_mode: chat_completions\n".to_string()
     } else {
         String::new()
     };
-    let custom_provider_block = if !base_url_value.is_empty() {
+    let custom_provider_block = if custom_provider && !base_url_value.is_empty() {
         format!(
             "custom_providers:\n  - name: yyapi\n    base_url: {base_url_value}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: {model_str}\n"
         )
@@ -2891,7 +2894,7 @@ pub async fn configure_hermes(
         _ => None,
     };
     // Provider 字段：Hermes v0.14+ 的 model_switch 依赖该字段决定 env_var。
-    // `custom` 不写 provider 行，让 Hermes 从 base_url 自动推断。
+    // MiniMax/Anthropic transport 不能写 chat_completions，也不能带 yyapi custom_providers。
     let provider_line = if provider.is_empty() {
         String::new()
     } else {
@@ -4508,6 +4511,155 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
     serde_json::json!([{ "role": "user", "content": parts }])
 }
 
+const HERMES_HISTORY_MAX_MESSAGES: usize = 24;
+const HERMES_HISTORY_MAX_CHARS: usize = 12000;
+
+fn safe_hermes_session_id(session_id: &str) -> String {
+    session_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        .collect()
+}
+
+fn normalize_hermes_history_text(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn same_hermes_history_text(left: &str, right: &str) -> bool {
+    let a = normalize_hermes_history_text(left);
+    let b = normalize_hermes_history_text(right);
+    !a.is_empty() && !b.is_empty() && (a == b || a.contains(&b) || b.contains(&a))
+}
+
+fn compact_hermes_history_content(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.trim().to_string();
+    }
+
+    if let Some(items) = content.as_array() {
+        let mut parts: Vec<String> = Vec::new();
+        for item in items {
+            if let Some(text) = item.as_str() {
+                let text = text.trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
+                continue;
+            }
+
+            let Some(obj) = item.as_object() else {
+                continue;
+            };
+            let typ = obj
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+
+            if (typ == "text" || typ == "input_text" || typ.is_empty())
+                && obj.get("text").and_then(|v| v.as_str()).is_some()
+            {
+                let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if !text.is_empty() {
+                    parts.push(text.to_string());
+                }
+                continue;
+            }
+
+            if typ == "image" || typ == "input_image" || typ == "image_url"
+                || obj.contains_key("image_url")
+                || obj.get("source").and_then(|v| v.get("data")).is_some()
+            {
+                parts.push("[image]".to_string());
+            }
+        }
+        return parts.join("\n").trim().to_string();
+    }
+
+    if let Some(obj) = content.as_object() {
+        for key in ["text", "content", "output", "message"] {
+            if let Some(text) = obj.get(key).and_then(|v| v.as_str()) {
+                return text.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn build_hermes_conversation_history_from_session(
+    session_id: Option<&String>,
+    current_input: &str,
+) -> Option<Value> {
+    let sid = safe_hermes_session_id(session_id?.trim());
+    if sid.is_empty() {
+        return None;
+    }
+
+    let path = hermes_home().join("sessions").join(format!("session_{sid}.json"));
+    let raw = std::fs::read_to_string(path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let messages = parsed.get("messages")?.as_array()?;
+
+    let mut history: Vec<Value> = Vec::new();
+    for msg in messages {
+        let role = msg
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(role.as_str(), "system" | "user" | "assistant") {
+            continue;
+        }
+        let content = msg
+            .get("content")
+            .map(compact_hermes_history_content)
+            .unwrap_or_default();
+        if content.trim().is_empty() {
+            continue;
+        }
+        history.push(serde_json::json!({ "role": role, "content": content }));
+    }
+
+    while history
+        .last()
+        .and_then(|item| item.get("role").and_then(|v| v.as_str()).map(|role| {
+            role == "user"
+                && same_hermes_history_text(
+                    item.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                    current_input,
+                )
+        }))
+        .unwrap_or(false)
+    {
+        history.pop();
+    }
+
+    let mut selected: Vec<Value> = Vec::new();
+    let mut total_chars = 0usize;
+    for item in history.into_iter().rev() {
+        let size = item
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .len();
+        if selected.len() >= HERMES_HISTORY_MAX_MESSAGES {
+            break;
+        }
+        if !selected.is_empty() && total_chars + size > HERMES_HISTORY_MAX_CHARS {
+            break;
+        }
+        total_chars += size;
+        selected.push(item);
+    }
+    selected.reverse();
+
+    if selected.is_empty() {
+        None
+    } else {
+        Some(Value::Array(selected))
+    }
+}
+
 #[tauri::command]
 pub async fn hermes_agent_run(
     app: tauri::AppHandle,
@@ -4550,6 +4702,8 @@ pub async fn hermes_agent_run(
     }
     if let Some(hist) = &conversation_history {
         payload["conversation_history"] = hist.clone();
+    } else if let Some(hist) = build_hermes_conversation_history_from_session(session_id.as_ref(), &input) {
+        payload["conversation_history"] = hist;
     }
     if let Some(inst) = &instructions {
         payload["instructions"] = Value::String(inst.clone());

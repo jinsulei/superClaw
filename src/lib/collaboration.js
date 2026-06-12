@@ -42,6 +42,7 @@ export function createCollaborationTask(input = {}) {
     source: input.source || COLLAB_TARGETS.hermes,
     executor: input.executor || COLLAB_TARGETS.openclaw,
     reviewer: input.reviewer || COLLAB_TARGETS.claudeCode,
+    plan: Array.isArray(input.plan) && input.plan.length ? input.plan : splitCollaborationTask(goal, input),
     status: 'draft',
     createdAt,
     updatedAt: createdAt,
@@ -70,6 +71,48 @@ function hasDesktopGoal(text) {
 function hasRecurringGoal(text) {
   const raw = String(text || '')
   return /(每\s*\d+\s*(秒|分钟|小时|天)|定时|循环|轮询|持续|一直|自动换)/i.test(raw)
+}
+
+function hasCodeGoal(text) {
+  const raw = String(text || '')
+  return /(代码|源码|文件|修复|修改|构建|打包|测试|接口|报错|bug|编译|仓库|git)/i.test(raw)
+}
+
+function hasVisionGoal(text) {
+  const raw = String(text || '')
+  return /(图片|截图|画面|识别|红框|粘贴|视觉|图里|图中)/i.test(raw)
+}
+
+export function splitCollaborationTask(goal, input = {}) {
+  const raw = String(goal || '').trim()
+  const executor = targetLabel(input.executor || COLLAB_TARGETS.openclaw)
+  const reviewer = targetLabel(input.reviewer || COLLAB_TARGETS.claudeCode)
+  const steps = [
+    `确认目标和上下文：读取当前会话、项目路径、已有配置和用户明确限制，先复述要解决的问题。`,
+  ]
+
+  if (hasDesktopGoal(raw)) {
+    steps.push('桌面端优先：先枚举并激活用户已打开的本地 App 窗口，必要时截图读取画面；找不到窗口时再说明原因并建议网页兜底。')
+  }
+  if (hasVisionGoal(raw)) {
+    steps.push('图片/截图处理：把粘贴或上传的图片作为视觉输入读取，提取关键文字、按钮、错误和用户标注区域。')
+  }
+  if (hasCodeGoal(raw)) {
+    steps.push('代码与文件处理：定位相关源码/配置，最小范围修改，避免改动无关文件或覆盖用户本地配置。')
+  }
+  if (hasRecurringGoal(raw)) {
+    steps.push('持续/定时处理：先跑通一次完整流程并回报，再判断是否需要后台定时任务或轮询执行器。')
+  }
+
+  steps.push(`${executor} 执行：按子任务逐项完成，并输出修改文件、命令、截图/日志或失败原因。`)
+  steps.push(`${reviewer} 验收：对照验收标准复核，明确通过/不通过/需要补充。`)
+  steps.push('Hermes 终审：读取执行和验收结果，给出最终结论、残留风险和下一步建议。')
+  return steps
+}
+
+function renderTaskPlan(task) {
+  const plan = Array.isArray(task.plan) && task.plan.length ? task.plan : splitCollaborationTask(task.goal, task)
+  return plan.map((item, index) => `${index + 1}. ${item}`).join('\n')
 }
 
 export function buildExecutionBrief(task) {
@@ -110,6 +153,9 @@ export function buildExecutionBrief(task) {
     '## 目标',
     task.goal || '（未填写）',
     '',
+    '## Hermes 拆分的子任务',
+    renderTaskPlan(task),
+    '',
     ...executionKickoff,
     '## 执行规则',
     '1. 先读取当前上下文和相关文件，再动手。',
@@ -137,6 +183,9 @@ export function buildReviewBrief(task, executionSummary = '') {
     '',
     '## 原始目标',
     task.goal || '（未填写）',
+    '',
+    '## Hermes 拆分的子任务',
+    renderTaskPlan(task),
     '',
     '## 执行方交接',
     executionSummary || '请读取执行会话中的交接内容。',

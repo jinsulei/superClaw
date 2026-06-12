@@ -1599,8 +1599,8 @@ export function render() {
             ${currentModel ? `<span class="hm-chat-gw-model">${escHtml(currentModel)}</span>` : ''}
           </div>
           <button class="hm-btn hm-btn--primary hm-btn--sm hm-chat-collab-btn" id="hm-chat-collab-open"
-                  title="Hermes 拆需求并派发给 OpenClaw / Claude Code">
-            协作派单
+                  title="Hermes 拆分任务并下发给 OpenClaw / Claude Code">
+            协作任务
           </button>
           <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-chat-search-open"
                   title="${escHtml(t('engine.chatSearchShortcut'))}">
@@ -2398,14 +2398,107 @@ export function render() {
     }
   }
 
+  function normalizeCollaborationGoal(text) {
+    return String(text || '')
+      .replace(/^\s*\[(?:协作任务|协作派单)\]\s*/i, '')
+      .trim()
+  }
+
+  function isCollaborationTaskRequest(text) {
+    return /^\s*\[(?:协作任务|协作派单)\]/i.test(String(text || ''))
+  }
+
+  function dispatchCollaborationTask({
+    goal,
+    executor = COLLAB_TARGETS.openclaw,
+    reviewer = COLLAB_TARGETS.claudeCode,
+    openReviewPanel = true,
+    closeOverlay = null,
+  } = {}) {
+    const cleanGoal = normalizeCollaborationGoal(goal)
+    if (!cleanGoal) {
+      toast('请先填写任务目标。', 'warning')
+      return false
+    }
+    const task = createCollaborationTask({
+      goal: cleanGoal,
+      executor,
+      reviewer,
+      source: COLLAB_TARGETS.hermes,
+    })
+    const brief = buildExecutionBrief(task)
+    const reviewBrief = buildReviewBrief(task, '执行方完成后，请读取执行会话交接内容，再按验收要求复核。')
+    updateCollaborationTask(task.id, {
+      status: 'dispatched',
+      lastDispatchedTo: executor,
+      dispatchedAt: Date.now(),
+      reviewPanelRequested: openReviewPanel,
+    })
+    setPendingDispatch({
+      target: executor,
+      taskId: task.id,
+      stage: 'execute',
+      title: `[执行] ${targetLabel(executor)} · ${shortGoal(cleanGoal)}`,
+      message: brief,
+    })
+    if (openReviewPanel && reviewer !== executor) {
+      setPendingDispatch({
+        target: reviewer,
+        taskId: task.id,
+        stage: 'review',
+        title: `[验收] ${targetLabel(reviewer)} · ${shortGoal(cleanGoal)}`,
+        message: reviewBrief,
+      })
+    }
+
+    if (!store.activeSession()) store.newChat({ title: 'Hermes 协作总控' })
+    store.pushLocalUser(`[协作任务]\n${cleanGoal}`)
+    store.pushLocalAssistant([
+      `已创建协作任务：${task.id}`,
+      `Hermes 已拆分：${Array.isArray(task.plan) ? task.plan.length : 0} 个子任务`,
+      `执行方：${targetLabel(executor)}`,
+      `验收方：${targetLabel(reviewer)}`,
+      `验收面板：${openReviewPanel && reviewer !== executor ? '已打开待命' : '暂不打开'}`,
+      '',
+      '我会先把拆分后的任务单发给执行方；执行完成后，再由验收方复核，最后回到 Hermes 做最终审核。',
+    ].join('\n'))
+
+    closeOverlay?.()
+    resetInput()
+    forceScrollBottom = true
+    draw()
+    openCollaborationPanel(executor, task.id, {
+      title: `${targetLabel(executor)} 执行面板 - ${shortGoal(cleanGoal)}`,
+    }).then(() => {
+      if (openReviewPanel && reviewer !== executor) {
+        setTimeout(() => {
+          openCollaborationPanel(reviewer, `${task.id}-review`, {
+            title: `${targetLabel(reviewer)} 验收面板 - ${shortGoal(cleanGoal)}`,
+          }).catch(err => {
+            toast(`打开验收面板失败：${err?.message || err}`, 'error')
+          })
+        }, 350)
+      }
+      if (executor === COLLAB_TARGETS.claudeCode) {
+        return copyText(brief).then(ok => {
+          if (ok) toast('Claude Code 执行面板已打开，协作任务单已复制。', 'success')
+        }).catch(() => {})
+      }
+      toast(`${targetLabel(executor)} 执行面板已打开。`, 'success')
+    }).catch(err => {
+      toast(`打开执行面板失败：${err?.message || err}`, 'error')
+    })
+    return true
+  }
+
   function openCollaborationDialog() {
     if (store.state.streaming) {
-      toast('Hermes 正在回复，完成后再派单。', 'warning')
+      toast('Hermes 正在回复，完成后再创建协作任务。', 'warning')
       return
     }
-    const defaultGoal = inputValue.trim()
+    const defaultGoal = normalizeCollaborationGoal(inputValue)
     const overlay = showContentModal({
-      title: 'Hermes 协作派单',
+      title: 'Hermes 协作任务',
       width: 620,
       content: `
         <div class="form-group">
@@ -2413,7 +2506,7 @@ export function render() {
           <textarea class="form-input" id="hm-collab-goal" rows="5"
             placeholder="写清楚要做什么、涉及哪个项目、希望谁执行和谁验收。"
             style="min-height:132px;resize:vertical">${escHtml(defaultGoal)}</textarea>
-          <div class="form-hint">Hermes 会生成任务单；执行方新开可见会话，做完后再交给验收方和 Hermes 最终审核。</div>
+          <div class="form-hint">Hermes 会先拆分子任务，再生成任务单；执行方新开可见会话，做完后交给验收方和 Hermes 最终审核。</div>
         </div>
         <div class="form-group">
           <label class="form-label">执行方</label>
@@ -2440,79 +2533,20 @@ export function render() {
         </label>
       `,
       buttons: [
-        { id: 'hm-collab-create', label: '创建并派发', className: 'hm-btn hm-btn--primary hm-btn--sm' },
+        { id: 'hm-collab-create', label: '拆分并下发', className: 'hm-btn hm-btn--primary hm-btn--sm' },
       ],
     })
     overlay.querySelector('#hm-collab-create')?.addEventListener('click', () => {
       const goal = overlay.querySelector('#hm-collab-goal')?.value?.trim() || ''
-      if (!goal) {
-        toast('请先填写任务目标。', 'warning')
-        return
-      }
       const executor = overlay.querySelector('#hm-collab-executor')?.value || COLLAB_TARGETS.openclaw
       const reviewer = overlay.querySelector('#hm-collab-reviewer')?.value || COLLAB_TARGETS.claudeCode
       const openReviewPanel = !!overlay.querySelector('#hm-collab-open-review')?.checked
-      const task = createCollaborationTask({ goal, executor, reviewer, source: COLLAB_TARGETS.hermes })
-      const brief = buildExecutionBrief(task)
-      const reviewBrief = buildReviewBrief(task, '执行方完成后，请读取执行会话交接内容，再按验收要求复核。')
-      updateCollaborationTask(task.id, {
-        status: 'dispatched',
-        lastDispatchedTo: executor,
-        dispatchedAt: Date.now(),
-        reviewPanelRequested: openReviewPanel,
-      })
-      setPendingDispatch({
-        target: executor,
-        taskId: task.id,
-        stage: 'execute',
-        title: `[执行] ${targetLabel(executor)} · ${shortGoal(goal)}`,
-        message: brief,
-      })
-      if (openReviewPanel && reviewer !== executor) {
-        setPendingDispatch({
-          target: reviewer,
-          taskId: task.id,
-          stage: 'review',
-          title: `[验收] ${targetLabel(reviewer)} · ${shortGoal(goal)}`,
-          message: reviewBrief,
-        })
-      }
-
-      if (!store.activeSession()) store.newChat({ title: 'Hermes 协作总控' })
-      store.pushLocalUser(`[协作派单]\n${goal}`)
-      store.pushLocalAssistant([
-        `已创建协作任务：${task.id}`,
-        `执行方：${targetLabel(executor)}`,
-        `验收方：${targetLabel(reviewer)}`,
-        `验收面板：${openReviewPanel && reviewer !== executor ? '已打开待命' : '暂不打开'}`,
-        '',
-        '我会先把任务单发给执行方；执行完成后，再由验收方复核，最后回到 Hermes 做最终审核。',
-      ].join('\n'))
-
-      overlay.close()
-      resetInput()
-      forceScrollBottom = true
-      draw()
-      openCollaborationPanel(executor, task.id, {
-        title: `${targetLabel(executor)} 执行面板 - ${shortGoal(goal)}`,
-      }).then(() => {
-        if (openReviewPanel && reviewer !== executor) {
-          setTimeout(() => {
-            openCollaborationPanel(reviewer, `${task.id}-review`, {
-              title: `${targetLabel(reviewer)} 验收面板 - ${shortGoal(goal)}`,
-            }).catch(err => {
-              toast(`打开验收面板失败：${err?.message || err}`, 'error')
-            })
-          }, 350)
-        }
-        if (executor === COLLAB_TARGETS.claudeCode) {
-          return copyText(brief).then(ok => {
-            if (ok) toast('Claude Code 执行面板已打开，任务单已复制。', 'success')
-          }).catch(() => {})
-        }
-        toast(`${targetLabel(executor)} 执行面板已打开。`, 'success')
-      }).catch(err => {
-        toast(`打开执行面板失败：${err?.message || err}`, 'error')
+      dispatchCollaborationTask({
+        goal,
+        executor,
+        reviewer,
+        openReviewPanel,
+        closeOverlay: () => overlay.close(),
       })
     })
   }
@@ -2575,6 +2609,11 @@ export function render() {
       )
       window.location.hash = '#' + target
       resetInput(); draw(); return
+    }
+
+    if (isCollaborationTaskRequest(text)) {
+      dispatchCollaborationTask({ goal: text })
+      return
     }
 
     let sendInstructions = [
