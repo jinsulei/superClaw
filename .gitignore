@@ -126,6 +126,8 @@ src-tauri/resources/data/hermes/plugins/*
 !src-tauri/resources/data/hermes/plugins/desktop_control_bridge/
 !src-tauri/resources/data/hermes/plugins/desktop_control_bridge/**
 resources/data/
+workspace/
+src-tauri/workspace/
 
 # Local Rust build cache for bundled helper tools
 tools/**/target/

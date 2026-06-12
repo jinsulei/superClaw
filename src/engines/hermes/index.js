@@ -58,9 +58,8 @@ async function tryAutoInit() {
 
     // Step 1: 未安装 → 静默安装
     if (!info?.installed) {
-      await api.installHermes('uv-tool', ['web'])
-      invalidate('check_hermes')
-      info = await api.checkHermes()
+      await detectHermesStatus()
+      return false
     }
 
     // Step 2: 已配置但 Gateway 未运行 → 自动启动
@@ -90,6 +89,9 @@ export default {
 
   async boot() {
     await detectHermesStatus()
+    if (_ready && !_running) {
+      await tryAutoInit()
+    }
     startPoll()
   },
 

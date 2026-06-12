@@ -31,6 +31,16 @@
 
 .PARAMETER SkipNpmInstall
   Do not install npm dependencies even when node_modules is missing.
+
+.PARAMETER OutputDir
+  Optional output directory for the portable desktop client.
+
+.PARAMETER SanitizedTest
+  Create a test package without remote activation, bundled YYAPI provider,
+  or embedded API keys. Existing customer credentials are not copied.
+
+.PARAMETER PackageOnly
+  Skip frontend and Tauri compilation and package the existing executable.
 #>
 
 param(
@@ -38,7 +48,10 @@ param(
   [switch]$Debug,
   [switch]$Clean,
   [switch]$SkipRuntimeDownload,
-  [switch]$SkipNpmInstall
+  [switch]$SkipNpmInstall,
+  [string]$OutputDir = "",
+  [switch]$SanitizedTest,
+  [switch]$PackageOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,6 +103,144 @@ function Remove-IfExists([string]$Path) {
 function Write-Utf8NoBom([string]$Path, [string]$Value) {
   $encoding = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
+function Scrub-SanitizedTextExamples([string]$Root) {
+  if (-not (Test-Path $Root)) {
+    return
+  }
+
+  $extensions = @(".md", ".txt", ".json", ".yaml", ".yml")
+  Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $extensions -contains $_.Extension.ToLowerInvariant() } |
+    ForEach-Object {
+      $path = $_.FullName
+      $text = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
+      if ($null -eq $text) {
+        return
+      }
+
+      $clean = $text
+      $clean = $clean -replace 'Bearer\s+sk-[A-Za-z0-9_-]{8,}', 'Bearer YOUR_API_TOKEN'
+      $clean = $clean -replace 'sk-[A-Za-z0-9_-]{20,}', 'sk-REDACTED'
+      $clean = $clean -replace '(?im)^(\s*export\s+(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY))=.*$', '$1  # set your own key'
+      $clean = $clean -replace '(?im)^(\s*(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY)\s*=\s*).+$', '$1YOUR_API_KEY'
+
+      if ($clean -ne $text) {
+        Write-Utf8NoBom $path $clean
+      }
+    }
+}
+
+function Restore-EnvValue([string]$Name, $Value) {
+  if ($null -eq $Value) {
+    Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+  } else {
+    Set-Item -LiteralPath "Env:$Name" -Value $Value
+  }
+}
+
+function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
+  $PythonRoot = Join-Path $PackagedResources "uv-python"
+  $PythonExe = Join-Path $PythonRoot "python\python.exe"
+  if (Test-Path $PythonExe) {
+    Ok "Portable Python runtime"
+    return $PythonExe
+  }
+
+  $Archive = Get-ChildItem -LiteralPath $PackagedResources -Filter "cpython-*-windows-*.tar.gz" -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $Archive) {
+    Fail "Portable Python archive not found in $PackagedResources"
+  }
+
+  Step "Extracting portable Python runtime"
+  New-Item -ItemType Directory -Path $PythonRoot -Force | Out-Null
+  & tar -xzf $Archive.FullName -C $PythonRoot
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed to extract portable Python archive: $($Archive.FullName)"
+  }
+  Assert-File $PythonExe "Portable Python runtime"
+  return $PythonExe
+}
+
+function Test-PackagedHermesRuntime([string]$PackagedResources, [string]$PythonExe) {
+  $SitePackages = Join-Path $PackagedResources "uv-tools\hermes-agent\Lib\site-packages"
+  $HermesCli = Join-Path $SitePackages "hermes_cli"
+  if (-not (Test-Path $HermesCli)) {
+    return $false
+  }
+
+  $OldPythonPath = $env:PYTHONPATH
+  $OldHermesHome = $env:HERMES_HOME
+  $OldDisableUpdate = $env:HERMES_DISABLE_UPDATE_CHECK
+  $OldNoUserSite = $env:PYTHONNOUSERSITE
+  try {
+    $env:PYTHONPATH = $SitePackages
+    $env:HERMES_HOME = Join-Path $PackagedResources "data\hermes"
+    $env:HERMES_DISABLE_UPDATE_CHECK = "1"
+    $env:PYTHONNOUSERSITE = "1"
+    & $PythonExe -c "import hermes_cli.main; import aiohttp; print('HERMES_RUNTIME_OK')" | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } finally {
+    Restore-EnvValue "PYTHONPATH" $OldPythonPath
+    Restore-EnvValue "HERMES_HOME" $OldHermesHome
+    Restore-EnvValue "HERMES_DISABLE_UPDATE_CHECK" $OldDisableUpdate
+    Restore-EnvValue "PYTHONNOUSERSITE" $OldNoUserSite
+  }
+}
+
+function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$PythonExe) {
+  if (Test-PackagedHermesRuntime $PackagedResources $PythonExe) {
+    Ok "Portable Hermes runtime"
+    return
+  }
+
+  $UvExe = Join-Path $PackagedResources "bin\uv.exe"
+  $HermesZip = Join-Path $PackagedResources "hermes-agent-main.zip"
+  Assert-File $UvExe "Packaged uv.exe"
+  Assert-File $HermesZip "Packaged Hermes source archive"
+
+  Step "Installing portable Hermes runtime"
+  $ToolHome = Join-Path $PackagedResources "uv-tools\hermes-agent"
+  if (Test-Path $ToolHome) {
+    Remove-Item -LiteralPath $ToolHome -Recurse -Force
+  }
+
+  $OldToolDir = $env:UV_TOOL_DIR
+  $OldToolBinDir = $env:UV_TOOL_BIN_DIR
+  $OldPythonInstallDir = $env:UV_PYTHON_INSTALL_DIR
+  $OldNoModifyPath = $env:UV_NO_MODIFY_PATH
+  $OldLinkMode = $env:UV_LINK_MODE
+  try {
+    $env:UV_TOOL_DIR = Join-Path $PackagedResources "uv-tools"
+    $env:UV_TOOL_BIN_DIR = Join-Path $PackagedResources "uv-tools\bin"
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $PackagedResources "uv-python"
+    $env:UV_NO_MODIFY_PATH = "1"
+    $env:UV_LINK_MODE = "copy"
+    & $UvExe tool install --force --python $PythonExe $HermesZip
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to install portable Hermes runtime"
+    }
+
+    $ToolPython = Join-Path $ToolHome "Scripts\python.exe"
+    Assert-File $ToolPython "Portable Hermes venv Python"
+    & $UvExe pip install --python $ToolPython aiohttp
+    if ($LASTEXITCODE -ne 0) {
+      throw "Failed to install portable Hermes API server dependency: aiohttp"
+    }
+  } finally {
+    Restore-EnvValue "UV_TOOL_DIR" $OldToolDir
+    Restore-EnvValue "UV_TOOL_BIN_DIR" $OldToolBinDir
+    Restore-EnvValue "UV_PYTHON_INSTALL_DIR" $OldPythonInstallDir
+    Restore-EnvValue "UV_NO_MODIFY_PATH" $OldNoModifyPath
+    Restore-EnvValue "UV_LINK_MODE" $OldLinkMode
+  }
+
+  if (-not (Test-PackagedHermesRuntime $PackagedResources $PythonExe)) {
+    Fail "Portable Hermes runtime verification failed"
+  }
+  Ok "Portable Hermes runtime"
 }
 
 function Assert-File([string]$Path, [string]$Label) {
@@ -256,20 +407,54 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
 }
 
-function Write-PortablePanelConfig([string]$OpenClawDataDir) {
+function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
   $config = [ordered]@{
     ignoreRisk = $true
     accessPassword = ""
     engineMode = "hermes"
   }
+  if ($SanitizedTestMode) {
+    $config.sanitizedTestMode = $true
+    $config.disableYyapiAutoSync = $true
+  }
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
 
-function Repair-HermesConfig([string]$HermesDataDir) {
+function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
+
+  if ($SanitizedTestMode) {
+    Set-Content -Path $configPath -Encoding UTF8 -Value @"
+# Hermes Agent configuration (sanitized SuperClaw test package)
+# No provider, base URL, or API key is bundled. Configure a model in the UI
+# or through the customer's own local settings after launch.
+model:
+  default:
+  provider:
+  base_url:
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+terminal:
+  backend: local
+platforms:
+  api_server:
+    enabled: true
+api_server:
+  host: 127.0.0.1
+  port: 8642
+skills:
+  disabled: []
+"@
+    Set-Content -Path $envPath -Encoding UTF8 -Value @"
+GATEWAY_ALLOW_ALL_USERS=true
+API_SERVER_KEY=clawpanel-local
+"@
+    return
+  }
 
   if (-not (Test-Path $configPath)) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
@@ -314,10 +499,62 @@ skills:
   Set-Content -Path $envPath -Encoding UTF8 -Value ($envText.Trim() + "`n")
 }
 
+function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
+  New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+
+  $HermesData = Join-Path $DataRoot "hermes"
+  New-Item -ItemType Directory -Path $HermesData -Force | Out-Null
+  foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks")) {
+    Remove-IfExists (Join-Path $HermesData $name)
+  }
+  foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "auth.lock", ".skills_prompt_snapshot.json", ".tirith-install-failed", "channel_directory.json")) {
+    Remove-IfExists (Join-Path $HermesData $name)
+  }
+  foreach ($name in @("cache", "models_dev_cache.json")) {
+    Remove-IfExists (Join-Path $HermesData $name)
+  }
+  Remove-IfExists (Join-Path $HermesData "skills\index-cache")
+  Remove-IfExists (Join-Path $HermesData "skills\.hub\index-cache")
+  Remove-IfExists (Join-Path $HermesData "skills\.curator_backups")
+  Get-ChildItem -Path $HermesData -File -Filter "*.bak*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -Path $HermesData -File -Filter "*.last-good*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -Path $HermesData -File -Filter "*.db" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -Path $HermesData -File -Filter "*.db-shm" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -Path $HermesData -File -Filter "*.db-wal" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
+  $DotOpenClaw = Join-Path $DataRoot ".openclaw"
+  Remove-IfExists $DotOpenClaw
+  New-Item -ItemType Directory -Path $DotOpenClaw -Force | Out-Null
+
+  $ClawPanelData = Join-Path $DataRoot "clawpanel"
+  Remove-IfExists (Join-Path $ClawPanelData "sessions")
+  Remove-IfExists (Join-Path $ClawPanelData "logs")
+
+  $ClaudePanelData = Join-Path $DataRoot "claude-panel"
+  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache")) {
+    Remove-IfExists (Join-Path $ClaudePanelData $name)
+  }
+
+  $ClaudeConfig = Join-Path $DataRoot "claude-code\home\claude-config"
+  foreach ($name in @("backups", "plans", "projects", "sessions")) {
+    Remove-IfExists (Join-Path $ClaudeConfig $name)
+  }
+
+  Write-PortableOpenClawConfig $DotOpenClaw
+  Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
+  Repair-HermesConfig $HermesData $SanitizedTestMode
+}
+
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $TauriDir = Join-Path $Root "src-tauri"
 $ResourcesDir = Join-Path $TauriDir "resources"
-$OutDir = Join-Path $Root "SuperClaw_Desktop_Client"
+if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+  $OutDir = Join-Path $Root "SuperClaw_Desktop_Client"
+} elseif ([System.IO.Path]::IsPathRooted($OutputDir)) {
+  $OutDir = $OutputDir
+} else {
+  $OutDir = Join-Path $Root $OutputDir
+}
 $ModeDir = if ($Debug) { "debug" } else { "release" }
 $ExeSource = Join-Path $TauriDir "target\$ModeDir\superclaw.exe"
 $ExeDest = Join-Path $OutDir "superclaw.exe"
@@ -329,6 +566,13 @@ Write-Host "  SuperClaw Desktop Client Builder" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ("Project: " + $Root)
 Write-Host ("Mode:    " + $(if ($Debug) { "debug" } else { "release" }))
+Write-Host ("Output:  " + $OutDir)
+if ($SanitizedTest) {
+  Write-Host "Package: Sanitized test build (activation and bundled YYAPI disabled)" -ForegroundColor Yellow
+}
+if ($PackageOnly) {
+  Write-Host "Build:   PackageOnly (using existing executable)" -ForegroundColor Yellow
+}
 
 Step "Checking build tools"
 foreach ($tool in @("node", "npm", "cargo", "rustc", "robocopy")) {
@@ -374,7 +618,10 @@ $NodeModules = Join-Path $Root "node_modules"
 $ViteBin = Join-Path $NodeModules ".bin\vite.cmd"
 $NeedsNpmInstall = (-not (Test-Path $NodeModules)) -or (-not (Test-Path $ViteBin))
 
-if (-not $SkipNpmInstall -and $NeedsNpmInstall) {
+if ($PackageOnly) {
+  Step "Npm dependencies"
+  Warn "Skipped by -PackageOnly"
+} elseif (-not $SkipNpmInstall -and $NeedsNpmInstall) {
   if ((Test-Path (Join-Path $Root "package-lock.json")) -and (-not (Test-Path $NodeModules))) {
     Invoke-Checked -File "npm" -Arguments @("ci") -Title "Installing npm dependencies"
   } else {
@@ -389,7 +636,10 @@ if (-not $SkipNpmInstall -and $NeedsNpmInstall) {
   }
 }
 
-if (-not $SkipRuntimeDownload) {
+if ($PackageOnly) {
+  Step "Runtime download"
+  Warn "Skipped by -PackageOnly"
+} elseif (-not $SkipRuntimeDownload) {
   if (Test-Path (Join-Path $Root "scripts\download-uv.js")) {
     Invoke-Checked -File "npm" -Arguments @("run", "download:uv") -Title "Preparing uv runtime archive"
   }
@@ -401,16 +651,27 @@ if (-not $SkipRuntimeDownload) {
   Warn "Skipped by -SkipRuntimeDownload"
 }
 
-if ($Clean) {
+Step "Preparing portable resource data"
+Prepare-PortableDataState (Join-Path $ResourcesDir "data") $SanitizedTest.IsPresent
+Ok "Source resource data is sanitized for desktop packaging"
+
+if (-not $PackageOnly -and $Clean) {
   Invoke-Checked -File "cargo" -Arguments @("clean", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Cleaning Rust target"
 }
 
-Invoke-Checked -File "npm" -Arguments @("run", "build") -Title "Building frontend"
-
-if ($Debug) {
-  Invoke-Checked -File "cargo" -Arguments @("build", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Building Tauri shell"
+if ($PackageOnly) {
+  Step "Building frontend"
+  Warn "Skipped by -PackageOnly"
+  Step "Building Tauri shell"
+  Warn "Skipped by -PackageOnly"
 } else {
-  Invoke-Checked -File "npm" -Arguments @("run", "tauri:build") -Title "Building Tauri shell with embedded frontend"
+  Invoke-Checked -File "npm" -Arguments @("run", "build") -Title "Building frontend"
+
+  if ($Debug) {
+    Invoke-Checked -File "cargo" -Arguments @("build", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Building Tauri shell"
+  } else {
+    Invoke-Checked -File "npm" -Arguments @("run", "tauri:build") -Title "Building Tauri shell with embedded frontend"
+  }
 }
 
 Assert-File $ExeSource "Built desktop executable"
@@ -424,32 +685,29 @@ Ok "Copied superclaw.exe and complete resources/"
 
 Step "Cleaning packaged runtime state"
 $PackagedResources = Join-Path $OutDir "resources"
-$HermesData = Join-Path $PackagedResources "data\hermes"
-foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks")) {
-  Remove-IfExists (Join-Path $HermesData $name)
+Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
+if ($SanitizedTest) {
+  Scrub-SanitizedTextExamples (Join-Path $PackagedResources "data")
 }
-foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "auth.lock", ".skills_prompt_snapshot.json")) {
-  Remove-IfExists (Join-Path $HermesData $name)
-}
-
-$DotOpenClaw = Join-Path $PackagedResources "data\.openclaw"
-foreach ($name in @(
-  "clawpanel-device-key.json",
-  "gateway-owner.json",
-  "openclaw.json",
-  "openclaw.json.bak",
-  "openclaw.json.last-good",
-  "update-check.json"
-)) {
-  Remove-IfExists (Join-Path $DotOpenClaw $name)
-}
-foreach ($name in @("agents", "canvas", "devices", "identity", "logs", "tasks", "workspace")) {
-  Remove-IfExists (Join-Path $DotOpenClaw $name)
-}
-Write-PortableOpenClawConfig $DotOpenClaw
-Write-PortablePanelConfig $DotOpenClaw
-Repair-HermesConfig $HermesData
 Ok "Removed local sessions, logs, locks, and machine-specific OpenClaw state"
+
+Step "Preparing packaged Hermes runtime"
+$PackagedPython = Ensure-PackagedPythonRuntime $PackagedResources
+Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
+
+if ($SanitizedTest) {
+  $SanitizedReadmeLines = @(
+    "SuperClaw sanitized test package",
+    "",
+    "1. Local activation and access password are skipped. Double-click superclaw.exe to open the control panel.",
+    "2. No YYAPI base URL, real API key, or local customer session is bundled.",
+    "3. OpenClaw keeps a MiniMax placeholder only: `${MINIMAX_API_KEY}. Configure your own key before chat testing.",
+    "4. Hermes is not bound to a provider in this test package. Configure a model in the UI after launch.",
+    "5. This is a USB test package, not a customer delivery package."
+  )
+  $SanitizedReadme = $SanitizedReadmeLines -join [Environment]::NewLine
+  Write-Utf8NoBom (Join-Path $OutDir "README-SANITIZED-TEST.txt") $SanitizedReadme
+}
 
 Step "Fixing portable uv virtualenv paths"
 $ActivateBat = Join-Path $PackagedResources "uv-tools\hermes-agent\Scripts\activate.bat"

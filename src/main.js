@@ -70,6 +70,14 @@ async function checkRemoteAuth() {
   // Desktop portable mode must be locally usable even when the remote account
   // service or YYApi token sync is unavailable.
   if (isTauri) {
+    try {
+      const cfg = await api.readPanelConfig()
+      if (cfg?.sanitizedTestMode || cfg?.disableYyapiAutoSync) {
+        localStorage.removeItem('superclaw_yyapi_key')
+        localStorage.setItem('superclaw_yyapi_deleted', '1')
+        sessionStorage.setItem('superclaw_yyapi_dismissed', '1')
+      }
+    } catch {}
     sessionStorage.setItem('superclaw_authed', '1')
     return { ok: true }
   }
