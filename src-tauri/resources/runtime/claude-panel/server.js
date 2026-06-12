@@ -1817,7 +1817,13 @@ async function handleRun(req, res) {
     args.push("--disable-slash-commands");
   }
 
-  if (payload.continueSession) {
+  const resumeSessionId = typeof payload.resumeSessionId === "string"
+    && /^[A-Za-z0-9:_-]{8,200}$/.test(payload.resumeSessionId)
+    ? payload.resumeSessionId
+    : "";
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+  } else if (payload.continueSession) {
     args.push("--continue");
   }
   if (model) {
@@ -1901,6 +1907,7 @@ async function handleRun(req, res) {
     toolProfile,
     browserAccess,
     attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
+    resumed: Boolean(resumeSessionId),
     continued: Boolean(payload.continueSession),
   });
 
@@ -2767,7 +2774,7 @@ function reservedContract(featureKey) {
       adminReserved: ADMIN_PORT,
     },
     auth: {
-      header: "Authorization: Bearer <admin-token>",
+      header: "Authorization header carrying the admin token",
       alternateHeader: "X-Admin-Token: <admin-token>",
       tokenEnv: "CLEAN_PANEL_ADMIN_TOKEN",
     },

@@ -147,7 +147,7 @@ function Write-HermesConfig([string]$Dir) {
 # Hermes Agent portable configuration.
 model:
   default: ""
-  provider: openai-api
+  provider: custom
   base_url: http://124.222.21.44:3002/v1
 platform_toolsets:
   api_server:

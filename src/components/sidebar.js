@@ -131,7 +131,6 @@ function _renderEngineSwitcher() {
         name: 'Claude Code',
         icon: ICONS.assistant,
         action: 'claude-code',
-        badge: '面板',
       },
     ]
   })
@@ -617,13 +616,12 @@ export function renderSidebar(el) {
         }
         if (action === 'claude-code') {
           engineOpt.style.opacity = '0.5'
-          api.claudeCodeNativeStart().then(async (res) => {
-            const status = res?.status || res || {}
+          Promise.resolve().then(async () => {
             await switchEngine('hermes')
+            await api.claudeCodeStart()
             renderSidebar(el)
             navigate('/h/claude-code')
-            const nativeVersion = status?.version ? `（${status.version}）` : ''
-            toast(`Claude Code 原生终端已打开${nativeVersion}`, 'success')
+            toast('Claude Code 控制面板已启动', 'success')
           }).catch(err => {
             console.error('[sidebar] Claude Code 接通失败:', err)
             toast(`Claude Code 接通失败：${err?.message || err}`, 'error')

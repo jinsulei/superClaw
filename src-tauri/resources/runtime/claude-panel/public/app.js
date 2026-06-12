@@ -1997,6 +1997,7 @@ function createConversation(prompt, titleSource = prompt) {
     archived: false,
     pinned: false,
     result: "",
+    nativeSessionId: "",
   };
   conversations.unshift(conversation);
   currentConversationId = conversation.id;
@@ -2043,6 +2044,7 @@ function ensureProjectConversation(projectPath, titleSource = "") {
     result: "",
     projectPath: normalizedPath,
     kind: "project",
+    nativeSessionId: "",
   };
   conversations.unshift(conversation);
   currentConversationId = conversation.id;
@@ -4492,6 +4494,13 @@ function handlePacket(packet) {
       speakVoiceReply(replyText || "已完成。");
       voiceReplyPending = false;
     }
+  } else if (event === "meta") {
+    if (payload.sessionId) {
+      updateCurrentConversation({
+        nativeSessionId: payload.sessionId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
 }
 
@@ -4607,6 +4616,11 @@ async function startRun(prompt, overrides = {}) {
         : browserModeRequested && browserModeConfirmed
           ? "once"
         : "none");
+    const activeConversation = currentConversationId ? getConversation(currentConversationId) : null;
+    const resumeSessionId = activeConversation?.nativeSessionId || "";
+    const continueSession = Object.prototype.hasOwnProperty.call(overrides, "continueSession")
+      ? Boolean(overrides.continueSession)
+      : Boolean(resumeSessionId || continueToggle.checked);
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4619,7 +4633,8 @@ async function startRun(prompt, overrides = {}) {
         toolProfile: overrides.toolProfile || permissionConfig.toolProfile,
         browserAccess,
         riskAccepted,
-        continueSession: continueToggle.checked,
+        continueSession,
+        resumeSessionId,
         attachments: outgoingAttachments,
         ...overrides,
       }),

@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -54,6 +55,10 @@ fn claude_panel_data_dir(resources: &Path) -> PathBuf {
     resources.join("data").join("claude-panel")
 }
 
+fn hermes_env_path(resources: &Path) -> PathBuf {
+    resources.join("data").join("hermes").join(".env")
+}
+
 fn claude_relay_config_path(resources: &Path) -> PathBuf {
     claude_panel_data_dir(resources).join("relay-config.json")
 }
@@ -74,6 +79,55 @@ fn bundled_node_path(resources: &Path) -> PathBuf {
     resources.join("runtime").join("openclaw").join(file_name)
 }
 
+fn read_env_file(path: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Ok(text) = fs::read_to_string(path) else {
+        return out;
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+        out.insert(key.to_string(), value);
+    }
+    out
+}
+
+fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String)> {
+    let env = read_env_file(&hermes_env_path(resources));
+    let key = env
+        .get("MINIMAX_API_KEY")
+        .or_else(|| env.get("MINIMAX_CN_API_KEY"))
+        .cloned()
+        .filter(|v| !v.trim().is_empty() && !v.contains("${"))?;
+    let base = env
+        .get("MINIMAX_BASE_URL")
+        .or_else(|| env.get("MINIMAX_CN_BASE_URL"))
+        .cloned()
+        .filter(|v| !v.trim().is_empty() && !v.contains("${"))
+        .unwrap_or_else(|| "https://api.minimaxi.com/anthropic/v1".to_string());
+    Some((key, base))
+}
+
+fn apply_minimax_env(cmd: &mut Command, resources: &Path) {
+    if let Some((key, base)) = claude_compatible_minimax_env(resources) {
+        cmd.env("MINIMAX_API_KEY", &key)
+            .env("MINIMAX_BASE_URL", &base)
+            .env("ANTHROPIC_API_KEY", &key)
+            .env("ANTHROPIC_AUTH_TOKEN", &key)
+            .env("ANTHROPIC_BASE_URL", &base);
+    }
+}
+
 fn panel_url() -> String {
     format!("http://127.0.0.1:{}/", CLAUDE_PANEL_PORT)
 }
@@ -87,7 +141,7 @@ fn ensure_portable_dirs(home: &Path, projects: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_portable_env(cmd: &mut Command, home: &Path, projects: &Path) {
+fn apply_portable_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &Path) {
     cmd.env("HOME", home)
         .env("USERPROFILE", home)
         .env("APPDATA", home.join("AppData").join("Roaming"))
@@ -98,6 +152,7 @@ fn apply_portable_env(cmd: &mut Command, home: &Path, projects: &Path) {
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped());
+    apply_minimax_env(cmd, resources);
 }
 
 fn is_port_open(port: u16) -> bool {
@@ -161,6 +216,7 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
         .env("LOCALAPPDATA", localappdata)
         .env("PATH", next_path)
         .stdin(Stdio::null());
+    apply_minimax_env(cmd, resources);
 }
 
 fn panel_running_info(resources: &Path) -> Value {
@@ -182,7 +238,10 @@ fn read_claude_version(claude: &Path, home: &Path, projects: &Path) -> (Option<S
     let mut cmd = Command::new(claude);
     cmd.arg("--version")
         .current_dir(projects.parent().unwrap_or(projects));
-    apply_portable_env(&mut cmd, home, projects);
+    let Ok(resources) = resources_dir() else {
+        return (None, "SuperClaw resources dir was not found".to_string());
+    };
+    apply_portable_env(&mut cmd, &resources, home, projects);
 
     match cmd.output() {
         Ok(output) => {
@@ -333,6 +392,7 @@ fn quote_cmd(value: &Path) -> String {
 
 #[cfg(target_os = "windows")]
 fn write_native_launcher(
+    resources: &Path,
     home: &Path,
     projects: &Path,
     run_cwd: &Path,
@@ -343,6 +403,7 @@ fn write_native_launcher(
     let config_dir = home.join("claude-config");
     let launcher = home.join("run-claude-native.cmd");
     let claude_dir = claude.parent().unwrap_or_else(|| Path::new(""));
+    let minimax_env = claude_compatible_minimax_env(resources);
     let lines = vec![
         "@echo off".to_string(),
         "chcp 65001 >nul".to_string(),
@@ -355,6 +416,26 @@ fn write_native_launcher(
         format!("set \"CLAUDE_CONFIG_DIR={}\"", config_dir.display()),
         format!("set \"CLAUDE_CODE_PROJECTS_DIR={}\"", projects.display()),
         "set \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\"".to_string(),
+        minimax_env
+            .as_ref()
+            .map(|(key, _)| format!("set \"MINIMAX_API_KEY={}\"", key))
+            .unwrap_or_else(|| "rem MINIMAX_API_KEY not configured".to_string()),
+        minimax_env
+            .as_ref()
+            .map(|(_, base)| format!("set \"MINIMAX_BASE_URL={}\"", base))
+            .unwrap_or_else(|| "rem MINIMAX_BASE_URL not configured".to_string()),
+        minimax_env
+            .as_ref()
+            .map(|(key, _)| format!("set \"ANTHROPIC_API_KEY={}\"", key))
+            .unwrap_or_else(|| "rem ANTHROPIC_API_KEY not configured".to_string()),
+        minimax_env
+            .as_ref()
+            .map(|(key, _)| format!("set \"ANTHROPIC_AUTH_TOKEN={}\"", key))
+            .unwrap_or_else(|| "rem ANTHROPIC_AUTH_TOKEN not configured".to_string()),
+        minimax_env
+            .as_ref()
+            .map(|(_, base)| format!("set \"ANTHROPIC_BASE_URL={}\"", base))
+            .unwrap_or_else(|| "rem ANTHROPIC_BASE_URL not configured".to_string()),
         format!("set \"PATH={};%PATH%\"", claude_dir.display()),
         quote_cmd(claude),
     ];
@@ -402,7 +483,7 @@ fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let launcher = write_native_launcher(&home, &projects, &run_cwd, &claude)?;
+        let launcher = write_native_launcher(&resources, &home, &projects, &run_cwd, &claude)?;
         let mut cmd = Command::new("cmd.exe");
         cmd.args(["/d", "/c", "start", "", "cmd.exe", "/k"])
             .arg(&launcher)
@@ -414,6 +495,7 @@ fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
         .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
         .env("CLAUDE_CODE_PROJECTS_DIR", &projects)
         .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        apply_minimax_env(&mut cmd, &resources);
         launcher_path = Some(launcher);
         cmd.spawn()
             .map_err(|e| format!("启动 Claude Code 原生终端失败：{e}"))?;
@@ -423,7 +505,7 @@ fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
     {
         let mut cmd = Command::new(&claude);
         cmd.current_dir(&run_cwd);
-        apply_portable_env(&mut cmd, &home, &projects);
+        apply_portable_env(&mut cmd, &resources, &home, &projects);
         cmd.spawn()
             .map_err(|e| format!("启动 Claude Code 原生终端失败：{e}"))?;
     }

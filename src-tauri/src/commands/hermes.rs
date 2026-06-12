@@ -2865,22 +2865,49 @@ pub async fn configure_hermes(
 
     // ---- 写入 config.yaml（合并模式：保留用户自定义的 hooks/skills/cron 等） ----
     let config_path = home.join("config.yaml");
-    let base_url_line = match base_url.as_ref() {
-        Some(url) if !url.trim().is_empty() => format!("  base_url: {}\n", url.trim()),
-        _ => String::new(),
+    let base_url_value = base_url
+        .as_ref()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .unwrap_or_default();
+    let base_url_line = if !base_url_value.is_empty() {
+        format!("  base_url: {base_url_value}\n")
+    } else {
+        String::new()
+    };
+    let api_mode_line = if !base_url_value.is_empty() {
+        "  api_mode: chat_completions\n".to_string()
+    } else {
+        String::new()
+    };
+    let custom_provider_block = if !base_url_value.is_empty() {
+        format!(
+            "custom_providers:\n  - name: yyapi\n    base_url: {base_url_value}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: {model_str}\n"
+        )
+    } else {
+        String::new()
+    };
+    let base_url_for_env: Option<String> = match base_url.as_ref() {
+        Some(url) if !url.trim().is_empty() => Some(url.trim().to_string()),
+        _ => None,
     };
     // Provider 字段：Hermes v0.14+ 的 model_switch 依赖该字段决定 env_var。
     // `custom` 不写 provider 行，让 Hermes 从 base_url 自动推断。
     let provider_line = if provider.is_empty() {
         String::new()
     } else {
-        format!("  provider: {provider}\n")
+        format!("  provider: {provider}\n{api_mode_line}")
     };
 
     let config_content = if config_path.exists() {
         // 读取现有配置，只更新 model 区块，保留其余内容
         let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-        merge_hermes_config_yaml(&existing, &model_str, &base_url_line, &provider_line)
+        merge_hermes_config_yaml(
+            &existing,
+            &model_str,
+            &base_url_line,
+            &provider_line,
+            &custom_provider_block,
+        )
     } else {
         // 首次创建：生成完整的基线配置
         format!(
@@ -2895,6 +2922,7 @@ terminal:
 platforms:
   api_server:
     enabled: true
+{custom_provider_block}
 "#
         )
     };
@@ -2926,7 +2954,7 @@ platforms:
         eprintln!("[configure_hermes] Provider '{provider}' uses OAuth; ignoring provided api_key");
     }
 
-    if let (Some(env), Some(url)) = (url_env, base_url.as_ref()) {
+    if let (Some(env), Some(url)) = (url_env, base_url_for_env.as_ref()) {
         let u = url.trim();
         if !u.is_empty() {
             new_pairs.push((env.into(), u.into()));
@@ -2968,6 +2996,7 @@ fn merge_hermes_config_yaml(
     model_str: &str,
     base_url_line: &str,
     provider_line: &str,
+    custom_provider_block: &str,
 ) -> String {
     let mut result = Vec::new();
     let mut in_model_block = false;
@@ -2978,6 +3007,24 @@ fn merge_hermes_config_yaml(
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
+
+        if is_hermes_model_provider_section(trimmed) {
+            i += 1;
+            while i < lines.len() {
+                let next = lines[i];
+                let next_trimmed = next.trim();
+                if next_trimmed.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                if next.starts_with("  ") || next.starts_with('\t') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
 
         if trimmed == "model:" || trimmed.starts_with("model:") {
             // 进入 model 区块，写入新的 model 配置
@@ -3051,10 +3098,29 @@ fn merge_hermes_config_yaml(
     if !final_content.contains("platforms:") {
         final_content.push_str("platforms:\n  api_server:\n    enabled: true\n");
     }
+    if !custom_provider_block.trim().is_empty() {
+        if !final_content.ends_with('\n') {
+            final_content.push('\n');
+        }
+        final_content.push_str(custom_provider_block);
+    }
     if !final_content.ends_with('\n') {
         final_content.push('\n');
     }
     final_content
+}
+
+fn is_hermes_model_provider_section(trimmed: &str) -> bool {
+    trimmed == "custom_providers:"
+        || trimmed.starts_with("custom_providers:")
+        || trimmed == "providers:"
+        || trimmed.starts_with("providers:")
+        || trimmed == "fallback_providers:"
+        || trimmed.starts_with("fallback_providers:")
+        || trimmed == "credential_pool_strategies:"
+        || trimmed.starts_with("credential_pool_strategies:")
+        || trimmed == "auxiliary:"
+        || trimmed.starts_with("auxiliary:")
 }
 
 /// 合并 .env 文件：更新 managed_keys 对应的值，保留用户自定义的其他环境变量。
@@ -3092,165 +3158,13 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
     content
 }
 
-fn env_value(raw: &str, key: &str) -> Option<String> {
-    raw.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            return None;
-        }
-        trimmed
-            .split_once('=')
-            .and_then(|(k, v)| (k.trim() == key).then(|| v.trim().to_string()))
-    })
-}
-
-fn env_key_count(raw: &str, key: &str) -> usize {
-    raw.lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return false;
-            }
-            trimmed
-                .split_once('=')
-                .map(|(k, _)| k.trim() == key)
-                .unwrap_or(false)
-        })
-        .count()
-}
-
-fn is_placeholder_token(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.is_empty()
-        || trimmed.eq_ignore_ascii_case("YYAPI")
-        || trimmed.eq_ignore_ascii_case("superclaw-login-required")
-        || trimmed.contains('*')
-}
-
-fn strip_provider_prefix(value: &str) -> String {
-    value
-        .split_once('/')
-        .map(|(_, model)| model)
-        .unwrap_or(value)
-        .trim()
-        .to_string()
-}
-
-fn read_hermes_model_from_config(raw: &str) -> String {
-    let mut in_model = false;
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("model:") {
-            in_model = true;
-            continue;
-        }
-        if in_model {
-            if let Some(v) = trimmed.strip_prefix("default:") {
-                return strip_provider_prefix(v.trim().trim_matches('"'));
-            }
-            if !trimmed.is_empty() && !line.starts_with("  ") && !line.starts_with('\t') {
-                break;
-            }
-        }
-    }
-    String::new()
-}
-
-fn yyapi_profile_from_openclaw() -> Option<(String, String, String)> {
-    let raw = std::fs::read_to_string(super::openclaw_dir().join("openclaw.json")).ok()?;
-    let cfg: Value = serde_json::from_str(&raw).ok()?;
-    let providers = cfg.get("models")?.get("providers")?.as_object()?;
-    let provider = providers.get("yyapi").or_else(|| {
-        providers.values().find(|p| {
-            p.get("baseUrl")
-                .and_then(|v| v.as_str())
-                .map(|url| url.contains("124.222.21.44:3002"))
-                .unwrap_or(false)
-        })
-    })?;
-    let api_key = provider.get("apiKey")?.as_str()?.trim().to_string();
-    if is_placeholder_token(&api_key) {
-        return None;
-    }
-    let base_url = provider
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://124.222.21.44:3002/v1")
-        .trim()
-        .to_string();
-    let model = cfg
-        .pointer("/agents/defaults/model/primary")
-        .and_then(|v| v.as_str())
-        .map(strip_provider_prefix)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            provider
-                .get("models")
-                .and_then(|v| v.as_array())
-                .and_then(|items| items.first())
-                .and_then(|item| {
-                    item.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| item.get("id").and_then(|v| v.as_str()).map(String::from))
-                })
-        })
-        .unwrap_or_default();
-    Some((api_key, base_url, model))
-}
-
 fn repair_hermes_yyapi_env_from_openclaw() -> Result<bool, String> {
-    let Some((api_key, base_url, openclaw_model)) = yyapi_profile_from_openclaw() else {
-        return Ok(false);
-    };
-
-    let home = hermes_home();
-    let env_path = home.join(".env");
-    let config_path = home.join("config.yaml");
-    let env_raw = std::fs::read_to_string(&env_path).unwrap_or_default();
-    let config_raw = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let api_server_key =
-        env_value(&env_raw, "API_SERVER_KEY").unwrap_or_else(|| "clawpanel-local".to_string());
-
-    let mut changed = false;
-    if env_value(&env_raw, "OPENAI_API_KEY").as_deref() != Some(api_key.as_str())
-        || env_key_count(&env_raw, "OPENAI_API_KEY") != 1
-        || env_value(&env_raw, "OPENAI_BASE_URL").as_deref() != Some(base_url.as_str())
-    {
-        use super::hermes_providers;
-        let managed = hermes_providers::all_managed_env_keys();
-        let pairs = vec![
-            ("OPENAI_API_KEY".to_string(), api_key.clone()),
-            ("OPENAI_BASE_URL".to_string(), base_url.clone()),
-            ("GATEWAY_ALLOW_ALL_USERS".to_string(), "true".to_string()),
-            ("API_SERVER_KEY".to_string(), api_server_key),
-        ];
-        let merged = merge_env_file(&env_raw, &managed, &pairs);
-        std::fs::write(&env_path, merged).map_err(|e| format!("写入 Hermes .env 失败: {e}"))?;
-        changed = true;
-    }
-
-    let hermes_model = read_hermes_model_from_config(&config_raw);
-    let model = if hermes_model.is_empty() { openclaw_model } else { hermes_model };
-    let provider_line = "  provider: openai-api\n".to_string();
-    let base_url_line = format!("  base_url: {base_url}\n");
-    let next_config = if config_raw.trim().is_empty() {
-        format!("# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: {model}\n{provider_line}{base_url_line}platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n")
-    } else {
-        merge_hermes_config_yaml(&config_raw, &model, &base_url_line, &provider_line)
-    };
-    if next_config != config_raw {
-        std::fs::write(&config_path, next_config)
-            .map_err(|e| format!("写入 Hermes config.yaml 失败: {e}"))?;
-        changed = true;
-    }
-
-    Ok(changed)
+    // Do not mirror OpenClaw's YYAPI profile into Hermes at runtime.
+    // Hermes uses its own provider registry; writing OpenClaw's synthetic
+    // `openai-api` provider here makes Hermes chats fail with
+    // "Unknown provider 'openai-api'".
+    Ok(false)
 }
-
-// ---------------------------------------------------------------------------
-// hermes_read_config — 读取 Hermes config.yaml + .env
-// ---------------------------------------------------------------------------
-
 #[tauri::command]
 pub async fn hermes_read_config() -> Result<Value, String> {
     use super::hermes_providers;
@@ -4518,6 +4432,82 @@ pub async fn hermes_api_proxy(
 // hermes_agent_run — 通过 /v1/runs + SSE 事件流驱动 Agent（工具调用可见）
 // ---------------------------------------------------------------------------
 
+fn json_string_field(value: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(s) = value.get(*key).and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
+    let text = input.trim();
+    let mut parts: Vec<Value> = Vec::new();
+    if !text.is_empty() {
+        parts.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+
+    if let Some(items) = attachments.as_ref().and_then(|v| v.as_array()) {
+        for item in items {
+            let category = json_string_field(item, &["category", "type"]).to_ascii_lowercase();
+            let mime_type = {
+                let mime = json_string_field(item, &["mimeType", "mediaType", "mime"]);
+                if mime.is_empty() {
+                    "image/png".to_string()
+                } else {
+                    mime
+                }
+            };
+            if category != "image" && !mime_type.to_ascii_lowercase().starts_with("image/") {
+                continue;
+            }
+
+            let mut url = json_string_field(item, &["url", "dataUrl"]);
+            let data = json_string_field(item, &["content", "data"]);
+            if url.is_empty() && !data.is_empty() {
+                if data.starts_with("data:image/") {
+                    url = data;
+                } else {
+                    url = format!("data:{mime_type};base64,{data}");
+                }
+            }
+
+            let lower = url.to_ascii_lowercase();
+            if !(lower.starts_with("data:image/")
+                || lower.starts_with("http://")
+                || lower.starts_with("https://"))
+            {
+                continue;
+            }
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": url, "detail": "auto" }
+            }));
+        }
+    }
+
+    let has_image = parts
+        .iter()
+        .any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"));
+    if !has_image {
+        return Value::String(text.to_string());
+    }
+    if !parts
+        .iter()
+        .any(|part| part.get("type").and_then(|v| v.as_str()) == Some("text"))
+    {
+        parts.insert(
+            0,
+            serde_json::json!({ "type": "text", "text": "请分析我刚刚上传或粘贴的图片。" }),
+        );
+    }
+    serde_json::json!([{ "role": "user", "content": parts }])
+}
+
 #[tauri::command]
 pub async fn hermes_agent_run(
     app: tauri::AppHandle,
@@ -4525,6 +4515,7 @@ pub async fn hermes_agent_run(
     session_id: Option<String>,
     conversation_history: Option<Value>,
     instructions: Option<String>,
+    attachments: Option<Value>,
 ) -> Result<String, String> {
     let gw_url = hermes_gateway_url();
     let runs_url = format!("{gw_url}/v1/runs");
@@ -4553,7 +4544,7 @@ pub async fn hermes_agent_run(
         key
     };
 
-    let mut payload = serde_json::json!({ "input": input });
+    let mut payload = serde_json::json!({ "input": build_hermes_run_input(&input, &attachments) });
     if let Some(sid) = &session_id {
         payload["session_id"] = Value::String(sid.clone());
     }
@@ -4600,10 +4591,20 @@ pub async fn hermes_agent_run(
         .as_str()
         .ok_or("响应中没有 run_id")?
         .to_string();
+    let response_session_id = body
+        .get("session_id")
+        .or_else(|| body.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .or(session_id.as_deref())
+        .unwrap_or("")
+        .to_string();
 
     let _ = app.emit(
         "hermes-run-started",
-        serde_json::json!({ "run_id": &run_id }),
+        serde_json::json!({
+            "run_id": &run_id,
+            "session_id": &response_session_id,
+        }),
     );
 
     // 2. GET /v1/runs/{run_id}/events — SSE 事件流
@@ -4658,6 +4659,7 @@ pub async fn hermes_agent_run(
                     "hermes-run-done",
                     serde_json::json!({
                         "run_id": &run_id,
+                        "session_id": &response_session_id,
                         "output": &final_output,
                     }),
                 );
@@ -4693,6 +4695,7 @@ pub async fn hermes_agent_run(
                             "hermes-run-done",
                             serde_json::json!({
                                 "run_id": &run_id,
+                                "session_id": &response_session_id,
                                 "output": &final_output,
                             }),
                         );
@@ -4704,6 +4707,7 @@ pub async fn hermes_agent_run(
                             "hermes-run-error",
                             serde_json::json!({
                                 "run_id": &run_id,
+                                "session_id": &response_session_id,
                                 "error": err,
                             }),
                         );
@@ -4722,6 +4726,7 @@ pub async fn hermes_agent_run(
         "hermes-run-done",
         serde_json::json!({
             "run_id": &run_id,
+            "session_id": &response_session_id,
             "output": &final_output,
         }),
     );

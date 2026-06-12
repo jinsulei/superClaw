@@ -16,8 +16,19 @@
 import { t } from '../../../lib/i18n.js'
 import { api } from '../../../lib/tauri-api.js'
 import { toast } from '../../../components/toast.js'
-import { showConfirm } from '../../../components/modal.js'
+import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
+import {
+  COLLAB_TARGETS,
+  buildExecutionBrief,
+  buildReviewBrief,
+  createCollaborationTask,
+  openCollaborationPanel,
+  setPendingDispatch,
+  shortGoal,
+  targetLabel,
+  updateCollaborationTask,
+} from '../../../lib/collaboration.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../../../lib/voice.js'
 import {
   loadModelVoiceConfig,
@@ -338,7 +349,8 @@ function buildIntentTriggeredToolInstructions(text) {
     lines.push(
       '[DESKTOP_CONTROL_TRIGGER]',
       '本轮用户明确要求操作桌面端/客户端/本地应用。若工具列表里有 desktop_control，请优先调用 desktop_control，不要改用浏览器，也不要把 <tool_call>、XML 或伪代码当作文字输出。',
-      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要搜索时再 click/type_text/press_key。若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
+      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要读取画面、价格、数量、字幕、直播间或当前状态时，必须再 action=screenshot，并基于返回图片继续分析；需要搜索时再 click/type_text/press_key。',
+      '若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
       '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
       '[/DESKTOP_CONTROL_TRIGGER]',
     )
@@ -623,6 +635,12 @@ function readFileAsDataUrl(file) {
   })
 }
 
+function parseImageDataUrl(dataUrl, fallbackMime = 'image/png') {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(String(dataUrl || ''))
+  if (!match) return { mimeType: fallbackMime || 'image/png', content: String(dataUrl || '') }
+  return { mimeType: match[1] || fallbackMime || 'image/png', content: match[2] || '' }
+}
+
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -855,6 +873,7 @@ export function render() {
   let linkBusy = false
   let linkError = ''
   let pendingAttachmentInstructions = ''
+  let pendingAttachments = []
   let gwOnline = false
   let currentModel = ''
   const mobileQuery = window.matchMedia('(max-width: 720px)')
@@ -1297,13 +1316,18 @@ export function render() {
     const isUser = m.role === 'user'
     const canCopy = !!(m.content || '').trim()
     const canSpeak = !isUser && canCopy
+    const messageContentHtml = [
+      renderMessageAttachments(m.attachments || []),
+      (m.content || '').trim() ? mdToHtml(m.content) : '',
+      m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
+    ].filter(Boolean).join('')
     return `
       <div class="hm-chat-msg hm-chat-msg--${escHtml(m.role)}" data-mid="${escAttr(m.id)}">
         <div class="hm-chat-msg-body">
           ${!isUser ? `<div class="hm-chat-msg-avatar" aria-hidden="true">H</div>` : ''}
           <div class="hm-chat-msg-content-wrap">
             <div class="hm-chat-msg-bubble">
-              <div class="hm-chat-msg-content">${mdToHtml(m.content)}${m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : ''}</div>
+              <div class="hm-chat-msg-content">${messageContentHtml}</div>
             </div>
             <div class="hm-chat-msg-footer">
               <span class="hm-chat-msg-time">${escHtml(formatTime(m.timestamp))}</span>
@@ -1320,6 +1344,53 @@ export function render() {
             </div>
           </div>
         </div>
+      </div>
+    `
+  }
+
+  function attachmentImageSrc(att) {
+    if (!att) return ''
+    if (att.dataUrl) return att.dataUrl
+    if (att.url) return att.url
+    const data = att.content || att.data
+    if (!data) return ''
+    return `data:${att.mimeType || att.mediaType || 'image/png'};base64,${data}`
+  }
+
+  function renderMessageAttachments(attachments = []) {
+    const images = (attachments || []).filter(att => {
+      const category = String(att?.category || att?.type || '').toLowerCase()
+      const mime = String(att?.mimeType || att?.mediaType || att?.mime || '').toLowerCase()
+      return category === 'image' || mime.startsWith('image/')
+    })
+    if (!images.length) return ''
+    return `
+      <div class="hm-chat-attachments">
+        ${images.map(att => {
+          const src = attachmentImageSrc(att)
+          if (!src) return ''
+          return `
+            <figure class="hm-chat-attachment-image">
+              <img src="${escAttr(src)}" alt="${escAttr(att.fileName || att.name || 'image')}">
+              ${att.fileName || att.name ? `<figcaption>${escHtml(att.fileName || att.name)}</figcaption>` : ''}
+            </figure>
+          `
+        }).join('')}
+      </div>
+    `
+  }
+
+  function renderPendingAttachments() {
+    if (!pendingAttachments.length) return ''
+    return `
+      <div class="hm-chat-pending-attachments">
+        ${pendingAttachments.map((att, idx) => `
+          <div class="hm-chat-pending-image">
+            <img src="${escAttr(attachmentImageSrc(att))}" alt="${escAttr(att.fileName || 'image')}">
+            <span>${escHtml(att.fileName || 'image')}</span>
+            <button type="button" data-remove-attachment="${idx}" title="Remove image">${ICONS.close}</button>
+          </div>
+        `).join('')}
       </div>
     `
   }
@@ -1444,6 +1515,7 @@ export function render() {
       <div class="hm-chat-input-area">
         ${renderSlashMenu()}
         ${renderLinkMenu()}
+        ${renderPendingAttachments()}
         ${showUsage ? `
           <div class="hm-chat-usage-bar" title="${escAttr(t('engine.chatUsageTooltip'))}">
             <span class="hm-chat-usage-pill" data-kind="in">
@@ -1487,7 +1559,7 @@ export function render() {
                    ${ICONS.stop}
                  </button>`
               : `<button class="hm-chat-send-btn" id="hm-chat-send"
-                         ${!active || !inputValue.trim() ? 'disabled' : ''}
+                         ${!active || (!inputValue.trim() && !pendingAttachments.length) ? 'disabled' : ''}
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
@@ -1526,6 +1598,10 @@ export function render() {
             <span class="hm-chat-gw-text">${escHtml(gwOnline ? t('engine.chatGatewayOnlineShort') : t('engine.chatGatewayOfflineShort'))}</span>
             ${currentModel ? `<span class="hm-chat-gw-model">${escHtml(currentModel)}</span>` : ''}
           </div>
+          <button class="hm-btn hm-btn--primary hm-btn--sm hm-chat-collab-btn" id="hm-chat-collab-open"
+                  title="Hermes 拆需求并派发给 OpenClaw / Claude Code">
+            协作派单
+          </button>
           <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-chat-search-open"
                   title="${escHtml(t('engine.chatSearchShortcut'))}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
@@ -1915,6 +1991,7 @@ export function render() {
     el.querySelector('#hm-chat-new-chat')?.addEventListener('click', () => {
       handleNewWorkFileSession()
     })
+    el.querySelector('#hm-chat-collab-open')?.addEventListener('click', () => openCollaborationDialog())
     el.querySelector('#hm-chat-search-open')?.addEventListener('click', () => openSearch())
     el.querySelector('#hm-chat-copy-id')?.addEventListener('click', async () => {
       const s = store.activeSession()
@@ -2026,6 +2103,16 @@ export function render() {
       const file = fileInput.files?.[0]
       fileInput.value = ''
       if (file) await handlePickAttachment(file)
+    })
+
+    el.querySelectorAll('[data-remove-attachment]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.removeAttachment)
+        if (Number.isInteger(idx)) pendingAttachments.splice(idx, 1)
+        if (!pendingAttachments.length) pendingAttachmentInstructions = ''
+        inputFocused = true
+        draw()
+      })
     })
 
     el.querySelector('#hm-chat-send')?.addEventListener('click', handleSend)
@@ -2150,9 +2237,19 @@ export function render() {
       let nextInstructions = ''
       if (isImage) {
         const dataUrl = await readFileAsDataUrl(file)
+        const parsed = parseImageDataUrl(dataUrl, file?.type || 'image/png')
         const imageId = `hermes-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
         const savedPath = await api.saveImage(imageId, dataUrl)
-        block = formatSelectedImageForPrompt(file, savedPath)
+        pendingAttachments.push({
+          category: 'image',
+          type: 'image',
+          mimeType: parsed.mimeType,
+          fileName: file?.name || `paste-${Date.now()}.png`,
+          content: parsed.content,
+          dataUrl,
+          savedPath,
+        })
+        block = ''
         nextInstructions = [
           '本轮用户通过输入框右侧的曲别针按钮主动添加了图片，已经触发图片/视觉识别。',
           '请直接调用可用的视觉/图片读取能力分析该图片，不要等待用户再次确认；普通文本对话不要主动启用视觉。',
@@ -2163,10 +2260,12 @@ export function render() {
         block = formatSelectedFileForPrompt(file, content)
         nextInstructions = '本轮用户通过输入框右侧的曲别针按钮主动添加了文本文件，请优先结合该文件内容回答。'
       }
-      const prefix = inputValue.trim() ? '\n\n' : ''
-      const insertAt = Math.max(0, Math.min(inputCaret || inputValue.length, inputValue.length))
-      inputValue = inputValue.slice(0, insertAt) + prefix + block + inputValue.slice(insertAt)
-      inputCaret = insertAt + prefix.length + block.length
+      if (block) {
+        const prefix = inputValue.trim() ? '\n\n' : ''
+        const insertAt = Math.max(0, Math.min(inputCaret || inputValue.length, inputValue.length))
+        inputValue = inputValue.slice(0, insertAt) + prefix + block + inputValue.slice(insertAt)
+        inputCaret = insertAt + prefix.length + block.length
+      }
       inputFocused = true
       linkMenuOpen = false
       linkDraft = ''
@@ -2265,6 +2364,7 @@ export function render() {
     showSlash = false
     slashFilter = ''
     pendingAttachmentInstructions = ''
+    pendingAttachments = []
   }
 
   async function handleNewWorkFileSession() {
@@ -2298,9 +2398,130 @@ export function render() {
     }
   }
 
+  function openCollaborationDialog() {
+    if (store.state.streaming) {
+      toast('Hermes 正在回复，完成后再派单。', 'warning')
+      return
+    }
+    const defaultGoal = inputValue.trim()
+    const overlay = showContentModal({
+      title: 'Hermes 协作派单',
+      width: 620,
+      content: `
+        <div class="form-group">
+          <label class="form-label">任务目标</label>
+          <textarea class="form-input" id="hm-collab-goal" rows="5"
+            placeholder="写清楚要做什么、涉及哪个项目、希望谁执行和谁验收。"
+            style="min-height:132px;resize:vertical">${escHtml(defaultGoal)}</textarea>
+          <div class="form-hint">Hermes 会生成任务单；执行方新开可见会话，做完后再交给验收方和 Hermes 最终审核。</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">执行方</label>
+          <select class="form-input" id="hm-collab-executor">
+            <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：改文件、跑命令、执行任务</option>
+            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：原生代码面板/终端能力</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">验收方</label>
+          <select class="form-input" id="hm-collab-reviewer">
+            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：代码验收</option>
+            <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：执行结果复核</option>
+          </select>
+        </div>
+        <label class="form-check" style="align-items:flex-start;gap:10px;margin-top:4px">
+          <input type="checkbox" id="hm-collab-open-review" checked style="margin-top:3px">
+          <span>
+            同时打开验收方待命面板
+            <span class="form-hint" style="display:block;margin-top:4px">
+              执行方先做事，验收方面板先拿到验收单；执行完成后可直接在该面板继续复核。
+            </span>
+          </span>
+        </label>
+      `,
+      buttons: [
+        { id: 'hm-collab-create', label: '创建并派发', className: 'hm-btn hm-btn--primary hm-btn--sm' },
+      ],
+    })
+    overlay.querySelector('#hm-collab-create')?.addEventListener('click', () => {
+      const goal = overlay.querySelector('#hm-collab-goal')?.value?.trim() || ''
+      if (!goal) {
+        toast('请先填写任务目标。', 'warning')
+        return
+      }
+      const executor = overlay.querySelector('#hm-collab-executor')?.value || COLLAB_TARGETS.openclaw
+      const reviewer = overlay.querySelector('#hm-collab-reviewer')?.value || COLLAB_TARGETS.claudeCode
+      const openReviewPanel = !!overlay.querySelector('#hm-collab-open-review')?.checked
+      const task = createCollaborationTask({ goal, executor, reviewer, source: COLLAB_TARGETS.hermes })
+      const brief = buildExecutionBrief(task)
+      const reviewBrief = buildReviewBrief(task, '执行方完成后，请读取执行会话交接内容，再按验收要求复核。')
+      updateCollaborationTask(task.id, {
+        status: 'dispatched',
+        lastDispatchedTo: executor,
+        dispatchedAt: Date.now(),
+        reviewPanelRequested: openReviewPanel,
+      })
+      setPendingDispatch({
+        target: executor,
+        taskId: task.id,
+        stage: 'execute',
+        title: `[执行] ${targetLabel(executor)} · ${shortGoal(goal)}`,
+        message: brief,
+      })
+      if (openReviewPanel && reviewer !== executor) {
+        setPendingDispatch({
+          target: reviewer,
+          taskId: task.id,
+          stage: 'review',
+          title: `[验收] ${targetLabel(reviewer)} · ${shortGoal(goal)}`,
+          message: reviewBrief,
+        })
+      }
+
+      if (!store.activeSession()) store.newChat({ title: 'Hermes 协作总控' })
+      store.pushLocalUser(`[协作派单]\n${goal}`)
+      store.pushLocalAssistant([
+        `已创建协作任务：${task.id}`,
+        `执行方：${targetLabel(executor)}`,
+        `验收方：${targetLabel(reviewer)}`,
+        `验收面板：${openReviewPanel && reviewer !== executor ? '已打开待命' : '暂不打开'}`,
+        '',
+        '我会先把任务单发给执行方；执行完成后，再由验收方复核，最后回到 Hermes 做最终审核。',
+      ].join('\n'))
+
+      overlay.close()
+      resetInput()
+      forceScrollBottom = true
+      draw()
+      openCollaborationPanel(executor, task.id, {
+        title: `${targetLabel(executor)} 执行面板 - ${shortGoal(goal)}`,
+      }).then(() => {
+        if (openReviewPanel && reviewer !== executor) {
+          setTimeout(() => {
+            openCollaborationPanel(reviewer, `${task.id}-review`, {
+              title: `${targetLabel(reviewer)} 验收面板 - ${shortGoal(goal)}`,
+            }).catch(err => {
+              toast(`打开验收面板失败：${err?.message || err}`, 'error')
+            })
+          }, 350)
+        }
+        if (executor === COLLAB_TARGETS.claudeCode) {
+          return copyText(brief).then(ok => {
+            if (ok) toast('Claude Code 执行面板已打开，任务单已复制。', 'success')
+          }).catch(() => {})
+        }
+        toast(`${targetLabel(executor)} 执行面板已打开。`, 'success')
+      }).catch(err => {
+        toast(`打开执行面板失败：${err?.message || err}`, 'error')
+      })
+    })
+  }
+
   async function handleSend() {
+    const attachments = pendingAttachments.slice()
     let text = inputValue.trim()
-    if (!text || store.state.streaming) return
+    if ((!text && !attachments.length) || store.state.streaming) return
+    if (!text && attachments.length) text = '请分析我刚刚上传或粘贴的图片。'
 
     // Local slash commands short-circuit before going to the agent.
     if (text === '/clear') {
@@ -2365,7 +2586,10 @@ export function render() {
     forceScrollBottom = true
     resetInput()
     draw()
-    await store.sendMessage(text, sendInstructions ? { instructions: sendInstructions } : {})
+    await store.sendMessage(text, {
+      instructions: sendInstructions || null,
+      attachments,
+    })
   }
 
   // ----------------------------------------------------------- search modal

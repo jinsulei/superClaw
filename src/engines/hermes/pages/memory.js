@@ -75,6 +75,28 @@ function hasCjk(text) {
 }
 
 const MEMORY_LINE_TRANSLATIONS = new Map([
+  ['# Hermes Memory', '# Hermes 记忆'],
+  ['This file stores durable facts and decisions for Hermes in the portable SuperClaw package.', '这个文件保存 Hermes 在 SuperClaw 便携版中的长期事实、决策和协作规则。'],
+  ['Do not store API keys, tokens, private certificates, passwords, or customer secrets here.', '不要在这里保存 API Key、token、私钥证书、密码或客户敏感信息。'],
+  ['## Product Role', '## 产品定位'],
+  ['- Hermes is the brain of SuperClaw.', '- Hermes 是 SuperClaw 的大脑。'],
+  ['- Hermes reads project context, breaks down requirements, creates execution plans, assigns work, and performs final review.', '- Hermes 负责读取项目上下文、拆解需求、制定执行方案、分派任务，并做最终验收。'],
+  ['- OpenClaw and Claude Code are execution or review workers started from the SuperClaw control panel.', '- OpenClaw 和 Claude Code 是从 SuperClaw 控制面板启动的执行或审核工作单元。'],
+  ['## Collaboration Protocol', '## 协作协议'],
+  ['When a user asks for implementation work:', '当用户提出实现类任务时：'],
+  ['1. Clarify the goal only if the task is unsafe or ambiguous.', '1. 仅在任务不安全或目标不清楚时先澄清。'],
+  ['2. Create a compact task brief with objective, target files, acceptance criteria, and safety boundaries.', '2. 生成简洁任务说明，包含目标、目标文件、验收标准和安全边界。'],
+  ['3. Assign execution work to OpenClaw or Claude Code through a new visible panel/session.', '3. 通过新的可见面板或会话，把执行任务分派给 OpenClaw 或 Claude Code。'],
+  ['4. Ask the worker to report changed files, commands run, test results, and remaining risks.', '4. 要求执行方回报修改文件、执行命令、测试结果和残留风险。'],
+  ['5. Review the result before presenting the final answer to the user.', '5. 在向用户输出最终结果前，先审核执行结果。'],
+  ['## Speed Policy', '## 速度策略'],
+  ['- Keep ordinary chat lightweight.', '- 普通聊天保持轻量，不加载不必要上下文。'],
+  ['- Do not load all tools, skills, memories, or logs into every request.', '- 不要在每次请求中加载全部工具、skills、记忆或日志。'],
+  ['- Load image, browser, desktop, file, or command tools only when the user intent requires them.', '- 只有当用户意图需要图片、浏览器、桌面、文件或命令能力时，才加载对应工具。'],
+  ['## Memory Policy', '## 记忆策略'],
+  ['- Keep this file as distilled long-term knowledge.', '- 这个文件只保存沉淀后的长期知识。'],
+  ['- Store raw observations elsewhere and summarize only useful, stable facts here.', '- 原始观察记录放到其他位置，这里只保留有用且稳定的总结。'],
+  ['- Keep customer-specific secrets out of memory.', '- 不要把客户专属敏感信息写进记忆。'],
   [
     'User prefers concise, direct responses and may ask for exact wording with minimal extra explanation.',
     '用户偏好简洁、直接的回复；有时会要求精确措辞，并希望额外解释尽量少。'

@@ -300,7 +300,10 @@ function normalizeYyapiModelRows(raw) {
 
 function pickYyapiDefaultModel(modelIds = []) {
   const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
-  return ids[0] || ''
+  return ids.find(id => /(^|[-_/])gpt-?5\.?5($|[-_/])/i.test(id))
+    || ids.find(id => /5\.?5/i.test(id))
+    || ids[0]
+    || ''
 }
 
 function modelIdFromRef(ref = '') {
@@ -523,8 +526,12 @@ async function syncHermesModel() {
     const savedPrimary = loadHermesPrimary()
     let targetModel = ''
 
-    if (savedPrimary && models.includes(savedPrimary)) {
-      // localStorage 中的主模型仍然有效
+    const preferredYyapiModel = pickYyapiDefaultModel(models)
+
+    if (preferredYyapiModel && models.includes(preferredYyapiModel)) {
+      // Hermes 只保留 YYAPI 通道时，启动同步始终优先使用后台默认模型。
+      targetModel = preferredYyapiModel
+    } else if (savedPrimary && models.includes(savedPrimary)) {
       targetModel = savedPrimary
     } else if (models.includes(currentModel)) {
       // 当前 config 中的模型有效
@@ -596,10 +603,14 @@ async function syncDefaultModelSettings() {
     const hermesConfig = await api.hermesReadConfig().catch(() => null)
     const hermesSaved = loadHermesPrimary()
     const hermesCurrent = hermesConfig?.model || ''
-    const hermesModel = yyapiModelIds.includes(hermesSaved)
-      ? hermesSaved
-      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
-    await api.configureHermes('openai-api', profile.apiKey, hermesModel, profile.baseUrl)
+    const hermesModel = yyapiModelIds.includes(profile.defaultModel)
+      ? profile.defaultModel
+      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : (yyapiModelIds.includes(hermesSaved) ? hermesSaved : profile.defaultModel))
+
+    // Hermes 需要在启动/登录后自动获得后台默认 API Key；这里用 custom
+    // OpenAI-compatible 配置写入 ~/.hermes/config.yaml 和 ~/.hermes/.env，
+    // 同时补齐本地 Gateway 所需的 API_SERVER_KEY。
+    await api.configureHermes('custom', profile.apiKey, hermesModel, profile.baseUrl)
     saveHermesPrimary(hermesModel)
 
     if (yyapiPrimaryManaged && typeof api.configureClaudeCodeRelay === 'function') {
@@ -612,7 +623,7 @@ async function syncDefaultModelSettings() {
       }).catch(err => console.warn('[model-sync] Claude Code relay sync failed:', err.message))
     }
 
-    console.log(`[model-sync] yyapi synced: openclaw=${openclawPrimary || 'unchanged'}, hermes=${hermesModel}`)
+    console.log(`[model-sync] yyapi synced: openclaw=${openclawPrimary || 'unchanged'}, hermes=${hermesModel || 'unchanged'}`)
   } catch (err) {
     console.warn('[model-sync] default model sync failed:', err.message)
     await syncHermesModel()

@@ -12,6 +12,7 @@ import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../lib/voice.js'
+import { COLLAB_TARGETS, consumePendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -132,6 +133,9 @@ let _workspaceInfo = null, _workspaceCoreFiles = [], _workspaceTreeCache = new M
 let _workspaceCurrentAgentId = 'main', _workspaceCurrentFile = null, _workspacePreviewMode = false, _workspaceDirty = false
 let _workspaceLoadedContent = '', _workspaceLoading = false
 let _workspaceLoadSeq = 0, _workspaceOpenSeq = 0
+let _collabDispatchBusy = false
+let _collabDispatchInterval = null
+let _collabDispatchStorageHandler = null
 
 export async function render() {
   const page = document.createElement('div')
@@ -363,6 +367,7 @@ export async function render() {
   loadHostedDefaults().then(() => { loadHostedSessionConfig(); renderHostedPanel(); updateHostedBadge() })
   loadModelOptions()
   // 非阻塞：先返回 DOM，后台连接 Gateway
+  startCollaborationDispatchWatcher()
   connectGateway()
   return page
 }
@@ -1495,6 +1500,7 @@ async function connectGateway() {
       }
       // 始终刷新会话列表（无论是否有 sessionKey）
       refreshSessionList()
+      maybeConsumeCollaborationDispatch()
     })
 
     _unsubEvent = wsClient.onEvent((msg) => {
@@ -1510,6 +1516,7 @@ async function connectGateway() {
       updateSessionTitle()
       loadHistory()
       refreshSessionList()
+      maybeConsumeCollaborationDispatch()
       return
     }
 
@@ -1549,6 +1556,75 @@ async function refreshSessionList() {
   }
 }
 
+function startCollaborationDispatchWatcher() {
+  if (!_collabDispatchInterval) {
+    _collabDispatchInterval = setInterval(() => {
+      maybeConsumeCollaborationDispatch().catch(err => console.warn('[collaboration] dispatch poll failed:', err))
+    }, 1000)
+  }
+  if (!_collabDispatchStorageHandler) {
+    _collabDispatchStorageHandler = (event) => {
+      if (event?.key && event.key !== 'superclaw-collab-pending-dispatch-v1') return
+      setTimeout(() => {
+        maybeConsumeCollaborationDispatch().catch(err => console.warn('[collaboration] dispatch wake failed:', err))
+      }, 0)
+    }
+    window.addEventListener('storage', _collabDispatchStorageHandler)
+    window.addEventListener('focus', _collabDispatchStorageHandler)
+  }
+  setTimeout(() => {
+    maybeConsumeCollaborationDispatch().catch(err => console.warn('[collaboration] dispatch initial check failed:', err))
+  }, 0)
+}
+
+function stopCollaborationDispatchWatcher() {
+  if (_collabDispatchInterval) {
+    clearInterval(_collabDispatchInterval)
+    _collabDispatchInterval = null
+  }
+  if (_collabDispatchStorageHandler) {
+    window.removeEventListener('storage', _collabDispatchStorageHandler)
+    window.removeEventListener('focus', _collabDispatchStorageHandler)
+    _collabDispatchStorageHandler = null
+  }
+}
+
+async function maybeConsumeCollaborationDispatch() {
+  if (_collabDispatchBusy || !_pageActive || !wsClient.gatewayReady) return
+  const pending = consumePendingDispatch(COLLAB_TARGETS.openclaw)
+  if (!pending) return
+  const message = String(pending.message || '').trim()
+  if (!message) return
+
+  _collabDispatchBusy = true
+  try {
+    const taskId = pending.taskId || `collab-${Date.now().toString(36)}`
+    const stage = pending.stage || 'execute'
+    const title = pending.title || `[${stage === 'review' ? '验收' : '执行'}] OpenClaw · ${taskId}`
+    const key = `agent:main:collaboration/${stage}/${taskId}.md`
+    setSessionName(key, title)
+    upsertLocalSession(key, 'main', title)
+    await switchSession(key, { forceWorkspace: true })
+    refreshSessionList()
+    updateCollaborationTask(taskId, {
+      status: stage === 'review' ? 'reviewer_running' : 'executor_running',
+      [stage === 'review' ? 'openclawReviewSessionKey' : 'openclawSessionKey']: key,
+      openedAt: Date.now(),
+    })
+    if (_isSending || _isStreaming) {
+      _messageQueue.push({ text: message, attachments: [] })
+      toast('协作任务已进入 OpenClaw 队列。', 'success')
+    } else {
+      await doSend(message, [])
+      toast('协作任务已派发给 OpenClaw。', 'success')
+    }
+  } catch (err) {
+    toast(`协作派单失败：${err?.message || err}`, 'error')
+  } finally {
+    _collabDispatchBusy = false
+  }
+}
+
 function resolveGatewaySessionKey(gatewaySessionKey) {
   const fallback = gatewaySessionKey || wsClient.sessionKey || 'agent:main:main'
   const saved = localStorage.getItem(STORAGE_SESSION_KEY)
@@ -1561,6 +1637,11 @@ function resolveGatewaySessionKey(gatewaySessionKey) {
     defaults.lastSessionKey,
   ].filter(Boolean))
   if (known.has(saved)) return saved
+  const savedAgent = parseSessionAgent(saved)
+  const fallbackAgent = parseSessionAgent(fallback)
+  if (/^agent:[^:]+:[^:]+$/.test(saved) && savedAgent && savedAgent === fallbackAgent) {
+    return saved
+  }
   localStorage.setItem(STORAGE_SESSION_KEY, fallback)
   return fallback
 }
@@ -2140,7 +2221,8 @@ function buildIntentTriggeredToolPrompt(text) {
       '',
       '[DESKTOP_CONTROL_TRIGGER]',
       '本轮用户明确要求操作桌面端/客户端/本地应用。若工具列表里有 desktop_control，请优先调用 desktop_control，不要改用浏览器，也不要把 <tool_call>、XML 或伪代码当作文字输出。',
-      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要搜索时再 click/type_text/press_key。若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
+      '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要读取画面、价格、数量、字幕、直播间或当前状态时，必须再 action=screenshot，并基于返回图片继续分析；需要搜索时再 click/type_text/press_key。',
+      '若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
       '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
       '[/DESKTOP_CONTROL_TRIGGER]',
     )
@@ -2910,17 +2992,15 @@ async function loadHistory() {
       return
     }
     const deduped = dedupeHistory(result.messages)
-    const hash = deduped.map(m => `${m.role}:${(m.text || '').length}`).join('|')
+    const hash = deduped
+      .map(m => `${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
+      .join('|')
     if (hash === _lastHistoryHash && hasExisting) return
     _lastHistoryHash = hash
 
     // 正在发送/流式输出时不全量重绘，避免覆盖本地乐观渲染
     if (hasExisting && (_isSending || _isStreaming || _messageQueue.length > 0)) {
-      saveMessages(result.messages.map(m => {
-        const c = extractContent(m)
-        const role = (m.role === 'tool' || m.role === 'toolResult') ? 'assistant' : m.role
-        return { id: m.id || uuid(), sessionKey: _sessionKey, role, content: c?.text || '', timestamp: m.timestamp || Date.now() }
-      }))
+      saveMessages(result.messages.map(cachedHistoryMessage))
       _isLoadingHistory = false
       return
     }
@@ -2945,11 +3025,7 @@ async function loadHistory() {
     if (hasOmittedImages) {
       appendSystemMessage(t('chat.imageHistoryHint'))
     }
-    saveMessages(result.messages.map(m => {
-      const c = extractContent(m)
-      const role = (m.role === 'tool' || m.role === 'toolResult') ? 'assistant' : m.role
-      return { id: m.id || uuid(), sessionKey: _sessionKey, role, content: c?.text || '', timestamp: m.timestamp || Date.now() }
-    }))
+    saveMessages(result.messages.map(cachedHistoryMessage))
     scrollToBottom()
   } catch (e) {
     console.error('[chat] loadHistory error:', e)
@@ -2989,6 +3065,27 @@ function dedupeHistory(messages) {
     deduped.push({ role, text: c.text, images: c.images, videos: c.videos, audios: c.audios, files: c.files, tools, timestamp: msg.timestamp })
   }
   return deduped
+}
+
+function cachedHistoryMessage(m) {
+  const c = extractContent(m)
+  const role = (m.role === 'tool' || m.role === 'toolResult') ? 'assistant' : m.role
+  const attachments = [
+    ...(c.images || []).map(i => ({
+      category: 'image',
+      mimeType: i.mediaType || i.media_type || 'image/png',
+      content: i.data || i.source?.data || '',
+      url: i.url || i.source?.url || '',
+    })),
+  ].filter(item => item.content || item.url)
+  return {
+    id: m.id || uuid(),
+    sessionKey: _sessionKey,
+    role,
+    content: c?.text || '',
+    timestamp: m.timestamp || Date.now(),
+    attachments: attachments.length ? attachments : undefined,
+  }
 }
 
 function extractContent(msg) {
@@ -3919,6 +4016,7 @@ function appendHostedOutput(text) {
 
 export function cleanup() {
   _pageActive = false
+  stopCollaborationDispatchWatcher()
   if (_pasteHandler) {
     document.removeEventListener('paste', _pasteHandler, true)
     _pasteHandler = null

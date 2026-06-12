@@ -8565,39 +8565,30 @@ const handlers = {
     for (const d of ['cron','sessions','logs','memories','skills','pairing','hooks','image_cache','audio_cache']) {
       fs.mkdirSync(path.join(home, d), { recursive: true })
     }
-    const providerName = String(provider || '').trim().toLowerCase()
-    const envProvider = providerName === 'anthropic' || providerName === 'minimax'
-      ? 'anthropic'
-      : providerName === 'openrouter'
-        ? 'openrouter'
-        : providerName === 'deepseek'
-          ? 'deepseek'
-          : 'openai'
-    const modelStr = model || (envProvider === 'anthropic'
-      ? 'claude-sonnet-4-20250514'
-      : envProvider === 'openrouter'
-        ? 'anthropic/claude-sonnet-4-20250514'
-        : envProvider === 'deepseek'
-          ? 'deepseek-chat'
-          : 'gpt-4o')
-    const providerLine = providerName ? `  provider: ${providerName}\n` : ''
-    const baseUrlLine = baseUrl && baseUrl.trim() ? `  base_url: ${baseUrl.trim()}\n` : ''
+    const providerName = 'custom'
+    const modelStr = model || 'gpt-5.5'
+    const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
+    const providerLine = `  provider: ${providerName}\n  api_mode: chat_completions\n`
+    const baseUrlLine = baseUrlValue ? `  base_url: ${baseUrlValue}\n` : ''
+    const customProvidersBlock = baseUrlValue
+      ? `custom_providers:\n  - name: yyapi\n    base_url: ${baseUrlValue}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr}\n`
+      : ''
     // config.yaml
     const configPath = path.join(home, 'config.yaml')
     let configContent
     if (fs.existsSync(configPath)) {
       const existing = fs.readFileSync(configPath, 'utf8')
-      configContent = _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine)
+      configContent = _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine, customProvidersBlock)
     } else {
-      configContent = `# Hermes Agent configuration (managed by ClawPanel)\nmodel:\n  default: ${modelStr}\n${providerLine}${baseUrlLine}platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n`
+      configContent = `# Hermes Agent configuration (managed by ClawPanel)\nmodel:\n  default: ${modelStr}\n${providerLine}${baseUrlLine}platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n${customProvidersBlock}`
     }
     fs.writeFileSync(configPath, configContent)
     // .env
-    const envKey = envProvider === 'anthropic' ? 'ANTHROPIC_API_KEY' : envProvider === 'openrouter' ? 'OPENROUTER_API_KEY' : envProvider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY'
-    const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY']
+    const envKey = 'OPENAI_API_KEY'
+    const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','MINIMAX_API_KEY','MINIMAX_CN_API_KEY','CUSTOM_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','MINIMAX_BASE_URL','MINIMAX_CN_BASE_URL','CUSTOM_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY']
     const newPairs = [[envKey, apiKey], ['GATEWAY_ALLOW_ALL_USERS', 'true'], ['API_SERVER_KEY', 'clawpanel-local']]
-    if (baseUrl && baseUrl.trim()) {
-      newPairs.push([envProvider === 'anthropic' ? 'ANTHROPIC_BASE_URL' : envProvider === 'openrouter' ? 'OPENROUTER_BASE_URL' : envProvider === 'deepseek' ? 'DEEPSEEK_BASE_URL' : 'OPENAI_BASE_URL', baseUrl.trim()])
+    if (baseUrlValue) {
+      newPairs.push(['OPENAI_BASE_URL', baseUrlValue])
     }
     const envPath = path.join(home, '.env')
     let envContent
@@ -8741,7 +8732,7 @@ const handlers = {
     return json
   },
 
-  async hermes_agent_run({ input, sessionId, conversationHistory, instructions } = {}) {
+  async hermes_agent_run({ input, sessionId, conversationHistory, instructions, attachments } = {}) {
     // Web 模式下简化实现：POST /v1/runs 然后轮询或直接返回
     const repaired = handlers._hermesRepairYyapiEnvFromOpenclaw()
     if (repaired && await _tcpProbe('127.0.0.1', hermesGatewayPort(), 300)) {
@@ -8756,7 +8747,7 @@ const handlers = {
       const m = envContent.match(/^API_SERVER_KEY=(.+)$/m)
       if (m) apiKey = m[1].trim()
     } catch {}
-    const payload = { input }
+    const payload = { input: _buildHermesRunInput(input, attachments) }
     if (sessionId) payload.session_id = sessionId
     if (conversationHistory) payload.conversation_history = conversationHistory
     if (instructions) payload.instructions = instructions
@@ -8823,11 +8814,20 @@ const handlers = {
 
   // Web-mode stub: the authoritative 22-provider registry lives in Rust.
   // Web mode is primarily used for remote admin on headless Linux where
-  // Hermes configuration is a minor flow; returning an empty array makes
-  // the frontend fall back to a "Please use the desktop app to configure
-  // Hermes providers" message in setup.js.
   hermes_list_providers() {
-    return []
+    return [{
+      id: 'custom',
+      name: 'YYAPI',
+      authType: 'api_key',
+      baseUrl: 'http://124.222.21.44:3002/v1',
+      baseUrlEnvVar: 'OPENAI_BASE_URL',
+      apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
+      transport: 'openai_chat',
+      modelsProbe: 'openai',
+      models: ['gpt-5.5'],
+      isAggregator: true,
+      cliAuthHint: '',
+    }]
   },
 
   // -----------------------------------------------------------------------
@@ -8971,8 +8971,14 @@ const handlers = {
       model = String(cfg?.agents?.defaults?.model?.primary || '').split('/').pop() || ''
     }
     const nextConfig = configRaw.trim()
-      ? _mergeHermesConfigYaml(configRaw, model, `  base_url: ${baseUrl}\n`, '  provider: openai-api\n')
-      : `# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: ${model}\n  provider: openai-api\n  base_url: ${baseUrl}\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n`
+      ? _mergeHermesConfigYaml(
+        configRaw,
+        model,
+        `  base_url: ${baseUrl}\n`,
+        '  provider: custom\n  api_mode: chat_completions\n',
+        _hermesYyapiCustomProviderBlock(model, baseUrl),
+      )
+      : `# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: ${model}\n  provider: custom\n  api_mode: chat_completions\n  base_url: ${baseUrl}\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n${_hermesYyapiCustomProviderBlock(model, baseUrl)}`
     if (nextConfig !== configRaw) {
       fs.writeFileSync(configPath, nextConfig)
       changed = true
@@ -10231,12 +10237,22 @@ const handlers = {
 }
 
 // Hermes 配置合并辅助函数
-function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = '') {
+function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = '', customProvidersBlock = '') {
   const lines = existing.split('\n')
   const result = []
   let inModel = false, written = false, i = 0
   while (i < lines.length) {
     const line = lines[i], t = line.trim()
+    if (_isHermesModelProviderSection(t)) {
+      i++
+      while (i < lines.length) {
+        const next = lines[i], nt = next.trim()
+        if (!nt) { i++; continue }
+        if (next.startsWith('  ') || next.startsWith('\t')) { i++; continue }
+        break
+      }
+      continue
+    }
     if (t === 'model:' || t.startsWith('model:')) {
       inModel = true; written = true
       result.push('model:')
@@ -10266,8 +10282,31 @@ function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = 
   if (!final.includes('platform_toolsets:')) final += '\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\n'
   if (!final.includes('terminal:')) final += 'terminal:\n  backend: local\n'
   if (!final.includes('platforms:')) final += 'platforms:\n  api_server:\n    enabled: true\n'
+  if (customProvidersBlock && customProvidersBlock.trim()) {
+    if (!final.endsWith('\n')) final += '\n'
+    final += customProvidersBlock
+  }
   if (!final.endsWith('\n')) final += '\n'
   return final
+}
+
+function _isHermesModelProviderSection(trimmed) {
+  return trimmed === 'custom_providers:'
+    || trimmed.startsWith('custom_providers:')
+    || trimmed === 'providers:'
+    || trimmed.startsWith('providers:')
+    || trimmed === 'fallback_providers:'
+    || trimmed.startsWith('fallback_providers:')
+    || trimmed === 'credential_pool_strategies:'
+    || trimmed.startsWith('credential_pool_strategies:')
+    || trimmed === 'auxiliary:'
+    || trimmed.startsWith('auxiliary:')
+}
+
+function _hermesYyapiCustomProviderBlock(modelStr, baseUrl) {
+  const cleanBaseUrl = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!cleanBaseUrl) return ''
+  return `custom_providers:\n  - name: yyapi\n    base_url: ${cleanBaseUrl}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr || 'gpt-5.5'}\n`
 }
 
 function _mergeEnvFile(existing, managedKeys, newPairs) {
@@ -10659,6 +10698,34 @@ function _readHermesApiServerKey() {
   }
 }
 
+function _buildHermesRunInput(input, attachments = []) {
+  const text = String(input || '').trim()
+  const parts = []
+  if (text) parts.push({ type: 'text', text })
+
+  for (const item of Array.isArray(attachments) ? attachments : []) {
+    const category = String(item?.category || item?.type || '').toLowerCase()
+    const mimeType = String(item?.mimeType || item?.mediaType || item?.mime || 'image/png')
+    if (category !== 'image' && !mimeType.toLowerCase().startsWith('image/')) continue
+
+    let url = String(item?.url || item?.dataUrl || '').trim()
+    const data = String(item?.content || item?.data || '').trim()
+    if (!url && data) {
+      url = data.startsWith('data:image/') ? data : `data:${mimeType};base64,${data}`
+    }
+    const lower = url.toLowerCase()
+    if (!lower.startsWith('data:image/') && !lower.startsWith('http://') && !lower.startsWith('https://')) continue
+    parts.push({ type: 'image_url', image_url: { url, detail: 'auto' } })
+  }
+
+  const hasImage = parts.some(part => part.type === 'image_url')
+  if (!hasImage) return text
+  if (!parts.some(part => part.type === 'text')) {
+    parts.unshift({ type: 'text', text: '请分析我刚刚上传或粘贴的图片。' })
+  }
+  return [{ role: 'user', content: parts }]
+}
+
 function _safeHermesSessionId(sessionId) {
   return String(sessionId || '').replace(/[^A-Za-z0-9._-]/g, '')
 }
@@ -10897,7 +10964,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`
 
-    const payload = { input: args.input || '' }
+    const payload = { input: _buildHermesRunInput(args.input || '', args.attachments || []) }
     if (args.sessionId) payload.session_id = args.sessionId
     if (args.conversationHistory) payload.conversation_history = args.conversationHistory
     if (args.instructions) payload.instructions = args.instructions
@@ -10915,6 +10982,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     const started = await startedResp.json()
     runId = started.run_id || started.id || ''
     if (!runId) throw new Error('响应中没有 run_id')
+    const responseSessionId = started.session_id || started.sessionId || args.sessionId || null
 
     res.statusCode = 200
     res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
@@ -10922,7 +10990,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
     if (typeof res.flushHeaders === 'function') res.flushHeaders()
-    _writeStreamEvent(res, { event: 'run.started', run_id: runId, session_id: args.sessionId || null })
+    _writeStreamEvent(res, { event: 'run.started', run_id: runId, session_id: responseSessionId })
 
     const eventsResp = await globalThis.fetch(`${gwUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'ClawPanel-Web' } : { 'User-Agent': 'ClawPanel-Web' },
@@ -10957,7 +11025,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
           const err = valueFrom(info || {}, ['error', 'message', 'detail']) || 'Hermes run failed'
           throw new Error(err)
         }
-        _writeStreamEvent(res, { event: 'run.progress', run_id: runId, session_id: args.sessionId || null, status: status || 'running' })
+          _writeStreamEvent(res, { event: 'run.progress', run_id: runId, session_id: responseSessionId, status: status || 'running' })
         await new Promise(resolve => setTimeout(resolve, 500))
       }
       return best
@@ -10976,7 +11044,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       if (completedOutput && completedOutput.startsWith(emittedOutput) && completedOutput.length > emittedOutput.length) {
         const missingDelta = completedOutput.slice(emittedOutput.length)
         if (missingDelta) {
-          _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: args.sessionId || null, delta: missingDelta, synthetic: true })
+          _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, delta: missingDelta, synthetic: true })
           emittedOutput = completedOutput
           finalOutput = completedOutput
         }
@@ -10984,9 +11052,9 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       flushSessionToolOutputs()
       const stableOutput = completedOutput || finalOutput
       if (stableOutput) {
-        _writeStreamEvent(res, { event: 'message.final', run_id: runId, output: stableOutput, session_id: args.sessionId || null })
+        _writeStreamEvent(res, { event: 'message.final', run_id: runId, output: stableOutput, session_id: responseSessionId })
       }
-      _writeStreamEvent(res, { event: 'run.completed', run_id: runId, output: stableOutput, session_id: args.sessionId || null })
+      _writeStreamEvent(res, { event: 'run.completed', run_id: runId, output: stableOutput, session_id: responseSessionId })
       _endStream(res)
     }
     const textFromValue = (value) => {
@@ -11017,7 +11085,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
         _writeStreamEvent(res, {
           event: 'tool.completed',
           run_id: runId,
-          session_id: args.sessionId || null,
+          session_id: responseSessionId,
           tool: tool.tool,
           output: tool.output,
           result: tool.output,
@@ -11054,7 +11122,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       evt = normalizeHermesEvent(evt)
       if (!evt) return false
       if (!evt.run_id) evt.run_id = runId
-      if (!evt.session_id && args.sessionId) evt.session_id = args.sessionId
+      if (!evt.session_id && responseSessionId) evt.session_id = responseSessionId
       if (evt.event === 'message.delta' && typeof evt.delta === 'string') {
         let delta = evt.delta
         if (evt.snapshot) {
@@ -11070,7 +11138,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
         if (evt.output.startsWith(emittedOutput) && evt.output.length > emittedOutput.length) {
           const missingDelta = evt.output.slice(emittedOutput.length)
           if (missingDelta) {
-            _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: args.sessionId || null, delta: missingDelta, synthetic: true })
+            _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, delta: missingDelta, synthetic: true })
             emittedOutput = evt.output
           }
         }
@@ -11135,7 +11203,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     _writeStreamEvent(res, {
       event: 'run.failed',
       run_id: runId || null,
-      session_id: args.sessionId || null,
+      session_id: responseSessionId,
       error: e.name === 'AbortError' ? 'aborted' : (e.message || String(e)),
     })
     _endStream(res)

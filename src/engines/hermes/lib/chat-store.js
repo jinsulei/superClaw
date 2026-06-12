@@ -100,6 +100,42 @@ function parseEpochMs(value) {
   return 0
 }
 
+function normalizeHermesMessageContent(content) {
+  if (typeof content === 'string') return { text: content, attachments: [] }
+  if (!Array.isArray(content)) {
+    try { return { text: JSON.stringify(content || ''), attachments: [] } }
+    catch { return { text: String(content || ''), attachments: [] } }
+  }
+
+  const texts = []
+  const attachments = []
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue
+    const type = String(part.type || '').toLowerCase()
+    if ((type === 'text' || type === 'input_text' || !type) && typeof part.text === 'string') {
+      texts.push(part.text)
+      continue
+    }
+
+    const imageUrl = part.image_url?.url || part.url || part.source?.url || ''
+    const imageData = part.data || part.source?.data || ''
+    if (type === 'image_url' || type === 'input_image' || type === 'image') {
+      const mimeType = part.mimeType || part.media_type || part.source?.media_type || 'image/png'
+      if (imageUrl || imageData) {
+        attachments.push({
+          category: 'image',
+          type: 'image',
+          mimeType,
+          url: imageUrl,
+          content: imageData,
+          fileName: part.fileName || part.name || 'image',
+        })
+      }
+    }
+  }
+  return { text: texts.join('\n'), attachments }
+}
+
 // ---------- message mapping ----------
 
 /**
@@ -172,8 +208,9 @@ function mapHermesMessages(msgs) {
       continue
     }
 
-    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
-    if (m.role === 'assistant' && !content.trim()) continue
+    const normalized = normalizeHermesMessageContent(m.content)
+    const content = normalized.text
+    if (m.role === 'assistant' && !content.trim() && !normalized.attachments.length) continue
 
     // Plain user/assistant/system message.
     out.push({
@@ -181,6 +218,7 @@ function mapHermesMessages(msgs) {
       role: m.role || 'assistant',
       content,
       timestamp: ts,
+      attachments: normalized.attachments,
     })
   }
   return collapseConsecutiveAssistantMessages(out)
@@ -203,6 +241,9 @@ function collapseConsecutiveAssistantMessages(messages) {
     const prev = out[out.length - 1]
     if (msg?.role === 'assistant' && prev?.role === 'assistant') {
       prev.content = joinAssistantChunks(prev.content, msg.content)
+      if (msg.attachments?.length) {
+        prev.attachments = [...(prev.attachments || []), ...msg.attachments]
+      }
       prev.timestamp = Math.max(Number(prev.timestamp || 0), Number(msg.timestamp || 0)) || prev.timestamp
       continue
     }
@@ -549,14 +590,15 @@ function createStore() {
     await loadSessions()
   }
 
-  async function refreshActiveMessages() {
+  async function refreshActiveMessages(options = {}) {
     const sid = state.activeSessionId
     if (!sid) return
     if (state.streaming && state.runningSessionId === sid) return
     const target = state.sessions.find(s => s.id === sid)
     if (!target) return
+    const force = Boolean(options.force || forceRemoteRefreshIds.has(sid))
     // Skip remote fetch for local-only sessions — the backend doesn't know them.
-    if (target.source === '__local__') return
+    if (target.source === '__local__' && !force) return
 
     try {
       const detail = await api.hermesSessionDetail(sid)
@@ -571,11 +613,13 @@ function createStore() {
       const serverTail = lastTurnAssistantText(mapped)
       const serverIsAhead = serverUsers > localUsers
         || (serverUsers === localUsers && (!localTail.trim() || serverTail.length >= localTail.length))
-      if (serverIsAhead) {
+      if (force || serverIsAhead) {
         target.messages = mapped
+        if (target.source === '__local__') target.source = detail.source || 'api_server'
         if (detail.title && !target.workFileName) target.title = detail.title
         persistActiveMessages()
       }
+      forceRemoteRefreshIds.delete(sid)
     } catch {
       // Session may not exist on server yet (local-only) — that's fine.
     }
@@ -604,6 +648,49 @@ function createStore() {
     persistSessions()
     notify()
     return s
+  }
+
+  function adoptBackendSessionId(currentId, backendSessionId) {
+    const nextId = String(backendSessionId || '').trim()
+    if (!currentId || !nextId || nextId === currentId) return currentId
+    const current = state.sessions.find(s => s.id === currentId)
+    if (!current) return currentId
+
+    const existing = state.sessions.find(s => s.id === nextId)
+    let target = current
+    if (existing && existing !== current) {
+      const existingMessageIds = new Set((existing.messages || []).map(m => m.id).filter(Boolean))
+      const movedMessages = (current.messages || []).filter(m => !m.id || !existingMessageIds.has(m.id))
+      existing.messages = [...(existing.messages || []), ...movedMessages]
+      existing.title = existing.title || current.title
+      existing.workFileName = existing.workFileName || current.workFileName
+      existing.workFilePath = existing.workFilePath || current.workFilePath
+      existing.workFileDir = existing.workFileDir || current.workFileDir
+      existing.workFileDisplayPath = existing.workFileDisplayPath || current.workFileDisplayPath
+      existing.updatedAt = Math.max(existing.updatedAt || 0, current.updatedAt || 0, Date.now())
+      existing.lastActiveAt = Math.max(existing.lastActiveAt || 0, current.lastActiveAt || 0, Date.now())
+      state.sessions = state.sessions.filter(s => s !== current)
+      target = existing
+    } else {
+      current.id = nextId
+      current.source = current.source === '__local__' ? 'api_server' : (current.source || 'api_server')
+      target = current
+    }
+
+    if (state.activeSessionId === currentId) {
+      state.activeSessionId = nextId
+      safeSet(activeKey(), nextId)
+    }
+    if (state.runningSessionId === currentId) state.runningSessionId = nextId
+    if (forceRemoteRefreshIds.has(currentId)) {
+      forceRemoteRefreshIds.delete(currentId)
+      forceRemoteRefreshIds.add(nextId)
+    }
+    persistSessionMessages(nextId)
+    safeRemove(messagesKey(currentId))
+    persistSessions()
+    notify()
+    return nextId
   }
 
   async function switchSession(sessionId) {
@@ -748,9 +835,18 @@ function createStore() {
 
   const unlisteners = []
   let streamAbortController = null
+  const forceRemoteRefreshIds = new Set()
   async function attachStreamListeners(runSessionId) {
     detachStreamListeners()
-    const runSession = () => state.sessions.find(x => x.id === runSessionId) || null
+    let trackedSessionId = runSessionId
+    const adoptEventSession = (payload = {}) => {
+      const next = payload.session_id || payload.sessionId || payload.id || ''
+      trackedSessionId = adoptBackendSessionId(trackedSessionId, next)
+    }
+    const runSession = () => state.sessions.find(x => x.id === trackedSessionId) || null
+    const u0 = await tauriListen('hermes-run-started', (e) => {
+      adoptEventSession(e?.payload || {})
+    })
     const u1 = await tauriListen('hermes-run-delta', (e) => {
       const delta = e?.payload?.delta || ''
       if (!delta) return
@@ -812,7 +908,8 @@ function createStore() {
       }
       notify()
     })
-    const u3 = await tauriListen('hermes-run-done', () => {
+    const u3 = await tauriListen('hermes-run-done', (e) => {
+      adoptEventSession(e?.payload || {})
       const s = runSession()
       if (!s) { cleanupAfterRun(); return }
       const runTools = [...state.liveTools]
@@ -856,6 +953,7 @@ function createStore() {
     })
     const u4 = await tauriListen('hermes-run-error', (e) => {
       const err = e?.payload?.error || 'unknown error'
+      adoptEventSession(e?.payload || {})
       const s = runSession()
       if (s) {
         s.messages.push({
@@ -868,7 +966,7 @@ function createStore() {
       }
       cleanupAfterRun()
     })
-    unlisteners.push(u1, u2, u3, u4)
+    unlisteners.push(u0, u1, u2, u3, u4)
   }
 
   function detachStreamListeners() {
@@ -1010,20 +1108,26 @@ function createStore() {
 
   function handleStreamEvent(runSessionId, evt) {
     const eventType = evt?.event || ''
+    const effectiveSessionId = adoptBackendSessionId(runSessionId, evt?.session_id || evt?.sessionId || '')
+    if (eventType === 'run.started') {
+      return
+    }
     if (eventType === 'message.delta') {
-      appendStreamDelta(runSessionId, evt.delta || '')
+      appendStreamDelta(effectiveSessionId, evt.delta || '')
     } else if (eventType === 'tool.started' || eventType === 'tool.completed' || eventType === 'tool.progress' || eventType === 'tool.error') {
       applyStreamToolEvent(evt)
     } else if (eventType === 'message.final') {
-      replaceStreamOutput(runSessionId, evt.output || '')
+      replaceStreamOutput(effectiveSessionId, evt.output || '')
     } else if (eventType === 'run.completed') {
-      completeStreamRun(runSessionId, evt.output || '')
+      completeStreamRun(effectiveSessionId, evt.output || '')
     } else if (eventType === 'run.failed') {
-      failStreamRun(runSessionId, evt.error || 'unknown error')
+      failStreamRun(effectiveSessionId, evt.error || 'unknown error')
     }
   }
 
   function cleanupAfterRun() {
+    const completedSessionId = state.runningSessionId
+    if (completedSessionId) forceRemoteRefreshIds.add(completedSessionId)
     state.streaming = false
     state.runningSessionId = null
     state.pendingAssistantId = null
@@ -1031,13 +1135,15 @@ function createStore() {
     streamAbortController = null
     detachStreamListeners()
     notify()
-    // After streaming finishes the server has updated the session's
-    // input_tokens / output_tokens / estimated_cost_usd aggregates. Refresh
-    // the list so the input bar's usage pills reflect the new turn — this
-    // is fire-and-forget; failures fall through silently.
-    setTimeout(() => {
-      if (!state.streaming) loadSessions().catch(() => {})
-    }, 1200)
+    refreshSessionsAfterRun()
+  }
+
+  function refreshSessionsAfterRun() {
+    for (const delay of [350, 1600, 3200]) {
+      setTimeout(() => {
+        if (!state.streaming) loadSessions().catch(() => {})
+      }, delay)
+    }
   }
 
   /**
@@ -1114,11 +1220,33 @@ function createStore() {
     try { return JSON.stringify(val) } catch { return String(val) }
   }
 
+  function normalizeAttachments(items = []) {
+    if (!Array.isArray(items)) return []
+    return items
+      .map(item => {
+        const category = String(item?.category || item?.type || '').toLowerCase() || 'file'
+        const mimeType = item?.mimeType || item?.mediaType || item?.mime || ''
+        const content = item?.content || item?.data || ''
+        const url = item?.url || ''
+        if (!content && !url) return null
+        return {
+          category,
+          type: category,
+          mimeType,
+          fileName: item?.fileName || item?.name || '',
+          content,
+          url,
+        }
+      })
+      .filter(Boolean)
+  }
+
   async function sendMessage(content, opts = {}) {
-    const text = (content || '').trim()
+    const attachments = normalizeAttachments(opts.attachments || [])
+    const text = (content || '').trim() || (attachments.length ? '请分析我刚刚上传或粘贴的图片。' : '')
     const runText = (opts.modelContent || text).trim()
     const displayText = (opts.displayContent || text).trim()
-    if (!runText || state.streaming) return
+    if ((!runText && !attachments.length) || state.streaming) return
     let s = activeSession()
     if (!s) {
       s = createLocalSession()
@@ -1131,6 +1259,7 @@ function createStore() {
       timestamp: Date.now(),
     }
     if (runText !== userMessage.content) userMessage.modelContent = runText
+    if (attachments.length) userMessage.attachments = attachments
 
     // Append user-visible message. modelContent is used only for future context.
     s.messages.push(userMessage)
@@ -1147,21 +1276,21 @@ function createStore() {
     notify()
 
     try {
-      const history = s.messages
-        .filter(m => (m.role === 'user' || m.role === 'assistant') && (m.content || '').trim())
-        .slice(0, -1)
-        .map(m => ({ role: m.role, content: m.modelContent || m.content }))
+      const conversationHistory = Array.isArray(opts.conversationHistory)
+        ? opts.conversationHistory
+        : null
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id)
-        await api.hermesAgentRun(runText, s.id, history.length ? history : null, opts.instructions || null)
+        await api.hermesAgentRun(runText, s.id, conversationHistory, opts.instructions || null, attachments)
       } else {
         streamAbortController = new AbortController()
         await api.hermesAgentRunStream(
           runText,
           s.id,
-          history.length ? history : null,
+          conversationHistory,
           opts.instructions || null,
+          attachments,
           (evt) => handleStreamEvent(s.id, evt),
           { signal: streamAbortController.signal },
         )

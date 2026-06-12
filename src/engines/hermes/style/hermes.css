@@ -5212,6 +5212,39 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   max-width: 90%;
 }
 
+[data-engine="hermes"] .hm-chat-attachments,
+[data-engine="hermes"] .hm-chat-pending-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+[data-engine="hermes"] .hm-chat-attachments {
+  margin-bottom: 8px;
+}
+
+[data-engine="hermes"] .hm-chat-attachment-image {
+  margin: 0;
+  max-width: min(260px, 72vw);
+}
+
+[data-engine="hermes"] .hm-chat-attachment-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: var(--hm-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--hm-accent) 18%, transparent);
+  background: var(--hm-surface-0);
+}
+
+[data-engine="hermes"] .hm-chat-attachment-image figcaption {
+  margin-top: 4px;
+  color: var(--hm-text-tertiary);
+  font-family: var(--hm-font-mono);
+  font-size: 10.5px;
+}
+
 [data-engine="hermes"] .hm-chat-msg-footer {
   display: flex;
   align-items: center;
@@ -5846,6 +5879,52 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   margin-top: 8px;
   color: var(--hm-error);
   font-size: 12px;
+}
+
+[data-engine="hermes"] .hm-chat-pending-attachments {
+  max-width: 760px;
+  margin: 0 auto 8px;
+}
+
+[data-engine="hermes"] .hm-chat-pending-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  padding: 6px 8px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--hm-accent) 20%, transparent);
+  border-radius: var(--hm-radius-sm);
+  background: var(--hm-surface-0);
+  color: var(--hm-text-secondary);
+  font-size: 12px;
+}
+
+[data-engine="hermes"] .hm-chat-pending-image img {
+  width: 42px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--hm-border-subtle);
+}
+
+[data-engine="hermes"] .hm-chat-pending-image span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-engine="hermes"] .hm-chat-pending-image button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--hm-surface-1);
+  color: var(--hm-text-tertiary);
+  cursor: pointer;
 }
 [data-engine="hermes"] .hm-chat-input::placeholder {
   color: var(--hm-text-tertiary);

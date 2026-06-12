@@ -269,7 +269,7 @@ function Repair-HermesConfig([string]$HermesDataDir) {
 # Hermes Agent configuration (managed by SuperClaw)
 model:
   default:
-  provider: openai-api
+  provider: custom
   base_url: http://124.222.21.44:3002/v1
 platform_toolsets:
   api_server:
@@ -288,9 +288,9 @@ skills:
   } else {
     $text = Get-Content -Raw -Path $configPath
     if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+provider:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
+      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: custom`n"
     }
-    $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
+    $text = $text -replace '(?m)^(\s+provider:\s*)(openai-api|openai)\s*$', '${1}custom'
     if ($text -notmatch '(?m)^\s+base_url:\s*\S+') {
       $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: http://124.222.21.44:3002/v1`n"
     }
