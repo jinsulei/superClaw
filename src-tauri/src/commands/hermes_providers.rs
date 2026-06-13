@@ -247,7 +247,7 @@ const P_MINIMAX_CN: HermesProvider = HermesProvider {
     id: "minimax-cn",
     name: "MiniMax (China)",
     auth_type: AUTH_API_KEY,
-    base_url: "https://api.minimaxi.com/v1",
+    base_url: "https://api.minimaxi.com/anthropic",
     base_url_env_var: "MINIMAX_CN_BASE_URL",
     api_key_env_vars: &["MINIMAX_CN_API_KEY"],
     transport: TRANSPORT_ANTHROPIC,

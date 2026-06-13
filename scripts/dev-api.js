@@ -113,9 +113,36 @@ function hermesPortablePython() {
 function hermesAgentSitePackages() {
   for (const root of existingPortableDirs('uv-tools')) {
     const site = path.join(root, 'hermes-agent', 'Lib', 'site-packages')
-    if (fs.existsSync(site)) return site
+    if (fs.existsSync(path.join(site, 'hermes_cli'))) return site
   }
   return ''
+}
+
+function isBadHermesLauncher(exePath) {
+  if (!exePath) return false
+  return exePath.replace(/\\/g, '/').toLowerCase().includes('/.local/bin/hermes.exe')
+}
+
+function hermesSystemExecutable() {
+  const candidates = []
+  if (process.env.HERMES_EXE) candidates.push(process.env.HERMES_EXE)
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || ''
+    if (localAppData) {
+      for (const py of ['Python312', 'Python311', 'Python310']) {
+        candidates.push(path.join(localAppData, 'Programs', 'Python', py, 'Scripts', 'hermes.exe'))
+      }
+    }
+  }
+  const fromPath = findCommandPath('hermes')
+  if (fromPath) candidates.push(fromPath)
+
+  for (const candidate of candidates) {
+    if (!candidate || isBadHermesLauncher(candidate)) continue
+    if (!candidate.includes('\\') && !candidate.includes('/')) return candidate
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return 'hermes'
 }
 
 function hermesCommandSpec(args = []) {
@@ -133,7 +160,11 @@ function hermesCommandSpec(args = []) {
       cwd: path.dirname(python),
     }
   }
-  return { command: 'hermes', args, env, cwd: hermesHome() }
+  // The global Windows hermes.exe launcher can fail with
+  // "Failed to canonicalize script path" when its working directory contains
+  // non-ASCII characters. Keep HERMES_HOME pointed at the project data folder,
+  // but run the launcher from the user's home directory.
+  return { command: hermesSystemExecutable(), args, env, cwd: homedir() }
 }
 
 function patchHermesPyvenvCfgs() {
@@ -8446,6 +8477,15 @@ const handlers = {
     result.gatewayRunning = gatewayRunning
     result.gatewayPort = port
     result.gatewayUrl = gwUrl
+    // Portable/dev fallback: if a bundled config exists or the gateway is already
+    // healthy, do not send the UI back to the first-run installer just because
+    // `hermes version` is not on PATH.
+    if (!result.installed && (result.configExists || gatewayRunning)) {
+      result.installed = true
+      result.version = gatewayRunning ? 'gateway' : 'bundled'
+      result.path = result.path || null
+      result.managed = result.managed || 'portable'
+    }
     return result
   },
 

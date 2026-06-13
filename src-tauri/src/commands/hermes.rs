@@ -1551,6 +1551,44 @@ fn hermes_bin_dir() -> Option<PathBuf> {
         .and_then(|p| Path::new(&p).parent().map(|d| d.to_path_buf()))
 }
 
+fn is_bad_hermes_launcher(path: &str) -> bool {
+    path.replace('\\', "/")
+        .to_lowercase()
+        .contains("/.local/bin/hermes.exe")
+}
+
+fn hermes_system_executable(enhanced: &str) -> String {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(raw) = std::env::var_os("HERMES_EXE") {
+        candidates.push(PathBuf::from(raw));
+    }
+    if cfg!(target_os = "windows") {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("Python");
+            for py in ["Python312", "Python311", "Python310"] {
+                candidates.push(base.join(py).join("Scripts").join("hermes.exe"));
+            }
+        }
+    }
+
+    for candidate in candidates {
+        let raw = candidate.to_string_lossy().to_string();
+        if candidate.exists() && !is_bad_hermes_launcher(&raw) {
+            return raw;
+        }
+    }
+
+    if let Some(found) = find_executable_path("hermes", enhanced) {
+        if !is_bad_hermes_launcher(&found) {
+            return found;
+        }
+    }
+
+    "hermes".into()
+}
+
 fn hermes_agent_scripts_dir() -> Option<PathBuf> {
     let dir = uv_tool_dir().join("hermes-agent").join("Scripts");
     if dir.exists() {
@@ -1589,7 +1627,7 @@ fn hermes_agent_site_packages() -> Option<PathBuf> {
         .join("hermes-agent")
         .join("Lib")
         .join("site-packages");
-    if site.exists() {
+    if site.join("hermes_cli").exists() {
         Some(site)
     } else {
         None
@@ -1598,7 +1636,7 @@ fn hermes_agent_site_packages() -> Option<PathBuf> {
 
 fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
     let home = hermes_home();
-    if let Some(python) = hermes_agent_python() {
+    if let (Some(python), Some(site)) = (hermes_agent_python(), hermes_agent_site_packages()) {
         let cwd = python.parent().map(Path::to_path_buf);
         let mut cmd = std::process::Command::new(python);
         cmd.args(["-m", "hermes_cli.main"])
@@ -1606,18 +1644,17 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
-        if let Some(site) = hermes_agent_site_packages() {
-            cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
-                .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
-        }
+        cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
+            .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
         cmd
     } else {
-        let mut cmd = std::process::Command::new("hermes");
+        let launcher = hermes_system_executable(enhanced);
+        let mut cmd = std::process::Command::new(&launcher);
         cmd.args(args)
-            .current_dir(hermes_bin_dir().unwrap_or_else(|| home.clone()))
+            .current_dir(hermes_launcher_cwd(&home, Some(&launcher)))
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
@@ -1627,7 +1664,7 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
 
 fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Command {
     let home = hermes_home();
-    if let Some(python) = hermes_agent_python() {
+    if let (Some(python), Some(site)) = (hermes_agent_python(), hermes_agent_site_packages()) {
         let cwd = python.parent().map(Path::to_path_buf);
         let mut cmd = tokio::process::Command::new(python);
         cmd.args(["-m", "hermes_cli.main"])
@@ -1635,23 +1672,43 @@ fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Comman
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
-        if let Some(site) = hermes_agent_site_packages() {
-            cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
-                .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
-        }
+        cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
+            .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
         cmd
     } else {
-        let mut cmd = tokio::process::Command::new("hermes");
+        let launcher = hermes_system_executable(enhanced);
+        let mut cmd = tokio::process::Command::new(&launcher);
         cmd.args(args)
-            .current_dir(hermes_bin_dir().unwrap_or_else(|| home.clone()))
+            .current_dir(hermes_launcher_cwd(&home, Some(&launcher)))
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd
     }
+}
+
+fn hermes_launcher_cwd(home: &Path, launcher: Option<&str>) -> PathBuf {
+    if let Some(raw) = launcher {
+        let exe = PathBuf::from(raw);
+        if exe.is_absolute() {
+            if let Some(dir) = exe.parent() {
+                return dir.to_path_buf();
+            }
+        }
+    }
+    if let Some(dir) = hermes_bin_dir() {
+        return dir;
+    }
+    if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+        let dir = PathBuf::from(userprofile);
+        if dir.exists() {
+            return dir;
+        }
+    }
+    home.to_path_buf()
 }
 
 // ---------------------------------------------------------------------------

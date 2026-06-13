@@ -393,6 +393,8 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
           "http://127.0.0.1",
           "http://localhost:1420",
           "http://127.0.0.1:1420",
+          "http://localhost:3020",
+          "http://127.0.0.1:3020",
           "http://127.0.0.1:18777",
           "app://localhost",
           "app://",
@@ -429,12 +431,13 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   if ($SanitizedTestMode) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (sanitized SuperClaw test package)
-# No provider, base URL, or API key is bundled. Configure a model in the UI
-# or through the customer's own local settings after launch.
+# Uses MiniMax provider placeholders for local testing. No real API key is bundled.
+# Set MINIMAX_API_KEY in the local environment before chat testing.
 model:
-  default:
-  provider:
-  base_url:
+  default: MiniMax-M2.7-highspeed
+  provider: minimax-cn
+  api_mode: anthropic_messages
+  base_url: https://api.minimaxi.com/anthropic
 platform_toolsets:
   api_server:
     - hermes-api-server
@@ -450,6 +453,10 @@ skills:
   disabled: []
 "@
     Set-Content -Path $envPath -Encoding UTF8 -Value @"
+MINIMAX_API_KEY=`${MINIMAX_API_KEY}
+MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic
+MINIMAX_CN_API_KEY=`${MINIMAX_API_KEY}
+MINIMAX_CN_BASE_URL=https://api.minimaxi.com/anthropic
 GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
 "@
@@ -701,8 +708,8 @@ if ($SanitizedTest) {
     "",
     "1. Local activation and access password are skipped. Double-click superclaw.exe to open the control panel.",
     "2. No YYAPI base URL, real API key, or local customer session is bundled.",
-    "3. OpenClaw keeps a MiniMax placeholder only: `${MINIMAX_API_KEY}. Configure your own key before chat testing.",
-    "4. Hermes is not bound to a provider in this test package. Configure a model in the UI after launch.",
+    "3. OpenClaw and Hermes keep MiniMax placeholders only: `${MINIMAX_API_KEY}. Configure your own key before chat testing.",
+    "4. Hermes starts in the normal dashboard/chat flow, not the first-run install wizard.",
     "5. This is a USB test package, not a customer delivery package."
   )
   $SanitizedReadme = $SanitizedReadmeLines -join [Environment]::NewLine

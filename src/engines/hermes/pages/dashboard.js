@@ -311,6 +311,7 @@ export function render() {
           ${!gwRunning ? `<button class="hm-btn hm-btn--cta hm-dash-start" ${actionBusy ? 'disabled' : ''}>▶ ${actionBusy ? t('engine.gatewayStarting') : t('engine.dashStartGw')}</button>` : ''}
           ${gwRunning ? `<button class="hm-btn hm-btn--danger hm-dash-stop" ${actionBusy ? 'disabled' : ''}>■ ${actionBusy ? t('engine.dashStopping') : t('engine.dashStopGw')}</button>` : ''}
           ${gwRunning ? `<button class="hm-btn hm-dash-restart" ${actionBusy ? 'disabled' : ''}>↻ ${actionBusy ? t('engine.dashRestarting') : t('engine.dashRestartGw')}</button>` : ''}
+          <button class="hm-btn hm-dash-terminal-chat">↗ ${t('engine.cliChat')}</button>
           <button class="hm-btn hm-btn--icon hm-dash-refresh" title="${t('engine.dashRefresh')}">${ICONS.refresh}</button>
         </div>
       </div>
@@ -680,6 +681,9 @@ export function render() {
         await api.hermesGatewayAction('start')
       } catch (e) { showGwMsg(String(e).replace(/^Error:\s*/, ''), true) }
       actionBusy = false; await refresh()
+    })
+    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', () => {
+      window.location.hash = '#/h/chat'
     })
     // Quick links
     el.querySelectorAll('.hm-dash-link').forEach(btn => {

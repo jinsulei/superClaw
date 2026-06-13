@@ -1823,7 +1823,7 @@ async function handleRun(req, res) {
     : "";
   if (resumeSessionId) {
     args.push("--resume", resumeSessionId);
-  } else if (payload.continueSession) {
+  } else if (payload.continueSession && payload.allowGlobalContinue === true) {
     args.push("--continue");
   }
   if (model) {

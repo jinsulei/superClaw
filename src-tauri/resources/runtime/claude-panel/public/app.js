@@ -192,6 +192,7 @@ const colorThemeStorageKey = "cleanClaude.colorTheme.v1";
 const automationsStorageKey = "cleanClaude.automations.v1";
 const schedulesStorageKey = "cleanClaude.schedules.v1";
 const temporaryTaskStorageKey = "cleanClaude.temporaryTask.v1";
+const automaticScheduleExecutionEnabled = false;
 const setupDismissedKey = "cleanClaude.setupDismissed.session";
 const superclawBaseStorageKey = "cleanClaude.superclawBase.v1";
 const fallbackSuperclawBase = "http://127.0.0.1:1420";
@@ -3973,7 +3974,7 @@ async function submitPromptText(prompt, options = {}) {
     closeSlashCommandMenu();
     return;
   }
-  if (tryCreateScheduleFromPrompt(text)) {
+  if (tryCreateScheduleFromPrompt(text, { source: options.source || "chat_input" })) {
     promptInput.value = "";
     return;
   }
@@ -4411,68 +4412,19 @@ function parseConversationAction(text) {
   return "";
 }
 
-function tryCreateScheduleFromPrompt(text) {
-  const prompt = text.trim();
-  const runDate = nextDateForRequest(prompt);
-  const looksLikeSchedule = /定时|提醒|明天|今天|每天|每日|每周|\d{1,2}\s*[:：点.]\s*\d{0,2}/.test(prompt);
-  if (!looksLikeSchedule || !runDate) return false;
+const manualScheduleSources = new Set(["chat_input", "user_message", "manual_chat"]);
 
-  const action = parseConversationAction(prompt);
-  const repeatRule = repeatRuleForRequest(prompt);
-  const risk = action
-    ? dangerousConversationActions.has(action)
-      ? "高风险：删除类对话操作执行前会再次确认"
-      : "低风险：仅修改本地会话状态"
-    : "执行前遵循权限模式；删除、覆盖、安装依赖、联网推送、发送敏感数据前必须二次确认";
-  const activeConversation = currentConversationId ? getConversation(currentConversationId) : conversations[0];
+function isManualScheduleCommand(text, source = "chat_input") {
+  return manualScheduleSources.has(String(source || "")) && String(text || "").trim() === "定时任务";
+}
 
-  const details = [
-    "检测到你想创建定时任务，请确认：",
-    "",
-    `任务名称：${action ? conversationActionLabels[action] : "Claude Code 定时执行"}`,
-    `执行时间：${runDate.toLocaleString("zh-CN")}`,
-    `重复规则：${repeatRule}`,
-    `执行内容：${prompt}`,
-    `项目路径：${projectSelect.value || "未选择"}`,
-    `权限模式：${modeNotes[activeMode]?.title || "默认"}`,
-    `风险提示：${risk}`,
-    "",
-    "确认后才会保存任务。",
-  ].join("\n");
-
-  const confirmed = window.confirm(details);
-  if (!confirmed) {
-    addMessage("system", "定时任务", "已取消创建定时任务。");
-    return true;
-  }
-
-  const task =
-    action && activeConversation
-      ? createConversationTask(action, activeConversation.id, runDate.toISOString(), `${conversationActionLabels[action]}：${activeConversation.title}`)
-      : {
-          id: makeId(),
-          name: prompt.slice(0, 28) || "定时任务",
-          prompt,
-          runAt: runDate.toISOString(),
-          repeatRule,
-          enabled: true,
-          completedAt: "",
-          createdAt: new Date().toISOString(),
-          projectPath: projectSelect.value,
-          permissionMode: activeMode,
-          risk,
-        };
-
-  if (!task) {
-    addMessage("error", "定时任务", "没有可操作的当前对话，无法创建对话操作任务。");
-    return true;
-  }
-
-  schedules.unshift(task);
-  saveStoredList(schedulesStorageKey, schedules);
-  renderSchedules();
+function tryCreateScheduleFromPrompt(text, options = {}) {
+  const source = options.source || "chat_input";
+  const prompt = String(text || "").trim();
+  if (!isManualScheduleCommand(prompt, source)) return false;
+  if (typeof scheduleNextDefaultTime === "function") scheduleNextDefaultTime();
   setWorkspaceTab("schedule");
-  addMessage("system", "定时任务", `已保存：${task.name}，执行时间 ${formatSchedule(task.runAt)}。`);
+  addMessage("system", "定时任务", "已打开定时任务面板。请填写任务名称、执行时间和指令后保存。");
   return true;
 }
 
@@ -4550,6 +4502,8 @@ function runScheduleNow(schedule) {
 }
 
 function checkSchedules() {
+  renderTemporaryTask();
+  if (!automaticScheduleExecutionEnabled) return;
   checkTemporaryTask();
   if (runController) return;
   const now = Date.now();
@@ -4774,7 +4728,7 @@ async function startRun(prompt, overrides = {}) {
     const resumeSessionId = activeConversation?.nativeSessionId || "";
     const continueSession = Object.prototype.hasOwnProperty.call(overrides, "continueSession")
       ? Boolean(overrides.continueSession)
-      : Boolean(resumeSessionId || continueToggle.checked);
+      : Boolean(resumeSessionId);
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4863,7 +4817,7 @@ async function runPrompt(event) {
     closeSlashCommandMenu();
     return;
   }
-  if (tryCreateScheduleFromPrompt(prompt)) {
+  if (tryCreateScheduleFromPrompt(prompt, { source: "chat_input" })) {
     promptInput.value = "";
     return;
   }

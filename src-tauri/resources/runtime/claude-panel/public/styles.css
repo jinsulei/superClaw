@@ -6679,9 +6679,10 @@ textarea#promptInput {
 
 .conversation-mode .transcript .message.assistant .message-body,
 .conversation-mode .transcript .message.user .message-body {
-  display: block !important;
+  display: inline-block !important;
   width: auto !important;
   max-width: 100% !important;
+  min-width: 0 !important;
   padding: 0 !important;
   border: 0 !important;
   background: transparent !important;
@@ -6697,10 +6698,6 @@ textarea#promptInput {
 }
 
 .conversation-mode .transcript .message.user .message-body {
-  display: inline-block !important;
-  min-width: 0 !important;
-  white-space: pre-wrap !important;
-  word-break: normal !important;
   overflow-wrap: anywhere !important;
 }
 
