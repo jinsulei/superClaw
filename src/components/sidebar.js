@@ -395,6 +395,39 @@ function _showEngineSwitchProgress(fromId, toId) {
   }
 }
 
+function _showEngineSwitchPageProgress() {
+  _clearEngineSwitchProgress()
+  _setEngineSwitchProgress(null, 4)
+
+  const startedAt = performance.now()
+  const duration = 900
+  const tick = (now) => {
+    const elapsed = Math.min(now - startedAt, duration)
+    const ratio = elapsed / duration
+    const eased = 1 - Math.pow(1 - ratio, 3)
+    _setEngineSwitchProgress(null, 4 + eased * 30)
+
+    if (ratio < 1) {
+      _engineSwitchProgressFrame = requestAnimationFrame(tick)
+    }
+  }
+  _engineSwitchProgressFrame = requestAnimationFrame(tick)
+
+  return {
+    setProgress: (value) => _setEngineSwitchProgress(null, value),
+    complete: () => _finishEngineSwitchPageProgress(),
+    fail: () => _finishEngineSwitchPageProgress(),
+  }
+}
+
+function _finishEngineSwitchPageProgress() {
+  if (_engineSwitchProgressFrame) {
+    cancelAnimationFrame(_engineSwitchProgressFrame)
+    _engineSwitchProgressFrame = null
+  }
+  _setEngineSwitchProgress(null, 100)
+}
+
 function _finishEngineSwitchProgress(overlay, failed) {
   if (_engineSwitchProgressFrame) {
     cancelAnimationFrame(_engineSwitchProgressFrame)
@@ -684,7 +717,7 @@ export function renderSidebar(el) {
               <div class="card"><div class="card-body" style="padding:20px"><div class="skeleton-line" style="width:40%;height:16px;margin-bottom:16px"></div><div class="skeleton-line" style="height:36px"></div></div></div>
             </div>`
           }
-          const switchProgress = showSwitchProgress ? _showEngineSwitchProgress(fromEngineId, eid) : null
+          const switchProgress = showSwitchProgress ? _showEngineSwitchPageProgress() : null
           Promise.resolve().then(async () => {
             if (eid === 'openclaw') {
               await _ensureOpenClawGatewayForSwitch(switchProgress)
