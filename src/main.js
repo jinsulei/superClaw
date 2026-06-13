@@ -62,11 +62,21 @@ async function openGatewayConflict(error = null) {
 // === 远程用户认证（JWT） ===
 const isTauri = isTauriRuntime()
 
+function isLocalDevAuthBypass() {
+  const host = window.location.hostname
+  return !!import.meta.env.DEV && (host === '127.0.0.1' || host === 'localhost' || host === '::1')
+}
+
 /**
  * 检查用户是否已通过远程 API 登录
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
+  if (isLocalDevAuthBypass()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    return { ok: true }
+  }
+
   // Desktop portable mode must be locally usable even when the remote account
   // service or YYApi token sync is unavailable.
   if (isTauri) {
