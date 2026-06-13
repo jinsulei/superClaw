@@ -353,7 +353,8 @@ function buildIntentTriggeredToolInstructions(text) {
       '[DESKTOP_CONTROL_TRIGGER]',
       '本轮用户明确要求操作桌面端/客户端/本地应用。若工具列表里有 desktop_control，请优先调用 desktop_control，不要改用浏览器，也不要把 <tool_call>、XML 或伪代码当作文字输出。',
       '执行顺序：先 action=list_windows 查找窗口；找到目标后再 activate；需要读取画面、价格、数量、字幕、直播间或当前状态时，必须再 action=screenshot，并基于返回图片继续分析；需要搜索时再 click/type_text/press_key。',
-      '若目标客户端没有打开或无法激活，再说明原因并退回浏览器工具。',
+      '注意：任务栏托盘里有图标但没有展开主窗口时，list_windows 可能看不到目标。不要因此断定“客户端未打开”；请先说明“当前工具只能枚举可见窗口，目标可能在托盘/后台”，再尝试通过已打开窗口、任务栏/前台窗口或用户已恢复窗口继续操作。',
+      '若目标是抖音、快手、小红书、微信、飞书、钉钉、QQ 等桌面客户端，必须优先操作用户已打开的桌面客户端；只有在桌面工具确实无法激活可见窗口，且用户同意网页兜底时，才改用浏览器。',
       '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
       '[/DESKTOP_CONTROL_TRIGGER]',
     )
@@ -362,7 +363,8 @@ function buildIntentTriggeredToolInstructions(text) {
     lines.push(
       '[BROWSER_TOOL_TRIGGER]',
       '本轮用户明确要求浏览器/网页/链接/搜索/抓取。若工具列表里有 browser、web、browser_navigate、browser_snapshot 等工具，请调用真实工具完成打开、搜索、读取、点击或页面快照；不要输出 <tool_call>、XML 或伪工具文本。',
-      '基础顺序：navigate/open -> snapshot/read visible text -> click/type/wait when needed；失败时用中文说明具体失败原因和下一步。',
+      '浏览器自动化必须复用同一个专用浏览器窗口/标签：先检查已有 tab/current page；能 navigate 当前页就不要 open 新窗口/新标签；同一任务最多保留一个自动化页面，禁止反复打开多个浏览器或多个独立页面。',
+      '基础顺序：tabs/current -> focus/reuse -> navigate -> snapshot/read visible text -> click/type/wait when needed；失败时用中文说明具体失败原因和下一步。',
       '普通聊天不要触发 browser/web 工具。',
       '[/BROWSER_TOOL_TRIGGER]',
     )
