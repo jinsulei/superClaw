@@ -256,9 +256,12 @@ export async function render() {
       <p class="page-desc">${t('skills.desc')}</p>
     </div>
     ${agentOptions}
-    <div class="tab-bar" id="skills-main-tabs">
-      <div class="tab active" data-main-tab="installed">${t('skills.tabInstalled')}</div>
-      <div class="tab" data-main-tab="store">${t('skills.tabStore')}</div>
+    <div class="skills-tabs-row">
+      <div class="tab-bar" id="skills-main-tabs">
+        <div class="tab active" data-main-tab="installed">${t('skills.tabInstalled')}</div>
+        <div class="tab" data-main-tab="store">${t('skills.tabStore')}</div>
+      </div>
+      <a class="btn btn-secondary btn-sm skills-market-link" href="https://clawhub.ai/" target="_blank" rel="noopener">Skills 商城</a>
     </div>
     <div id="skills-tab-installed" class="config-section">
       <div class="stat-card loading-placeholder" style="height:96px"></div>

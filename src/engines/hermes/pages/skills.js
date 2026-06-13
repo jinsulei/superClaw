@@ -1231,6 +1231,9 @@ export function render() {
           </div>
         </div>
         <div class="hm-hero-actions">
+          <a class="hm-btn hm-btn--ghost hm-btn--sm" href="https://hermes-agent.nousresearch.com/docs/skills/?utm_source=chatgpt.com" target="_blank" rel="noopener">
+            Skills 商城
+          </a>
           <button class="hm-btn hm-btn--ghost hm-btn--sm" id="hm-skills-install">
             📦 安装技能
           </button>

@@ -517,6 +517,25 @@
   font-weight: 700;
 }
 
+.openclaw-skills-page .skills-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  border-bottom: 1px solid var(--border-primary);
+  margin-bottom: var(--space-lg);
+}
+
+.openclaw-skills-page .skills-tabs-row .tab-bar {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+
+.openclaw-skills-page .skills-market-link {
+  margin-bottom: 6px;
+  white-space: nowrap;
+}
+
 .clawhub-toolbar {
   display: flex;
   gap: var(--space-sm);
