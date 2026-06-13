@@ -185,6 +185,7 @@ const runTabButtons = Array.from(document.querySelectorAll("[data-run-tab]"));
 const cwdStorageKey = "cleanClaude.cwd.v2";
 const modelStorageKey = "cleanClaude.model";
 const conversationsStorageKey = "cleanClaude.conversations.v1";
+const maxConversationMessages = 80;
 const rightPanelCollapsedKey = "cleanClaude.rightPanelCollapsed.v1";
 const themeStorageKey = "cleanClaude.theme.v1";
 const colorThemeStorageKey = "cleanClaude.colorTheme.v1";
@@ -720,6 +721,7 @@ let conversationRenderFrame = null;
 let conversationsSaveTimer = null;
 let relayWritable = false;
 let currentConversationId = null;
+let activeRunConversationId = null;
 let conversations = loadConversations();
 let conversationSearchTerm = "";
 let openConversationMenuId = null;
@@ -1896,6 +1898,7 @@ function loadConversations() {
           status: normalizeConversationStatus(conversation.status),
           pinned: Boolean(conversation.pinned),
           archived: Boolean(conversation.archived),
+          messages: Array.isArray(conversation.messages) ? conversation.messages : [],
         }))
       : [];
   } catch {
@@ -1912,7 +1915,11 @@ function normalizeConversationStatus(status) {
 }
 
 function persistConversationsNow() {
-  window.localStorage.setItem(conversationsStorageKey, JSON.stringify(conversations.slice(0, 120)));
+  const compacted = conversations.slice(0, 120).map((conversation) => ({
+    ...conversation,
+    messages: compactConversationMessages(conversation.messages || []),
+  }));
+  window.localStorage.setItem(conversationsStorageKey, JSON.stringify(compacted));
 }
 
 function saveConversations(immediate = false) {
@@ -1987,6 +1994,68 @@ function createConversationTitle(text) {
   return (firstLine || "新对话").replace(/\s+/g, " ").slice(0, 42);
 }
 
+function normalizeConversationMessages(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter((message) => message && typeof message === "object")
+    .map((message) => ({
+      id: message.id || makeId(),
+      role: ["user", "assistant", "system", "error"].includes(message.role) ? message.role : "system",
+      title: String(message.title || ""),
+      content: String(message.content || ""),
+      timestamp: message.timestamp || new Date().toISOString(),
+    }))
+    .filter((message) => message.content.trim());
+}
+
+function compactConversationMessages(messages) {
+  const list = normalizeConversationMessages(messages);
+  if (list.length <= maxConversationMessages) return list;
+  const keep = list.slice(-maxConversationMessages);
+  return [
+    {
+      id: `summary-${Date.now()}`,
+      role: "system",
+      title: "上下文已压缩",
+      content: `已压缩 ${list.length - keep.length} 条更早的界面记录；真正的连续上下文继续由 Claude Code 原生 session 续接。`,
+      timestamp: new Date().toISOString(),
+    },
+    ...keep,
+  ];
+}
+
+function appendConversationMessage(conversationId, role, title, content) {
+  const text = String(content || "").trim();
+  if (!conversationId || !text) return;
+  conversations = conversations.map((conversation) => {
+    if (conversation.id !== conversationId) return conversation;
+    const messages = compactConversationMessages([
+      ...(conversation.messages || []),
+      {
+        id: makeId(),
+        role,
+        title,
+        content: text,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    return {
+      ...conversation,
+      messages,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  saveConversations();
+  scheduleConversationRender();
+}
+
+function appendCurrentConversationMessage(role, title, content) {
+  appendConversationMessage(currentConversationId, role, title, content);
+}
+
+function appendActiveRunConversationMessage(role, title, content) {
+  appendConversationMessage(activeRunConversationId || currentConversationId, role, title, content);
+}
+
 function createConversation(prompt, titleSource = prompt) {
   const conversation = {
     id: makeId(),
@@ -1998,6 +2067,7 @@ function createConversation(prompt, titleSource = prompt) {
     pinned: false,
     result: "",
     nativeSessionId: "",
+    messages: [],
   };
   conversations.unshift(conversation);
   currentConversationId = conversation.id;
@@ -2045,6 +2115,7 @@ function ensureProjectConversation(projectPath, titleSource = "") {
     projectPath: normalizedPath,
     kind: "project",
     nativeSessionId: "",
+    messages: [],
   };
   conversations.unshift(conversation);
   currentConversationId = conversation.id;
@@ -2078,13 +2149,21 @@ function createOrUpdateProjectConversation(prompt, titleSource = prompt) {
   });
 }
 
-function updateCurrentConversation(patch) {
-  if (!currentConversationId) return;
+function updateConversationById(id, patch) {
+  if (!id) return;
   conversations = conversations.map((conversation) =>
-    conversation.id === currentConversationId ? { ...conversation, ...patch } : conversation
+    conversation.id === id ? { ...conversation, ...patch } : conversation
   );
   saveConversations();
   scheduleConversationRender();
+}
+
+function updateCurrentConversation(patch) {
+  updateConversationById(currentConversationId, patch);
+}
+
+function updateActiveRunConversation(patch) {
+  updateConversationById(activeRunConversationId || currentConversationId, patch);
 }
 
 function getConversation(id) {
@@ -2101,11 +2180,16 @@ function showConversation(conversation) {
     }
   }
   transcript.innerHTML = "";
-  addMessage("user", "你", conversation.prompt || "");
-  if (conversation.result) {
-    addMessage("assistant", "Claude", conversation.result);
+  const messages = normalizeConversationMessages(conversation.messages || []);
+  if (messages.length) {
+    for (const message of messages) {
+      addMessage(message.role, message.title || (message.role === "user" ? "你" : message.role === "assistant" ? "Claude" : "记录"), message.content);
+    }
+  } else if (conversation.prompt || conversation.result) {
+    if (conversation.prompt) addMessage("user", "你", conversation.prompt);
+    if (conversation.result) addMessage("assistant", "Claude", conversation.result);
   } else {
-    addMessage("system", normalizeConversationStatus(conversation.status), "这条对话还没有完整输出。");
+    addMessage("system", normalizeConversationStatus(conversation.status), "这个工程文件还没有开始对话。");
   }
   removeRuntimeSummaryMessages();
   setRunState(statusToRunState(conversation.status), normalizeConversationStatus(conversation.status));
@@ -2129,7 +2213,13 @@ function renderConversations() {
     .filter((conversation) => showArchived || !conversation.archived)
     .filter((conversation) => {
       if (!search) return true;
-      return [conversation.title, conversation.prompt, conversation.result, conversation.status]
+      return [
+        conversation.title,
+        conversation.prompt,
+        conversation.result,
+        conversation.status,
+        ...(conversation.messages || []).map((message) => `${message.title || ""} ${message.content || ""}`),
+      ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(search));
     })
@@ -2250,6 +2340,62 @@ async function copyText(text) {
 function isManagedProjectPath(projectPath) {
   const normalized = String(projectPath || "").trim().toLowerCase();
   return Boolean(normalized) && managedProjectFolders.some((item) => String(item.path || "").trim().toLowerCase() === normalized);
+}
+
+function sameProjectPath(a, b) {
+  return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+}
+
+function shouldAutoCreateProjectForPrompt(overrides = {}) {
+  const selected = projectSelect.value || "";
+  if (overrides.source === "quick-command") return false;
+  if (!selected) return true;
+  if (!isManagedProjectPath(selected)) return true;
+  const activeConversation = currentConversationId ? getConversation(currentConversationId) : null;
+  if (!activeConversation) return false;
+  return !sameProjectPath(activeConversation.projectPath, selected);
+}
+
+async function createManagedProjectFromPrompt(prompt) {
+  const name = createConversationTitle(prompt || "新工程文件");
+  const res = await fetch("/api/project-folders", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(result.error || "工程文件创建失败");
+
+  const project = result.project || {};
+  if (!project.path) throw new Error("工程文件创建失败：服务没有返回项目路径");
+  managedProjectFolders = Array.isArray(result.folders) ? result.folders : managedProjectFolders;
+  renderProjectOptions(result.projects || [project]);
+  projectSelect.value = project.path;
+  updateCurrentProject();
+  const conversation = ensureProjectConversation(project.path, project.name || name);
+  if (conversation) {
+    conversation.title = project.name || name;
+    conversation.status = "准备就绪";
+    conversation.kind = "project";
+    conversation.projectPath = project.path;
+    conversation.messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+    saveConversations();
+    renderConversations();
+  }
+  return conversation;
+}
+
+async function ensureProjectForPrompt(prompt, overrides = {}) {
+  if (!shouldAutoCreateProjectForPrompt(overrides)) return true;
+  try {
+    const conversation = await createManagedProjectFromPrompt(prompt);
+    if (conversation) return true;
+  } catch (error) {
+    addMessage("error", "工程文件创建失败", error.message || "无法自动创建工程文件，请手动新建后再发送。");
+    openProjectNameDialog();
+    return false;
+  }
+  return false;
 }
 
 function removeConversationRecord(id) {
@@ -2541,6 +2687,8 @@ function syncProjectConversationCards(projects) {
       result: "",
       projectPath: project.path,
       kind: "project",
+      nativeSessionId: "",
+      messages: [],
     });
     changed = true;
   }
@@ -4480,13 +4628,15 @@ function handlePacket(packet) {
     flushAssistantTextBuffer();
     setRunState("error", "运行异常");
     addMessage("error", "运行异常", payload.text || "执行失败");
-    updateCurrentConversation({ status: "运行异常", result: payload.text || "执行失败" });
+    appendActiveRunConversationMessage("error", "运行异常", payload.text || "执行失败");
+    updateActiveRunConversation({ status: "运行异常", result: payload.text || "执行失败" });
   } else if (event === "done") {
     flushAssistantTextBuffer();
     removeRuntimeSummaryMessages();
     const replyText = activeAssistantMessage?.body?.textContent || "";
     setRunState("done", "已完成");
-    updateCurrentConversation({
+    appendActiveRunConversationMessage("assistant", "Claude", replyText || "已完成。");
+    updateActiveRunConversation({
       status: "已完成",
       result: replyText,
     });
@@ -4496,7 +4646,7 @@ function handlePacket(packet) {
     }
   } else if (event === "meta") {
     if (payload.sessionId) {
-      updateCurrentConversation({
+      updateActiveRunConversation({
         nativeSessionId: payload.sessionId,
         updatedAt: new Date().toISOString(),
       });
@@ -4547,6 +4697,8 @@ function confirmHighRiskRun(config) {
 async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
   overrides = implicitBrowserRunOverrides(prompt, overrides);
+  const projectReady = await ensureProjectForPrompt(prompt, overrides);
+  if (!projectReady) return;
   if (!projectSelect.value) {
     addMessage("error", "请选择对话", "请先在左侧选择一个对话，或点击左上角 + 新建对话后再发送。");
     openProjectNameDialog();
@@ -4580,6 +4732,8 @@ async function startRun(prompt, overrides = {}) {
   }));
   inspectPromptForPetMood(prompt);
   createOrUpdateProjectConversation(finalPrompt, prompt);
+  activeRunConversationId = currentConversationId;
+  appendActiveRunConversationMessage("user", "你", finalPrompt);
   addMessage("user", "你", finalPrompt);
   if (selectedAttachments.length) {
     addMessage("system", "附件", "图片已上传到本机，并已把本地路径随本次消息发送给 Claude Code。");
@@ -4646,7 +4800,8 @@ async function startRun(prompt, overrides = {}) {
       const body = formatErrorHelp({ code: error.code || String(response.status), message: error.error || error.message, suggestion: error.suggestion }, response.status);
       setRunState("error", "运行异常");
       addMessage("error", "运行异常", body);
-      updateCurrentConversation({ status: "运行异常", result: body });
+      appendActiveRunConversationMessage("error", "运行异常", body);
+      updateActiveRunConversation({ status: "运行异常", result: body });
       return;
     }
 
@@ -4655,11 +4810,12 @@ async function startRun(prompt, overrides = {}) {
     if (error.name !== "AbortError") {
       setRunState("error", "连接中断");
       addMessage("error", "连接中断", error.message);
-      updateCurrentConversation({ status: "连接中断", result: error.message });
+      appendActiveRunConversationMessage("error", "连接中断", error.message);
+      updateActiveRunConversation({ status: "连接中断", result: error.message });
     } else {
       setRunState("stopped", "已停止");
       addMessage("system", "已停止", "请求已取消。");
-      updateCurrentConversation({ status: "已停止" });
+      updateActiveRunConversation({ status: "已停止" });
     }
   } finally {
     flushAssistantTextBuffer();
@@ -4670,6 +4826,7 @@ async function startRun(prompt, overrides = {}) {
     clearTimeout(petSlowTimer);
     petSlowTimer = null;
     runController = null;
+    activeRunConversationId = null;
     activeAssistantMessage = null;
     setRunning(false);
     promptInput.focus();
@@ -4899,7 +5056,11 @@ function requestScreenshot() {
 async function copyCurrentConversation() {
   const conversation = currentConversationId ? getConversation(currentConversationId) : conversations[0];
   if (!conversation) return;
-  const content = `# ${conversation.title}\n\n${conversation.prompt}\n\n${conversation.result || ""}`;
+  const messages = normalizeConversationMessages(conversation.messages || []);
+  const transcriptText = messages.length
+    ? messages.map((message) => `## ${message.title || message.role}\n\n${message.content}`).join("\n\n")
+    : `${conversation.prompt}\n\n${conversation.result || ""}`;
+  const content = `# ${conversation.title}\n\n${transcriptText}`;
   try {
     await copyText(content);
     addMessage("system", "复制", "已复制当前对话内容。");
