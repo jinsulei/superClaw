@@ -6733,6 +6733,109 @@ textarea#promptInput {
   background: var(--panel-bg) !important;
 }
 
+:root[data-theme="dark"] .conversation-mode .transcript .message.assistant,
+:root[data-color-theme="midnight"] .conversation-mode .transcript .message.assistant,
+:root[data-color-theme="cyberpunk"] .conversation-mode .transcript .message.assistant,
+:root[data-color-theme="ember"] .conversation-mode .transcript .message.assistant {
+  border-color: var(--line-strong) !important;
+  background: var(--surface-soft) !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24) !important;
+}
+
+:root[data-theme="dark"] .conversation-mode .transcript .message.user,
+:root[data-color-theme="midnight"] .conversation-mode .transcript .message.user,
+:root[data-color-theme="cyberpunk"] .conversation-mode .transcript .message.user,
+:root[data-color-theme="ember"] .conversation-mode .transcript .message.user {
+  border-color: var(--ready-border) !important;
+  background: var(--user-bg) !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22) !important;
+}
+
+:root[data-theme="dark"] .conversation-mode .transcript .message.assistant .message-body,
+:root[data-theme="dark"] .conversation-mode .transcript .message.user .message-body,
+:root[data-color-theme="midnight"] .conversation-mode .transcript .message.assistant .message-body,
+:root[data-color-theme="midnight"] .conversation-mode .transcript .message.user .message-body,
+:root[data-color-theme="cyberpunk"] .conversation-mode .transcript .message.assistant .message-body,
+:root[data-color-theme="cyberpunk"] .conversation-mode .transcript .message.user .message-body,
+:root[data-color-theme="ember"] .conversation-mode .transcript .message.assistant .message-body,
+:root[data-color-theme="ember"] .conversation-mode .transcript .message.user .message-body {
+  color: var(--text) !important;
+}
+
+:root[data-theme="dark"] #projectSelect.control,
+:root[data-color-theme="midnight"] #projectSelect.control,
+:root[data-color-theme="cyberpunk"] #projectSelect.control,
+:root[data-color-theme="ember"] #projectSelect.control {
+  background-color: var(--surface-soft) !important;
+  background-image: none !important;
+  color: var(--control-text) !important;
+}
+
+:root[data-theme="dark"] .run-panel .section-title,
+:root[data-color-theme="midnight"] .run-panel .section-title,
+:root[data-color-theme="cyberpunk"] .run-panel .section-title,
+:root[data-color-theme="ember"] .run-panel .section-title {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+:root[data-theme="dark"] .run-panel .health-list,
+:root[data-theme="dark"] .extensions-section .health-list,
+:root[data-theme="dark"] .right-compact-details,
+:root[data-theme="dark"] .extension-card.compact,
+:root[data-theme="dark"] .run-panel .control,
+:root[data-theme="dark"] .run-panel input,
+:root[data-theme="dark"] .run-panel textarea,
+:root[data-theme="dark"] .extension-library-button,
+:root[data-theme="dark"] .run-panel .secondary-button,
+:root[data-color-theme="midnight"] .run-panel .health-list,
+:root[data-color-theme="midnight"] .extensions-section .health-list,
+:root[data-color-theme="midnight"] .right-compact-details,
+:root[data-color-theme="midnight"] .extension-card.compact,
+:root[data-color-theme="midnight"] .run-panel .control,
+:root[data-color-theme="midnight"] .run-panel input,
+:root[data-color-theme="midnight"] .run-panel textarea,
+:root[data-color-theme="midnight"] .extension-library-button,
+:root[data-color-theme="midnight"] .run-panel .secondary-button,
+:root[data-color-theme="cyberpunk"] .run-panel .health-list,
+:root[data-color-theme="cyberpunk"] .extensions-section .health-list,
+:root[data-color-theme="cyberpunk"] .right-compact-details,
+:root[data-color-theme="cyberpunk"] .extension-card.compact,
+:root[data-color-theme="cyberpunk"] .run-panel .control,
+:root[data-color-theme="cyberpunk"] .run-panel input,
+:root[data-color-theme="cyberpunk"] .run-panel textarea,
+:root[data-color-theme="cyberpunk"] .extension-library-button,
+:root[data-color-theme="cyberpunk"] .run-panel .secondary-button,
+:root[data-color-theme="ember"] .run-panel .health-list,
+:root[data-color-theme="ember"] .extensions-section .health-list,
+:root[data-color-theme="ember"] .right-compact-details,
+:root[data-color-theme="ember"] .extension-card.compact,
+:root[data-color-theme="ember"] .run-panel .control,
+:root[data-color-theme="ember"] .run-panel input,
+:root[data-color-theme="ember"] .run-panel textarea,
+:root[data-color-theme="ember"] .extension-library-button,
+:root[data-color-theme="ember"] .run-panel .secondary-button {
+  background: var(--surface-soft);
+  color: var(--control-text);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .right-compact-details summary,
+:root[data-theme="dark"] .quick-command-details summary,
+:root[data-theme="dark"] .right-compact-details.extensions-install-details summary,
+:root[data-color-theme="midnight"] .right-compact-details summary,
+:root[data-color-theme="midnight"] .quick-command-details summary,
+:root[data-color-theme="midnight"] .right-compact-details.extensions-install-details summary,
+:root[data-color-theme="cyberpunk"] .right-compact-details summary,
+:root[data-color-theme="cyberpunk"] .quick-command-details summary,
+:root[data-color-theme="cyberpunk"] .right-compact-details.extensions-install-details summary,
+:root[data-color-theme="ember"] .right-compact-details summary,
+:root[data-color-theme="ember"] .quick-command-details summary,
+:root[data-color-theme="ember"] .right-compact-details.extensions-install-details summary {
+  background: var(--surface-quiet);
+  color: var(--text);
+}
+
 @media (max-width: 860px) {
   .conversation-mode .transcript {
     padding-inline: 14px !important;
