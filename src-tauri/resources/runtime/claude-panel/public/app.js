@@ -1300,7 +1300,7 @@ function ensureRunActivityCard() {
     <div class="run-activity-head">
       <span class="run-activity-dot"></span>
       <strong>运行过程</strong>
-      <small>工具和命令会在这里显示，不混入正式回复</small>
+      <small></small>
     </div>
     <div class="run-activity-list"></div>
   `;
@@ -1987,6 +1987,57 @@ function loadConversations() {
   }
 }
 
+function conversationUpdatedMs(conversation) {
+  const value = Date.parse(conversation?.updatedAt || conversation?.createdAt || "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function mergeConversationLists(primary = [], secondary = []) {
+  const map = new Map();
+  for (const item of [...secondary, ...primary]) {
+    if (!item?.id) continue;
+    const existing = map.get(item.id);
+    if (!existing || conversationUpdatedMs(item) >= conversationUpdatedMs(existing)) {
+      map.set(item.id, {
+        ...item,
+        status: normalizeConversationStatus(item.status),
+        pinned: Boolean(item.pinned),
+        archived: Boolean(item.archived),
+        messages: normalizeConversationMessages(item.messages || []),
+      });
+    }
+  }
+  return Array.from(map.values())
+    .sort((a, b) => conversationUpdatedMs(b) - conversationUpdatedMs(a))
+    .slice(0, 120);
+}
+
+async function hydrateConversationsFromPortableStore() {
+  try {
+    const response = await fetch("/api/conversations", { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const portableConversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+    if (!portableConversations.length) {
+      if (conversations.length) saveConversations(true);
+      return;
+    }
+    const merged = mergeConversationLists(portableConversations, conversations);
+    const changed = JSON.stringify(merged) !== JSON.stringify(conversations);
+    conversations = merged;
+    if (changed) {
+      persistConversationsNow();
+      scheduleConversationRender();
+      if (currentConversationId) {
+        const active = getConversation(currentConversationId);
+        if (active) showConversation(active);
+      }
+    }
+  } catch {
+    // Keep localStorage as a fallback if the portable data store is unavailable.
+  }
+}
+
 function normalizeConversationStatus(status) {
   if (!status) return "已完成";
   if (status === "success" || status === "完成") return "已完成";
@@ -2001,6 +2052,19 @@ function persistConversationsNow() {
     messages: compactConversationMessages(conversation.messages || []),
   }));
   window.localStorage.setItem(conversationsStorageKey, JSON.stringify(compacted));
+  const payload = JSON.stringify({ conversations: compacted });
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: "application/json" });
+      if (navigator.sendBeacon("/api/conversations", blob)) return;
+    }
+  } catch {}
+  fetch("/api/conversations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+    keepalive: true,
+  }).catch(() => {});
 }
 
 function saveConversations(immediate = false) {
@@ -5486,6 +5550,7 @@ renderAccountMenu();
 applyPetSyncUi();
 loadFeishuTutorialStatus();
 loadVoiceCapabilities().catch(() => updateVoiceButtonHint());
+hydrateConversationsFromPortableStore();
 setInterval(checkSchedules, 30000);
 setInterval(renderTemporaryTask, 30000);
 setInterval(checkWorkRestReminder, 60000);

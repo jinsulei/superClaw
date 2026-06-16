@@ -594,7 +594,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   Remove-IfExists (Join-Path $ClawPanelData "logs")
 
   $ClaudePanelData = Join-Path $DataRoot "claude-panel"
-  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache", "project-folders.json", "projects.json", "recent-projects.json")) {
+  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache", "project-folders.json", "projects.json", "recent-projects.json", "conversations.json")) {
     Remove-IfExists (Join-Path $ClaudePanelData $name)
   }
 

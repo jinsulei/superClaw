@@ -16,6 +16,7 @@ const APP_CONFIG_DIR = process.env.CLEAN_PANEL_DATA_DIR
 const RELAY_CONFIG_PATH = path.join(APP_CONFIG_DIR, "relay-config.json");
 const CUSTOM_PROJECTS_PATH = path.join(APP_CONFIG_DIR, "projects.json");
 const PROJECT_FOLDERS_PATH = path.join(APP_CONFIG_DIR, "project-folders.json");
+const CONVERSATIONS_PATH = path.join(APP_CONFIG_DIR, "conversations.json");
 const CONTACT_CARD_PATH =
   process.env.CLEAN_PANEL_CONTACT_CARD_FILE || path.join(APP_CONFIG_DIR, "contact-card.json");
 const ANNOUNCEMENT_PATH =
@@ -906,6 +907,85 @@ function removeCustomProject(projectPath) {
     encoding: "utf8",
     mode: 0o600,
   });
+}
+
+function normalizeConversationRecord(item) {
+  if (!item || typeof item !== "object") return null;
+  const id = String(item.id || "").trim().slice(0, 120);
+  if (!id) return null;
+  const messages = Array.isArray(item.messages) ? item.messages : [];
+  return {
+    id,
+    title: String(item.title || "").slice(0, 120),
+    prompt: String(item.prompt || "").slice(0, 20000),
+    result: String(item.result || "").slice(0, 20000),
+    status: String(item.status || "").slice(0, 80),
+    kind: String(item.kind || "").slice(0, 40),
+    projectPath: String(item.projectPath || "").slice(0, 1000),
+    nativeSessionId: String(item.nativeSessionId || "").slice(0, 240),
+    pinned: Boolean(item.pinned),
+    archived: Boolean(item.archived),
+    createdAt: String(item.createdAt || "").slice(0, 80),
+    updatedAt: String(item.updatedAt || "").slice(0, 80),
+    messages: messages.slice(-80).map((message) => ({
+      id: String(message?.id || "").slice(0, 120),
+      role: String(message?.role || "system").slice(0, 20),
+      title: String(message?.title || "").slice(0, 120),
+      content: String(message?.content || "").slice(0, 20000),
+      timestamp: String(message?.timestamp || "").slice(0, 80),
+    })).filter((message) => message.content.trim()),
+  };
+}
+
+function readConversations() {
+  const data = readJson(CONVERSATIONS_PATH);
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.conversations) ? data.conversations : [];
+  return rows.map(normalizeConversationRecord).filter(Boolean);
+}
+
+function writeConversations(conversations) {
+  ensureAppConfigDir();
+  const rows = (Array.isArray(conversations) ? conversations : [])
+    .map(normalizeConversationRecord)
+    .filter(Boolean)
+    .slice(0, 120);
+  fs.writeFileSync(CONVERSATIONS_PATH, JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    conversations: rows,
+  }, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return rows;
+}
+
+async function handleConversations(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, {
+      success: true,
+      conversations: readConversations(),
+      storage: "data/claude-panel/conversations.json",
+    });
+    return;
+  }
+
+  if (req.method === "POST" || req.method === "PUT") {
+    try {
+      const payload = await readRequestBody(req, 5 * 1024 * 1024);
+      const rows = writeConversations(payload.conversations || payload);
+      sendJson(res, 200, {
+        success: true,
+        conversations: rows,
+        storage: "data/claude-panel/conversations.json",
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error.message || "会话保存失败" });
+    }
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed" });
 }
 
 function getManagedProjectsRoot() {
@@ -2949,6 +3029,11 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/project-folders") {
     handleProjectFolders(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/conversations") {
+    handleConversations(req, res);
     return;
   }
 

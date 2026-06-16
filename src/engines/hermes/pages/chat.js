@@ -14,7 +14,7 @@
  * State lives in `chat-store.js`; this module only does DOM + events.
  */
 import { t } from '../../../lib/i18n.js'
-import { api } from '../../../lib/tauri-api.js'
+import { api, invalidate, isTauriRuntime } from '../../../lib/tauri-api.js'
 import { toast } from '../../../components/toast.js'
 import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
@@ -45,6 +45,16 @@ import {
 } from '../../../lib/model-voice.js'
 
 // ----------------------------------------------------------- helpers
+
+let _tauriListenFn = null
+async function tauriListen(event, cb) {
+  if (!isTauriRuntime()) return () => {}
+  if (!_tauriListenFn) {
+    const mod = await import('@tauri-apps/api/event')
+    _tauriListenFn = mod.listen
+  }
+  return _tauriListenFn(event, cb)
+}
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -880,6 +890,8 @@ export function render() {
   let pendingAttachments = []
   let gwOnline = false
   let currentModel = ''
+  let statusRefreshInFlight = false
+  let unlistenGatewayStatus = null
   const mobileQuery = window.matchMedia('(max-width: 720px)')
 
   // Input state must live outside the textarea DOM node because every draw()
@@ -1042,17 +1054,52 @@ export function render() {
     scheduleDraw(canPatchMessages ? 'messages' : 'full')
   }
 
+  async function refreshHermesRuntimeStatus(force = false) {
+    if (statusRefreshInFlight) return
+    statusRefreshInFlight = true
+    try {
+      invalidate('check_hermes')
+      const info = await api.checkHermes()
+      const nextOnline = !!info?.gatewayRunning
+      const nextModel = info?.model || ''
+      const changed = nextOnline !== gwOnline || nextModel !== currentModel
+      gwOnline = nextOnline
+      currentModel = nextModel
+      if (force || changed) scheduleDraw('full')
+    } catch {
+      const changed = gwOnline || currentModel
+      gwOnline = false
+      currentModel = ''
+      if (force || changed) scheduleDraw('full')
+    } finally {
+      statusRefreshInFlight = false
+    }
+  }
+
+  const onVisibilityRefreshStatus = () => {
+    if (!document.hidden) refreshHermesRuntimeStatus(true)
+  }
+
+  function applyHermesRuntimeStatusEvent(payload = {}) {
+    const nextOnline = !!payload.running
+    const nextModel = payload.model || currentModel
+    const changed = nextOnline !== gwOnline || nextModel !== currentModel
+    gwOnline = nextOnline
+    currentModel = nextModel
+    if (changed) scheduleDraw('full')
+  }
+
   // --- initial session load + model meta ---
   store.loadSessions().then(() => {
     renderHermesInboxMessages()
     scheduleDraw('full')
   })
   store.loadProfiles().then(() => scheduleDraw('full')).catch(() => {})
-  api.checkHermes().then(info => {
-    gwOnline = !!info?.gatewayRunning
-    currentModel = info?.model || ''
-    scheduleDraw('full')
-  }).catch(() => {})
+  refreshHermesRuntimeStatus(true)
+  document.addEventListener('visibilitychange', onVisibilityRefreshStatus)
+  tauriListen('hermes-gateway-status', (event) => {
+    applyHermesRuntimeStatusEvent(event?.payload || {})
+  }).then(unlisten => { unlistenGatewayStatus = unlisten }).catch(() => {})
   loadModelVoiceConfig({ force: true }).then(config => {
     modelVoiceConfig = config
     scheduleDraw('full')
@@ -3006,8 +3053,10 @@ export function render() {
     document.removeEventListener('keydown', onGlobalKey)
     document.removeEventListener('click', onGlobalClick)
     document.removeEventListener('paste', onPasteImage, true)
+    document.removeEventListener('visibilitychange', onVisibilityRefreshStatus)
     window.removeEventListener('superclaw-agent-task-message', onInboxMessage)
     window.removeEventListener('storage', onInboxMessage)
+    if (unlistenGatewayStatus) { unlistenGatewayStatus(); unlistenGatewayStatus = null }
     if (drawFrame != null) {
       cancelAnimationFrame(drawFrame)
       drawFrame = null

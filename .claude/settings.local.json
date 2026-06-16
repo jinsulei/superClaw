@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /b \"c:\\Users\\ZXKJ\\Documents\\superClaw_code\\src-tauri\\resources\"\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

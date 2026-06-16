@@ -32,6 +32,8 @@ const STORAGE_PINNED_PREFIX = 'hermes_chat_pinned_'
 const STORAGE_COLLAPSED_PREFIX = 'hermes_chat_collapsed_groups_'
 const STORAGE_MSGS_PREFIX = 'hermes_chat_msgs_v2_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
+const HISTORY_MAX_MESSAGES = 18
+const HISTORY_MAX_CHARS = 14000
 
 const SOURCE_LABELS = {
   telegram: 'Telegram',
@@ -1275,6 +1277,44 @@ function createStore() {
     try { return JSON.stringify(val) } catch { return String(val) }
   }
 
+  function messageTextForHistory(message) {
+    if (!message || message.isStreaming) return ''
+    const raw = message.modelContent || message.content || ''
+    let text = typeof raw === 'string' ? raw : stringifyMaybe(raw)
+    text = String(text || '').trim()
+    if (!text && Array.isArray(message.attachments) && message.attachments.length) {
+      text = message.attachments
+        .map(item => item?.fileName || item?.name || item?.type || item?.category || 'attachment')
+        .filter(Boolean)
+        .map(name => `[attachment: ${name}]`)
+        .join('\n')
+    }
+    return text
+  }
+
+  function buildDefaultConversationHistory(session, currentMessageId) {
+    const messages = Array.isArray(session?.messages) ? session.messages : []
+    const selected = []
+    let totalChars = 0
+
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i]
+      if (!message || message.id === currentMessageId) continue
+      const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : ''
+      if (!role) continue
+      const content = messageTextForHistory(message)
+      if (!content) continue
+      const size = content.length
+      if (selected.length >= HISTORY_MAX_MESSAGES) break
+      if (selected.length && totalChars + size > HISTORY_MAX_CHARS) break
+      totalChars += size
+      selected.push({ role, content })
+    }
+
+    selected.reverse()
+    return selected.length ? selected : null
+  }
+
   function normalizeAttachments(items = []) {
     if (!Array.isArray(items)) return []
     return items
@@ -1333,7 +1373,7 @@ function createStore() {
     try {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? opts.conversationHistory
-        : null
+        : buildDefaultConversationHistory(s, userMessage.id)
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id)

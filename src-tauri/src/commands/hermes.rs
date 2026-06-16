@@ -305,6 +305,19 @@ async fn gateway_quick_health_check() -> bool {
 }
 
 /// 重启 Gateway（kill 旧进程 → 启动新进程）
+async fn wait_gateway_stopped(max_wait_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(max_wait_ms);
+    loop {
+        if !gateway_quick_health_check().await {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
 async fn do_restart_gateway() -> Result<(), String> {
     // 1. 杀掉旧进程
     kill_gateway_pid();
@@ -3933,7 +3946,26 @@ pub async fn hermes_gateway_action(
                 }
             }
 
-            emit_gateway_status(false);
+            let stopped = wait_gateway_stopped(5000).await;
+            #[cfg(target_os = "windows")]
+            let stopped = if stopped {
+                true
+            } else {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/IM", "hermes.exe"])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+                wait_gateway_stopped(3000).await
+            };
+            #[cfg(not(target_os = "windows"))]
+            let stopped = stopped;
+
+            if stopped {
+                emit_gateway_status(false);
+            } else {
+                emit_gateway_status(true);
+                return Err("Gateway stop requested, but the health endpoint is still reachable".into());
+            }
 
             match stop_result {
                 Ok(out) if out.status.success() || killed => Ok("Gateway 已停止".into()),
