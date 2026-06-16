@@ -300,12 +300,44 @@ async function _runSwitchProgressStep(progress, start, end, task) {
   }
 }
 
+async function _prepareOpenClawGatewayForSwitch() {
+  let pairingRepaired = false
+  try {
+    const pairResult = await api.autoPairDevice()
+    pairingRepaired = String(pairResult || '').includes('scopes repaired')
+  } catch (e) {
+    console.warn('[sidebar] OpenClaw auto pair before switch failed:', e)
+  }
+  try {
+    await api.claimGateway()
+  } catch (e) {
+    console.warn('[sidebar] OpenClaw claim before switch failed:', e)
+  }
+  return pairingRepaired
+}
+
 async function _ensureOpenClawGatewayForSwitch(progress) {
-  const services = await _runSwitchProgressStep(progress, 28, 42, () => api.getServicesStatus().catch(() => []))
+  const pairingRepaired = await _runSwitchProgressStep(progress, 18, 28, () => _prepareOpenClawGatewayForSwitch())
+  const services = await _runSwitchProgressStep(progress, 30, 42, () => api.getServicesStatus().catch(() => []))
   const gw = _findOpenClawGateway(services)
   if (gw?.running) {
-    await _waitForOpenClawGatewayHealth(progress, 46, 84, 9000)
-    return gw
+    if (pairingRepaired) {
+      await _runSwitchProgressStep(progress, 42, 64, () => api.restartService('ai.openclaw.gateway'))
+    }
+    try {
+      await _waitForOpenClawGatewayHealth(progress, pairingRepaired ? 64 : 46, 84, 9000)
+      return gw
+    } catch (e) {
+      console.warn('[sidebar] OpenClaw Gateway running but unhealthy, restarting once:', e)
+      await _runSwitchProgressStep(progress, 58, 78, () => api.restartService('ai.openclaw.gateway'))
+      await _waitForOpenClawGatewayHealth(progress, 78, 90, 18000)
+      const latest = await _runSwitchProgressStep(progress, 90, 94, () => api.getServicesStatus().catch(() => []))
+      const next = _findOpenClawGateway(latest)
+      if (!next?.running) {
+        throw new Error('OpenClaw Gateway is still offline after restart')
+      }
+      return next
+    }
   }
 
   await _runSwitchProgressStep(progress, 44, 78, () => api.startService('ai.openclaw.gateway'))

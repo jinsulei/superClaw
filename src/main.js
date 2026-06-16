@@ -64,7 +64,9 @@ const isTauri = isTauriRuntime()
 
 function isLocalDevAuthBypass() {
   const host = window.location.hostname
-  return !!import.meta.env.DEV && (host === '127.0.0.1' || host === 'localhost' || host === '::1')
+  return import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS === '1'
+    && !!import.meta.env.DEV
+    && (host === '127.0.0.1' || host === 'localhost' || host === '::1')
 }
 
 /**
@@ -77,19 +79,17 @@ async function checkRemoteAuth() {
     return { ok: true }
   }
 
-  // Desktop portable mode must be locally usable even when the remote account
-  // service or YYApi token sync is unavailable.
   if (isTauri) {
     try {
       const cfg = await api.readPanelConfig()
-      if (cfg?.sanitizedTestMode || cfg?.disableYyapiAutoSync) {
+      if (cfg?.sanitizedTestMode || cfg?.remoteAuthBypass) {
         localStorage.removeItem('superclaw_yyapi_key')
         localStorage.setItem('superclaw_yyapi_deleted', '1')
         sessionStorage.setItem('superclaw_yyapi_dismissed', '1')
+        sessionStorage.setItem('superclaw_authed', '1')
+        return { ok: true }
       }
     } catch {}
-    sessionStorage.setItem('superclaw_authed', '1')
-    return { ok: true }
   }
 
   // 已有 JWT token 则认为已登录
@@ -307,6 +307,9 @@ async function renderLocalAccessPage(app) {
 const YYAPI_BASE_URL = 'http://124.222.21.44:3002'
 const YYAPI_API_BASE_URL = `${YYAPI_BASE_URL}/v1`
 const YYAPI_PROVIDER_KEY = 'yyapi'
+const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
+const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 
 function normalizeYyapiModelRows(raw) {
   const rows = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : [])
@@ -318,10 +321,7 @@ function normalizeYyapiModelRows(raw) {
 
 function pickYyapiDefaultModel(modelIds = []) {
   const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
-  return ids.find(id => /(^|[-_/])gpt-?5\.?5($|[-_/])/i.test(id))
-    || ids.find(id => /5\.?5/i.test(id))
-    || ids[0]
-    || ''
+  return ids[0] || ''
 }
 
 function modelIdFromRef(ref = '') {
@@ -341,6 +341,117 @@ function isYyapiPrimary(ref = '', yyapiModelIds = []) {
   if (!value) return true
   if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
   return yyapiModelIds.includes(value)
+}
+
+function ensurePortableOpenClawSkills(config) {
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  delete config.agents.defaults.skills
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      delete agent.skills
+      if (!agent.skillsLimits || typeof agent.skillsLimits !== 'object' || Array.isArray(agent.skillsLimits)) {
+        agent.skillsLimits = {}
+      }
+      if (!Number(agent.skillsLimits.maxSkillsPromptChars)) {
+        agent.skillsLimits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
+      }
+      if (!agent.tools || typeof agent.tools !== 'object' || Array.isArray(agent.tools)) agent.tools = {}
+      agent.tools.profile = agent.tools.profile || 'minimal'
+      const allow = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow.filter(Boolean).map(String) : []
+      for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
+        if (!allow.includes(tool)) allow.push(tool)
+      }
+      agent.tools.alsoAllow = allow
+      agent.tools.exec = { ...(agent.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
+    }
+  }
+
+  if (!config.plugins || typeof config.plugins !== 'object' || Array.isArray(config.plugins)) config.plugins = {}
+  if (!config.plugins.entries || typeof config.plugins.entries !== 'object' || Array.isArray(config.plugins.entries)) {
+    config.plugins.entries = {}
+  }
+  config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
+  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
+  config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
+
+  if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
+  config.tools.profile = config.tools.profile || 'minimal'
+  const allow = Array.isArray(config.tools.alsoAllow) ? config.tools.alsoAllow.filter(Boolean).map(String) : []
+  for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
+    if (!allow.includes(tool)) allow.push(tool)
+  }
+  config.tools.alsoAllow = allow
+  config.tools.exec = { ...(config.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
+
+  if (!config.skills || typeof config.skills !== 'object' || Array.isArray(config.skills)) config.skills = {}
+  if (!config.skills.entries || typeof config.skills.entries !== 'object' || Array.isArray(config.skills.entries)) config.skills.entries = {}
+  if (!config.skills.limits || typeof config.skills.limits !== 'object' || Array.isArray(config.skills.limits)) {
+    config.skills.limits = {}
+  }
+  if (!Number(config.skills.limits.maxSkillsPromptChars)) {
+    config.skills.limits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
+  }
+}
+
+function ensureYyapiManagedModelSelection(config, yyapiModelIds = [], defaultModel = '') {
+  const fallbackModel = yyapiModelIds.includes(defaultModel) ? defaultModel : yyapiModelIds[0]
+  const fallbackRef = yyapiModelRef(fallbackModel)
+  if (!fallbackRef) return { primary: '', managed: false }
+
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  if (!config.agents.defaults.model) config.agents.defaults.model = {}
+
+  const defaults = config.agents.defaults
+  const currentPrimary = String(defaults.model.primary || '').trim()
+  const defaultsManaged = isYyapiPrimary(currentPrimary, yyapiModelIds)
+  let primary = currentPrimary
+
+  if (defaultsManaged) {
+    const currentModelId = modelIdFromRef(currentPrimary)
+    primary = yyapiModelIds.includes(currentModelId) ? yyapiModelRef(currentModelId) : fallbackRef
+    defaults.model.primary = primary
+
+    if (Array.isArray(defaults.model.fallbacks)) {
+      defaults.model.fallbacks = defaults.model.fallbacks.filter(ref => {
+        const value = String(ref || '').trim()
+        return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+      })
+    }
+
+    if (!defaults.models || typeof defaults.models !== 'object' || Array.isArray(defaults.models)) {
+      defaults.models = {}
+    }
+    for (const key of Object.keys(defaults.models)) {
+      if (key.startsWith(`${YYAPI_PROVIDER_KEY}/`) && !yyapiModelIds.includes(modelIdFromRef(key))) {
+        delete defaults.models[key]
+      }
+    }
+    defaults.models[primary] = defaults.models[primary] || {}
+  }
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      if (!agent.model) agent.model = {}
+      const agentPrimary = String(agent.model.primary || '').trim()
+      if (isYyapiPrimary(agentPrimary, yyapiModelIds)) {
+        const agentModelId = modelIdFromRef(agentPrimary)
+        agent.model.primary = yyapiModelIds.includes(agentModelId) ? yyapiModelRef(agentModelId) : primary || fallbackRef
+      }
+      if (Array.isArray(agent.model.fallbacks)) {
+        agent.model.fallbacks = agent.model.fallbacks.filter(ref => {
+          const value = String(ref || '').trim()
+          return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+        })
+      }
+    }
+  }
+
+  return { primary, managed: defaultsManaged }
 }
 
 async function getDefaultYyapiProfile() {
@@ -381,6 +492,9 @@ async function getDefaultYyapiProfile() {
     headers: { Authorization: `Bearer ${fullKey}` },
     signal: AbortSignal.timeout(10000),
   })
+  if (modelResp.status === 401) {
+    try { localStorage.removeItem('superclaw_yyapi_key') } catch {}
+  }
   if (!modelResp.ok) throw new Error(`YYAPI models HTTP ${modelResp.status}`)
 
   const modelData = await modelResp.json()
@@ -544,12 +658,7 @@ async function syncHermesModel() {
     const savedPrimary = loadHermesPrimary()
     let targetModel = ''
 
-    const preferredYyapiModel = pickYyapiDefaultModel(models)
-
-    if (preferredYyapiModel && models.includes(preferredYyapiModel)) {
-      // Hermes 只保留 YYAPI 通道时，启动同步始终优先使用后台默认模型。
-      targetModel = preferredYyapiModel
-    } else if (savedPrimary && models.includes(savedPrimary)) {
+    if (savedPrimary && models.includes(savedPrimary)) {
       targetModel = savedPrimary
     } else if (models.includes(currentModel)) {
       // 当前 config 中的模型有效
@@ -604,15 +713,10 @@ async function syncDefaultModelSettings() {
     if (!config.agents) config.agents = {}
     if (!config.agents.defaults) config.agents.defaults = {}
     if (!config.agents.defaults.model) config.agents.defaults.model = {}
-    const currentPrimary = String(config.agents.defaults.model.primary || '').trim()
-    let openclawPrimary = currentPrimary
-    const yyapiPrimaryManaged = isYyapiPrimary(currentPrimary, yyapiModelIds)
-    if (yyapiPrimaryManaged) {
-      const currentModelId = modelIdFromRef(currentPrimary)
-      openclawPrimary = yyapiModelIds.includes(currentModelId)
-        ? yyapiModelRef(currentModelId)
-        : yyapiModelRef(profile.defaultModel)
-      config.agents.defaults.model.primary = openclawPrimary
+    const openclawSelection = ensureYyapiManagedModelSelection(config, yyapiModelIds, profile.defaultModel)
+    ensurePortableOpenClawSkills(config)
+    const openclawPrimary = openclawSelection.primary
+    if (openclawSelection.managed && openclawPrimary) {
       try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
     }
 
@@ -621,17 +725,17 @@ async function syncDefaultModelSettings() {
     const hermesConfig = await api.hermesReadConfig().catch(() => null)
     const hermesSaved = loadHermesPrimary()
     const hermesCurrent = hermesConfig?.model || ''
-    const hermesModel = yyapiModelIds.includes(profile.defaultModel)
-      ? profile.defaultModel
-      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : (yyapiModelIds.includes(hermesSaved) ? hermesSaved : profile.defaultModel))
+    const hermesModel = yyapiModelIds.includes(hermesSaved)
+      ? hermesSaved
+      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
 
-    // Hermes 需要在启动/登录后自动获得后台默认 API Key；这里用 custom
-    // OpenAI-compatible 配置写入 ~/.hermes/config.yaml 和 ~/.hermes/.env，
+    // Hermes 0.16 的 bare custom provider 不读取 OPENAI_API_KEY，会落到
+    // 本地占位 key；用 openai-api + OPENAI_BASE_URL 才能稳定对接 yyapi。
     // 同时补齐本地 Gateway 所需的 API_SERVER_KEY。
-    await api.configureHermes('custom', profile.apiKey, hermesModel, profile.baseUrl)
+    await api.configureHermes('openai-api', profile.apiKey, hermesModel, profile.baseUrl)
     saveHermesPrimary(hermesModel)
 
-    if (yyapiPrimaryManaged && typeof api.configureClaudeCodeRelay === 'function') {
+    if (openclawSelection.managed && typeof api.configureClaudeCodeRelay === 'function') {
       await api.configureClaudeCodeRelay({
         baseUrl: profile.baseUrl,
         apiKey: profile.apiKey,

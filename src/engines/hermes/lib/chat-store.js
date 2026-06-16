@@ -305,6 +305,44 @@ function mapSessionSummary(s) {
   }
 }
 
+function compactSessionText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+}
+
+function firstUserText(session) {
+  const msg = (session?.messages || []).find(m => m?.role === 'user' && String(m.content || '').trim())
+  return compactSessionText(msg?.content)
+}
+
+function sessionLooksLikeBackendMatch(local, fresh, activeId, runningId) {
+  if (!local || !fresh || local.id === fresh.id || local.source !== '__local__') return false
+  const first = firstUserText(local)
+  if (!first) return false
+  const title = compactSessionText(fresh.title)
+  const updated = Number(fresh.updatedAt || fresh.createdAt || 0)
+  const localStarted = Number(local.createdAt || local.updatedAt || 0)
+  const closeInTime = updated && localStarted && Math.abs(updated - localStarted) < 10 * 60 * 1000
+  const titleMatches = title && (first.startsWith(title) || title.startsWith(first.slice(0, Math.min(24, first.length))))
+  const activeMatch = local.id === activeId || local.id === runningId
+  return !!titleMatches && (closeInTime || activeMatch)
+}
+
+function mergeLocalSessionIntoBackend(local, backend) {
+  const backendIds = new Set((backend.messages || []).map(m => m.id).filter(Boolean))
+  const moved = (local.messages || []).filter(m => !m.id || !backendIds.has(m.id))
+  if (moved.length) backend.messages = [...moved, ...(backend.messages || [])]
+  backend.title = backend.title || local.title
+  backend.workFileName = backend.workFileName || local.workFileName
+  backend.workFilePath = backend.workFilePath || local.workFilePath
+  backend.workFileDir = backend.workFileDir || local.workFileDir
+  backend.workFileDisplayPath = backend.workFileDisplayPath || local.workFileDisplayPath
+  backend.updatedAt = Math.max(backend.updatedAt || 0, local.updatedAt || 0, Date.now())
+  backend.lastActiveAt = Math.max(backend.lastActiveAt || 0, local.lastActiveAt || 0, Date.now())
+}
+
 // ---------- Tauri event bridge ----------
 //
 // Streaming relies on Tauri's `hermes-run-*` events. In Web mode (远程浏览器
@@ -530,8 +568,25 @@ function createStore() {
         if (prev?.length) s.messages = prev
       }
 
-      // Keep local-only sessions (not yet flushed to the backend).
-      const localOnly = state.sessions.filter(s => s.source === '__local__' && !freshIds.has(s.id))
+      // Keep local-only sessions that the backend still does not know about.
+      // Hermes may create the real backend session with a different id after
+      // the first run; merge the temporary local row into the matching backend
+      // row so the sidebar does not show duplicate conversations.
+      const localOnly = []
+      for (const local of state.sessions.filter(s => s.source === '__local__' && !freshIds.has(s.id))) {
+        const match = fresh.find(s => sessionLooksLikeBackendMatch(local, s, state.activeSessionId, state.runningSessionId))
+        if (match) {
+          mergeLocalSessionIntoBackend(local, match)
+          if (state.activeSessionId === local.id) {
+            state.activeSessionId = match.id
+            safeSet(activeKey(), match.id)
+          }
+          if (state.runningSessionId === local.id) state.runningSessionId = match.id
+          safeRemove(messagesKey(local.id))
+        } else {
+          localOnly.push(local)
+        }
+      }
       state.sessions = [...localOnly, ...fresh]
       persistSessions()
 

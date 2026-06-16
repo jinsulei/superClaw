@@ -1,6 +1,14 @@
 /// 设备配对命令
 /// 自动向 Gateway 注册设备，跳过手动配对流程
 
+const REQUIRED_SCOPES: &[&str] = &[
+    "operator.admin",
+    "operator.approvals",
+    "operator.pairing",
+    "operator.read",
+    "operator.write",
+];
+
 #[tauri::command]
 pub fn auto_pair_device() -> Result<String, String> {
     // 无论是否已配对，都确保 gateway.controlUi.allowedOrigins 已写入
@@ -34,6 +42,13 @@ pub fn auto_pair_device() -> Result<String, String> {
     // 如果已配对，档查 platform 字段是否正确；不正确则覆盖更新，
     // 避免 Gateway 因 metadata-upgrade 拒绝静默自动配对
     if let Some(existing) = paired.get_mut(&device_id) {
+        if patch_existing_pairing_record(existing, os_platform) {
+            let new_content = serde_json::to_string_pretty(&paired)
+                .map_err(|e| format!("serialize paired.json failed: {e}"))?;
+            std::fs::write(&paired_path, new_content)
+                .map_err(|e| format!("update paired.json failed: {e}"))?;
+            return Ok("device pairing scopes repaired".into());
+        }
         let current_platform = existing
             .get("platform")
             .and_then(|v| v.as_str())
@@ -73,20 +88,8 @@ pub fn auto_pair_device() -> Result<String, String> {
         "clientMode": "ui",
         "role": "operator",
         "roles": ["operator"],
-        "scopes": [
-            "operator.admin",
-            "operator.approvals",
-            "operator.pairing",
-            "operator.read",
-            "operator.write"
-        ],
-        "approvedScopes": [
-            "operator.admin",
-            "operator.approvals",
-            "operator.pairing",
-            "operator.read",
-            "operator.write"
-        ],
+        "scopes": REQUIRED_SCOPES,
+        "approvedScopes": REQUIRED_SCOPES,
         "tokens": {},
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms
@@ -103,6 +106,93 @@ pub fn auto_pair_device() -> Result<String, String> {
 
 /// 将 Tauri 应用的 origin 写入 gateway.controlUi.allowedOrigins
 /// 避免 Gateway 因 origin not allowed 拒绝 WebSocket 握手
+fn patch_existing_pairing_record(record: &mut serde_json::Value, os_platform: &str) -> bool {
+    let Some(obj) = record.as_object_mut() else {
+        return false;
+    };
+
+    let mut changed = false;
+    if obj.get("platform").and_then(|v| v.as_str()) != Some(os_platform) {
+        obj.insert(
+            "platform".into(),
+            serde_json::Value::String(os_platform.into()),
+        );
+        changed = true;
+    }
+    if obj.get("deviceFamily").and_then(|v| v.as_str()) != Some("desktop") {
+        obj.insert(
+            "deviceFamily".into(),
+            serde_json::Value::String("desktop".into()),
+        );
+        changed = true;
+    }
+    if obj.get("clientId").and_then(|v| v.as_str()) != Some("openclaw-control-ui") {
+        obj.insert(
+            "clientId".into(),
+            serde_json::Value::String("openclaw-control-ui".into()),
+        );
+        changed = true;
+    }
+    if obj.get("clientMode").and_then(|v| v.as_str()) != Some("ui") {
+        obj.insert("clientMode".into(), serde_json::Value::String("ui".into()));
+        changed = true;
+    }
+    if obj.get("role").and_then(|v| v.as_str()) != Some("operator") {
+        obj.insert("role".into(), serde_json::Value::String("operator".into()));
+        changed = true;
+    }
+    if ensure_string_array_contains(obj, "roles", &["operator"]) {
+        changed = true;
+    }
+    if ensure_string_array_contains(obj, "scopes", REQUIRED_SCOPES) {
+        changed = true;
+    }
+    if ensure_string_array_contains(obj, "approvedScopes", REQUIRED_SCOPES) {
+        changed = true;
+    }
+
+    if let Some(tokens) = obj.get_mut("tokens").and_then(|v| v.as_object_mut()) {
+        for token in tokens.values_mut() {
+            if let Some(token_obj) = token.as_object_mut() {
+                if ensure_string_array_contains(token_obj, "scopes", REQUIRED_SCOPES) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+fn ensure_string_array_contains(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    required: &[&str],
+) -> bool {
+    let mut values = obj
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut changed = !obj.get(key).is_some_and(|v| v.is_array());
+    for item in required {
+        if !values.iter().any(|v| v == item) {
+            values.push((*item).to_string());
+            changed = true;
+        }
+    }
+
+    if changed {
+        obj.insert(key.to_string(), serde_json::json!(values));
+    }
+    changed
+}
+
 fn patch_gateway_origins() {
     let Ok(mut config) = super::config::load_openclaw_json() else {
         return;

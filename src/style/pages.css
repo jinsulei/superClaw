@@ -698,6 +698,35 @@
   transform: translateY(-1px);
 }
 
+[data-theme="dark"] .openclaw-skills-page .clawhub-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015)),
+    var(--bg-secondary);
+  box-shadow: none;
+}
+
+[data-theme="dark"] .openclaw-skills-page .skills-overview-card {
+  background:
+    linear-gradient(115deg, rgba(255, 204, 102, 0.12), transparent 38%),
+    linear-gradient(180deg, var(--bg-secondary), var(--bg-card));
+}
+
+[data-theme="dark"] .openclaw-skills-page .openclaw-skill-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+    var(--bg-secondary);
+}
+
+[data-theme="dark"] .openclaw-skills-page .openclaw-skill-card:hover {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .openclaw-skills-page .clawhub-detail-card,
+[data-theme="dark"] .openclaw-skills-page .skills-loading-panel,
+[data-theme="dark"] .openclaw-skills-page .skills-load-error {
+  background: var(--bg-secondary);
+}
+
 .clawhub-item-main {
   flex: 1;
   min-width: 0;

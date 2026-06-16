@@ -1,0 +1,4 @@
+# Runtime data is mutated by local engines while `tauri dev` is running.
+# Watching it causes Tauri to rebuild the desktop shell in a loop.
+src-tauri/resources/data/**
+.dev-data/**

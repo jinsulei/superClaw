@@ -20,9 +20,13 @@ import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
 import {
   COLLAB_TARGETS,
+  buildTaskContext,
   buildExecutionBrief,
   buildReviewBrief,
+  createTaskRequest,
   createCollaborationTask,
+  listAgentTaskMessages,
+  normalizeClaudeCodeMode,
   openCollaborationPanel,
   setPendingDispatch,
   shortGoal,
@@ -30,6 +34,8 @@ import {
   updateCollaborationTask,
 } from '../../../lib/collaboration.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../../../lib/voice.js'
+import { clipboardHasImage, getUniqueClipboardImageFiles } from '../../../lib/clipboard-images.js'
+import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -660,13 +666,6 @@ function isReadableTextFile(file) {
   return /\.(txt|md|markdown|json|csv|log|yaml|yml|toml|ini|xml|html|css|js|jsx|ts|tsx|py|rs|go|java|sql|sh|bat|cmd|ps1)$/i.test(file?.name || '')
 }
 
-function clipboardImageFiles(event) {
-  return Array.from(event?.clipboardData?.items || [])
-    .filter(item => String(item.type || '').startsWith('image/'))
-    .map(item => item.getAsFile())
-    .filter(Boolean)
-}
-
 // ----------------------------------------------------------- icons
 
 const ICONS = {
@@ -894,6 +893,7 @@ export function render() {
   let lastRenderedStreaming = store.state.streaming
   let drawFrame = null
   let drawMode = 'full'
+  const renderedInboxMessages = new Set(JSON.parse(localStorage.getItem('superclaw-hermes-rendered-task-messages-v1') || '[]'))
   let voiceInputState = 'idle'
   let voicePlaybackKey = null
   let modelVoiceConfig = null
@@ -949,6 +949,55 @@ export function render() {
     },
   })
 
+  function inboxMessageKey(message) {
+    return [
+      message.task_id || '',
+      message.message_type || '',
+      message.from_agent || '',
+      message.updated_at || message.created_at || '',
+      String(message.content || '').slice(0, 80),
+    ].join('|')
+  }
+
+  function persistRenderedInboxMessages() {
+    localStorage.setItem('superclaw-hermes-rendered-task-messages-v1', JSON.stringify(Array.from(renderedInboxMessages).slice(-300)))
+  }
+
+  function renderHermesInboxMessages() {
+    const rows = listAgentTaskMessages({ toAgent: COLLAB_TARGETS.hermes })
+      .filter(item => ['task_request', 'task_result', 'task_error', 'task_delegate'].includes(item.message_type))
+      .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+    const fresh = rows.filter(item => !renderedInboxMessages.has(inboxMessageKey(item)))
+    if (!fresh.length) return
+    if (!store.activeSession()) store.newChat({ title: 'Hermes 协作收件箱' })
+    for (const item of fresh) {
+      const key = inboxMessageKey(item)
+      renderedInboxMessages.add(key)
+      const label = item.message_type === 'task_error' ? '错误回传'
+        : item.message_type === 'task_delegate' ? '任务委派'
+        : item.message_type === 'task_request' ? '任务请求'
+        : '结果回传'
+      store.pushLocalAssistant([
+        `## ${label}`,
+        '',
+        `- 任务：${item.task_id || ''}`,
+        `- 来源：${targetLabel(item.from_agent)}`,
+        `- 状态：${item.status || ''}`,
+        item.mode ? `- Claude Code mode: ${item.mode}` : '',
+        item.permission_level ? `- Permission level: ${item.permission_level}` : '',
+        item.requires_confirmation ? '- Requires confirmation: true' : '',
+        item.mode_warning ? `- Mode warning: ${item.mode_warning}` : '',
+        item.tool ? `- 工具：${item.tool}` : '',
+        item.title ? `- 标题：${item.title}` : '',
+        '',
+        item.content || '（没有正文）',
+      ].filter(Boolean).join('\n'))
+    }
+    persistRenderedInboxMessages()
+    forceScrollBottom = true
+    scheduleDraw('full')
+  }
+
   // Multi-select for batch session deletion. When non-null, the sidebar
   // switches into "selection mode": a checkbox appears on every row and
   // selecting items doesn't switch sessions.
@@ -964,9 +1013,10 @@ export function render() {
 
   const onPasteImage = async (event) => {
     if (!el.isConnected || !el.contains(event.target)) return
-    const files = clipboardImageFiles(event)
-    if (!files.length) return
+    if (!clipboardHasImage(event)) return
     event.preventDefault()
+    event.stopImmediatePropagation?.()
+    const files = await getUniqueClipboardImageFiles(event)
     for (const file of files) await handlePickAttachment(file)
   }
   document.addEventListener('paste', onPasteImage, true)
@@ -993,7 +1043,10 @@ export function render() {
   }
 
   // --- initial session load + model meta ---
-  store.loadSessions().then(() => scheduleDraw('full'))
+  store.loadSessions().then(() => {
+    renderHermesInboxMessages()
+    scheduleDraw('full')
+  })
   store.loadProfiles().then(() => scheduleDraw('full')).catch(() => {})
   api.checkHermes().then(info => {
     gwOnline = !!info?.gatewayRunning
@@ -2413,10 +2466,42 @@ export function render() {
     return /^\s*\[(?:协作任务|协作派单)\]/i.test(String(text || ''))
   }
 
+  function isOcrIntent(text) {
+    return /(ocr|识别文字|文字识别|读取图片文字|图片里的字|截图文字|报错截图|UI 截图|ui截图)/i.test(String(text || ''))
+  }
+
+  async function runHermesAttachmentOcr(attachments = []) {
+    const image = attachments.find(item => item?.dataUrl || item?.content || item?.savedPath)
+    if (!image) return null
+    const result = image.savedPath
+      ? await ocr.extractTextFromImage(image.savedPath, { sourceType: 'image' })
+      : await ocr.extractTextFromImageData(image.dataUrl || `data:${image.mimeType || 'image/png'};base64,${image.content}`, {
+          mimeType: image.mimeType || 'image/png',
+          sourceType: 'image',
+        })
+    createTaskResult({
+      taskId: `ocr-${Date.now().toString(36)}`,
+      sessionId: store.activeSession?.()?.id,
+      fromAgent: COLLAB_TARGETS.hermes,
+      toAgent: COLLAB_TARGETS.hermes,
+      title: result.ok ? 'Hermes OCR completed' : 'Hermes OCR failed',
+      content: result.ok ? result.text : result.error,
+      failed: !result.ok,
+      tool: 'ocr',
+      artifacts: [{
+        type: 'ocr_text',
+        path: image.savedPath || image.fileName || 'clipboard-image',
+        text: result.ok ? result.text : result.error,
+      }],
+    })
+    return result
+  }
+
   function dispatchCollaborationTask({
     goal,
     executor = COLLAB_TARGETS.openclaw,
     reviewer = COLLAB_TARGETS.claudeCode,
+    claudeCodeMode = 'safe',
     openReviewPanel = true,
     closeOverlay = null,
   } = {}) {
@@ -2425,11 +2510,52 @@ export function render() {
       toast('请先填写任务目标。', 'warning')
       return false
     }
+    const claudeMode = normalizeClaudeCodeMode(claudeCodeMode)
+    const activeSession = store.activeSession?.()
+    const sessionId = activeSession?.id
+    const recentMessages = (activeSession?.messages || []).slice(-50).map(item => ({
+      role: item.role,
+      content: typeof item.content === 'string' ? item.content : JSON.stringify(item.content || ''),
+      timestamp: item.timestamp || item.createdAt || null,
+    }))
+    const sharedContext = buildTaskContext({
+      sessionId,
+      summary: cleanGoal,
+      recent_messages: recentMessages,
+      important_facts: [
+        `executor=${executor}`,
+        `reviewer=${reviewer}`,
+        `claude_code_mode=${claudeMode.mode}`,
+      ],
+      artifacts: pendingAttachments.map(item => ({
+        type: item?.type || item?.category || 'file',
+        path: item?.savedPath || item?.fileName || item?.name || '',
+        text: item?.ocrText || '',
+      })),
+      content: cleanGoal,
+    })
     const task = createCollaborationTask({
       goal: cleanGoal,
+      sessionId,
+      context: sharedContext,
+      artifacts: sharedContext.artifacts,
       executor,
       reviewer,
       source: COLLAB_TARGETS.hermes,
+      claudeCodeMode: claudeMode.mode,
+    })
+    createTaskRequest({
+      taskId: task.id,
+      sessionId,
+      fromAgent: COLLAB_TARGETS.hermes,
+      toAgent: executor,
+      title: shortGoal(cleanGoal),
+      content: cleanGoal,
+      context: sharedContext,
+      artifacts: sharedContext.artifacts,
+      mode: executor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+      permission_level: executor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+      requires_confirmation: executor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
     })
     const brief = buildExecutionBrief(task)
     const reviewBrief = buildReviewBrief(task, '执行方完成后，请读取执行会话交接内容，再按验收要求复核。')
@@ -2438,21 +2564,38 @@ export function render() {
       lastDispatchedTo: executor,
       dispatchedAt: Date.now(),
       reviewPanelRequested: openReviewPanel,
+      claudeCodeMode: claudeMode.mode,
+      claudeCodePermissionLevel: claudeMode.permission_level,
+      claudeCodeRequiresConfirmation: claudeMode.requires_confirmation,
+      context: sharedContext,
+      artifacts: sharedContext.artifacts,
     })
     setPendingDispatch({
       target: executor,
       taskId: task.id,
+      sessionId,
       stage: 'execute',
       title: `[执行] ${targetLabel(executor)} · ${shortGoal(cleanGoal)}`,
       message: brief,
+      context: sharedContext,
+      artifacts: sharedContext.artifacts,
+      mode: executor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+      permission_level: executor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+      requires_confirmation: executor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
     })
     if (openReviewPanel && reviewer !== executor) {
       setPendingDispatch({
         target: reviewer,
         taskId: task.id,
+        sessionId,
         stage: 'review',
         title: `[验收] ${targetLabel(reviewer)} · ${shortGoal(cleanGoal)}`,
         message: reviewBrief,
+        context: sharedContext,
+        artifacts: sharedContext.artifacts,
+        mode: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+        permission_level: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+        requires_confirmation: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
       })
     }
 
@@ -2527,6 +2670,15 @@ export function render() {
             <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：执行结果复核</option>
           </select>
         </div>
+        <div class="form-group">
+          <label class="form-label">Claude Code mode</label>
+          <select class="form-input" id="hm-collab-claude-mode">
+            <option value="safe" selected>safe - restricted, no browser/takeover</option>
+            <option value="browser_automation">browser_automation - browser only, single page</option>
+            <option value="takeover">takeover - full control, requires confirmation</option>
+          </select>
+          <div class="form-hint">Default is safe. Takeover requires explicit confirmation and must not run silently.</div>
+        </div>
         <label class="form-check" style="align-items:flex-start;gap:10px;margin-top:4px">
           <input type="checkbox" id="hm-collab-open-review" checked style="margin-top:3px">
           <span>
@@ -2545,11 +2697,13 @@ export function render() {
       const goal = overlay.querySelector('#hm-collab-goal')?.value?.trim() || ''
       const executor = overlay.querySelector('#hm-collab-executor')?.value || COLLAB_TARGETS.openclaw
       const reviewer = overlay.querySelector('#hm-collab-reviewer')?.value || COLLAB_TARGETS.claudeCode
+      const claudeCodeMode = overlay.querySelector('#hm-collab-claude-mode')?.value || 'safe'
       const openReviewPanel = !!overlay.querySelector('#hm-collab-open-review')?.checked
       dispatchCollaborationTask({
         goal,
         executor,
         reviewer,
+        claudeCodeMode,
         openReviewPanel,
         closeOverlay: () => overlay.close(),
       })
@@ -2627,13 +2781,33 @@ export function render() {
     ].filter(Boolean).join('\n\n')
 
     // Normal user message → start agent run.
+    if (attachments.length && isOcrIntent(text)) {
+      const ocrResult = await runHermesAttachmentOcr(attachments)
+      if (ocrResult) {
+        const ocrBlock = formatOcrResult(ocrResult)
+        sendInstructions = [
+          sendInstructions,
+          'The following OCR result was produced by the shared SuperClaw OCR service. Use it as task context; if it failed, continue normally and explain the OCR failure only when relevant.',
+          ocrBlock,
+        ].filter(Boolean).join('\n\n')
+        store.pushLocalAssistant(ocrBlock)
+      }
+    }
     forceScrollBottom = true
     resetInput()
+    inputFocused = true
+    inputCaret = 0
     draw()
-    await store.sendMessage(text, {
-      instructions: sendInstructions || null,
-      attachments,
-    })
+    try {
+      await store.sendMessage(text, {
+        instructions: sendInstructions || null,
+        attachments,
+      })
+    } finally {
+      inputFocused = true
+      inputCaret = inputValue.length
+      draw()
+    }
   }
 
   // ----------------------------------------------------------- search modal
@@ -2819,6 +2993,11 @@ export function render() {
     draw()
   }
   document.addEventListener('click', onGlobalClick)
+  const onInboxMessage = (event) => {
+    if (!event?.detail || event.detail.to_agent === COLLAB_TARGETS.hermes) renderHermesInboxMessages()
+  }
+  window.addEventListener('superclaw-agent-task-message', onInboxMessage)
+  window.addEventListener('storage', onInboxMessage)
 
   // Detach the global listener + close modal on unmount. A single
   // MutationObserver watches our parent; when `el` is detached, we run the
@@ -2827,6 +3006,8 @@ export function render() {
     document.removeEventListener('keydown', onGlobalKey)
     document.removeEventListener('click', onGlobalClick)
     document.removeEventListener('paste', onPasteImage, true)
+    window.removeEventListener('superclaw-agent-task-message', onInboxMessage)
+    window.removeEventListener('storage', onInboxMessage)
     if (drawFrame != null) {
       cancelAnimationFrame(drawFrame)
       drawFrame = null

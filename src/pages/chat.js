@@ -12,7 +12,9 @@ import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../lib/voice.js'
-import { COLLAB_TARGETS, consumePendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
+import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, updateCollaborationTask } from '../lib/collaboration.js'
+import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
+import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -1368,13 +1370,11 @@ async function handleFileSelect(e) {
 }
 
 async function handlePaste(e) {
-  const items = Array.from(e.clipboardData?.items || [])
-  const imageItems = items.filter(item => item.type.startsWith('image/'))
-  if (!imageItems.length) return
+  if (!clipboardHasImage(e)) return
   e.preventDefault()
-  for (const item of imageItems) {
-    const file = item.getAsFile()
-    if (!file) continue
+  e.stopImmediatePropagation?.()
+  const files = await getUniqueClipboardImageFiles(e)
+  for (const file of files) {
     if (file.size > 5 * 1024 * 1024) { toast(t('chat.imageSizeLimit'), 'warning'); continue }
     try {
       const base64 = await fileToBase64(file)
@@ -1382,10 +1382,6 @@ async function handlePaste(e) {
       renderAttachments()
     } catch (_) { toast(t('chat.readFileFailed'), 'error') }
   }
-}
-
-function clipboardHasImage(e) {
-  return Array.from(e?.clipboardData?.items || []).some(item => String(item.type || '').startsWith('image/'))
 }
 
 function bindImagePasteHandlers() {
@@ -1424,7 +1420,9 @@ function renderAttachments() {
       <img src="data:${att.mimeType};base64,${att.content}" alt="${att.fileName}">
       <button class="chat-attachment-del" data-idx="${idx}">×</button>
     </div>
-  `).join('')
+  `).join('') + `
+    <button class="btn btn-secondary btn-sm" id="chat-ocr-attachments" type="button">识别文字</button>
+  `
 
   _attachPreviewEl.querySelectorAll('.chat-attachment-del').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1433,10 +1431,97 @@ function renderAttachments() {
       renderAttachments()
     })
   })
+  _attachPreviewEl.querySelector('#chat-ocr-attachments')?.addEventListener('click', runOcrForAttachments)
   updateSendState()
 }
 
 // ── Gateway 连接 ──
+
+async function runOcrForAttachments() {
+  const att = _attachments.find(item => item?.content)
+  if (!att) {
+    toast('请先添加一张图片', 'warning')
+    return
+  }
+  const btn = _attachPreviewEl?.querySelector('#chat-ocr-attachments')
+  if (btn) btn.disabled = true
+  try {
+    const dataUrl = `data:${att.mimeType || 'image/png'};base64,${att.content}`
+    const result = await ocr.extractTextFromImageData(dataUrl, {
+      mimeType: att.mimeType || 'image/png',
+      sourceType: 'image',
+    })
+    const text = formatOcrResult(result)
+    if (result.ok && result.text) {
+      const insert = `[OCR]\n${result.text}\n[/OCR]`
+      _textarea.value = _textarea.value.trim() ? `${_textarea.value.trim()}\n\n${insert}` : insert
+      _textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      await copyText(result.text).catch(() => false)
+      const task = currentCollaborationTask()
+      if (task?.taskId) {
+        const artifacts = [{
+          type: 'ocr_text',
+          path: att.savedPath || att.fileName || att.name || 'openclaw-ocr-image',
+          text: result.text,
+        }]
+        const context = buildOpenClawCollaborationContext(task, result.text, artifacts)
+        createTaskResult({
+          taskId: task.taskId,
+          sessionId: context.session_id,
+          fromAgent: COLLAB_TARGETS.openclaw,
+          toAgent: COLLAB_TARGETS.hermes,
+          title: 'OpenClaw OCR completed',
+          content: result.text,
+          tool: 'ocr',
+          context,
+          artifacts,
+        })
+      }
+      toast('OCR 识别完成，结果已加入输入框', 'success')
+    } else {
+      toast(text, 'warning')
+    }
+  } catch (error) {
+    toast(`OCR 失败：${error?.message || error}`, 'warning')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+function isOcrIntentText(text) {
+  return /(ocr|识别文字|文字识别|读取图片文字|图片里的字|截图文字|报错截图|UI 截图|ui截图)/i.test(String(text || ''))
+}
+
+async function runOcrForAttachmentData(att) {
+  if (!att?.content) return null
+  const dataUrl = `data:${att.mimeType || 'image/png'};base64,${att.content}`
+  const result = await ocr.extractTextFromImageData(dataUrl, {
+    mimeType: att.mimeType || 'image/png',
+    sourceType: 'image',
+  })
+  const task = currentCollaborationTask()
+  if (task?.taskId) {
+    const artifacts = [{
+      type: 'ocr_text',
+      path: att.savedPath || att.fileName || att.name || 'openclaw-ocr-attachment',
+      text: result.ok ? result.text : result.error,
+    }]
+    const context = buildOpenClawCollaborationContext(task, result.ok ? result.text : result.error, artifacts)
+    createTaskResult({
+      taskId: task.taskId,
+      sessionId: context.session_id,
+      fromAgent: COLLAB_TARGETS.openclaw,
+      toAgent: COLLAB_TARGETS.hermes,
+      title: result.ok ? 'OpenClaw OCR completed' : 'OpenClaw OCR failed',
+      content: result.ok ? result.text : result.error,
+      failed: !result.ok,
+      tool: 'ocr',
+      context,
+      artifacts,
+    })
+  }
+  return result
+}
 
 async function connectGateway() {
   try {
@@ -1600,6 +1685,13 @@ async function maybeConsumeCollaborationDispatch() {
   try {
     const taskId = pending.taskId || `collab-${Date.now().toString(36)}`
     const stage = pending.stage || 'execute'
+    const collabContext = buildTaskContext({
+      sessionId: pending.session_id || pending.sessionId || _sessionKey,
+      taskId,
+      context: pending.context || {},
+      artifacts: pending.artifacts || [],
+      content: pending.message || '',
+    })
     const title = pending.title || `[${stage === 'review' ? '验收' : '执行'}] OpenClaw · ${taskId}`
     const key = `agent:main:collaboration/${stage}/${taskId}.md`
     setSessionName(key, title)
@@ -1610,6 +1702,18 @@ async function maybeConsumeCollaborationDispatch() {
       status: stage === 'review' ? 'reviewer_running' : 'executor_running',
       [stage === 'review' ? 'openclawReviewSessionKey' : 'openclawSessionKey']: key,
       openedAt: Date.now(),
+      context: collabContext,
+      artifacts: collabContext.artifacts,
+    })
+    createTaskProgress({
+      taskId,
+      sessionId: collabContext.session_id,
+      fromAgent: COLLAB_TARGETS.openclaw,
+      toAgent: COLLAB_TARGETS.hermes,
+      title,
+      content: `${stage === 'review' ? 'OpenClaw review' : 'OpenClaw execution'} started in session ${key}`,
+      context: collabContext,
+      artifacts: collabContext.artifacts,
     })
     if (_isSending || _isStreaming) {
       _messageQueue.push({ text: message, attachments: [] })
@@ -2123,8 +2227,8 @@ function toggleCmdPanel() {
 
 // ── 消息发送 ──
 
-function sendMessage() {
-  const text = _textarea.value.trim()
+async function sendMessage() {
+  let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
   ensureReadySessionKey()
   if (!wsClient.gatewayReady || !_sessionKey) {
@@ -2138,6 +2242,37 @@ function sendMessage() {
   const attachments = [..._attachments]
   _attachments = []
   renderAttachments()
+  if (attachments.length && isOcrIntentText(text)) {
+    const result = await runOcrForAttachmentData(attachments[0])
+    if (result?.ok && result.text) {
+      text = `${text}\n\n[OCR]\n${result.text}\n[/OCR]`
+    } else if (result) {
+      appendSystemMessage(formatOcrResult(result))
+    }
+  }
+  const hermesDelegateMatch = /^\/(?:hermes|delegate-hermes)\s+([\s\S]+)/i.exec(text)
+  if (hermesDelegateMatch) {
+    const content = hermesDelegateMatch[1].trim()
+    if (content) {
+      const task = currentCollaborationTask()
+      const taskId = task?.taskId || `openclaw-${Date.now().toString(36)}`
+      const context = buildOpenClawCollaborationContext({ taskId, stage: task?.stage || 'delegate' }, content)
+      createTaskDelegate({
+        taskId,
+        parentTaskId: task?.taskId || null,
+        sessionId: context.session_id,
+        fromAgent: COLLAB_TARGETS.openclaw,
+        toAgent: COLLAB_TARGETS.hermes,
+        title: 'OpenClaw delegated task to Hermes',
+        content,
+        context,
+      })
+      appendUserMessage(text, attachments)
+      appendSystemMessage('已委派给 Hermes 收件箱。')
+      toast('已委派给 Hermes 收件箱', 'success')
+      return
+    }
+  }
   if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments }); return }
   doSend(text, attachments)
 }
@@ -2258,6 +2393,61 @@ function processMessageQueue() {
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
   else doSend(msg.text, msg.attachments || [])
+}
+
+function currentCollaborationTask() {
+  const match = /^agent:[^:]+:collaboration\/([^/]+)\/(.+)\.md$/.exec(String(_sessionKey || ''))
+  if (!match) return null
+  return { stage: match[1], taskId: match[2] }
+}
+
+function buildOpenClawCollaborationContext(task, content = '', artifacts = []) {
+  return buildTaskContext({
+    sessionId: _sessionKey,
+    taskId: task?.taskId,
+    summary: content,
+    recent_messages: getLocalMessages(_sessionKey).slice(-50).map(item => ({
+      role: item.role,
+      content: item.content,
+      timestamp: item.timestamp,
+    })),
+    artifacts,
+    content,
+  })
+}
+
+function markCollaborationReturnOnce(taskId, runId, kind) {
+  const key = `${taskId}:${runId || 'no-run'}:${kind}`
+  let rows = []
+  try { rows = JSON.parse(localStorage.getItem('superclaw-openclaw-returned-collab-v1') || '[]') } catch {}
+  if (rows.includes(key)) return false
+  rows.push(key)
+  localStorage.setItem('superclaw-openclaw-returned-collab-v1', JSON.stringify(rows.slice(-200)))
+  return true
+}
+
+function returnOpenClawCollaborationResult({ runId, content, failed = false } = {}) {
+  const task = currentCollaborationTask()
+  if (!task?.taskId) return
+  const body = String(content || '').trim()
+  if (!body) return
+  if (!markCollaborationReturnOnce(task.taskId, runId || body.slice(0, 80), failed ? 'error' : 'result')) return
+  const context = buildOpenClawCollaborationContext(task, body)
+  createTaskResult({
+    taskId: task.taskId,
+    sessionId: context.session_id,
+    fromAgent: COLLAB_TARGETS.openclaw,
+    toAgent: COLLAB_TARGETS.hermes,
+    title: `${task.stage === 'review' ? 'OpenClaw review' : 'OpenClaw execution'} ${failed ? 'failed' : 'completed'}`,
+    content: body,
+    failed,
+    context,
+  })
+  updateCollaborationTask(task.taskId, {
+    status: failed ? 'failed' : (task.stage === 'review' ? 'review_completed' : 'executor_completed'),
+    [task.stage === 'review' ? 'openclawReviewResultAt' : 'openclawResultAt']: Date.now(),
+    context,
+  })
 }
 
 function previewToolValue(value, maxLen = 180) {
@@ -2572,6 +2762,10 @@ function handleChatEvent(payload) {
         content: _currentAiText, timestamp: Date.now(),
         attachments: _currentAiImages.map(i => ({ category: 'image', mimeType: i.mediaType || 'image/png', url: i.url, content: i.data })).filter(a => a.url || a.content)
       })
+      returnOpenClawCollaborationResult({
+        runId: payload.runId,
+        content: _currentAiText || finalText,
+      })
     }
     // 托管 Agent：捕获 AI 回复，检测停止信号，决定是否继续
     if (shouldCaptureHostedTarget(payload)) {
@@ -2635,6 +2829,11 @@ function handleChatEvent(payload) {
     }
 
     showTyping(false)
+    returnOpenClawCollaborationResult({
+      runId: payload.runId,
+      content: errMsg,
+      failed: true,
+    })
     appendSystemMessage(`${t('chat.errorPrefix')}${errMsg}`)
     resetStreamState()
     processMessageQueue()
@@ -2997,6 +3196,22 @@ async function loadHistory() {
       return
     }
     const deduped = dedupeHistory(result.messages)
+    const displayedCount = countDisplayedChatMessages()
+    const refreshIsSparse = hasExisting
+      && !_isSending
+      && !_isStreaming
+      && _messageQueue.length === 0
+      && deduped.length > 0
+      && displayedCount > deduped.length
+    if (refreshIsSparse) {
+      console.warn('[chat] sparse history refresh ignored to preserve visible messages:', {
+        sessionKey: _sessionKey,
+        displayedCount,
+        historyCount: deduped.length,
+      })
+      saveMessages(result.messages.map(cachedHistoryMessage))
+      return
+    }
     const hash = deduped
       .map(m => `${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
       .join('|')
@@ -3038,6 +3253,11 @@ async function loadHistory() {
   } finally {
     _isLoadingHistory = false
   }
+}
+
+function countDisplayedChatMessages() {
+  if (!_messagesEl) return 0
+  return _messagesEl.querySelectorAll('.msg-user, .msg-ai').length
 }
 
 function dedupeHistory(messages) {

@@ -358,6 +358,10 @@ export const api = {
   writeMemoryFile: (path, content, category, agentId) => { invalidate('list_memory_files', 'read_memory_file'); return invoke('write_memory_file', { path, content, category: category || 'memory', agentId: agentId || null }) },
   deleteMemoryFile: (path, agentId) => { invalidate('list_memory_files'); return invoke('delete_memory_file', { path, agentId: agentId || null }) },
   exportMemoryZip: (category, agentId) => invoke('export_memory_zip', { category, agentId: agentId || null }),
+  sharedMemoryConfig: () => invoke('shared_memory_config'),
+  sharedMemoryRead: () => invoke('shared_memory_read'),
+  sharedMemoryWrite: (content) => invoke('shared_memory_write', { content }),
+  sharedMemoryWriteFile: (path, content) => invoke('shared_memory_write_file', { path, content }),
 
   // 消息渠道管理
   readPlatformConfig: (platform, accountId) => invoke('read_platform_config', { platform, accountId: accountId || null }),
@@ -495,6 +499,9 @@ export const api = {
   saveImage: (id, data) => invoke('assistant_save_image', { id, data }),
   loadImage: (id) => invoke('assistant_load_image', { id }),
   deleteImage: (id) => invoke('assistant_delete_image', { id }),
+  ocrGetConfig: () => cachedInvoke('ocr_get_config', {}, 10000),
+  ocrSetEnabled: (enabled) => { invalidate('ocr_get_config'); return invoke('ocr_set_enabled', { enabled }) },
+  ocrExtractText: (request) => invoke('ocr_extract_text', request || {}),
 
   // Hermes Agent 管理
   checkPython: () => cachedInvoke('check_python', {}, 60000),

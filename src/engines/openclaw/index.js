@@ -16,8 +16,10 @@ async function ensureGatewayReadyOnBoot() {
   _gatewayBootPromise = (async () => {
     if (!isTauriRuntime() || !isOpenclawReady()) return
 
+    let pairingRepaired = false
     try {
-      await api.autoPairDevice()
+      const pairResult = await api.autoPairDevice()
+      pairingRepaired = String(pairResult || '').includes('scopes repaired')
     } catch (e) {
       console.warn('[openclaw] autoPairDevice failed before gateway boot:', e)
     }
@@ -33,11 +35,12 @@ async function ensureGatewayReadyOnBoot() {
       const gateway = services?.find?.(s => s.label === 'ai.openclaw.gateway') || services?.[0]
 
       if (gateway?.running) {
-        try {
-          await api.reloadGateway()
-        } catch (reloadError) {
-          console.warn('[openclaw] reload gateway failed, restarting:', reloadError)
+        if (pairingRepaired) {
           await api.restartService('ai.openclaw.gateway')
+        } else {
+          await api.claimGateway().catch((e) => {
+            console.warn('[openclaw] claim running gateway failed:', e)
+          })
         }
       } else {
         await api.startService('ai.openclaw.gateway')

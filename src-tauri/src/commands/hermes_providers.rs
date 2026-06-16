@@ -542,14 +542,14 @@ const P_COPILOT_ACP: HermesProvider = HermesProvider {
 // uses whatever api_key + base_url the user provides.
 const P_CUSTOM: HermesProvider = HermesProvider {
     id: "custom",
-    name: "YYAPI",
+    name: "Custom OpenAI-Compatible",
     auth_type: AUTH_API_KEY,
-    base_url: "http://124.222.21.44:3002/v1",
+    base_url: "",
     base_url_env_var: "OPENAI_BASE_URL",
     api_key_env_vars: &["OPENAI_API_KEY", "CUSTOM_API_KEY"],
     transport: TRANSPORT_OPENAI_CHAT,
     models_probe: PROBE_OPENAI,
-    models: &["gpt-5.5"],
+    models: &[],
     is_aggregator: true,
     cli_auth_hint: "",
 };
@@ -681,7 +681,7 @@ pub fn find_provider_by_model(model: &str) -> Option<&'static str> {
 /// clients can cache it for the lifetime of the session.
 #[tauri::command]
 pub fn hermes_list_providers() -> Vec<HermesProvider> {
-    vec![P_CUSTOM]
+    ALL_PROVIDERS.to_vec()
 }
 
 // =============================================================================

@@ -351,9 +351,14 @@ async fn do_restart_gateway() -> Result<(), String> {
         }
     }
 
+    if let Some(runtime_error) = hermes_portable_runtime_error() {
+        let _ = std::fs::write(&log_path, &runtime_error);
+        return Err(format!("Hermes gateway run failed: {runtime_error}"));
+    }
+
     let child = cmd
         .spawn()
-        .map_err(|e| format!("启动 hermes gateway run 失败: {e}"))?;
+        .map_err(|e| format!("Hermes gateway run failed: {e}\n{}", hermes_runtime_diagnostics()))?;
     GW_PID.store(child.id(), Ordering::SeqCst);
 
     // 4. 等待端口可达（最多 15s）
@@ -768,7 +773,7 @@ fn patch_uv_tool_pyvenv_cfgs() {
             }
         };
 
-        // Scripts/python.exe resolves pyvenv.cfg `home` relative to Scripts/.
+        // uv's Windows launcher resolves pyvenv.cfg `home` relative to Scripts/.
         let cfg_dir = entry.path().join("Scripts"); // e.g. resources/uv-tools/hermes-agent/Scripts/
         let new_home = compute_relative_path(&cfg_dir, &python_home);
         let new_home_line = format!("home = {}", new_home.replace('/', "\\"));
@@ -1629,6 +1634,62 @@ fn hermes_agent_site_packages() -> Option<PathBuf> {
         .join("site-packages");
     if site.join("hermes_cli").exists() {
         Some(site)
+    } else {
+        None
+    }
+}
+
+fn hermes_runtime_diagnostics() -> String {
+    let app_root = app_root_dir();
+    let resources = app_root.join("resources");
+    let python_root = uv_python_dir();
+    let tool_root = uv_tool_dir();
+    let python = hermes_agent_python();
+    let site = hermes_agent_site_packages();
+    let expected_site = tool_root
+        .join("hermes-agent")
+        .join("Lib")
+        .join("site-packages")
+        .join("hermes_cli");
+    let python_children = std::fs::read_dir(&python_root)
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .take(8)
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "(empty or missing)".to_string());
+
+    format!(
+        "Hermes bundled runtime not found.\napp_root={}\nresources_exists={}\nuv_python_dir={}\nuv_python_exists={}\nuv_python_children={}\nresolved_python={}\nuv_tool_dir={}\nuv_tool_exists={}\nexpected_hermes_cli={}\nhermes_cli_exists={}",
+        app_root.display(),
+        resources.is_dir(),
+        python_root.display(),
+        python_root.is_dir(),
+        python_children,
+        python
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        tool_root.display(),
+        tool_root.is_dir(),
+        expected_site.display(),
+        site.is_some()
+    )
+}
+
+fn hermes_portable_runtime_error() -> Option<String> {
+    let app_root = app_root_dir();
+    let has_portable_layout = app_root.join("resources").is_dir()
+        || app_root.join("uv-python").is_dir()
+        || app_root.join("uv-tools").is_dir();
+    let should_require_bundle = has_portable_layout || !cfg!(debug_assertions);
+    if should_require_bundle && (hermes_agent_python().is_none() || hermes_agent_site_packages().is_none()) {
+        Some(hermes_runtime_diagnostics())
     } else {
         None
     }
@@ -3505,7 +3566,6 @@ pub async fn hermes_update_model(
     //   3. 找不到 / 模糊 → 保持现有 provider（不改）
     let resolved_provider: Option<String> =
         provider.or_else(|| hermes_providers::find_provider_by_model(&model).map(String::from));
-
     // 一次性扫描并替换 model 区块中的 default / provider 字段。
     let lines: Vec<&str> = config_raw.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
@@ -3657,6 +3717,11 @@ pub async fn hermes_gateway_action(
                     .try_clone()
                     .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
+                if let Some(runtime_error) = hermes_portable_runtime_error() {
+                    let _ = std::fs::write(&log_path, &runtime_error);
+                    return Err(format!("Hermes gateway run 失败: {runtime_error}"));
+                }
+
                 let mut cmd = hermes_command(&["gateway", "run"], &enhanced);
                 cmd.stdin(std::process::Stdio::null())
                     .stdout(log_file)
@@ -3747,7 +3812,10 @@ pub async fn hermes_gateway_action(
                             ))
                         }
                     }
-                    Err(e) => Err(format!("启动 hermes gateway run 失败: {e}")),
+                    Err(e) => Err(format!(
+                        "Hermes gateway run failed: {e}\n{}",
+                        hermes_runtime_diagnostics()
+                    )),
                 }
             }
             #[cfg(not(target_os = "windows"))]
@@ -3755,6 +3823,10 @@ pub async fn hermes_gateway_action(
                 let home = hermes_home();
                 // 先精准杀掉之前我们 spawn 的进程
                 kill_gateway_pid();
+
+                if let Some(runtime_error) = hermes_portable_runtime_error() {
+                    return Err(format!("Hermes gateway run failed: {runtime_error}"));
+                }
 
                 let mut cmd = hermes_command(&["gateway", "run"], &enhanced);
                 cmd.stdin(std::process::Stdio::null())

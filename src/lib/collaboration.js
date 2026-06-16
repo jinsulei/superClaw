@@ -1,10 +1,66 @@
 const TASKS_KEY = 'superclaw-collab-tasks-v1'
 const PENDING_KEY = 'superclaw-collab-pending-dispatch-v1'
+const MESSAGES_KEY = 'superclaw-agent-task-messages-v1'
+const MEMORY_KEY = 'superclaw-shared-agent-memory-v1'
+
+export const SHARED_MEMORY_CONFIG = {
+  enabled: true,
+  store: 'local',
+  portable: true,
+  path: 'data/memory',
+  maxRecentMessages: 50,
+  maxSummaryLength: 8000,
+  persistTaskContext: true,
+  persistAgentMessages: true,
+  sharedForAgents: ['hermes', 'openclaw', 'claude_code'],
+}
 
 export const COLLAB_TARGETS = {
   openclaw: 'openclaw',
   claudeCode: 'claude-code',
   hermes: 'hermes',
+}
+
+export const CLAUDE_CODE_MODES = {
+  safe: 'safe',
+  browserAutomation: 'browser_automation',
+  takeover: 'takeover',
+}
+
+const CLAUDE_CODE_MODE_ALIASES = {
+  safe: CLAUDE_CODE_MODES.safe,
+  restricted: CLAUDE_CODE_MODES.safe,
+  browser: CLAUDE_CODE_MODES.browserAutomation,
+  browsermode: CLAUDE_CODE_MODES.browserAutomation,
+  browserautomation: CLAUDE_CODE_MODES.browserAutomation,
+  browser_automation: CLAUDE_CODE_MODES.browserAutomation,
+  automation: CLAUDE_CODE_MODES.browserAutomation,
+  browser_only: CLAUDE_CODE_MODES.browserAutomation,
+  takeover: CLAUDE_CODE_MODES.takeover,
+  full_control: CLAUDE_CODE_MODES.takeover,
+}
+
+export function normalizeClaudeCodeMode(input = {}) {
+  const raw = typeof input === 'string' ? input : (input.mode || input.claudeCodeMode || input.permission_mode || input.permissionMode || '')
+  const key = String(raw || CLAUDE_CODE_MODES.safe).trim().replace(/[-\s]+/g, '_').toLowerCase()
+  const mode = CLAUDE_CODE_MODE_ALIASES[key] || CLAUDE_CODE_MODE_ALIASES[key.replace(/_/g, '')] || CLAUDE_CODE_MODES.safe
+  const unknown = !!raw && !CLAUDE_CODE_MODE_ALIASES[key] && !CLAUDE_CODE_MODE_ALIASES[key.replace(/_/g, '')]
+  if (mode === CLAUDE_CODE_MODES.takeover) {
+    return { mode, permission_level: 'full_control', requires_confirmation: true, warning: unknown ? 'unknown_mode_fallback_to_safe' : null }
+  }
+  if (mode === CLAUDE_CODE_MODES.browserAutomation) {
+    return {
+      mode,
+      permission_level: 'browser_only',
+      requires_confirmation: false,
+      single_browser: true,
+      single_page: true,
+      allow_popup: false,
+      requires_confirmation_for_extra_page: true,
+      warning: unknown ? 'unknown_mode_fallback_to_safe' : null,
+    }
+  }
+  return { mode: CLAUDE_CODE_MODES.safe, permission_level: 'restricted', requires_confirmation: false, warning: unknown ? 'unknown_mode_fallback_to_safe' : null }
 }
 
 export function listCollaborationTasks() {
@@ -14,6 +70,178 @@ export function listCollaborationTasks() {
   } catch {
     return []
   }
+}
+
+export function listAgentTaskMessages(filter = {}) {
+  try {
+    const rows = JSON.parse(localStorage.getItem(MESSAGES_KEY) || '[]')
+    const list = Array.isArray(rows) ? rows : []
+    return list.filter(item => {
+      if (filter.toAgent && item.to_agent !== filter.toAgent) return false
+      if (filter.fromAgent && item.from_agent !== filter.fromAgent) return false
+      if (filter.taskId && item.task_id !== filter.taskId) return false
+      if (filter.messageType && item.message_type !== filter.messageType) return false
+      return true
+    })
+  } catch {
+    return []
+  }
+}
+
+export function listSharedMemory(filter = {}) {
+  try {
+    const rows = JSON.parse(localStorage.getItem(MEMORY_KEY) || '[]')
+    const list = Array.isArray(rows) ? rows : []
+    return list.filter(item => {
+      if (filter.sessionId && item.session_id !== filter.sessionId) return false
+      if (filter.taskId && item.task_id !== filter.taskId) return false
+      if (filter.agent && item.from_agent !== filter.agent && item.to_agent !== filter.agent) return false
+      return true
+    })
+  } catch {
+    return []
+  }
+}
+
+export function buildTaskContext(input = {}) {
+  const sessionId = input.session_id || input.sessionId || input.session?.id || getDefaultSessionId()
+  const taskId = input.task_id || input.taskId || ''
+  const base = normalizeContext(input.context || {})
+  const history = listAgentTaskMessages({ taskId }).slice(0, SHARED_MEMORY_CONFIG.maxRecentMessages)
+  const recent = base.recent_messages.length ? base.recent_messages : history.map(item => ({
+    from_agent: item.from_agent,
+    to_agent: item.to_agent,
+    message_type: item.message_type,
+    status: item.status,
+    title: item.title,
+    content: item.content,
+    created_at: item.created_at,
+  }))
+  const artifacts = mergeArtifacts(base.artifacts, input.artifacts)
+  return {
+    summary: clampText(base.summary || input.summary || shortGoal(input.content || input.title || taskId, 120), SHARED_MEMORY_CONFIG.maxSummaryLength),
+    recent_messages: recent.slice(0, SHARED_MEMORY_CONFIG.maxRecentMessages),
+    important_facts: Array.isArray(base.important_facts) ? base.important_facts.slice(0, 100) : [],
+    artifacts,
+    session_id: sessionId,
+    task_id: taskId,
+  }
+}
+
+export function saveAgentTaskMessage(message = {}) {
+  const now = new Date().toISOString()
+  const taskId = message.task_id || message.taskId || `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  const sessionId = message.session_id || message.sessionId || getDefaultSessionId()
+  const fromAgent = normalizeAgentId(message.from_agent || message.fromAgent || COLLAB_TARGETS.hermes)
+  const toAgent = normalizeAgentId(message.to_agent || message.toAgent || COLLAB_TARGETS.hermes)
+  const isClaudeMessage = fromAgent === COLLAB_TARGETS.claudeCode || toAgent === COLLAB_TARGETS.claudeCode || !!message.mode || !!message.claudeCodeMode
+  const modeInfo = isClaudeMessage ? normalizeClaudeCodeMode(message) : null
+  const artifacts = normalizeArtifacts(message.artifacts)
+  const context = buildTaskContext({ ...message, task_id: taskId, session_id: sessionId, artifacts })
+  const row = {
+    session_id: sessionId,
+    task_id: taskId,
+    parent_task_id: message.parent_task_id || message.parentTaskId || null,
+    from_agent: fromAgent,
+    to_agent: toAgent,
+    message_type: message.message_type || message.messageType || (message.memory_update ? 'memory_update' : 'task_result'),
+    mode: modeInfo?.mode || message.mode || null,
+    permission_level: modeInfo?.permission_level || message.permission_level || message.permissionLevel || null,
+    requires_confirmation: modeInfo ? !!modeInfo.requires_confirmation : !!(message.requires_confirmation || message.requiresConfirmation),
+    mode_warning: modeInfo?.warning || message.mode_warning || message.modeWarning || null,
+    tool: message.tool || null,
+    status: message.status || 'completed',
+    title: message.title || shortGoal(message.content || taskId),
+    content: String(message.content || ''),
+    context,
+    artifacts,
+    created_at: message.created_at || now,
+    updated_at: now,
+  }
+  const rows = listAgentTaskMessages()
+    .filter(item => !(item.task_id === row.task_id && item.message_type === row.message_type && item.from_agent === row.from_agent && item.content === row.content))
+  rows.unshift(row)
+  localStorage.setItem(MESSAGES_KEY, JSON.stringify(rows.slice(0, 200)))
+  saveSharedMemoryEntry(row)
+  window.dispatchEvent(new CustomEvent('superclaw-agent-task-message', { detail: row }))
+  return row
+}
+
+export function createTaskRequest({ fromAgent, toAgent, title, content, parentTaskId, taskId, sessionId, context, artifacts, mode, permission_level, permissionLevel, requires_confirmation, requiresConfirmation } = {}) {
+  return saveAgentTaskMessage({
+    session_id: sessionId,
+    task_id: taskId,
+    parent_task_id: parentTaskId || null,
+    from_agent: fromAgent,
+    to_agent: toAgent,
+    mode,
+    permission_level: permission_level || permissionLevel,
+    requires_confirmation: requires_confirmation ?? requiresConfirmation,
+    message_type: 'task_request',
+    status: 'pending',
+    title,
+    content,
+    context,
+    artifacts,
+  })
+}
+
+export function createTaskProgress({ fromAgent, toAgent, title, content, parentTaskId, taskId, sessionId, context, artifacts, mode, permission_level, permissionLevel, requires_confirmation, requiresConfirmation } = {}) {
+  return saveAgentTaskMessage({
+    session_id: sessionId,
+    task_id: taskId,
+    parent_task_id: parentTaskId || null,
+    from_agent: fromAgent,
+    to_agent: toAgent,
+    mode,
+    permission_level: permission_level || permissionLevel,
+    requires_confirmation: requires_confirmation ?? requiresConfirmation,
+    message_type: 'task_progress',
+    status: 'running',
+    title,
+    content,
+    context,
+    artifacts,
+  })
+}
+
+export function createTaskResult({ fromAgent, toAgent, title, content, parentTaskId, taskId, sessionId, context, artifacts, failed = false, tool = null, mode, permission_level, permissionLevel, requires_confirmation, requiresConfirmation } = {}) {
+  return saveAgentTaskMessage({
+    session_id: sessionId,
+    task_id: taskId,
+    parent_task_id: parentTaskId || null,
+    from_agent: fromAgent,
+    to_agent: toAgent,
+    mode,
+    permission_level: permission_level || permissionLevel,
+    requires_confirmation: requires_confirmation ?? requiresConfirmation,
+    message_type: failed ? 'task_error' : 'task_result',
+    tool,
+    status: failed ? 'failed' : 'completed',
+    title,
+    content,
+    context,
+    artifacts,
+  })
+}
+
+export function createTaskDelegate({ fromAgent, toAgent = COLLAB_TARGETS.hermes, title, content, parentTaskId, taskId, sessionId, context, artifacts, mode, permission_level, permissionLevel, requires_confirmation, requiresConfirmation } = {}) {
+  return saveAgentTaskMessage({
+    session_id: sessionId,
+    task_id: taskId,
+    parent_task_id: parentTaskId || null,
+    from_agent: fromAgent,
+    to_agent: toAgent,
+    mode,
+    permission_level: permission_level || permissionLevel,
+    requires_confirmation: requires_confirmation ?? requiresConfirmation,
+    message_type: 'task_delegate',
+    status: 'delegated',
+    title,
+    content,
+    context,
+    artifacts,
+  })
 }
 
 export function saveCollaborationTask(task) {
@@ -35,19 +263,50 @@ export function updateCollaborationTask(id, patch = {}) {
 export function createCollaborationTask(input = {}) {
   const goal = String(input.goal || '').trim()
   const createdAt = Date.now()
+  const claudeMode = normalizeClaudeCodeMode(input.claudeCodeMode || input.mode || CLAUDE_CODE_MODES.safe)
+  const sessionId = input.session_id || input.sessionId || getDefaultSessionId()
+  const context = buildTaskContext({ ...input, session_id: sessionId, content: goal })
   const task = {
     id: `collab-${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    session_id: sessionId,
     goal,
     title: input.title || shortGoal(goal),
     source: input.source || COLLAB_TARGETS.hermes,
     executor: input.executor || COLLAB_TARGETS.openclaw,
     reviewer: input.reviewer || COLLAB_TARGETS.claudeCode,
+    claudeCodeMode: claudeMode.mode,
+    claudeCodePermissionLevel: claudeMode.permission_level,
+    claudeCodeRequiresConfirmation: claudeMode.requires_confirmation,
+    context,
+    artifacts: normalizeArtifacts(input.artifacts),
     plan: Array.isArray(input.plan) && input.plan.length ? input.plan : splitCollaborationTask(goal, input),
     status: 'draft',
     createdAt,
     updatedAt: createdAt,
   }
   return saveCollaborationTask(task)
+}
+
+export function getDefaultSessionId() {
+  try {
+    const key = 'superclaw-active-agent-session-id'
+    let current = localStorage.getItem(key)
+    if (!current) {
+      current = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      localStorage.setItem(key, current)
+    }
+    return current
+  } catch {
+    return `session-${Date.now().toString(36)}`
+  }
+}
+
+function normalizeAgentId(agent) {
+  const value = String(agent || '').trim()
+  if (value === COLLAB_TARGETS.claudeCode || value === 'claude_code' || value === 'claudeCode') return COLLAB_TARGETS.claudeCode
+  if (value === COLLAB_TARGETS.openclaw) return COLLAB_TARGETS.openclaw
+  if (value === COLLAB_TARGETS.hermes) return COLLAB_TARGETS.hermes
+  return value || COLLAB_TARGETS.hermes
 }
 
 export function shortGoal(text, maxLen = 24) {
@@ -200,8 +459,18 @@ export function buildReviewBrief(task, executionSummary = '') {
 }
 
 export function setPendingDispatch(dispatch) {
+  const modeInfo = dispatch?.target === COLLAB_TARGETS.claudeCode ? normalizeClaudeCodeMode(dispatch) : null
+  const sessionId = dispatch?.session_id || dispatch?.sessionId || getDefaultSessionId()
+  const context = buildTaskContext({ ...dispatch, session_id: sessionId, task_id: dispatch?.taskId || dispatch?.task_id, content: dispatch?.message || dispatch?.content })
   const payload = {
     ...dispatch,
+    session_id: sessionId,
+    context,
+    artifacts: normalizeArtifacts(dispatch?.artifacts),
+    mode: modeInfo?.mode || dispatch?.mode,
+    permission_level: modeInfo?.permission_level || dispatch?.permission_level,
+    requires_confirmation: modeInfo ? !!modeInfo.requires_confirmation : !!dispatch?.requires_confirmation,
+    mode_warning: modeInfo?.warning || dispatch?.mode_warning || null,
     createdAt: Date.now(),
   }
   const queue = readPendingQueue()
@@ -209,6 +478,100 @@ export function setPendingDispatch(dispatch) {
   queue.push(payload)
   localStorage.setItem(PENDING_KEY, JSON.stringify(queue.slice(-20)))
   return payload
+}
+
+function normalizeContext(context = {}) {
+  const value = context && typeof context === 'object' ? context : {}
+  return {
+    summary: clampText(value.summary || '', SHARED_MEMORY_CONFIG.maxSummaryLength),
+    recent_messages: Array.isArray(value.recent_messages) ? value.recent_messages.slice(0, SHARED_MEMORY_CONFIG.maxRecentMessages) : [],
+    important_facts: Array.isArray(value.important_facts) ? value.important_facts : [],
+    artifacts: normalizeArtifacts(value.artifacts),
+  }
+}
+
+function normalizeArtifacts(input = []) {
+  const list = Array.isArray(input) ? input : []
+  return list
+    .filter(Boolean)
+    .map(item => {
+      const rawPath = String(item.path || item.relativePath || '').replace(/\\/g, '/')
+      return {
+        type: item.type || 'file',
+        path: stripAbsolutePath(rawPath),
+        text: item.text || item.content || '',
+        created_at: item.created_at || item.createdAt || new Date().toISOString(),
+      }
+    })
+}
+
+function mergeArtifacts(...groups) {
+  const seen = new Set()
+  const merged = []
+  for (const item of groups.flatMap(group => normalizeArtifacts(group))) {
+    const key = `${item.type}:${item.path}:${item.text.slice(0, 80)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(item)
+  }
+  return merged.slice(0, 100)
+}
+
+function stripAbsolutePath(path) {
+  const raw = String(path || '')
+  if (!raw) return ''
+  const normalized = raw.replace(/\\/g, '/')
+  const idx = normalized.toLowerCase().lastIndexOf('/resources/data/')
+  if (idx >= 0) return normalized.slice(idx + '/resources/'.length)
+  if (/^[a-z]:\//i.test(normalized)) return normalized.split('/').slice(-2).join('/')
+  if (normalized.startsWith('/')) return normalized.split('/').slice(-2).join('/')
+  return normalized
+}
+
+function clampText(text, maxLen) {
+  const raw = String(text || '').trim()
+  return raw.length > maxLen ? raw.slice(0, maxLen) : raw
+}
+
+function saveSharedMemoryEntry(row) {
+  if (!SHARED_MEMORY_CONFIG.enabled) return
+  const entry = {
+    session_id: row.session_id,
+    task_id: row.task_id,
+    parent_task_id: row.parent_task_id,
+    from_agent: row.from_agent,
+    to_agent: row.to_agent,
+    mode: row.mode || 'normal',
+    message_type: row.message_type,
+    status: row.status,
+    title: row.title,
+    content: row.content,
+    context: row.context,
+    artifacts: row.artifacts,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+  const rows = listSharedMemory()
+    .filter(item => !(item.task_id === entry.task_id && item.message_type === entry.message_type && item.from_agent === entry.from_agent && item.content === entry.content))
+  rows.unshift(entry)
+  localStorage.setItem(MEMORY_KEY, JSON.stringify(rows.slice(0, 500)))
+  persistPortableSharedMemory(rows.slice(0, 500))
+}
+
+let portableMemoryWritePending = false
+function persistPortableSharedMemory(rows) {
+  if (portableMemoryWritePending || typeof window === 'undefined') return
+  if (!window.__TAURI_INTERNALS__ && !window.__TAURI__) return
+  portableMemoryWritePending = true
+  setTimeout(async () => {
+    portableMemoryWritePending = false
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('shared_memory_write', { content: JSON.stringify(rows, null, 2) })
+    } catch (err) {
+      console.warn('[collaboration] shared memory portable write failed:', err)
+    }
+  }, 50)
 }
 
 function routeForTarget(target) {

@@ -2,7 +2,7 @@
  * 个人中心页面
  * 展示用户信息、退出登录、重置激活（调试用）
  */
-import { getUserInfo, getUserQuota, getStoredUser, clearAuth, logout, navigateTo } from '../lib/user-api.js'
+import { getUserInfo, getUserQuota, getStoredUser, logout, navigateTo } from '../lib/user-api.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { toast } from '../components/toast.js'
@@ -32,10 +32,23 @@ async function loadProfile(page) {
   const body = page.querySelector('#profile-body')
 
   try {
-    const [data, yyapiQuota] = await Promise.all([
+    const [dataResult, quotaResult] = await Promise.allSettled([
       getUserInfo(),
-      getUserQuota().catch(() => null),
+      getUserQuota(),
     ])
+    if (dataResult.status === 'rejected' && !getStoredUser()) {
+      throw dataResult.reason
+    }
+    if (dataResult.status === 'rejected') {
+      console.warn('[profile] user info load skipped:', dataResult.reason?.message)
+    }
+    if (quotaResult.status === 'rejected') {
+      console.warn('[profile] quota load skipped:', quotaResult.reason?.message)
+    }
+    const data = dataResult.status === 'fulfilled'
+      ? dataResult.value
+      : { user: getStoredUser(), amount: 0, tokenInfo: {} }
+    const yyapiQuota = quotaResult.status === 'fulfilled' ? quotaResult.value : null
     const user = data.user || getStoredUser()
     const amount = data.amount || 0
     const remainingTokens = data.tokenInfo?.remaining_tokens ?? amount
@@ -132,8 +145,8 @@ async function loadProfile(page) {
       </div>
     `
     body.querySelector('#btn-profile-retry')?.addEventListener('click', () => loadProfile(page))
-    body.querySelector('#btn-profile-logout')?.addEventListener('click', () => {
-      clearAuth()
+    body.querySelector('#btn-profile-logout')?.addEventListener('click', async () => {
+      await logout()
       navigateTo('login')
     })
   }

@@ -162,8 +162,9 @@ function bindRegisterEvents(page) {
       localStorage.setItem('superclaw_yyapi_password', password)
 
       // 保存 v2 注册返回的 YYApi API Key（明文）
-      if (result.new_api_key) {
-        localStorage.setItem('superclaw_yyapi_key', result.new_api_key)
+      const yyapiKey = result.new_api_key || result.api_key || result.apiKey || ''
+      if (yyapiKey) {
+        localStorage.setItem('superclaw_yyapi_key', yyapiKey)
       }
       if (result.new_api_user_id) {
         localStorage.setItem('superclaw_yyapi_user_id', String(result.new_api_user_id))

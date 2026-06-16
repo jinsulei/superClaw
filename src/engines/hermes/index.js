@@ -168,6 +168,7 @@ export default {
       { path: '/settings', loader: () => import('../../pages/settings.js') },
       { path: '/about', loader: () => import('../../pages/about.js') },
       { path: '/recharge', loader: () => import('../../pages/payment.js') },
+      { path: '/profile', loader: () => import('../../pages/profile.js') },
     ]
   },
 

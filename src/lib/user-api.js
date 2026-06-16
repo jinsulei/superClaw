@@ -92,6 +92,106 @@ export function isLoggedIn() {
 export function clearAuth() {
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
+  clearConfiguredModelsForLogout().catch(err => {
+    console.warn('[auth] clear configured models failed:', err?.message || err)
+  })
+}
+
+const YYAPI_PROVIDER_KEY = 'yyapi'
+const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
+const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
+
+export async function clearConfiguredModelsForLogout() {
+  try { localStorage.removeItem('superclaw_yyapi_key') } catch {}
+  try { localStorage.removeItem('superclaw_yyapi_user_id') } catch {}
+  try { localStorage.removeItem('superclaw-primary-model') } catch {}
+  try { localStorage.removeItem('hermes-primary-model') } catch {}
+  try { sessionStorage.removeItem('superclaw_yyapi_dismissed') } catch {}
+
+  if (!window.__TAURI_INTERNALS__) return
+
+  const { api } = await import('./tauri-api.js')
+  await Promise.allSettled([
+    resetOpenclawManagedModelConfig(api),
+    resetHermesManagedModelConfig(api),
+    resetClaudeManagedModelConfig(api),
+  ])
+}
+
+async function resetOpenclawManagedModelConfig(api) {
+  const config = await api.readOpenclawConfig()
+  if (!config.models) config.models = {}
+  if (!config.models.providers) config.models.providers = {}
+
+  config.models.providers[YYAPI_PROVIDER_KEY] = {
+    ...(config.models.providers[YYAPI_PROVIDER_KEY] || {}),
+    baseUrl: YYAPI_BASE_URL,
+    apiKey: LOGOUT_MODEL_PLACEHOLDER,
+    api: 'openai-completions',
+    models: [],
+  }
+
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  if (!config.agents.defaults.model) config.agents.defaults.model = {}
+  if (isManagedYyapiModelRef(config.agents.defaults.model.primary)) {
+    config.agents.defaults.model.primary = ''
+  }
+  if (Array.isArray(config.agents.defaults.model.fallbacks)) {
+    config.agents.defaults.model.fallbacks = config.agents.defaults.model.fallbacks
+      .filter(ref => !isManagedYyapiModelRef(ref))
+  }
+  if (config.agents.defaults.models && typeof config.agents.defaults.models === 'object') {
+    for (const key of Object.keys(config.agents.defaults.models)) {
+      if (isManagedYyapiModelRef(key)) delete config.agents.defaults.models[key]
+    }
+  }
+
+  for (const agent of (config.agents.list || [])) {
+    if (!agent?.model || typeof agent.model !== 'object') continue
+    if (isManagedYyapiModelRef(agent.model.primary)) agent.model.primary = ''
+    if (Array.isArray(agent.model.fallbacks)) {
+      agent.model.fallbacks = agent.model.fallbacks.filter(ref => !isManagedYyapiModelRef(ref))
+    }
+  }
+
+  await api.writeOpenclawConfig(config)
+}
+
+async function resetHermesManagedModelConfig(api) {
+  const current = await api.hermesReadConfig().catch(() => null)
+  if (!isYyapiBaseUrl(current?.base_url || '')) return
+
+  await api.configureHermes(
+    'openai-api',
+    '',
+    LOGOUT_MODEL_PLACEHOLDER,
+    YYAPI_BASE_URL,
+  )
+}
+
+async function resetClaudeManagedModelConfig(api) {
+  if (typeof api.configureClaudeCodeRelay !== 'function') return
+  await api.configureClaudeCodeRelay({
+    baseUrl: YYAPI_BASE_URL,
+    apiKey: LOGOUT_MODEL_PLACEHOLDER,
+    model: LOGOUT_MODEL_PLACEHOLDER,
+    models: [],
+    force: false,
+  })
+}
+
+function isManagedYyapiModelRef(ref) {
+  const value = String(ref || '').trim()
+  return !value || value.startsWith(`${YYAPI_PROVIDER_KEY}/`)
+}
+
+function isYyapiBaseUrl(url) {
+  return normalizeUrl(url) === normalizeUrl(YYAPI_BASE_URL)
+}
+
+function normalizeUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '')
 }
 
 function isAuthInvalidError(status, message = '') {
@@ -105,24 +205,29 @@ function isAuthInvalidError(status, message = '') {
  * 通用 fetch 封装，自动附加 JWT
  */
 async function request(path, options = {}) {
-  const { method = 'POST', body, auth = false } = options
+  const { method = 'POST', body, auth = false, suppressAuthRedirect = false, timeoutMs = 15000 } = options
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   const resp = await fetch(`${getBaseUrl()}${path}`, {
     method,
     headers,
+    signal: controller?.signal,
     body: body ? JSON.stringify(body) : undefined,
-  })
+  }).finally(() => { if (timer) clearTimeout(timer) })
   const data = await resp.json()
   if (!resp.ok) {
     const msg = data.error || data.message || `HTTP ${resp.status}`
     // 令牌失效 / 未登录 → 全局跳转登录页
     if (isAuthInvalidError(resp.status, msg)) {
       clearAuth()
-      navigateTo('login')
+      if (!suppressAuthRedirect) {
+        navigateTo('login')
+      }
     }
     throw new Error(msg)
   }
@@ -169,7 +274,7 @@ export async function register(data) {
  * @returns {{ token: string, user: object, tokenInfo?: { remaining_tokens: number } }}
  */
 export async function login(data) {
-  return request('/auth/login', { body: data })
+  return request('/auth/login', { body: data, suppressAuthRedirect: true })
 }
 
 /**
@@ -182,7 +287,9 @@ export async function logout() {
   } catch {
     // 忽略登出时的网络错误
   }
-  clearAuth()
+  localStorage.removeItem('superclaw_token')
+  localStorage.removeItem('superclaw_user')
+  await clearConfiguredModelsForLogout()
 }
 
 /**
@@ -191,7 +298,7 @@ export async function logout() {
  * @returns {{ user: object, amount: number, tokenInfo?: { remaining_tokens: number } }}
  */
 export async function getUserInfo() {
-  return request('/user/info', { auth: true, method: 'GET' })
+  return request('/user/info', { auth: true, method: 'GET', timeoutMs: 2500 })
 }
 
 /**
@@ -217,7 +324,7 @@ export async function redeemCode(code) {
 // ========== v2 API（YYApi 中转站集成） ==========
 
 async function requestV2(path, options = {}) {
-  const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false, cache } = options
+  const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false, cache, timeoutMs = 15000 } = options
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
@@ -226,12 +333,15 @@ async function requestV2(path, options = {}) {
   let url = `${getBaseUrlV2()}${path}`
   const qs = new URLSearchParams(params).toString()
   if (qs) url += '?' + qs
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   const resp = await fetch(url, {
     method,
     headers,
     cache,
+    signal: controller?.signal,
     body: body ? JSON.stringify(body) : undefined,
-  })
+  }).finally(() => { if (timer) clearTimeout(timer) })
   let data
   try {
     data = await resp.json()
@@ -292,12 +402,12 @@ export async function getFullTokenKey(id) {
 
 /** 获取用户额度 GET /api/v2/user/quota */
 export async function getUserQuota() {
-  return requestV2('/user/quota', { auth: true, method: 'GET' })
+  return requestV2('/user/quota', { auth: true, method: 'GET', timeoutMs: 2500 })
 }
 
 /** 获取用户信息（v2 格式，兼容 v1） GET /api/v2/user/info */
 export async function getUserInfoV2() {
-  return requestV2('/user/info', { auth: true, method: 'GET' })
+  return requestV2('/user/info', { auth: true, method: 'GET', timeoutMs: 3000 })
 }
 
 /** 同步用户到 YYApi POST /api/v2/user/sync */
@@ -318,7 +428,7 @@ export async function topupUser(amount) {
  * @returns {{ discount: object, pay_methods: Array }}
  */
 export async function getTopupInfo() {
-  return requestV2('/payment/topup-info', { auth: true, method: 'GET' })
+  return requestV2('/payment/topup-info', { auth: true, method: 'GET', timeoutMs: 5000 })
 }
 
 /**

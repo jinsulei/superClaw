@@ -195,7 +195,7 @@ const temporaryTaskStorageKey = "cleanClaude.temporaryTask.v1";
 const automaticScheduleExecutionEnabled = false;
 const setupDismissedKey = "cleanClaude.setupDismissed.session";
 const superclawBaseStorageKey = "cleanClaude.superclawBase.v1";
-const fallbackSuperclawBase = "http://127.0.0.1:1420";
+const fallbackSuperclawBase = "";
 let consoleSwitchProgressFrame = null;
 let consoleSwitchProgressTimer = null;
 let nativeClaudeRunning = false;
@@ -249,7 +249,7 @@ function resolveSuperclawBase() {
   } catch {
     base = "";
   }
-  return base || fallbackSuperclawBase;
+  return base || fallbackSuperclawBase || "#";
 }
 
 function getSuperclawTargetCopy(route) {

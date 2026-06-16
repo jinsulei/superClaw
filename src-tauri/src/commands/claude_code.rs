@@ -155,6 +155,14 @@ fn apply_portable_env(cmd: &mut Command, resources: &Path, home: &Path, projects
     apply_minimax_env(cmd, resources);
 }
 
+#[cfg(target_os = "windows")]
+fn hide_console_window(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_console_window(_cmd: &mut Command) {}
+
 fn is_port_open(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
@@ -242,6 +250,7 @@ fn read_claude_version(claude: &Path, home: &Path, projects: &Path) -> (Option<S
         return (None, "SuperClaw resources dir was not found".to_string());
     };
     apply_portable_env(&mut cmd, &resources, home, projects);
+    hide_console_window(&mut cmd);
 
     match cmd.output() {
         Ok(output) => {
@@ -551,15 +560,15 @@ pub async fn claude_code_stop() -> Result<Value, String> {
 pub async fn claude_code_native_stop() -> Result<Value, String> {
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("taskkill.exe")
-            .args([
-                "/F",
-                "/T",
-                "/FI",
-                &format!("WINDOWTITLE eq {}*", NATIVE_CLAUDE_WINDOW_TITLE),
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new("taskkill.exe");
+        cmd.args([
+            "/F",
+            "/T",
+            "/FI",
+            &format!("WINDOWTITLE eq {}*", NATIVE_CLAUDE_WINDOW_TITLE),
+        ]);
+        hide_console_window(&mut cmd);
+        let output = cmd.output().map_err(|e| e.to_string())?;
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),

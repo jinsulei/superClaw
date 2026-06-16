@@ -280,12 +280,13 @@ export function render() {
           `<div class="hm-dropdown-item hm-model-opt ${m === formModel ? 'is-selected' : ''}" data-model="${esc(m)}">${esc(m)}</div>`
         ).join('')}</div>`
       : ''
+    const effectiveApiKeyId = selectedApiKeyId || (apiKeyTokens.length ? tokenId(apiKeyTokens[0]) : '')
     const apiKeyOptionsHtml = [
-      `<option value="" ${!selectedApiKeyId ? 'selected' : ''}>请选择 API Key</option>`,
+      `<option value="" ${!effectiveApiKeyId ? 'selected' : ''}>请选择 API Key</option>`,
       ...apiKeyTokens.map((token, index) => {
         const id = tokenId(token)
         if (!id) return ''
-        return `<option value="${esc(id)}" ${selectedApiKeyId === id ? 'selected' : ''}>${esc(tokenLabel(token, index))}</option>`
+        return `<option value="${esc(id)}" ${effectiveApiKeyId === id ? 'selected' : ''}>${esc(tokenLabel(token, index))}</option>`
       }).filter(Boolean),
     ].join('')
     const apiKeySelectHint = apiKeyListBusy
@@ -1019,9 +1020,12 @@ export function render() {
       const tokens = await getTokenList()
       apiKeyTokens = Array.isArray(tokens) ? tokens : []
       apiKeyListLoaded = true
-      if (selectFirst && apiKeyTokens.length && !selectedApiKeyId && !formApiKey) {
+      if (apiKeyTokens.length && !selectedApiKeyId && (selectFirst || formApiKey)) {
         await applyUserApiKey(tokenId(apiKeyTokens[0]), { fetchModels: false })
         return
+      }
+      if (apiKeyTokens.length && !selectedApiKeyId) {
+        selectedApiKeyId = tokenId(apiKeyTokens[0])
       }
       cfgMsg = `<span style="color:var(--success)">已获取 ${apiKeyTokens.length} 个 API Key</span>`
     } catch (err) {
@@ -1113,11 +1117,16 @@ export function render() {
   async function doSaveModel() {
     syncFormFromDom()
     const yyapiManaged = applyYyapiManagedFormGuard()
+    if (yyapiManaged && selectedApiKeyId) {
+      await applyUserApiKey(selectedApiKeyId, { fetchModels: false })
+    }
     if (!formApiKey) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedKey')}</span>`; draw(); return }
     if (!formModel) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configModelRequired')}</span>`; draw(); return }
 
     const matched = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    const provider = yyapiManaged ? 'custom' : (matched?.id || 'custom')
+    // Hermes 0.16 的 bare custom provider 会走本地占位 key；yyapi 是
+    // OpenAI-compatible endpoint，必须用 openai-api + OPENAI_BASE_URL。
+    const provider = yyapiManaged ? 'openai-api' : (matched?.id || 'custom')
 
     modelBusy = true; cfgMsg = ''; draw()
     try {

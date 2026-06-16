@@ -1392,14 +1392,21 @@ function sendJson(res, status, data) {
 
 function sendStatic(res, urlPath) {
   const cleanPath = urlPath === "/" ? "/index.html" : urlPath;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
+  let filePath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     sendJson(res, 403, { error: "Forbidden" });
     return;
   }
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    sendJson(res, 404, { error: "Not found" });
-    return;
+    const shouldUseSpaFallback =
+      !cleanPath.startsWith("/api/") && !path.extname(cleanPath);
+    if (shouldUseSpaFallback) {
+      filePath = path.join(PUBLIC_DIR, "index.html");
+    }
+    if (!shouldUseSpaFallback || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
   }
 
   const ext = path.extname(filePath);

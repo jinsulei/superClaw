@@ -2024,7 +2024,27 @@ mod platform {
             .await
             .map_err(|e| format!("执行 openclaw gateway start 失败: {e}"))?;
 
-        if !output.status.success() {
+        let start_stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        let start_stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        let service_missing = start_stdout.contains("service missing")
+            || start_stderr.contains("service missing")
+            || start_stdout.contains("gateway install")
+            || start_stderr.contains("gateway install");
+        if service_missing {
+            let mut child = crate::utils::openclaw_command_async()
+                .args(["gateway", "run"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("启动便携 Gateway 失败: {e}"))?;
+            let _ = write_gateway_owner(child.id());
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+
+        if !output.status.success() && !service_missing {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("openclaw gateway start 失败: {stderr}"));
         }

@@ -26,8 +26,10 @@ pub mod hermes_providers;
 pub mod logs;
 pub mod memory;
 pub mod messaging;
+pub mod ocr;
 pub mod pairing;
 pub mod service;
+pub mod shared_memory;
 pub mod skillhub;
 pub mod skills;
 pub mod update;
@@ -95,6 +97,17 @@ fn default_openclaw_dir() -> PathBuf {
 /// 1. 相对于可执行文件（已安装/打包模式）
 /// 2. 相对于当前工作目录（开发模式）
 fn app_resources_dir() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(project_root) = manifest.parent() {
+            let candidate = project_root.join("src-tauri").join("resources");
+            if candidate.is_dir() && candidate.join("runtime").join("openclaw").is_dir() {
+                return Some(candidate);
+            }
+        }
+    }
+
     // 已安装/打包模式：找 exe 同级或父级目录
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
@@ -281,8 +294,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 defaults.insert(
                     "model".into(),
                     serde_json::json!({
-                        "primary": "minimax/MiniMax-M2.7-highspeed",
-                        "fallbacks": ["minimax/MiniMax-M2.7"]
+                        "primary": "",
+                        "fallbacks": []
                     }),
                 );
                 changed = true;
@@ -304,8 +317,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "name": "Main Agent",
                     "workspace": "workspace",
                     "model": {
-                        "primary": "minimax/MiniMax-M2.7-highspeed",
-                        "fallbacks": ["minimax/MiniMax-M2.7"]
+                        "primary": "",
+                        "fallbacks": []
                     },
                     "skills": [],
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
@@ -326,30 +339,11 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "models".into(),
             serde_json::json!({
                 "providers": {
-                    "minimax": {
-                        "baseUrl": "https://api.minimaxi.com/anthropic/v1",
-                        "apiKey": "${MINIMAX_API_KEY}",
-                        "api": "anthropic-messages",
-                        "models": [
-                            {
-                                "id": "MiniMax-M2.7-highspeed",
-                                "name": "MiniMax M2.7 Highspeed",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            },
-                            {
-                                "id": "MiniMax-M2.7",
-                                "name": "MiniMax M2.7",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            }
-                        ]
+                    "yyapi": {
+                        "baseUrl": "http://124.222.21.44:3002/v1",
+                        "apiKey": "superclaw-login-required",
+                        "api": "openai-completions",
+                        "models": []
                     }
                 }
             }),
@@ -361,36 +355,90 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("providers")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(providers_obj) = providers.as_object_mut() {
-            if !providers_obj.contains_key("minimax") {
-                providers_obj.insert(
-                    "minimax".into(),
-                    serde_json::json!({
-                        "baseUrl": "https://api.minimaxi.com/anthropic/v1",
-                        "apiKey": "${MINIMAX_API_KEY}",
-                        "api": "anthropic-messages",
-                        "models": [
-                            {
-                                "id": "MiniMax-M2.7-highspeed",
-                                "name": "MiniMax M2.7 Highspeed",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            },
-                            {
-                                "id": "MiniMax-M2.7",
-                                "name": "MiniMax M2.7",
-                                "api": "anthropic-messages",
-                                "reasoning": false,
-                                "input": ["text"],
-                                "contextWindow": 204800,
-                                "maxTokens": 8192
-                            }
-                        ]
-                    }),
-                );
+            if providers_obj.remove("minimax").is_some() {
                 changed = true;
+            }
+        }
+    }
+
+    let yyapi_primary = obj
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.get("yyapi"))
+        .and_then(|v| v.get("models"))
+        .and_then(|v| v.as_array())
+        .and_then(|models| models.first())
+        .and_then(|model| model.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|id| format!("yyapi/{id}"))
+        .unwrap_or_default();
+    let yyapi_fallback = obj
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.get("yyapi"))
+        .and_then(|v| v.get("models"))
+        .and_then(|v| v.as_array())
+        .and_then(|models| models.get(1).or_else(|| models.first()))
+        .and_then(|model| model.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|id| format!("yyapi/{id}"))
+        .unwrap_or_else(|| yyapi_primary.clone());
+    if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
+        if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+            if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
+                if model
+                    .get("primary")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| v.starts_with("minimax/"))
+                {
+                    model.insert("primary".into(), serde_json::json!(yyapi_primary.clone()));
+                    changed = true;
+                }
+                if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
+                    let before = fallbacks.len();
+                    fallbacks.retain(|v| !v.as_str().is_some_and(|s| s.starts_with("minimax/")));
+                    if fallbacks.is_empty() && !yyapi_fallback.is_empty() {
+                        fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
+                    }
+                    if fallbacks.len() != before {
+                        changed = true;
+                    }
+                }
+            }
+            if let Some(agent_models) = defaults.get_mut("models").and_then(|v| v.as_object_mut()) {
+                let keys: Vec<String> = agent_models
+                    .keys()
+                    .filter(|key| key.starts_with("minimax/"))
+                    .cloned()
+                    .collect();
+                for key in keys {
+                    agent_models.remove(&key);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(list) = agents.get_mut("list").and_then(|v| v.as_array_mut()) {
+            for agent in list.iter_mut().filter_map(|v| v.as_object_mut()) {
+                if let Some(model) = agent.get_mut("model").and_then(|v| v.as_object_mut()) {
+                    if model
+                        .get("primary")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|v| v.starts_with("minimax/"))
+                    {
+                        model.insert("primary".into(), serde_json::json!(yyapi_primary.clone()));
+                        changed = true;
+                    }
+                    if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
+                        let before = fallbacks.len();
+                        fallbacks.retain(|v| !v.as_str().is_some_and(|s| s.starts_with("minimax/")));
+                        if fallbacks.is_empty() && !yyapi_fallback.is_empty() {
+                            fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
+                        }
+                        if fallbacks.len() != before {
+                            changed = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -404,7 +452,10 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            for key in ["browser", "desktop-control", "skill-manager", "minimax"] {
+            if entries_obj.remove("minimax").is_some() {
+                changed = true;
+            }
+            for key in ["browser", "desktop-control", "skill-manager"] {
                 let enabled = entries_obj
                     .get(key)
                     .and_then(|v| v.get("enabled"))

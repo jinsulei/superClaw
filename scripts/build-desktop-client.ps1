@@ -140,10 +140,24 @@ function Restore-EnvValue([string]$Name, $Value) {
   }
 }
 
+function Find-PackagedPythonExe([string]$PythonRoot) {
+  $Direct = Join-Path $PythonRoot "python\python.exe"
+  if (Test-Path $Direct) {
+    return $Direct
+  }
+  $Candidate = Get-ChildItem -LiteralPath $PythonRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName "python.exe") } |
+    Select-Object -First 1
+  if ($Candidate) {
+    return (Join-Path $Candidate.FullName "python.exe")
+  }
+  return $null
+}
+
 function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
   $PythonRoot = Join-Path $PackagedResources "uv-python"
-  $PythonExe = Join-Path $PythonRoot "python\python.exe"
-  if (Test-Path $PythonExe) {
+  $PythonExe = Find-PackagedPythonExe $PythonRoot
+  if ($PythonExe -and (Test-Path $PythonExe)) {
     Ok "Portable Python runtime"
     return $PythonExe
   }
@@ -160,6 +174,7 @@ function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
   if ($LASTEXITCODE -ne 0) {
     throw "Failed to extract portable Python archive: $($Archive.FullName)"
   }
+  $PythonExe = Find-PackagedPythonExe $PythonRoot
   Assert-File $PythonExe "Portable Python runtime"
   return $PythonExe
 }
@@ -268,12 +283,44 @@ function Ensure-ResourceDir([string]$RelativePath) {
   }
 }
 
+function Sync-SuperClawOpenClawPlugins {
+  $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
+  $RuntimeExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
+  Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
+  Assert-Dir $RuntimeExtensions "OpenClaw runtime plugin directory"
+
+  foreach ($plugin in @("skill-manager", "desktop-control")) {
+    $source = Join-Path $SourceExtensions $plugin
+    $destination = Join-Path $RuntimeExtensions $plugin
+    Copy-Directory $source $destination
+    Assert-File (Join-Path $destination "openclaw.plugin.json") "OpenClaw plugin manifest: $plugin"
+    Assert-File (Join-Path $destination "index.js") "OpenClaw plugin entry: $plugin"
+  }
+
+  $DesktopAgentSource = Join-Path $ResourcesDir "bin\desktop-control-agent.exe"
+  $DesktopAgentDestDir = Join-Path $ResourcesDir "runtime\openclaw\bin"
+  $DesktopAgentDest = Join-Path $DesktopAgentDestDir "desktop-control-agent.exe"
+  Assert-File $DesktopAgentSource "Desktop control sidecar source"
+  New-Item -ItemType Directory -Path $DesktopAgentDestDir -Force | Out-Null
+  Copy-Item -Path $DesktopAgentSource -Destination $DesktopAgentDest -Force
+  Assert-File $DesktopAgentDest "OpenClaw desktop-control sidecar"
+  Ok "SuperClaw OpenClaw plugins are installed into the runtime package path"
+}
+
 function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
   # Keep the packaged template path-relative. Absolute paths under Chinese
   # directories have been observed to get mojibake-corrupted and break JSON
   # parsing after the desktop client copies resources at startup.
   $workspace = "workspace"
+  $baselineSkills = @(
+    "healthcheck",
+    "node-connect",
+    "skill-creator",
+    "taskflow",
+    "taskflow-inbox-triage",
+    "weather"
+  )
   New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "workspace") -Force | Out-Null
 
   $config = [ordered]@{
@@ -284,28 +331,19 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     }
     models = [ordered]@{
       providers = [ordered]@{
-        minimax = [ordered]@{
-          baseUrl = "https://api.minimaxi.com/anthropic/v1"
-          apiKey = '${MINIMAX_API_KEY}'
-          api = "anthropic-messages"
+        yyapi = [ordered]@{
+          baseUrl = "http://124.222.21.44:3002/v1"
+          apiKey = "superclaw-login-required"
+          api = "openai-completions"
           models = @(
             [ordered]@{
-              id = "MiniMax-M2.7-highspeed"
-              name = "MiniMax M2.7 Highspeed"
-              api = "anthropic-messages"
+              id = "superclaw-login-required"
+              name = "Login required"
+              api = "openai-completions"
               reasoning = $false
               input = @("text")
-              contextWindow = 204800
-              maxTokens = 8192
-            },
-            [ordered]@{
-              id = "MiniMax-M2.7"
-              name = "MiniMax M2.7"
-              api = "anthropic-messages"
-              reasoning = $false
-              input = @("text")
-              contextWindow = 204800
-              maxTokens = 8192
+              contextWindow = 128000
+              maxTokens = 4096
             }
           )
         }
@@ -315,14 +353,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       defaults = [ordered]@{
         workspace = $workspace
         model = [ordered]@{
-          primary = "minimax/MiniMax-M2.7-highspeed"
-          fallbacks = @("minimax/MiniMax-M2.7")
+          primary = "yyapi/superclaw-login-required"
+          fallbacks = @()
         }
         models = [ordered]@{
-          "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}
-          "minimax/MiniMax-M2.7" = [ordered]@{}
+          "yyapi/superclaw-login-required" = [ordered]@{}
         }
-        skills = @()
         contextInjection = "never"
         bootstrapMaxChars = 300
         bootstrapTotalMaxChars = 800
@@ -334,14 +370,18 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         name = "Main Agent"
         workspace = $workspace
         model = [ordered]@{
-          primary = "minimax/MiniMax-M2.7-highspeed"
-          fallbacks = @("minimax/MiniMax-M2.7")
+          primary = "yyapi/superclaw-login-required"
+          fallbacks = @()
         }
-        skills = @()
-        skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
+        skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
         tools = [ordered]@{
           profile = "minimal"
           alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
+          exec = [ordered]@{
+            host = "gateway"
+            security = "full"
+            ask = "off"
+          }
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -360,11 +400,13 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         browser = [ordered]@{ enabled = $true }
         "desktop-control" = [ordered]@{ enabled = $true }
         "skill-manager" = [ordered]@{ enabled = $true }
-        minimax = [ordered]@{ enabled = $true }
       }
     }
     session = [ordered]@{ dmScope = "per-channel-peer" }
-    skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
+    skills = [ordered]@{
+      entries = [ordered]@{}
+      limits = [ordered]@{ maxSkillsPromptChars = 12000 }
+    }
     tools = [ordered]@{
       profile = "minimal"
       alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
@@ -431,13 +473,12 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   if ($SanitizedTestMode) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (sanitized SuperClaw test package)
-# Uses MiniMax provider placeholders for local testing. No real API key is bundled.
-# Set MINIMAX_API_KEY in the local environment before chat testing.
+# No real API key is bundled. Login/model sync must provide usable credentials.
 model:
-  default: MiniMax-M2.7-highspeed
-  provider: minimax-cn
-  api_mode: anthropic_messages
-  base_url: https://api.minimaxi.com/anthropic
+  default: superclaw-login-required
+  provider: openai-api
+  api_mode: chat_completions
+  base_url: http://124.222.21.44:3002/v1
 platform_toolsets:
   api_server:
     - hermes-api-server
@@ -453,10 +494,8 @@ skills:
   disabled: []
 "@
     Set-Content -Path $envPath -Encoding UTF8 -Value @"
-MINIMAX_API_KEY=`${MINIMAX_API_KEY}
-MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic
-MINIMAX_CN_API_KEY=`${MINIMAX_API_KEY}
-MINIMAX_CN_BASE_URL=https://api.minimaxi.com/anthropic
+OPENAI_API_KEY=superclaw-login-required
+OPENAI_BASE_URL=http://124.222.21.44:3002/v1
 GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
 "@
@@ -467,8 +506,8 @@ API_SERVER_KEY=clawpanel-local
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (managed by SuperClaw)
 model:
-  default:
-  provider: custom
+  default: superclaw-login-required
+  provider: openai-api
   base_url: http://124.222.21.44:3002/v1
 platform_toolsets:
   api_server:
@@ -487,9 +526,9 @@ skills:
   } else {
     $text = Get-Content -Raw -Path $configPath
     if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+provider:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: custom`n"
+      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
     }
-    $text = $text -replace '(?m)^(\s+provider:\s*)(openai-api|openai)\s*$', '${1}custom'
+    $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
     if ($text -notmatch '(?m)^\s+base_url:\s*\S+') {
       $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: http://124.222.21.44:3002/v1`n"
     }
@@ -538,8 +577,13 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   Remove-IfExists (Join-Path $ClawPanelData "logs")
 
   $ClaudePanelData = Join-Path $DataRoot "claude-panel"
-  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache")) {
+  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache", "project-folders.json", "projects.json", "recent-projects.json")) {
     Remove-IfExists (Join-Path $ClaudePanelData $name)
+  }
+
+  $ClaudeCodeHome = Join-Path $DataRoot "claude-code\home"
+  foreach ($name in @(".claude.json", ".claude\projects", "Documents\OpenClawProjects")) {
+    Remove-IfExists (Join-Path $ClaudeCodeHome $name)
   }
 
   $ClaudeConfig = Join-Path $DataRoot "claude-code\home\claude-config"
@@ -550,6 +594,62 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   Write-PortableOpenClawConfig $DotOpenClaw
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
   Repair-HermesConfig $HermesData $SanitizedTestMode
+}
+
+function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
+  if (-not (Test-Path $DataRoot -PathType Container)) {
+    return
+  }
+
+  foreach ($pattern in @("*.log", "*.pid", "*.lock")) {
+    Get-ChildItem -Path $DataRoot -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
+      Remove-Item -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
+  $HermesTool = Join-Path $PackagedResources "uv-tools\hermes-agent"
+  $HermesScripts = Join-Path $HermesTool "Scripts"
+
+  # uv writes install receipts and non-Windows activation scripts with the build
+  # machine path. SuperClaw launches Hermes directly via python.exe, so these are
+  # not needed in the Windows portable client and should not be shipped.
+  foreach ($rel in @(
+    "uv-receipt.toml",
+    "Scripts\activate",
+    "Scripts\activate.csh",
+    "Scripts\activate.fish",
+    "Scripts\activate.nu"
+  )) {
+    Remove-IfExists (Join-Path $HermesTool $rel)
+  }
+
+  $ActivateBat = Join-Path $HermesScripts "activate.bat"
+  if (Test-Path $ActivateBat) {
+    (Get-Content -Raw $ActivateBat) -replace 'C:\\Users\\.*?hermes-agent', '%%~dp0..' |
+      Set-Content -Path $ActivateBat -Encoding UTF8
+  }
+
+  $ActivatePs1 = Join-Path $HermesScripts "activate.ps1"
+  if (Test-Path $ActivatePs1) {
+    (Get-Content -Raw $ActivatePs1) -replace 'C:\\Users\\.*?hermes-agent', '$PSScriptRoot\..' |
+      Set-Content -Path $ActivatePs1 -Encoding UTF8
+  }
+
+  foreach ($root in @(
+    (Join-Path $PackagedResources "uv-tools\hermes-agent"),
+    (Join-Path $PackagedResources "uv-python")
+  )) {
+    if (Test-Path $root -PathType Container) {
+      Get-ChildItem -Path $root -Recurse -Directory -Force -Filter "__pycache__" -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  $ClaudePanelData = Join-Path $PackagedResources "data\claude-panel"
+  foreach ($name in @("project-folders.json", "projects.json", "recent-projects.json")) {
+    Remove-IfExists (Join-Path $ClaudePanelData $name)
+  }
 }
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -595,10 +695,16 @@ Ensure-ResourceDir "uv-python"
 Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
+Sync-SuperClawOpenClawPlugins
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-code") "Claude Code runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-code\bin\claude.exe") "Claude Code CLI"
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-panel") "Claude UI panel runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\server.js") "Claude UI panel server"
+Assert-Dir (Join-Path $ResourcesDir "runtime\ocr") "Shared OCR runtime"
+Assert-File (Join-Path $ResourcesDir "runtime\ocr\ocr-runner.cjs") "Shared OCR runner"
+Assert-File (Join-Path $ResourcesDir "runtime\ocr\tessdata\eng.traineddata.gz") "OCR English language data"
+Assert-File (Join-Path $ResourcesDir "runtime\ocr\tessdata\chi_sim.traineddata.gz") "OCR Chinese language data"
+Assert-File (Join-Path $ResourcesDir "data\ocr\ocr-config.json") "Shared OCR config"
 Assert-Dir (Join-Path $ResourcesDir "data") "Portable data"
 
 $TauriConf = Join-Path $TauriDir "tauri.conf.json"
@@ -607,6 +713,7 @@ foreach ($glob in @(
   "resources/runtime/openclaw/**/*",
   "resources/runtime/claude-code/**/*",
   "resources/runtime/claude-panel/**/*",
+  "resources/runtime/ocr/**/*",
   "resources/data/**/*"
 )) {
   if ($TauriConfText -notlike "*$glob*") {
@@ -693,6 +800,7 @@ Ok "Copied superclaw.exe and complete resources/"
 Step "Cleaning packaged runtime state"
 $PackagedResources = Join-Path $OutDir "resources"
 Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
+Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 if ($SanitizedTest) {
   Scrub-SanitizedTextExamples (Join-Path $PackagedResources "data")
 }
@@ -708,7 +816,7 @@ if ($SanitizedTest) {
     "",
     "1. Local activation and access password are skipped. Double-click superclaw.exe to open the control panel.",
     "2. No YYAPI base URL, real API key, or local customer session is bundled.",
-    "3. OpenClaw and Hermes keep MiniMax placeholders only: `${MINIMAX_API_KEY}. Configure your own key before chat testing.",
+    "3. OpenClaw and Hermes keep login-required placeholders only. Configure a user model before chat testing.",
     "4. Hermes starts in the normal dashboard/chat flow, not the first-run install wizard.",
     "5. This is a USB test package, not a customer delivery package."
   )
@@ -726,24 +834,49 @@ if (Test-Path $ActivateBat) {
   Warn "activate.bat not found"
 }
 if (Test-Path $PyVenvCfg) {
-  (Get-Content $PyVenvCfg) -replace 'home = C:\\.*', 'home = ..\..\..\uv-python\python' | Set-Content $PyVenvCfg
+  $PythonExeForVenv = Find-PackagedPythonExe (Join-Path $PackagedResources "uv-python")
+  if ($PythonExeForVenv) {
+    $PythonHomeForVenv = Split-Path -Parent $PythonExeForVenv
+    $PythonHomeLeaf = Split-Path -Leaf $PythonHomeForVenv
+    $PortableHome = "..\..\..\uv-python\$PythonHomeLeaf"
+    (Get-Content $PyVenvCfg) -replace '^home = .*', "home = $PortableHome" | Set-Content $PyVenvCfg
+  } else {
+    Warn "portable Python home not found for pyvenv.cfg"
+  }
   Ok "pyvenv.cfg"
 } else {
   Warn "pyvenv.cfg not found"
 }
+Clear-PackagedMachineSpecificPaths $PackagedResources
+
+Step "Final packaged runtime cleanup"
+Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
+Clear-PackagedMachineSpecificPaths $PackagedResources
+Ok "Removed logs, locks, and pid files created during package verification"
 
 Step "Verifying package"
 Assert-File $ExeDest "Packaged superclaw.exe"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\openclaw.cmd") "Packaged OpenClaw launcher"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json") "Packaged OpenClaw skill-manager plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "runtime\claude-code\bin\claude.exe") "Packaged Claude Code CLI"
 Assert-File (Join-Path $PackagedResources "runtime\claude-panel\server.js") "Packaged Claude UI panel"
+Assert-File (Join-Path $PackagedResources "runtime\ocr\ocr-runner.cjs") "Packaged shared OCR runner"
+Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.gz") "Packaged OCR English language data"
+Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
+Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
 
 $HardcodedFound = $false
 foreach ($scan in @(
   (Join-Path $PackagedResources "runtime\openclaw\openclaw.cmd"),
-  $ActivateBat
+  $ActivateBat,
+  (Join-Path $PackagedResources "uv-tools\hermes-agent\Scripts\activate.ps1"),
+  (Join-Path $PackagedResources "uv-tools\hermes-agent\pyvenv.cfg"),
+  (Join-Path $PackagedResources "data\claude-panel\project-folders.json"),
+  (Join-Path $PackagedResources "data\claude-panel\projects.json")
 )) {
   if (Test-Path $scan) {
     $hit = Select-String -Path $scan -Pattern "C:\Users" -SimpleMatch -ErrorAction SilentlyContinue

@@ -13,6 +13,9 @@ import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestart
 // YYApi 中转站常量
 const YYAPI_CONSOLE_URL = 'http://124.222.21.44:3002/console'
 const YYAPI_PROVIDER_KEY = 'yyapi'
+const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
+const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 
 function modelRefForProvider(providerKey, modelId) {
   return `${providerKey}/${modelId}`
@@ -30,6 +33,111 @@ function isYyapiPrimary(ref = '', yyapiModels = []) {
   if (!value) return true
   if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
   return yyapiModels.includes(value)
+}
+
+function ensurePortableOpenClawSkills(config) {
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  delete config.agents.defaults.skills
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      delete agent.skills
+      if (!agent.skillsLimits || typeof agent.skillsLimits !== 'object' || Array.isArray(agent.skillsLimits)) {
+        agent.skillsLimits = {}
+      }
+      if (!Number(agent.skillsLimits.maxSkillsPromptChars)) {
+        agent.skillsLimits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
+      }
+      if (!agent.tools || typeof agent.tools !== 'object' || Array.isArray(agent.tools)) agent.tools = {}
+      agent.tools.profile = agent.tools.profile || 'minimal'
+      const allow = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow.filter(Boolean).map(String) : []
+      for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
+        if (!allow.includes(tool)) allow.push(tool)
+      }
+      agent.tools.alsoAllow = allow
+      agent.tools.exec = { ...(agent.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
+    }
+  }
+
+  if (!config.plugins || typeof config.plugins !== 'object' || Array.isArray(config.plugins)) config.plugins = {}
+  if (!config.plugins.entries || typeof config.plugins.entries !== 'object' || Array.isArray(config.plugins.entries)) {
+    config.plugins.entries = {}
+  }
+  config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
+  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
+  config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
+
+  if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
+  config.tools.profile = config.tools.profile || 'minimal'
+  const allow = Array.isArray(config.tools.alsoAllow) ? config.tools.alsoAllow.filter(Boolean).map(String) : []
+  for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
+    if (!allow.includes(tool)) allow.push(tool)
+  }
+  config.tools.alsoAllow = allow
+  config.tools.exec = { ...(config.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
+
+  if (!config.skills || typeof config.skills !== 'object' || Array.isArray(config.skills)) config.skills = {}
+  if (!config.skills.entries || typeof config.skills.entries !== 'object' || Array.isArray(config.skills.entries)) config.skills.entries = {}
+  if (!config.skills.limits || typeof config.skills.limits !== 'object' || Array.isArray(config.skills.limits)) {
+    config.skills.limits = {}
+  }
+  if (!Number(config.skills.limits.maxSkillsPromptChars)) {
+    config.skills.limits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
+  }
+}
+
+function ensureYyapiManagedModelSelection(config, yyapiModelIds = []) {
+  if (!yyapiModelIds.length) return ''
+  const fallbackRef = modelRefForProvider(YYAPI_PROVIDER_KEY, yyapiModelIds[0])
+
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  if (!config.agents.defaults.model) config.agents.defaults.model = {}
+
+  const defaults = config.agents.defaults
+  const currentPrimary = getCurrentPrimary(config)
+  let primary = currentPrimary
+  if (isYyapiPrimary(currentPrimary, yyapiModelIds)) {
+    const currentModelId = modelIdFromRef(currentPrimary)
+    primary = yyapiModelIds.includes(currentModelId)
+      ? modelRefForProvider(YYAPI_PROVIDER_KEY, currentModelId)
+      : fallbackRef
+    defaults.model.primary = primary
+
+    if (!defaults.models || typeof defaults.models !== 'object' || Array.isArray(defaults.models)) {
+      defaults.models = {}
+    }
+    for (const key of Object.keys(defaults.models)) {
+      if (key.startsWith(`${YYAPI_PROVIDER_KEY}/`) && !yyapiModelIds.includes(modelIdFromRef(key))) {
+        delete defaults.models[key]
+      }
+    }
+    defaults.models[primary] = defaults.models[primary] || {}
+  }
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      if (!agent.model) agent.model = {}
+      const agentPrimary = String(agent.model.primary || '').trim()
+      if (isYyapiPrimary(agentPrimary, yyapiModelIds)) {
+        const agentModelId = modelIdFromRef(agentPrimary)
+        agent.model.primary = yyapiModelIds.includes(agentModelId)
+          ? modelRefForProvider(YYAPI_PROVIDER_KEY, agentModelId)
+          : primary || fallbackRef
+      }
+      if (Array.isArray(agent.model.fallbacks)) {
+        agent.model.fallbacks = agent.model.fallbacks.filter(ref => {
+          const value = String(ref || '').trim()
+          return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+        })
+      }
+    }
+  }
+
+  return primary
 }
 
 // 主模型 localStorage 持久化键名
@@ -1419,13 +1527,11 @@ async function autoInitYYApi(page, state) {
     models: modelIds,
   }
 
-  // 自动设置主模型
-  if (!getCurrentPrimary(state.config) && primaryModelId) {
-    if (!state.config.agents) state.config.agents = {}
-    if (!state.config.agents.defaults) state.config.agents.defaults = {}
-    if (!state.config.agents.defaults.model) state.config.agents.defaults.model = {}
-    state.config.agents.defaults.model.primary = modelRefForProvider(YYAPI_PROVIDER_KEY, primaryModelId)
+  // 自动设置主模型；打包模板里的 yyapi/superclaw-login-required 也会在这里替换掉。
+  if (primaryModelId) {
+    ensureYyapiManagedModelSelection(state.config, modelIds.map(m => m.id).filter(Boolean))
   }
+  ensurePortableOpenClawSkills(state.config)
 
   renderProviders(page, state)
   renderDefaultBar(page, state)
@@ -1933,12 +2039,9 @@ async function refreshYYApiKeys(page, state) {
     }
 
     const yyapiIds = modelIds.map(m => m.id).filter(Boolean)
-    const currentPrimary = getCurrentPrimary(state.config)
-    if (yyapiIds.length && isYyapiPrimary(currentPrimary, yyapiIds)) {
-      const currentModelId = modelIdFromRef(currentPrimary)
-      const nextModelId = yyapiIds.includes(currentModelId) ? currentModelId : yyapiIds[0]
-      const nextPrimary = modelRefForProvider(YYAPI_PROVIDER_KEY, nextModelId)
-      ensureDefaultModelConfig(state).primary = nextPrimary
+    const nextPrimary = ensureYyapiManagedModelSelection(state.config, yyapiIds)
+    ensurePortableOpenClawSkills(state.config)
+    if (nextPrimary) {
       try { localStorage.setItem(STORAGE_PRIMARY_MODEL_KEY, nextPrimary) } catch {}
     }
 

@@ -89,6 +89,90 @@ function existingPortableDirs(kind) {
   ].map(p => path.resolve(p)))].filter(p => fs.existsSync(p))
 }
 
+function ocrResourcesDir() {
+  const candidates = [
+    path.join(appRootDir(), 'resources'),
+    path.join(appRootDir(), 'src-tauri', 'resources'),
+  ]
+  return candidates.find(dir => fs.existsSync(path.join(dir, 'runtime', 'ocr', 'ocr-runner.cjs'))) || candidates[1]
+}
+
+function readOcrConfig() {
+  const resDir = ocrResourcesDir()
+  const configPath = path.join(resDir, 'data', 'ocr', 'ocr-config.json')
+  const fallback = {
+    ocr: {
+      enabled: true,
+      offline: true,
+      lazyLoad: true,
+      engine: 'tesseract.js',
+      languages: ['chi_sim', 'eng'],
+      defaultLanguage: 'chi_sim+eng',
+      timeoutMs: 30000,
+      maxImageSize: 4096,
+      failSafe: true,
+      sharedForAgents: ['hermes', 'openclaw', 'claude_code'],
+      runtimePath: 'runtime/ocr',
+      languagePath: 'runtime/ocr/tessdata',
+    },
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    if (parsed?.ocr) return parsed
+  } catch {}
+  return fallback
+}
+
+function ocrFail(sourceType, sourcePath, error) {
+  return {
+    ok: false,
+    error: String(error || 'OCR failed'),
+    recoverable: true,
+    source: { type: sourceType || 'image', path: sourcePath || '' },
+  }
+}
+
+function runOcrRunner(request = {}) {
+  const root = readOcrConfig()
+  const cfg = root.ocr || {}
+  const sourceType = request.sourceType || 'image'
+  const sourcePath = request.imagePath || ''
+  if (cfg.enabled === false) return ocrFail(sourceType, sourcePath, 'OCR is disabled')
+  const resDir = ocrResourcesDir()
+  const runtimeDir = path.join(resDir, cfg.runtimePath || 'runtime/ocr')
+  const runner = path.join(runtimeDir, 'ocr-runner.cjs')
+  const tessdata = path.join(resDir, cfg.languagePath || 'runtime/ocr/tessdata')
+  if (!fs.existsSync(runner)) return ocrFail(sourceType, sourcePath, 'OCR runner is missing')
+  if (!fs.existsSync(path.join(tessdata, 'eng.traineddata.gz')) || !fs.existsSync(path.join(tessdata, 'chi_sim.traineddata.gz'))) {
+    return ocrFail(sourceType, sourcePath, 'OCR language data is missing')
+  }
+  if (request.imagePath && fs.existsSync(request.imagePath)) {
+    const stat = fs.statSync(request.imagePath)
+    const maxBytes = Number(cfg.maxImageSize || 4096) * Number(cfg.maxImageSize || 4096) * 4
+    if (maxBytes > 0 && stat.size > maxBytes) return ocrFail(sourceType, sourcePath, 'image is larger than OCR maxImageSize budget')
+  }
+  const payload = {
+    imagePath: request.imagePath || null,
+    imageData: request.imageData || null,
+    mimeType: request.mimeType || null,
+    sourceType,
+    language: request.language || cfg.defaultLanguage || 'chi_sim+eng',
+    defaultLanguage: cfg.defaultLanguage || 'chi_sim+eng',
+  }
+  const child = spawnSync(process.execPath, [runner], {
+    cwd: runtimeDir,
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    timeout: Number(request.timeoutMs || cfg.timeoutMs || 30000),
+    windowsHide: true,
+    env: { ...process.env, TESSDATA_PREFIX: tessdata, NO_UPDATE_NOTIFIER: '1' },
+  })
+  if (child.error) return ocrFail(sourceType, sourcePath, child.error.message)
+  const out = String(child.stdout || '').trim()
+  if (!out) return ocrFail(sourceType, sourcePath, String(child.stderr || 'OCR returned no output'))
+  try { return JSON.parse(out) } catch (e) { return ocrFail(sourceType, sourcePath, `parse OCR output failed: ${e.message}`) }
+}
+
 function findHermesPythonHome(pythonRoot) {
   const direct = path.join(pythonRoot, 'python', isWindows ? 'python.exe' : 'bin/python')
   if (fs.existsSync(direct)) return path.dirname(direct)
@@ -3084,7 +3168,6 @@ function buildCalibrationBaseline() {
     agents: {
       defaults: {
         workspace: calibrationDefaultWorkspace(),
-        skills: [],
         contextInjection: 'never',
         bootstrapMaxChars: 300,
         bootstrapTotalMaxChars: 800,
@@ -3096,8 +3179,7 @@ function buildCalibrationBaseline() {
           id: 'main',
           name: 'Main Agent',
           workspace: 'workspace',
-          skills: [],
-          skillsLimits: { maxSkillsPromptChars: 0 },
+          skillsLimits: { maxSkillsPromptChars: 12000 },
           tools: {
             profile: 'minimal',
             alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
@@ -3125,7 +3207,7 @@ function buildCalibrationBaseline() {
     session: { dmScope: 'per-channel-peer' },
     skills: {
       entries: {},
-      limits: { maxSkillsPromptChars: 0 },
+      limits: { maxSkillsPromptChars: 12000 },
     },
     tools: {
       profile: 'minimal',
@@ -3162,7 +3244,7 @@ function ensurePortableDesktopToolDefaults(config) {
   config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
   config.skills.limits = config.skills.limits && typeof config.skills.limits === 'object' && !Array.isArray(config.skills.limits) ? config.skills.limits : {}
-  config.skills.limits.maxSkillsPromptChars = 0
+  config.skills.limits.maxSkillsPromptChars = 12000
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
   config.tools = normalizeOpenClawDirectTools(config.tools, { includeExecConfig: true })
@@ -3171,7 +3253,7 @@ function ensurePortableDesktopToolDefaults(config) {
 
   config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
   config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
-  config.agents.defaults.skills = []
+  delete config.agents.defaults.skills
   config.agents.defaults.contextInjection = 'never'
   config.agents.defaults.bootstrapMaxChars = 300
   config.agents.defaults.bootstrapTotalMaxChars = 800
@@ -3188,10 +3270,10 @@ function ensurePortableDesktopToolDefaults(config) {
     }
     config.agents.list.unshift(mainAgent)
   }
-  mainAgent.skills = []
-  mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 0 }
+  delete mainAgent.skills
+  mainAgent.skillsLimits = { ...(mainAgent.skillsLimits || {}), maxSkillsPromptChars: 12000 }
   mainAgent.tools = mainAgent.tools && typeof mainAgent.tools === 'object' && !Array.isArray(mainAgent.tools) ? mainAgent.tools : {}
-  mainAgent.tools = normalizeOpenClawDirectTools(mainAgent.tools)
+  mainAgent.tools = normalizeOpenClawDirectTools(mainAgent.tools, { includeExecConfig: true })
   mainAgent.thinkingDefault = 'off'
   mainAgent.verboseDefault = 'off'
 
@@ -7906,6 +7988,31 @@ const handlers = {
       if (fs.existsSync(filepath)) fs.unlinkSync(filepath)
     }
     return null
+  },
+
+  ocr_get_config() {
+    const root = readOcrConfig()
+    const resDir = ocrResourcesDir()
+    return {
+      ...root,
+      runtimeDir: path.join(resDir, root.ocr?.runtimePath || 'runtime/ocr'),
+      languageDir: path.join(resDir, root.ocr?.languagePath || 'runtime/ocr/tessdata'),
+    }
+  },
+
+  ocr_set_enabled({ enabled } = {}) {
+    const resDir = ocrResourcesDir()
+    const configPath = path.join(resDir, 'data', 'ocr', 'ocr-config.json')
+    const root = readOcrConfig()
+    root.ocr = root.ocr || {}
+    root.ocr.enabled = !!enabled
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify(root, null, 2))
+    return handlers.ocr_get_config()
+  },
+
+  ocr_extract_text(request = {}) {
+    return runOcrRunner(request)
   },
 
   // === AI 助手工具（Web 模式真实执行） ===

@@ -29,6 +29,11 @@ const ICONS = {
 // Web 模式下 dev-api.js 返回空数组，UI 会降级到手填模式
 let hermesProviders = []
 let hermesGroups = { apiKeyIntl: [], apiKeyCn: [], aggregators: [], oauth: [], externalProc: [], custom: [] }
+const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
+
+function normalizeUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '').toLowerCase()
+}
 
 export function render() {
   const el = document.createElement('div')
@@ -615,9 +620,12 @@ export function render() {
     const baseUrl = el.querySelector('#hm-baseurl')?.value?.trim()
     const apiKey = el.querySelector('#hm-apikey')?.value?.trim()
     const model = el.querySelector('#hm-model')?.value?.trim()
-    // 从 baseUrl 推断 provider id；推不出来时用 'custom'，让后端按通用 OpenAI 兼容处理
+    // yyapi 是 OpenAI-compatible endpoint；Hermes 0.16 的 bare custom
+    // provider 不读取 OPENAI_API_KEY，会落到本地占位 key。
     const matched = inferProviderByBaseUrl(hermesProviders, baseUrl)
-    const provider = matched?.id || 'custom'
+    const provider = normalizeUrl(baseUrl) === normalizeUrl(YYAPI_BASE_URL)
+      ? 'openai-api'
+      : (matched?.id || 'custom')
 
     if (!apiKey) {
       alert('请输入 API Key')

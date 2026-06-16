@@ -5,7 +5,7 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
-    hermes_providers, logs, memory, messaging, pairing, service, skills, update,
+    hermes_providers, logs, memory, messaging, ocr, pairing, service, shared_memory, skills, update,
 };
 use tauri::Manager;
 
@@ -205,6 +205,10 @@ pub fn run() {
             memory::write_memory_file,
             memory::delete_memory_file,
             memory::export_memory_zip,
+            shared_memory::shared_memory_config,
+            shared_memory::shared_memory_read,
+            shared_memory::shared_memory_write,
+            shared_memory::shared_memory_write_file,
             // 扩展工具
             extensions::get_cftunnel_status,
             extensions::cftunnel_action,
@@ -244,6 +248,9 @@ pub fn run() {
             assistant::assistant_save_image,
             assistant::assistant_load_image,
             assistant::assistant_delete_image,
+            ocr::ocr_get_config,
+            ocr::ocr_set_enabled,
+            ocr::ocr_extract_text,
             // 消息渠道管理
             messaging::read_platform_config,
             messaging::save_messaging_platform,
