@@ -1637,11 +1637,22 @@ function extractText(message) {
   return message.content
     .map((item) => {
       if (item.type === "text") return item.text || "";
-      if (item.type === "tool_use") return `\n[工具] ${item.name || "tool"}\n`;
+      if (item.type === "tool_use") return "";
       return "";
     })
     .filter(Boolean)
     .join("");
+}
+
+function extractToolUses(message) {
+  if (!message || !Array.isArray(message.content)) return [];
+  return message.content
+    .filter((item) => item?.type === "tool_use")
+    .map((item) => ({
+      id: item.id || "",
+      name: item.name || "tool",
+      input: item.input || item.arguments || {},
+    }));
 }
 
 function isPathInside(childPath, parentPath) {
@@ -1957,6 +1968,10 @@ async function handleRun(req, res) {
     }
 
     if (parsed.type === "assistant") {
+      const toolUses = extractToolUses(parsed.message);
+      for (const tool of toolUses) {
+        writeEvent(res, "tool", tool);
+      }
       const text = extractText(parsed.message);
       if (text) {
         assistantTextSeen = true;

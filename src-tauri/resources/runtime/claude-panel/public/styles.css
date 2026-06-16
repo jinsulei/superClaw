@@ -6711,6 +6711,78 @@ textarea#promptInput {
   margin-bottom: 0 !important;
 }
 
+.run-activity-card {
+  width: min(760px, 64vw);
+  margin: 0 auto 0 clamp(46px, 6vw, 118px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 10px 12px;
+  box-shadow: var(--card-shadow);
+}
+
+.run-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.run-activity-head small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.run-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.run-activity-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.run-activity-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  min-width: 0;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.run-activity-label {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-weight: 850;
+}
+
+.run-activity-detail {
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.run-activity-row.is-error .run-activity-label {
+  color: var(--danger);
+}
+
+.run-activity-row.is-done .run-activity-label {
+  color: var(--ready-text);
+}
+
 #projectSelect.control {
   background-color: #fbfdff !important;
   background-image: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%) !important;

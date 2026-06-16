@@ -294,18 +294,21 @@ function showPanelFrame(page, url) {
   state.innerHTML = `
     <div class="hm-panel-head" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px">
       <div>
-        <strong>Claude Code 控制面板</strong>
+        <strong>正在进入 Claude Code 控制面板</strong>
         <div class="hm-muted" style="margin-top:4px">${esc(panelUrl)}</div>
       </div>
       <button class="hm-btn hm-btn--ghost" id="cloudcode-refresh">刷新状态</button>
     </div>
-    <iframe
-      src="${escAttr(panelUrl)}"
-      title="Claude Code 控制面板"
-      style="width:100%;height:min(72vh,760px);border:1px solid var(--border);border-radius:8px;background:var(--panel);"
-    ></iframe>
+    <div class="hm-muted" style="line-height:1.7">即将以整窗方式打开 3020 原生面板。如果没有自动跳转，请点击下方按钮。</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px">
+      <button class="hm-btn hm-btn--primary" id="cloudcode-open-full-panel">进入 Claude Code 控制面板</button>
+    </div>
   `
+  state.querySelector('#cloudcode-open-full-panel')?.addEventListener('click', () => {
+    window.location.assign(panelUrl)
+  })
   bindActions(page)
+  setTimeout(() => window.location.assign(panelUrl), 50)
 }
 
 async function openPanel(page) {

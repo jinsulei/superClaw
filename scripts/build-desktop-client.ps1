@@ -100,6 +100,23 @@ function Remove-IfExists([string]$Path) {
   }
 }
 
+function Stop-PackagedProcesses([string]$PackageRoot) {
+  if ([string]::IsNullOrWhiteSpace($PackageRoot) -or -not (Test-Path $PackageRoot)) {
+    return
+  }
+
+  $ResolvedPackageRoot = (Resolve-Path -LiteralPath $PackageRoot).Path
+  $Processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.ExecutablePath -and
+      $_.ExecutablePath.StartsWith($ResolvedPackageRoot, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+  foreach ($Process in $Processes) {
+    Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Write-Utf8NoBom([string]$Path, [string]$Value) {
   $encoding = New-Object System.Text.UTF8Encoding($false)
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
@@ -791,6 +808,7 @@ if ($PackageOnly) {
 Assert-File $ExeSource "Built desktop executable"
 
 Step "Creating portable desktop client"
+Stop-PackagedProcesses $OutDir
 Remove-IfExists $OutDir
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 Copy-Item -Path $ExeSource -Destination $ExeDest -Force
@@ -850,6 +868,7 @@ if (Test-Path $PyVenvCfg) {
 Clear-PackagedMachineSpecificPaths $PackagedResources
 
 Step "Final packaged runtime cleanup"
+Stop-PackagedProcesses $OutDir
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 Clear-PackagedMachineSpecificPaths $PackagedResources
 Ok "Removed logs, locks, and pid files created during package verification"
