@@ -16,6 +16,34 @@ import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
+function cleanConfiguredUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function stripApiVersion(url) {
+  const clean = cleanConfiguredUrl(url)
+  const parts = clean.split('/')
+  const last = parts[parts.length - 1] || ''
+  if (/^v\d+$/i.test(last)) {
+    parts.pop()
+    return parts.join('/')
+  }
+  return clean
+}
+
+function configuredYyapiBaseUrl() {
+  return cleanConfiguredUrl(process.env.YYAPI_BASE_URL || process.env.OPENAI_BASE_URL || '')
+}
+
+function configuredYyapiAuthBaseUrl() {
+  return cleanConfiguredUrl(process.env.YYAPI_AUTH_BASE_URL || stripApiVersion(configuredYyapiBaseUrl()))
+}
+
+function isConfiguredYyapiBaseUrl(value) {
+  const configured = configuredYyapiBaseUrl()
+  return !!configured && cleanConfiguredUrl(value).toLowerCase() === configured.toLowerCase()
+}
+
 // ---------------------------------------------------------------------------
 // Hermes Agent — 路径 / 工具函数
 // ---------------------------------------------------------------------------
@@ -9024,7 +9052,7 @@ const handlers = {
       id: 'custom',
       name: 'YYAPI',
       authType: 'api_key',
-      baseUrl: 'http://124.222.21.44:3002/v1',
+      baseUrl: configuredYyapiBaseUrl(),
       baseUrlEnvVar: 'OPENAI_BASE_URL',
       apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
       transport: 'openai_chat',
@@ -9144,7 +9172,7 @@ const handlers = {
       const baseLower = currentBaseUrl.toLowerCase()
       const wantsYyapi = providerLower === 'custom'
         || providerLower === 'yyapi'
-        || baseLower.includes('124.222.21.44:3002')
+        || isConfiguredYyapiBaseUrl(baseLower)
         || configRaw.includes('custom_providers:')
       const isMiniMax = providerLower === 'minimax'
         || providerLower === 'minimax-cn'
@@ -9156,10 +9184,12 @@ const handlers = {
     const providers = cfg?.models?.providers && typeof cfg.models.providers === 'object'
       ? cfg.models.providers
       : {}
-    const provider = providers.yyapi || Object.values(providers).find(p => String(p?.baseUrl || '').includes('124.222.21.44:3002'))
+    const provider = providers.yyapi
+      || Object.values(providers).find(p => isConfiguredYyapiBaseUrl(p?.baseUrl || ''))
     const apiKey = String(provider?.apiKey || '').trim()
     if (!apiKey || apiKey === 'YYAPI' || apiKey === 'superclaw-login-required' || apiKey.includes('*')) return false
-    const baseUrl = String(provider?.baseUrl || 'http://124.222.21.44:3002/v1').trim()
+    const baseUrl = String(provider?.baseUrl || configuredYyapiBaseUrl()).trim()
+    if (!baseUrl) return false
     fs.mkdirSync(home, { recursive: true })
     const envRaw = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
     const env = {}
@@ -11547,8 +11577,15 @@ async function _apiMiddleware(req, res, next) {
   if (req.url.startsWith('/api/')) {
     const yyapiSessionVal = extractYYApiSession(req)
     if (yyapiSessionVal) {
+      const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
+      if (!yyapiAuthBaseUrl) {
+        res.statusCode = 503
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: 'YYAPI 未配置' }))
+        return
+      }
       const yyapiCookie = buildYYApiCookie(yyapiSessionVal)
-      const targetUrl = `http://124.222.21.44:3002${req.url}`
+      const targetUrl = `${yyapiAuthBaseUrl}${req.url}`
       try {
         const apiResp = await globalThis.fetch(targetUrl, {
           method: req.method || 'GET',
@@ -11583,7 +11620,14 @@ async function _apiMiddleware(req, res, next) {
   // --- YYApi 控制台反向代理：同源代理 + localStorage 注入 ---
   if (req.url.startsWith('/__api/yyapi_proxy/')) {
     const targetPath = req.url.slice('/__api/yyapi_proxy/'.length)
-    const targetUrl = `http://124.222.21.44:3002/${targetPath}`
+    const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
+    if (!yyapiAuthBaseUrl) {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'YYAPI 未配置' }))
+      return
+    }
+    const targetUrl = `${yyapiAuthBaseUrl}/${targetPath}`
     try {
       // 提取 session cookie
       const yyapiSessionVal = extractYYApiSession(req)
@@ -11834,7 +11878,11 @@ if(typeof yyUser!=='undefined'){localStorage.setItem('user',yyUser);}
         return
       }
       // 调用 YYApi 登录接口
-      const loginResp = await globalThis.fetch('http://124.222.21.44:3002/api/user/login', {
+      const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
+      if (!yyapiAuthBaseUrl) {
+        throw new Error('YYAPI 未配置')
+      }
+      const loginResp = await globalThis.fetch(`${yyapiAuthBaseUrl}/api/user/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),

@@ -9,10 +9,8 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
+import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl, getYyapiConsoleUrl } from '../lib/yyapi-config.js'
 
-// YYApi 中转站常量
-const YYAPI_CONSOLE_URL = 'http://124.222.21.44:3002/console'
-const YYAPI_PROVIDER_KEY = 'yyapi'
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
@@ -1335,6 +1333,7 @@ function bindTopActions(page, state) {
 
 // 模型配置对话框（默认 YYApi，API Key 可下拉选择也可手动输入）
 function addProvider(page, state) {
+  const yyapiBaseUrl = getYyapiBaseUrl()
   const overlay = document.createElement('div')
   overlay.className = 'modal-overlay'
   overlay.innerHTML = `
@@ -1347,7 +1346,7 @@ function addProvider(page, state) {
       </div>
       <div class="form-group">
         <label class="form-label">${t('models.baseUrl')}</label>
-        <input class="form-input" data-name="baseUrl" value="http://124.222.21.44:3002/v1" placeholder="https://api.openai.com/v1">
+        <input class="form-input" data-name="baseUrl" value="${escapeHtml(yyapiBaseUrl)}" placeholder="https://api.openai.com/v1">
         <div class="form-hint">${t('models.baseUrlHint')}</div>
       </div>
       <div class="form-group">
@@ -1474,6 +1473,8 @@ function addProvider(page, state) {
 async function autoInitYYApi(page, state) {
   // 如果已有 YYAPI 服务商则跳过
   if (state.config?.models?.providers?.[YYAPI_PROVIDER_KEY]) return
+  const yyapiBaseUrl = getYyapiBaseUrl()
+  if (!yyapiBaseUrl) return
 
   let tokens, firstKey
   try {
@@ -1501,7 +1502,7 @@ async function autoInitYYApi(page, state) {
   // 拉取 YYApi 模型列表
   let modelIds = []
   try {
-    const modelResp = await fetch('http://124.222.21.44:3002/v1/models', {
+    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
       headers: { 'Authorization': `Bearer ${firstKey}` },
       signal: AbortSignal.timeout(10000),
     })
@@ -1521,7 +1522,7 @@ async function autoInitYYApi(page, state) {
   // 自动初始化时只把主模型写入配置，避免上百个模型全量写入导致 gateway schema 验证失败
   const primaryModelId = modelIds.length ? modelIds[0].id : null
   state.config.models.providers[YYAPI_PROVIDER_KEY] = {
-    baseUrl: 'http://124.222.21.44:3002/v1',
+    baseUrl: yyapiBaseUrl,
     apiKey: firstKey,
     api: 'openai-completions',
     models: modelIds,
@@ -1975,6 +1976,11 @@ async function refreshYYApiKeys(page, state) {
   btn.innerHTML = t('models.refreshing')
 
   try {
+    const yyapiBaseUrl = getYyapiBaseUrl()
+    if (!yyapiBaseUrl) {
+      toast('YYAPI 未配置', 'warning')
+      return
+    }
     const { getTokenList, getFullTokenKey } = await import('../lib/user-api.js')
     const tokens = await getTokenList()
     if (!tokens || !tokens.length) {
@@ -2001,7 +2007,7 @@ async function refreshYYApiKeys(page, state) {
     }
 
     // 从 YYApi 获取模型列表
-    const modelResp = await fetch('http://124.222.21.44:3002/v1/models', {
+    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
       headers: { 'Authorization': `Bearer ${fullKey}` },
       signal: AbortSignal.timeout(10000),
     })
@@ -2026,13 +2032,13 @@ async function refreshYYApiKeys(page, state) {
     const existing = state.config.models.providers[YYAPI_PROVIDER_KEY]
     if (!existing) {
       state.config.models.providers[YYAPI_PROVIDER_KEY] = {
-        baseUrl: 'http://124.222.21.44:3002/v1',
+        baseUrl: yyapiBaseUrl,
         apiKey: fullKey,
         api: 'openai-completions',
         models: modelIds,
       }
     } else {
-      existing.baseUrl = 'http://124.222.21.44:3002/v1'
+      existing.baseUrl = yyapiBaseUrl
       existing.apiKey = fullKey
       existing.api = existing.api || 'openai-completions'
       existing.models = modelIds
@@ -2064,21 +2070,26 @@ async function refreshYYApiKeys(page, state) {
  * 打开 YYApi 控制台 - 直接在浏览器打开，不内置
  */
 async function openYYApiConsole() {
+  const yyapiConsoleUrl = getYyapiConsoleUrl()
+  if (!yyapiConsoleUrl) {
+    toast('YYAPI 未配置', 'warning')
+    return
+  }
   if (window.__TAURI_INTERNALS__) {
-    return openYYApiConsoleDesktop()
+    return openYYApiConsoleDesktop(yyapiConsoleUrl)
   }
   // Web 端：直接在新标签页打开
-  window.open(YYAPI_CONSOLE_URL, '_blank')
+  window.open(yyapiConsoleUrl, '_blank')
 }
 
 /** Tauri 桌面端：直接在系统浏览器打开 YYApi 控制台 */
-async function openYYApiConsoleDesktop() {
+async function openYYApiConsoleDesktop(yyapiConsoleUrl) {
   try {
     const { open } = await import('@tauri-apps/plugin-shell')
-    await open(YYAPI_CONSOLE_URL)
+    await open(yyapiConsoleUrl)
   } catch (_) {
     // 降级：window.open 兜底
-    window.open(YYAPI_CONSOLE_URL, '_blank')
+    window.open(yyapiConsoleUrl, '_blank')
   }
 }
 

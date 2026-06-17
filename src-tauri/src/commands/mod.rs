@@ -13,6 +13,13 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
     });
 
+fn configured_yyapi_base_url() -> Option<String> {
+    std::env::var("YYAPI_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub mod agent;
 pub mod assistant;
 pub mod claude_code;
@@ -335,17 +342,22 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     }
 
     if !obj.get("models").is_some_and(|v| v.is_object()) {
+        let providers = if let Some(base_url) = configured_yyapi_base_url() {
+            serde_json::json!({
+                "yyapi": {
+                    "baseUrl": base_url,
+                    "apiKey": "superclaw-login-required",
+                    "api": "openai-completions",
+                    "models": []
+                }
+            })
+        } else {
+            serde_json::json!({})
+        };
         obj.insert(
             "models".into(),
             serde_json::json!({
-                "providers": {
-                    "yyapi": {
-                        "baseUrl": "http://124.222.21.44:3002/v1",
-                        "apiKey": "superclaw-login-required",
-                        "api": "openai-completions",
-                        "models": []
-                    }
-                }
+                "providers": providers
             }),
         );
         changed = true;

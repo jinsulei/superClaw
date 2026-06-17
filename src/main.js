@@ -23,6 +23,7 @@ import { initFeatureGates } from './lib/feature-gates.js'
 import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
+import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -304,9 +305,6 @@ async function renderLocalAccessPage(app) {
 }
 
 // YYApi 常量
-const YYAPI_BASE_URL = 'http://124.222.21.44:3002'
-const YYAPI_API_BASE_URL = `${YYAPI_BASE_URL}/v1`
-const YYAPI_PROVIDER_KEY = 'yyapi'
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
@@ -456,6 +454,8 @@ function ensureYyapiManagedModelSelection(config, yyapiModelIds = [], defaultMod
 
 async function getDefaultYyapiProfile() {
   if (!isLoggedIn()) return null
+  const yyapiBaseUrl = getYyapiBaseUrl()
+  if (!yyapiBaseUrl) return null
 
   let fullKey = ''
 
@@ -488,7 +488,7 @@ async function getDefaultYyapiProfile() {
   if (!fullKey) fullKey = localStorage.getItem('superclaw_yyapi_key') || ''
   if (!fullKey || fullKey.includes('*')) return null
 
-  const modelResp = await fetch(`${YYAPI_API_BASE_URL}/models`, {
+  const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
     headers: { Authorization: `Bearer ${fullKey}` },
     signal: AbortSignal.timeout(10000),
   })
@@ -503,7 +503,7 @@ async function getDefaultYyapiProfile() {
 
   return {
     apiKey: fullKey,
-    baseUrl: YYAPI_API_BASE_URL,
+    baseUrl: yyapiBaseUrl,
     models: modelIds,
     defaultModel: pickYyapiDefaultModel(modelIds),
   }
@@ -523,6 +523,8 @@ async function syncYYApiKeys() {
 
   try {
     const { api } = await import('./lib/tauri-api.js')
+    const yyapiBaseUrl = getYyapiBaseUrl()
+    if (!yyapiBaseUrl) return
     const config = await api.readOpenclawConfig()
 
     // 确保 models.providers 存在
@@ -572,7 +574,7 @@ async function syncYYApiKeys() {
     if (!fullKey) return
 
     // 从 YYApi 获取模型列表
-    const modelResp = await fetch(`${YYAPI_BASE_URL}/v1/models`, {
+    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
       headers: { 'Authorization': `Bearer ${fullKey}` },
       signal: AbortSignal.timeout(10000),
     })
@@ -588,14 +590,14 @@ async function syncYYApiKeys() {
     const existing = config.models.providers[YYAPI_PROVIDER_KEY]
     if (!existing) {
       config.models.providers[YYAPI_PROVIDER_KEY] = {
-        baseUrl: `${YYAPI_BASE_URL}/v1`,
+        baseUrl: yyapiBaseUrl,
         apiKey: fullKey,
         api: 'openai-completions',
         models: modelIds,
       }
     } else {
       // 只更新 baseUrl、apiKey，保留用户自定义的模型顺序
-      existing.baseUrl = `${YYAPI_BASE_URL}/v1`
+      existing.baseUrl = yyapiBaseUrl
       existing.apiKey = fullKey
       existing.api = existing.api || 'openai-completions'
 

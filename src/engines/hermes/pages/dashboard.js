@@ -10,6 +10,7 @@ import {
   loadHermesProviders,
   inferProviderByBaseUrl,
 } from '../lib/providers.js'
+import { getYyapiBaseUrl, isYyapiBaseUrl } from '../../../lib/yyapi-config.js'
 
 const ICONS = {
   running: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--success, #22c55e)" stroke-width="2.5" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`,
@@ -47,7 +48,6 @@ async function tauriListen(event, cb) {
 }
 
 const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
-const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
 
 function normalizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
@@ -122,8 +122,8 @@ export function render() {
   }
 
   function applyYyapiManagedFormGuard() {
-    if (normalizeUrl(formBaseUrl || hermesConfig?.base_url) !== normalizeUrl(YYAPI_BASE_URL)) return false
-    formBaseUrl = YYAPI_BASE_URL
+    if (!isYyapiBaseUrl(formBaseUrl || hermesConfig?.base_url)) return false
+    formBaseUrl = getYyapiBaseUrl()
     try {
       const yyapiKey = localStorage.getItem('superclaw_yyapi_key') || ''
       if (yyapiKey) formApiKey = yyapiKey
@@ -272,7 +272,7 @@ export function render() {
 
     // 服务商高亮匹配
     const activePreset = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    const yyapiManaged = normalizeUrl(formBaseUrl || hermesConfig?.base_url) === normalizeUrl(YYAPI_BASE_URL)
+    const yyapiManaged = isYyapiBaseUrl(formBaseUrl || hermesConfig?.base_url)
 
     // 模型下拉 HTML（data-dense）
     const dropdownHtml = showDropdown && models.length

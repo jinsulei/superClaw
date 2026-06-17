@@ -6140,16 +6140,44 @@ pub fn write_panel_config(config: Value) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))
 }
 
+fn configured_env_url(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn strip_api_version(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    if let Some((prefix, last)) = trimmed.rsplit_once('/') {
+        if last.len() > 1
+            && last.starts_with('v')
+            && last[1..].chars().all(|c| c.is_ascii_digit())
+        {
+            return prefix.to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn configured_yyapi_auth_base_url() -> Option<String> {
+    configured_env_url("YYAPI_AUTH_BASE_URL")
+        .or_else(|| configured_env_url("YYAPI_BASE_URL").map(|url| strip_api_version(&url)))
+}
+
 /// 创建 YYApi 控制台登录会话
 #[tauri::command]
 pub async fn yyapi_create_session(username: String, password: String) -> Result<Value, String> {
+    let auth_base_url =
+        configured_yyapi_auth_base_url().ok_or_else(|| "YYAPI_AUTH_BASE_URL 未配置".to_string())?;
+    let login_url = format!("{auth_base_url}/api/user/login");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
 
     let login_resp = client
-        .post("http://124.222.21.44:3002/api/user/login")
+        .post(login_url)
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({ "username": username, "password": password }))
         .send()

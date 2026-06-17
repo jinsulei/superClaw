@@ -1,25 +1,22 @@
 /**
  * SuperClaw 远程用户认证 API 服务层
- * 对接 http://124.222.21.44:3001/api
+ * Remote API base URL is provided by yyapi-config.js.
  * 处理 激活 → 注册（含登录）→ 领证 → 登录 流程
  */
-
-const REMOTE_API_ORIGIN = 'http://124.222.21.44:3001'
-const API_BASE_OVERRIDE_KEY = 'superclaw_api_base_url'
-
-function getApiOrigin() {
-  const override = localStorage.getItem(API_BASE_OVERRIDE_KEY)
-  if (override) return override.replace(/\/+$/, '')
-
-  return REMOTE_API_ORIGIN
-}
+import {
+  YYAPI_PROVIDER_KEY,
+  getUserApiBaseUrl,
+  getUserApiBaseUrlV2,
+  getYyapiBaseUrl,
+  isYyapiBaseUrl,
+} from './yyapi-config.js'
 
 function getBaseUrl() {
-  return `${getApiOrigin()}/api`
+  return getUserApiBaseUrl()
 }
 
 function getBaseUrlV2() {
-  return `${getApiOrigin()}/api/v2`
+  return getUserApiBaseUrlV2()
 }
 
 /**
@@ -97,8 +94,6 @@ export function clearAuth() {
   })
 }
 
-const YYAPI_PROVIDER_KEY = 'yyapi'
-const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
 const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
 
 export async function clearConfiguredModelsForLogout() {
@@ -119,13 +114,14 @@ export async function clearConfiguredModelsForLogout() {
 }
 
 async function resetOpenclawManagedModelConfig(api) {
+  const yyapiBaseUrl = getYyapiBaseUrl()
   const config = await api.readOpenclawConfig()
   if (!config.models) config.models = {}
   if (!config.models.providers) config.models.providers = {}
 
   config.models.providers[YYAPI_PROVIDER_KEY] = {
     ...(config.models.providers[YYAPI_PROVIDER_KEY] || {}),
-    baseUrl: YYAPI_BASE_URL,
+    baseUrl: yyapiBaseUrl,
     apiKey: LOGOUT_MODEL_PLACEHOLDER,
     api: 'openai-completions',
     models: [],
@@ -159,6 +155,7 @@ async function resetOpenclawManagedModelConfig(api) {
 }
 
 async function resetHermesManagedModelConfig(api) {
+  const yyapiBaseUrl = getYyapiBaseUrl()
   const current = await api.hermesReadConfig().catch(() => null)
   if (!isYyapiBaseUrl(current?.base_url || '')) return
 
@@ -166,14 +163,15 @@ async function resetHermesManagedModelConfig(api) {
     'openai-api',
     '',
     LOGOUT_MODEL_PLACEHOLDER,
-    YYAPI_BASE_URL,
+    yyapiBaseUrl,
   )
 }
 
 async function resetClaudeManagedModelConfig(api) {
+  const yyapiBaseUrl = getYyapiBaseUrl()
   if (typeof api.configureClaudeCodeRelay !== 'function') return
   await api.configureClaudeCodeRelay({
-    baseUrl: YYAPI_BASE_URL,
+    baseUrl: yyapiBaseUrl,
     apiKey: LOGOUT_MODEL_PLACEHOLDER,
     model: LOGOUT_MODEL_PLACEHOLDER,
     models: [],
@@ -184,14 +182,6 @@ async function resetClaudeManagedModelConfig(api) {
 function isManagedYyapiModelRef(ref) {
   const value = String(ref || '').trim()
   return !value || value.startsWith(`${YYAPI_PROVIDER_KEY}/`)
-}
-
-function isYyapiBaseUrl(url) {
-  return normalizeUrl(url) === normalizeUrl(YYAPI_BASE_URL)
-}
-
-function normalizeUrl(url) {
-  return String(url || '').trim().replace(/\/+$/, '')
 }
 
 function isAuthInvalidError(status, message = '') {
@@ -206,6 +196,8 @@ function isAuthInvalidError(status, message = '') {
  */
 async function request(path, options = {}) {
   const { method = 'POST', body, auth = false, suppressAuthRedirect = false, timeoutMs = 15000 } = options
+  const baseUrl = getBaseUrl()
+  if (!baseUrl) throw new Error('USER_API_BASE_URL 未配置')
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
@@ -213,7 +205,7 @@ async function request(path, options = {}) {
   }
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
-  const resp = await fetch(`${getBaseUrl()}${path}`, {
+  const resp = await fetch(`${baseUrl}${path}`, {
     method,
     headers,
     signal: controller?.signal,
@@ -325,12 +317,14 @@ export async function redeemCode(code) {
 
 async function requestV2(path, options = {}) {
   const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false, cache, timeoutMs = 15000 } = options
+  const baseUrl = getBaseUrlV2()
+  if (!baseUrl) throw new Error('USER_API_BASE_URL 未配置')
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
-  let url = `${getBaseUrlV2()}${path}`
+  let url = `${baseUrl}${path}`
   const qs = new URLSearchParams(params).toString()
   if (qs) url += '?' + qs
   const controller = timeoutMs ? new AbortController() : null

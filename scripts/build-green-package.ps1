@@ -55,6 +55,16 @@ function Write-Utf8File([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Get-ConfiguredYyapiBaseUrl {
+  foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ($value -and $value.Trim()) {
+      return $value.Trim().TrimEnd("/")
+    }
+  }
+  return ""
+}
+
 function Write-OpenClawConfig([string]$Dir) {
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $Dir "workspace") -Force | Out-Null
@@ -141,6 +151,8 @@ function Write-OpenClawConfig([string]$Dir) {
 
 function Write-HermesConfig([string]$Dir) {
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+  $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
   foreach ($name in @("cron", "sessions", "logs", "memories", "skills", "pairing", "hooks", "image_cache", "audio_cache", "plugins")) {
     New-Item -ItemType Directory -Path (Join-Path $Dir $name) -Force | Out-Null
   }
@@ -149,8 +161,7 @@ function Write-HermesConfig([string]$Dir) {
 model:
   default: ""
   provider: custom
-  base_url: http://124.222.21.44:3002/v1
-platform_toolsets:
+${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
     - desktop_control
@@ -417,13 +428,14 @@ if (Test-Path -LiteralPath $hermesPluginsSrc) {
 }
 Copy-FileIfExists (Join-Path $Root "src-tauri\resources\data\hermes\SOUL.md") (Join-Path $Hermes "docs")
 
+$templateYyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+$templateBaseUrlLine = if ($templateYyapiBaseUrl) { "OPENAI_BASE_URL=$templateYyapiBaseUrl`n" } else { "" }
 Write-Utf8File (Join-Path $ConfigTemplate "OpenCloud-openclaw.json.template") (Get-Content -Raw -LiteralPath (Join-Path $OpenCloud "resources\data\.openclaw\openclaw.json"))
 Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
 OPENAI_API_KEY=superclaw-login-required
-OPENAI_BASE_URL=http://124.222.21.44:3002/v1
-API_SERVER_KEY=clawpanel-local
+${templateBaseUrlLine}API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@
 Write-Utf8File (Join-Path $ConfigTemplate "README-config.txt") @"

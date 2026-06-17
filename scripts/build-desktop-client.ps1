@@ -74,6 +74,16 @@ function Fail([string]$Message) {
   exit 1
 }
 
+function Get-ConfiguredYyapiBaseUrl {
+  foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ($value -and $value.Trim()) {
+      return $value.Trim().TrimEnd("/")
+    }
+  }
+  return ""
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$Title) {
   Step $Title
   Write-Host ("  > " + $File + " " + ($Arguments -join " ")) -ForegroundColor DarkGray
@@ -340,6 +350,31 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   )
   New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "workspace") -Force | Out-Null
 
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+  $providers = [ordered]@{}
+  $defaultModelRef = ""
+  $defaultModels = [ordered]@{}
+  if ($yyapiBaseUrl) {
+    $providers.yyapi = [ordered]@{
+      baseUrl = $yyapiBaseUrl
+      apiKey = "superclaw-login-required"
+      api = "openai-completions"
+      models = @(
+        [ordered]@{
+          id = "superclaw-login-required"
+          name = "Login required"
+          api = "openai-completions"
+          reasoning = $false
+          input = @("text")
+          contextWindow = 128000
+          maxTokens = 4096
+        }
+      )
+    }
+    $defaultModelRef = "yyapi/superclaw-login-required"
+    $defaultModels[$defaultModelRef] = [ordered]@{}
+  }
+
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
     meta = [ordered]@{
@@ -347,35 +382,16 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       lastTouchedAt = (Get-Date).ToUniversalTime().ToString("o")
     }
     models = [ordered]@{
-      providers = [ordered]@{
-        yyapi = [ordered]@{
-          baseUrl = "http://124.222.21.44:3002/v1"
-          apiKey = "superclaw-login-required"
-          api = "openai-completions"
-          models = @(
-            [ordered]@{
-              id = "superclaw-login-required"
-              name = "Login required"
-              api = "openai-completions"
-              reasoning = $false
-              input = @("text")
-              contextWindow = 128000
-              maxTokens = 4096
-            }
-          )
-        }
-      }
+      providers = $providers
     }
     agents = [ordered]@{
       defaults = [ordered]@{
         workspace = $workspace
         model = [ordered]@{
-          primary = "yyapi/superclaw-login-required"
+          primary = $defaultModelRef
           fallbacks = @()
         }
-        models = [ordered]@{
-          "yyapi/superclaw-login-required" = [ordered]@{}
-        }
+        models = $defaultModels
         contextInjection = "never"
         bootstrapMaxChars = 300
         bootstrapTotalMaxChars = 800
@@ -387,7 +403,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         name = "Main Agent"
         workspace = $workspace
         model = [ordered]@{
-          primary = "yyapi/superclaw-login-required"
+          primary = $defaultModelRef
           fallbacks = @()
         }
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
@@ -486,6 +502,9 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+  $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
+  $baseUrlEnvLine = if ($yyapiBaseUrl) { "OPENAI_BASE_URL=$yyapiBaseUrl`n" } else { "" }
 
   if ($SanitizedTestMode) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
@@ -495,8 +514,7 @@ model:
   default: superclaw-login-required
   provider: openai-api
   api_mode: chat_completions
-  base_url: http://124.222.21.44:3002/v1
-platform_toolsets:
+${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
 terminal:
@@ -512,8 +530,7 @@ skills:
 "@
     Set-Content -Path $envPath -Encoding UTF8 -Value @"
 OPENAI_API_KEY=superclaw-login-required
-OPENAI_BASE_URL=http://124.222.21.44:3002/v1
-GATEWAY_ALLOW_ALL_USERS=true
+${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
 "@
     return
@@ -525,8 +542,7 @@ API_SERVER_KEY=clawpanel-local
 model:
   default: superclaw-login-required
   provider: openai-api
-  base_url: http://124.222.21.44:3002/v1
-platform_toolsets:
+${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
 terminal:
@@ -546,17 +562,19 @@ skills:
       $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
     }
     $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
-    if ($text -notmatch '(?m)^\s+base_url:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: http://124.222.21.44:3002/v1`n"
+    if ($yyapiBaseUrl -and $text -notmatch '(?m)^\s+base_url:\s*\S+') {
+      $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: $yyapiBaseUrl`n"
     }
     Set-Content -Path $configPath -Encoding UTF8 -Value $text
   }
 
   $envText = if (Test-Path $envPath) { Get-Content -Raw -Path $envPath } else { "" }
   $envText = $envText -replace '(?m)^OPENAI_API_KEY=.*$', 'OPENAI_API_KEY=superclaw-login-required'
-  $envText = $envText -replace '(?m)^OPENAI_BASE_URL=.*$', 'OPENAI_BASE_URL=http://124.222.21.44:3002/v1'
+  if ($yyapiBaseUrl) {
+    $envText = $envText -replace '(?m)^OPENAI_BASE_URL=.*$', "OPENAI_BASE_URL=$yyapiBaseUrl"
+  }
   if ($envText -notmatch '(?m)^OPENAI_API_KEY=') { $envText += "`nOPENAI_API_KEY=superclaw-login-required" }
-  if ($envText -notmatch '(?m)^OPENAI_BASE_URL=') { $envText += "`nOPENAI_BASE_URL=http://124.222.21.44:3002/v1" }
+  if ($yyapiBaseUrl -and $envText -notmatch '(?m)^OPENAI_BASE_URL=') { $envText += "`nOPENAI_BASE_URL=$yyapiBaseUrl" }
   if ($envText -notmatch '(?m)^GATEWAY_ALLOW_ALL_USERS=') { $envText += "`nGATEWAY_ALLOW_ALL_USERS=true" }
   if ($envText -notmatch '(?m)^API_SERVER_KEY=') { $envText += "`nAPI_SERVER_KEY=clawpanel-local" }
   Set-Content -Path $envPath -Encoding UTF8 -Value ($envText.Trim() + "`n")
