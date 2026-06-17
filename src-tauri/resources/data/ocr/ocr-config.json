@@ -1,0 +1,29 @@
+{
+  "ocr": {
+    "enabled": true,
+    "offline": true,
+    "lazyLoad": true,
+    "engine": "tesseract.js",
+    "runtime": "node",
+    "runner": "ocr-runner.cjs",
+    "languages": [
+      "eng",
+      "chi_sim"
+    ],
+    "defaultLanguage": "eng+chi_sim",
+    "timeoutMs": 60000,
+    "maxImageSize": 4096,
+    "failSafe": true,
+    "sharedForAgents": [
+      "openclaw",
+      "hermes",
+      "claude_code"
+    ],
+    "runtimePath": "runtime/ocr",
+    "languagePath": "runtime/ocr/tessdata",
+    "output": {
+      "format": "json",
+      "includeConfidence": true
+    }
+  }
+}

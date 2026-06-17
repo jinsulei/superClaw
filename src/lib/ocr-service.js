@@ -1,6 +1,7 @@
 import { api } from './tauri-api.js'
 
-const DEFAULT_LANGUAGE = 'chi_sim+eng'
+const DEFAULT_LANGUAGE = 'eng+chi_sim'
+const DEFAULT_AGENT = 'openclaw'
 
 function normalizeResult(result, fallbackSource = {}) {
   if (result?.ok) {
@@ -66,6 +67,7 @@ export const ocr = {
         imagePath,
         sourceType: 'image',
         language: options.language || DEFAULT_LANGUAGE,
+        agent: options.agent || DEFAULT_AGENT,
         timeoutMs: options.timeoutMs || null,
       })
       return normalizeResult(result, source)
@@ -83,6 +85,7 @@ export const ocr = {
         mimeType: options.mimeType || 'image/png',
         sourceType: options.sourceType || 'image',
         language: options.language || DEFAULT_LANGUAGE,
+        agent: options.agent || DEFAULT_AGENT,
         timeoutMs: options.timeoutMs || null,
       })
       return normalizeResult(result, source)
@@ -99,6 +102,7 @@ export const ocr = {
         imagePath: screenshotPath,
         sourceType: 'screenshot',
         language: options.language || DEFAULT_LANGUAGE,
+        agent: options.agent || DEFAULT_AGENT,
         timeoutMs: options.timeoutMs || null,
       })
       return normalizeResult(result, source)
@@ -117,6 +121,7 @@ export const ocr = {
         mimeType,
         sourceType: 'clipboard',
         language: options.language || DEFAULT_LANGUAGE,
+        agent: options.agent || DEFAULT_AGENT,
         timeoutMs: options.timeoutMs || null,
       })
       return normalizeResult(result, source)
@@ -134,6 +139,7 @@ export const ocr = {
           imagePath: options.screenshotPath,
           sourceType: 'browser_page',
           language: options.language || DEFAULT_LANGUAGE,
+          agent: options.agent || DEFAULT_AGENT,
           timeoutMs: options.timeoutMs || null,
         })
         return normalizeResult(result, source)

@@ -111,6 +111,10 @@ src-tauri/resources/runtime/openclaw/dist/extensions/*
 !src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/**
 !src-tauri/resources/runtime/openclaw/dist/extensions/skill-manager/
 !src-tauri/resources/runtime/openclaw/dist/extensions/skill-manager/**
+!src-tauri/resources/runtime/ocr/
+!src-tauri/resources/runtime/ocr/**
+src-tauri/resources/runtime/ocr/node_modules/
+src-tauri/resources/runtime/ocr/node_modules/**
 resources/runtime/
 # 保留占位文件以通过 Tauri 构建校验
 !src-tauri/resources/runtime/**/.gitkeep
@@ -119,6 +123,8 @@ resources/runtime/
 src-tauri/resources/data/
 !src-tauri/resources/data/
 src-tauri/resources/data/*
+!src-tauri/resources/data/ocr/
+!src-tauri/resources/data/ocr/**
 !src-tauri/resources/data/hermes/
 src-tauri/resources/data/hermes/*
 !src-tauri/resources/data/hermes/plugins/

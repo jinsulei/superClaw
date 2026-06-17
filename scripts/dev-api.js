@@ -134,8 +134,8 @@ function readOcrConfig() {
       offline: true,
       lazyLoad: true,
       engine: 'tesseract.js',
-      languages: ['chi_sim', 'eng'],
-      defaultLanguage: 'chi_sim+eng',
+      languages: ['eng', 'chi_sim'],
+      defaultLanguage: 'eng+chi_sim',
       timeoutMs: 30000,
       maxImageSize: 4096,
       failSafe: true,
@@ -183,10 +183,11 @@ function runOcrRunner(request = {}) {
     imagePath: request.imagePath || null,
     imageData: request.imageData || null,
     mimeType: request.mimeType || null,
-    sourceType,
-    language: request.language || cfg.defaultLanguage || 'chi_sim+eng',
-    defaultLanguage: cfg.defaultLanguage || 'chi_sim+eng',
-  }
+      sourceType,
+    language: request.language || cfg.defaultLanguage || 'eng+chi_sim',
+    defaultLanguage: cfg.defaultLanguage || 'eng+chi_sim',
+      agent: request.agent || 'openclaw',
+    }
   const child = spawnSync(process.execPath, [runner], {
     cwd: runtimeDir,
     input: JSON.stringify(payload),

@@ -16,6 +16,7 @@ pub struct OcrRequest {
     pub mime_type: Option<String>,
     pub source_type: Option<String>,
     pub language: Option<String>,
+    pub agent: Option<String>,
     pub timeout_ms: Option<u64>,
 }
 
@@ -48,8 +49,8 @@ fn default_config() -> OcrConfig {
         offline: true,
         lazy_load: true,
         engine: "tesseract.js".into(),
-        languages: vec!["chi_sim".into(), "eng".into()],
-        default_language: "chi_sim+eng".into(),
+        languages: vec!["eng".into(), "chi_sim".into()],
+        default_language: "eng+chi_sim".into(),
         timeout_ms: 30_000,
         max_image_size: 4096,
         fail_safe: true,
@@ -60,7 +61,8 @@ fn default_config() -> OcrConfig {
 }
 
 fn config_path() -> Result<PathBuf, String> {
-    let res = super::app_resources_dir().ok_or_else(|| "resources directory not found".to_string())?;
+    let res =
+        super::app_resources_dir().ok_or_else(|| "resources directory not found".to_string())?;
     Ok(res.join("data").join("ocr").join("ocr-config.json"))
 }
 
@@ -77,7 +79,8 @@ fn read_config() -> OcrConfig {
 }
 
 fn resources_relative(path: &str) -> Result<PathBuf, String> {
-    let res = super::app_resources_dir().ok_or_else(|| "resources directory not found".to_string())?;
+    let res =
+        super::app_resources_dir().ok_or_else(|| "resources directory not found".to_string())?;
     Ok(res.join(path.replace('\\', "/")))
 }
 
@@ -108,9 +111,19 @@ fn bundled_node(runtime_dir: &Path) -> PathBuf {
 }
 
 fn fail(source_type: &str, path: &str, message: impl Into<String>) -> serde_json::Value {
+    let message = message.into();
+    let error_code = match message.as_str() {
+        "OCR is disabled" => "OCR_DISABLED",
+        "OCR runner is missing" => "OCR_RUNTIME_MISSING",
+        "OCR language data is missing" => "OCR_TESSDATA_MISSING",
+        "OCR timed out" => "OCR_TIMEOUT",
+        _ if message.contains("image") || message.contains("metadata") => "OCR_IMAGE_MISSING",
+        _ => "OCR_ENGINE_ERROR",
+    };
     json!({
         "ok": false,
-        "error": message.into(),
+        "error": message,
+        "errorCode": error_code,
         "recoverable": true,
         "source": { "type": source_type, "path": path }
     })
@@ -139,7 +152,8 @@ pub async fn ocr_set_enabled(enabled: bool) -> Result<serde_json::Value, String>
     }
     root["ocr"]["enabled"] = json!(enabled);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create OCR config dir failed: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create OCR config dir failed: {e}"))?;
     }
     let text = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| format!("write OCR config failed: {e}"))?;
@@ -156,10 +170,18 @@ pub async fn ocr_extract_text(request: OcrRequest) -> Result<serde_json::Value, 
     }
 
     if let Some(path) = request.image_path.as_deref() {
-        let meta = std::fs::metadata(path).map_err(|e| format!("read image metadata failed: {e}"))?;
-        let max_bytes = cfg.max_image_size.saturating_mul(cfg.max_image_size).saturating_mul(4);
+        let meta =
+            std::fs::metadata(path).map_err(|e| format!("read image metadata failed: {e}"))?;
+        let max_bytes = cfg
+            .max_image_size
+            .saturating_mul(cfg.max_image_size)
+            .saturating_mul(4);
         if max_bytes > 0 && meta.len() > max_bytes {
-            return Ok(fail(source_type, path, "image is larger than OCR maxImageSize budget"));
+            return Ok(fail(
+                source_type,
+                path,
+                "image is larger than OCR maxImageSize budget",
+            ));
         }
     }
 
@@ -169,8 +191,14 @@ pub async fn ocr_extract_text(request: OcrRequest) -> Result<serde_json::Value, 
         return Ok(fail(source_type, source_path, "OCR runner is missing"));
     }
     let lang_dir = resources_relative(&cfg.language_path)?;
-    if !lang_dir.join("eng.traineddata.gz").is_file() || !lang_dir.join("chi_sim.traineddata.gz").is_file() {
-        return Ok(fail(source_type, source_path, "OCR language data is missing"));
+    if !lang_dir.join("eng.traineddata.gz").is_file()
+        || !lang_dir.join("chi_sim.traineddata.gz").is_file()
+    {
+        return Ok(fail(
+            source_type,
+            source_path,
+            "OCR language data is missing",
+        ));
     }
 
     let payload = json!({
@@ -180,6 +208,7 @@ pub async fn ocr_extract_text(request: OcrRequest) -> Result<serde_json::Value, 
         "sourceType": source_type,
         "language": request.language.unwrap_or_else(|| cfg.default_language.clone()),
         "defaultLanguage": cfg.default_language,
+        "agent": request.agent.unwrap_or_else(|| "openclaw".to_string()),
     });
 
     let node = bundled_node(&runtime_dir);
@@ -194,7 +223,9 @@ pub async fn ocr_extract_text(request: OcrRequest) -> Result<serde_json::Value, 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000);
 
-    let mut child = cmd.spawn().map_err(|e| format!("start OCR runner failed: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("start OCR runner failed: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(payload.to_string().as_bytes())
@@ -204,14 +235,21 @@ pub async fn ocr_extract_text(request: OcrRequest) -> Result<serde_json::Value, 
     let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(cfg.timeout_ms).max(1000));
     let start = Instant::now();
     loop {
-        if let Some(_status) = child.try_wait().map_err(|e| format!("wait OCR runner failed: {e}"))? {
+        if let Some(_status) = child
+            .try_wait()
+            .map_err(|e| format!("wait OCR runner failed: {e}"))?
+        {
             let output = child
                 .wait_with_output()
                 .map_err(|e| format!("read OCR output failed: {e}"))?;
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if stdout.is_empty() {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                return Ok(fail(source_type, source_path, format!("OCR returned no output: {stderr}")));
+                return Ok(fail(
+                    source_type,
+                    source_path,
+                    format!("OCR returned no output: {stderr}"),
+                ));
             }
             return serde_json::from_str(&stdout)
                 .map_err(|e| format!("parse OCR output failed: {e}; output={stdout}"));

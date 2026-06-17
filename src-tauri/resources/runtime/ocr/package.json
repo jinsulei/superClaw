@@ -1,0 +1,10 @@
+{
+  "name": "superclaw-shared-ocr-runtime",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Shared OCR runtime for OpenClaw, Hermes, and ClaudeCode",
+  "type": "commonjs",
+  "dependencies": {
+    "tesseract.js": "^6.0.1"
+  }
+}

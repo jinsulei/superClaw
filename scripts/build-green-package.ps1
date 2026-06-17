@@ -50,6 +50,49 @@ function Copy-FileIfExists([string]$Source, [string]$DestDir) {
   }
 }
 
+function Assert-FileMinSize([string]$Path, [int64]$MinBytes, [string]$Label) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    Fail "Missing ${Label}: $Path"
+  }
+  $item = Get-Item -LiteralPath $Path
+  if ($item.Length -lt $MinBytes) {
+    Fail "${Label} is too small: $($item.Length) bytes, expected >= $MinBytes"
+  }
+}
+
+function Test-GreenOcrRuntime([string]$OpenCloudDir, [string]$NodeExe) {
+  $ocrRuntime = Join-Path $OpenCloudDir "resources\runtime\ocr"
+  $ocrData = Join-Path $OpenCloudDir "resources\data\ocr"
+  $runner = Join-Path $ocrRuntime "ocr-runner.cjs"
+
+  Assert-FileMinSize $runner 1000 "shared OCR runner"
+  Assert-FileMinSize (Join-Path $ocrRuntime "package.json") 100 "OCR package.json"
+  $sourceLock = Join-Path $Root "src-tauri\resources\runtime\ocr\package-lock.json"
+  if (Test-Path -LiteralPath $sourceLock -PathType Leaf) {
+    Assert-FileMinSize (Join-Path $ocrRuntime "package-lock.json") 100 "OCR package-lock.json"
+  }
+  Assert-FileMinSize (Join-Path $ocrRuntime "node_modules\tesseract.js\package.json") 100 "tesseract.js package"
+  Assert-FileMinSize (Join-Path $ocrRuntime "node_modules\tesseract.js-core\package.json") 100 "tesseract.js-core package"
+  Assert-FileMinSize (Join-Path $ocrRuntime "node_modules\tesseract.js-core\tesseract-core.wasm") 100000 "tesseract wasm"
+  Assert-FileMinSize (Join-Path $ocrRuntime "tessdata\eng.traineddata.gz") 1048576 "OCR English language data"
+  Assert-FileMinSize (Join-Path $ocrRuntime "tessdata\chi_sim.traineddata.gz") 1048576 "OCR Chinese language data"
+  Assert-FileMinSize (Join-Path $ocrData "ocr-config.json") 100 "shared OCR config"
+
+  Push-Location $ocrRuntime
+  try {
+    $healthText = (& $NodeExe "ocr-runner.cjs" --health 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+      Fail "Packaged OCR health check failed: $healthText"
+    }
+    $health = $healthText | ConvertFrom-Json
+    if (-not $health.ok) {
+      Fail "Packaged OCR health check returned ok=false: $healthText"
+    }
+  } finally {
+    Pop-Location
+  }
+}
+
 function Write-Utf8File([string]$Path, [string]$Content) {
   New-Item -ItemType Directory -Path (Split-Path $Path -Parent) -Force | Out-Null
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
@@ -392,6 +435,7 @@ Copy-Dir (Join-Path $Root "src") (Join-Path $OpenCloud "src")
 Copy-Dir (Join-Path $Root "public") (Join-Path $OpenCloud "public")
 Copy-Dir (Join-Path $Root "scripts") (Join-Path $OpenCloud "scripts") -XD @("__pycache__", ".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\openclaw") (Join-Path $OpenCloud "resources\runtime\openclaw") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\ocr") (Join-Path $OpenCloud "resources\runtime\ocr") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 
 foreach ($runtimeName in @("claude-code", "claude-panel")) {
   $rp = Join-Path $Root "src-tauri\resources\runtime\$runtimeName"
@@ -417,6 +461,7 @@ if (Test-Path -LiteralPath (Join-Path $Root "docs")) {
 Step "Writing clean configs and templates"
 Write-OpenClawConfig (Join-Path $OpenCloud "resources\data\.openclaw")
 Write-HermesConfig (Join-Path $OpenCloud "resources\data\hermes")
+Copy-Dir (Join-Path $Root "src-tauri\resources\data\ocr") (Join-Path $OpenCloud "resources\data\ocr") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 $skillsSrc = Join-Path $Root "src-tauri\resources\data\hermes\skills"
 if (Test-Path -LiteralPath $skillsSrc) {
   Copy-Dir $skillsSrc (Join-Path $OpenCloud "resources\data\hermes\skills") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
@@ -508,10 +553,12 @@ if ($secretHits.Count -gt 0 -or $envFiles.Count -gt 0) {
 }
 
 Step "Running basic checks"
-& (Join-Path $Runtime "node-win\node.exe") --version
+$BundledNode = Join-Path $Runtime "node-win\node.exe"
+& $BundledNode --version
 if ($LASTEXITCODE -ne 0) { Fail "Bundled Node is not usable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "scripts\serve.js"))) { Fail "Missing serve.js" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\openclaw.cmd"))) { Fail "Missing openclaw.cmd" }
+Test-GreenOcrRuntime $OpenCloud $BundledNode
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\hermes-agent-main.zip"))) { Fail "Missing Hermes offline package" }
 
 if (-not $SkipZip) {
@@ -521,7 +568,7 @@ if (-not $SkipZip) {
   Step "Extracting zip for structure verification"
   Expand-Archive -LiteralPath $ZipPath -DestinationPath $TestExtract -Force
   $ExtractedRoot = Join-Path $TestExtract (Split-Path $OutRoot -Leaf)
-  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd")) {
+  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $ExtractedRoot $must))) {
       Fail "Extract test missing: $must"
     }
@@ -537,6 +584,7 @@ Size MB: $sizeMb
 Bundled Node: runtime\node-win\node.exe
 OpenCloud: dist, src, scripts, OpenClaw runtime, clean config
 Hermes: clean config, offline package, uv tools, skills
+Shared OCR: runner, package metadata, tesseract.js dependencies, tessdata, data config
 Security scan: no complete sk-/ark-/Bearer/private-key material; no .env/pem/key/p12/pfx files
 Excluded: node_modules, src-tauri\target, old zips/builds, logs, cache/tmp/temp, sessions, real configs
 Customer action: unzip and double-click bat; fill own API key before chat
