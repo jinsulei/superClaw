@@ -789,10 +789,11 @@ fn patch_uv_tool_pyvenv_cfgs() {
             }
         };
 
-        // uv's Windows launcher resolves pyvenv.cfg `home` relative to Scripts/.
-        let cfg_dir = entry.path().join("Scripts"); // e.g. resources/uv-tools/hermes-agent/Scripts/
-        let new_home = compute_relative_path(&cfg_dir, &python_home);
-        let new_home_line = format!("home = {}", new_home.replace('/', "\\"));
+        // Use an absolute Python home. uv's generated relative path can fail
+        // on Windows portable layouts, especially when the project path has
+        // non-ASCII characters.
+        let new_home = python_home.to_string_lossy().to_string();
+        let new_home_line = format!("home = {}", new_home);
 
         // 检查是否需要更新
         let needs_update = !content.lines().any(|l| {
@@ -865,48 +866,6 @@ fn find_python_home(python_root: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// 计算从 from_dir 到 to_dir 的相对路径（使用 '/' 分隔）
-fn compute_relative_path(from_dir: &Path, to_dir: &Path) -> String {
-    // 获取规范的绝对路径
-    let from = from_dir
-        .canonicalize()
-        .unwrap_or_else(|_| from_dir.to_path_buf());
-    let to = to_dir
-        .canonicalize()
-        .unwrap_or_else(|_| to_dir.to_path_buf());
-
-    let from_parts: Vec<_> = from.components().collect();
-    let to_parts: Vec<_> = to.components().collect();
-
-    // 找共同前缀长度
-    let common = from_parts
-        .iter()
-        .zip(to_parts.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    // 构建相对路径
-    let mut result = Vec::new();
-
-    // 向上 (从 from_dir 到共同祖先)
-    for _ in common..from_parts.len() {
-        result.push("..".to_string());
-    }
-
-    // 向下 (从共同祖先到 to_dir)
-    for i in common..to_parts.len() {
-        if let std::path::Component::Normal(name) = to_parts[i] {
-            result.push(name.to_string_lossy().to_string());
-        }
-    }
-
-    if result.is_empty() {
-        return ".".to_string();
-    }
-
-    result.join("/")
 }
 
 /// 返回 true 表示组件就绪且 hermes 已验证可用，后续安装流程可跳过。

@@ -291,8 +291,7 @@ function patchHermesPyvenvCfgs() {
       const cfgPath = path.join(toolRoot, entry.name, 'pyvenv.cfg')
       if (!fs.existsSync(cfgPath)) continue
       let content = fs.readFileSync(cfgPath, 'utf8')
-      const rel = path.relative(path.join(path.dirname(cfgPath), 'Scripts'), pythonHome).replace(/\\/g, '\\')
-      const nextLine = `home = ${rel}`
+      const nextLine = `home = ${pythonHome}`
       if (content.split(/\r?\n/).some(line => line.trim().toLowerCase() === nextLine.toLowerCase())) continue
       const newline = content.includes('\r\n') ? '\r\n' : '\n'
       if (/^home\s*=.*$/mi.test(content)) {
