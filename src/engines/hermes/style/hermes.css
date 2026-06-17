@@ -1118,6 +1118,8 @@ body[data-active-engine="hermes"] .sidebar-close-btn:hover {
 body[data-active-engine="hermes"] .engine-switcher {
   border-bottom: 1px solid rgba(28, 25, 23, 0.06);
   padding: 14px 14px 16px;
+  position: relative;
+  z-index: 30;
 }
 body[data-active-engine="hermes"] .engine-switcher-label {
   font-family: 'Playfair Display', 'Cormorant Garamond', Georgia, serif;
@@ -1146,10 +1148,14 @@ body[data-active-engine="hermes"] .engine-current:hover {
 body[data-active-engine="hermes"] .engine-icon { color: #CA8A04; }
 body[data-active-engine="hermes"] .engine-dropdown {
   background: #FFFFFF;
+  opacity: 1;
+  backdrop-filter: none;
+  z-index: 1000;
   border: 1px solid rgba(28, 25, 23, 0.08);
   box-shadow: 0 1px 2px rgba(28, 25, 23, 0.04), 0 8px 24px rgba(28, 25, 23, 0.08);
   border-radius: 8px;
   padding: 4px;
+  overflow: hidden;
 }
 body[data-active-engine="hermes"] .engine-option {
   padding: 8px 10px;
@@ -1335,6 +1341,8 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 [data-theme="dark"] body[data-active-engine="hermes"] .engine-dropdown {
   background: #1C1917;
+  opacity: 1;
+  backdrop-filter: none;
   border-color: rgba(250, 250, 249, 0.08);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
 }
@@ -5537,6 +5545,18 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hm-chat-msg-voice.is-speaking {
   color: var(--hm-accent);
   background: var(--hm-accent-soft);
+}
+
+[data-engine="hermes"] .hm-chat-read-rate {
+  min-width: 68px;
+  height: 26px;
+  border: 1px solid var(--hm-border-soft);
+  border-radius: 999px;
+  background: var(--hm-surface);
+  color: var(--hm-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 8px;
 }
 
 /* Streaming dots pulse (shown while first delta hasn't arrived) */

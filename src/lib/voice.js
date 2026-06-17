@@ -289,18 +289,46 @@ export function createVoiceInputController(options = {}) {
   }
 }
 
-export function createSpeechPlaybackController({ onStateChange, synthesizeAudio } = {}) {
+export function createSpeechPlaybackController({ onStateChange, onProgress, synthesizeAudio, rate = 1 } = {}) {
   let activeKey = null
   let activeText = ''
+  let activeLang = ''
   let activeAudio = null
   let activeObjectUrl = ''
+  let activeUtterance = null
+  let activeCharIndex = 0
+  let activeSpeechOffset = 0
+  let speechTimer = null
+  let speechToken = 0
+  let speechRate = normalizeSpeechRate(rate)
+
+  function normalizeSpeechRate(value) {
+    const next = Number(value)
+    if (!Number.isFinite(next)) return 1
+    return Math.min(2, Math.max(0.75, next))
+  }
 
   function setState(nextKey) {
     activeKey = nextKey
     onStateChange?.(activeKey)
   }
 
-  function stop() {
+  function clearSpeechTimer() {
+    if (speechTimer) clearInterval(speechTimer)
+    speechTimer = null
+  }
+
+  function emitProgress(progress, extra = {}) {
+    onProgress?.({
+      key: activeKey,
+      progress: Math.max(0, Math.min(100, Math.round(progress || 0))),
+      rate: speechRate,
+      ...extra,
+    })
+  }
+
+  function stop(options = {}) {
+    const previousKey = activeKey
     if (activeAudio) {
       try {
         activeAudio.pause()
@@ -309,6 +337,8 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
       } catch {}
       activeAudio = null
     }
+    activeUtterance = null
+    clearSpeechTimer()
     if (activeObjectUrl) {
       try { URL.revokeObjectURL(activeObjectUrl) } catch {}
       activeObjectUrl = ''
@@ -317,24 +347,69 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
       try { window.speechSynthesis.cancel() } catch {}
     }
     activeText = ''
+    activeLang = ''
+    activeCharIndex = 0
+    activeSpeechOffset = 0
+    if (options.finalProgress) onProgress?.({ key: previousKey, progress: 100, rate: speechRate, done: true })
+    else onProgress?.({ key: previousKey, progress: 0, rate: speechRate, cancelled: true })
     setState(null)
   }
 
-  function speak({ key, text, lang }) {
+  function estimateSpeechProgress(token, offset, length) {
+    const startedAt = Date.now()
+    const remainingChars = Math.max(1, length - offset)
+    const estimatedMs = Math.max(1200, (remainingChars / (11 * speechRate)) * 1000)
+    clearSpeechTimer()
+    speechTimer = setInterval(() => {
+      if (token !== speechToken || !activeKey || !activeText) return
+      const ratio = Math.min(0.96, (Date.now() - startedAt) / estimatedMs)
+      const index = offset + Math.floor(remainingChars * ratio)
+      activeCharIndex = Math.max(activeCharIndex, index)
+      emitProgress((activeCharIndex / Math.max(1, activeText.length)) * 100)
+    }, 300)
+  }
+
+  function speakBrowser({ key, text, lang, offset = 0 }) {
     if (!isSpeechPlaybackSupported()) return false
     const content = String(text || '').trim()
     if (!content) return false
-    stop()
-    const utterance = new SpeechSynthesisUtterance(content)
-    utterance.lang = lang || navigator.language || 'zh-CN'
-    utterance.onend = () => {
-      if (activeText === content) stop()
-    }
-    utterance.onerror = () => stop()
+    const safeOffset = Math.max(0, Math.min(offset, content.length - 1))
+    const segment = content.slice(safeOffset).trim()
+    if (!segment) return false
+    speechToken += 1
+    const token = speechToken
     activeText = content
+    activeLang = lang || navigator.language || 'zh-CN'
+    activeCharIndex = safeOffset
+    activeSpeechOffset = safeOffset
+    const utterance = new SpeechSynthesisUtterance(segment)
+    utterance.lang = lang || navigator.language || 'zh-CN'
+    utterance.rate = speechRate
+    utterance.onboundary = (event) => {
+      if (token !== speechToken) return
+      if (typeof event.charIndex === 'number') {
+        activeCharIndex = activeSpeechOffset + event.charIndex
+        emitProgress((activeCharIndex / Math.max(1, activeText.length)) * 100)
+      }
+    }
+    utterance.onend = () => {
+      if (token === speechToken && activeText === content) stop({ finalProgress: true })
+    }
+    utterance.onerror = () => {
+      if (token === speechToken) stop()
+    }
+    activeUtterance = utterance
     setState(key)
+    emitProgress((safeOffset / Math.max(1, activeText.length)) * 100)
+    estimateSpeechProgress(token, safeOffset, content.length)
     window.speechSynthesis.speak(utterance)
     return true
+  }
+
+  function speak({ key, text, lang, rate: nextRate } = {}) {
+    if (nextRate) speechRate = normalizeSpeechRate(nextRate)
+    stop()
+    return speakBrowser({ key, text, lang })
   }
 
   async function speakWithModel({ key, text, lang }) {
@@ -350,11 +425,18 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
 
     stop()
     const player = new Audio(src)
+    player.playbackRate = speechRate
     activeAudio = player
     activeText = content
+    activeLang = lang || navigator.language || 'zh-CN'
     setState(key)
+    emitProgress(0)
+    player.ontimeupdate = () => {
+      if (activeAudio !== player || !Number.isFinite(player.duration) || player.duration <= 0) return
+      emitProgress((player.currentTime / player.duration) * 100)
+    }
     player.onended = () => {
-      if (activeAudio === player) stop()
+      if (activeAudio === player) stop({ finalProgress: true })
     }
     player.onerror = () => {
       if (activeAudio === player) stop()
@@ -363,7 +445,8 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
     return true
   }
 
-  function toggle({ key, text, lang }) {
+  function toggle({ key, text, lang, rate: nextRate } = {}) {
+    if (nextRate) speechRate = normalizeSpeechRate(nextRate)
     if (activeKey === key) {
       stop()
       return 'stopped'
@@ -371,7 +454,8 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
     return speak({ key, text, lang }) ? 'started' : 'unsupported'
   }
 
-  async function toggleAsync({ key, text, lang }) {
+  async function toggleAsync({ key, text, lang, rate: nextRate } = {}) {
+    if (nextRate) speechRate = normalizeSpeechRate(nextRate)
     if (activeKey === key) {
       stop()
       return 'stopped'
@@ -382,10 +466,30 @@ export function createSpeechPlaybackController({ onStateChange, synthesizeAudio 
     return toggle({ key, text, lang })
   }
 
+  function setRate(nextRate) {
+    speechRate = normalizeSpeechRate(nextRate)
+    if (activeAudio) {
+      try { activeAudio.playbackRate = speechRate } catch {}
+      emitProgress(Number.isFinite(activeAudio.duration) && activeAudio.duration > 0 ? (activeAudio.currentTime / activeAudio.duration) * 100 : 0)
+      return
+    }
+    if (activeUtterance && activeKey && activeText) {
+      const key = activeKey
+      const text = activeText
+      const lang = activeLang
+      const offset = Math.max(0, Math.min(activeCharIndex, text.length - 1))
+      speechToken += 1
+      try { window.speechSynthesis.cancel() } catch {}
+      clearSpeechTimer()
+      speakBrowser({ key, text, lang, offset })
+    }
+  }
+
   return {
     stop,
     toggle,
     toggleAsync,
+    setRate,
     isActive: (key) => activeKey === key,
     destroy: stop,
   }

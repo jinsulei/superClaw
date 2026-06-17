@@ -5,7 +5,7 @@
   "description": "SuperClaw AI control panel",
   "main": "src/main.js",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "vite build",
     "serve": "node scripts/serve.js",
     "tauri": "tauri",

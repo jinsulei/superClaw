@@ -562,6 +562,58 @@ function turnMaterialId(userMessage, index) {
   return `mat_${String(userMessage?.id || index).replace(/[^a-zA-Z0-9_-]/g, '_')}`
 }
 
+function countFilledMaterialFields(text) {
+  return normalizeMaterialText(text)
+    .split('\n')
+    .map(line => line.replace(/\*\*/g, '').replace(/^[-*]\s*/, '').trim())
+    .filter(line => /^(视频标题|标题|平台|时长|发布者|作者|主题|发布时间|互动数据)\s*[：:]\s*\S+/.test(line))
+    .length
+}
+
+function assistantTextHasExtractedMaterial(text) {
+  const clean = normalizeMaterialText(text)
+  if (/成功.{0,10}(获取|解析|拿到|读取).{0,12}视频|以下是拆解结果|视频内容.*拆解/.test(clean)) return true
+  if (!clean || /素材不足|暂时拿不到视频正文|需要你补充素材|登录|验证码|反爬|访问受限/.test(clean)) return false
+  return clean.length >= 120 && countFilledMaterialFields(clean) >= 2
+}
+
+function assistantTextHasMaterialFailure(text) {
+  const clean = normalizeMaterialText(text)
+  return /素材不足|没有拿到完整|暂时拿不到视频正文|需要你补充素材|抓取失败|抓取超时|登录|验证码|反爬|访问受限/.test(clean)
+}
+
+function formatCapturedMaterialAsTranscript(rawText) {
+  if (!rawText || typeof rawText !== 'string') return ''
+  const cleaned = rawText
+    .trim()
+    .replace(/\n?---+\n?/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/```[\s\S]*?```/g, block => block.replace(/```/g, '').trim())
+
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .map(line => line.replace(/^#{1,4}\s*/, '').replace(/\*\*/g, '').replace(/^[-*]\s*/, '').trim())
+    .map(line => line.replace(/^\|?\s*/, '').replace(/\s*\|?\s*$/, '').replace(/\s*\|\s*/g, ' / '))
+    .filter(Boolean)
+    .filter(line => !/^视频拆解$/.test(line))
+
+  if (!lines.length) return rawText
+
+  const info = []
+  const body = []
+  const infoPattern = /^(视频标题|标题|平台|时长|发布者|作者|发布时间|获赞|互动数据)\s*[：:]/
+  for (const line of lines) {
+    if (infoPattern.test(line)) info.push(line)
+    else body.push(line)
+  }
+
+  const parts = ['【素材逐字稿】']
+  if (info.length) parts.push(['基础信息', ...info].join('\n'))
+  if (body.length) parts.push(['正文素材', ...body].join('\n'))
+  return parts.join('\n\n')
+}
+
 function collectTurnMaterial(messages, index) {
   const user = messages[index]
   if (!user || user.role !== 'user') return null
@@ -586,19 +638,21 @@ function collectTurnMaterial(messages, index) {
       if (material.title && !title) title = material.title
       if (material.text) pieces.push(material.text)
     } else if (m.role === 'assistant' && m.content) {
-      assistantText = m.content
+      assistantText = [assistantText, normalizeMaterialText(m.content)].filter(Boolean).join('\n\n')
     }
   }
 
   const fullText = uniqueMaterialLines(pieces.join('\n\n')).slice(0, MATERIAL_FULL_LIMIT)
   const fallbackText = normalizeMaterialText(assistantText).slice(0, 3600)
   const hasMaterial = fullText.length >= 80
-  if (!hasMaterial && !fallbackText) return null
+  const assistantHasMaterial = assistantTextHasExtractedMaterial(fallbackText)
+  const assistantHasFailure = assistantTextHasMaterialFailure(fallbackText)
+  if (!hasMaterial && !assistantHasMaterial && !assistantHasFailure) return null
 
   const displayText = hasMaterial ? fullText : fallbackText
-  const status = hasMaterial ? 'ready' : 'partial'
-  const reason = hasMaterial
-    ? '已从后台浏览器工具读取到可整理的页面文字。'
+  const status = hasMaterial || assistantHasMaterial ? 'ready' : 'partial'
+  const reason = hasMaterial || assistantHasMaterial
+    ? '已读取到可整理的视频页面素材。'
     : '这次没有拿到完整原生页素材，只保留了失败原因和后续补充模板。'
   const preview = normalizeMaterialText(displayText).slice(0, MATERIAL_PREVIEW_LIMIT)
 
@@ -908,6 +962,7 @@ export function render() {
   const renderedInboxMessages = new Set(JSON.parse(localStorage.getItem('superclaw-hermes-rendered-task-messages-v1') || '[]'))
   let voiceInputState = 'idle'
   let voicePlaybackKey = null
+  let voiceRate = Number(localStorage.getItem('superclaw-hermes-voice-rate') || '1') || 1
   let modelVoiceConfig = null
   const voiceInputId = 'hm-chat-voice'
   const voiceInputController = createVoiceInputController({
@@ -958,6 +1013,7 @@ export function render() {
         btn.classList.toggle('is-speaking', active)
         btn.title = active ? t('engine.chatVoiceStopSpeak') : t('engine.chatVoiceSpeak')
       })
+      draw()
     },
   })
 
@@ -1343,6 +1399,7 @@ export function render() {
     const expanded = expandedMaterialIds.has(material.id)
     const title = material.status === 'ready' ? '已抓取素材' : '素材不足'
     const tone = material.status === 'ready' ? 'is-ready' : 'is-partial'
+    const expandedText = formatCapturedMaterialAsTranscript(material.fullText) || material.fullText
     const source = material.resolvedUrl && material.resolvedUrl !== material.url
       ? material.resolvedUrl
       : material.url
@@ -1372,12 +1429,12 @@ export function render() {
         ${expanded ? `
           <div class="hm-chat-material-full">
             <div class="hm-chat-material-full-head">
-              <span>完整文案 / 页面素材</span>
+              <span>素材逐字稿</span>
               <button type="button" class="hm-chat-material-copy" data-material-copy="${escAttr(material.id)}">
-                ${ICONS.copy}<span>复制文案</span>
+                ${ICONS.copy}<span>复制逐字稿</span>
               </button>
             </div>
-            <pre>${escHtml(material.fullText)}</pre>
+            <pre>${escHtml(expandedText)}</pre>
           </div>
         ` : ''}
       </div>
@@ -1440,6 +1497,9 @@ export function render() {
                 <button class="hm-chat-msg-copy hm-chat-msg-voice ${voicePlaybackKey === m.id ? 'is-speaking' : ''}" data-voice-mid="${escAttr(m.id)}" title="${escHtml(voicePlaybackKey === m.id ? t('engine.chatVoiceStopSpeak') : t('engine.chatVoiceSpeak'))}">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg><span>${escHtml(t('engine.chatVoiceSpeak'))}</span>
                 </button>
+                <select class="hm-chat-read-rate" data-voice-rate-mid="${escAttr(m.id)}" aria-label="朗读速度">
+                  ${[0.75, 1, 1.25, 1.5, 2].map(rate => `<option value="${rate}" ${Math.abs(voiceRate - rate) < 0.001 ? 'selected' : ''}>${rate}x</option>`).join('')}
+                </select>
               ` : ''}
               ${canCopy ? `
                 <button class="hm-chat-msg-copy" data-copy-mid="${escAttr(m.id)}" title="${escHtml(t('engine.chatCopyMessage'))}">
@@ -1862,9 +1922,20 @@ export function render() {
         const msg = s?.messages.find(m => m.id === mid)
         const text = msg?.content || ''
         if (!text.trim()) return
-        const status = await voicePlaybackController.toggleAsync({ key: mid, text })
+        const status = await voicePlaybackController.toggleAsync({ key: mid, text, rate: voiceRate })
         if (status === 'started') toast(t('engine.chatVoiceFallbackTts'), 'info')
         else if (status === 'unsupported') toast(t('engine.chatVoicePlaybackUnsupported'), 'warning')
+      })
+    })
+
+    el.querySelectorAll('[data-voice-rate-mid]').forEach(select => {
+      select.addEventListener('click', (e) => e.stopPropagation())
+      select.addEventListener('change', (e) => {
+        e.stopPropagation()
+        voiceRate = Number(select.value) || 1
+        localStorage.setItem('superclaw-hermes-voice-rate', String(voiceRate))
+        voicePlaybackController.setRate(voiceRate)
+        draw()
       })
     })
 
@@ -2718,13 +2789,13 @@ export function render() {
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Claude Code mode</label>
+          <label class="form-label">Claude Code 模式</label>
           <select class="form-input" id="hm-collab-claude-mode">
-            <option value="safe" selected>safe - restricted, no browser/takeover</option>
-            <option value="browser_automation">browser_automation - browser only, single page</option>
-            <option value="takeover">takeover - full control, requires confirmation</option>
+            <option value="safe" selected>安全模式：受限执行，不允许浏览器/接管</option>
+            <option value="browser_automation">浏览器自动化：仅浏览器，单页面</option>
+            <option value="takeover">接管模式：完全控制，需要确认</option>
           </select>
-          <div class="form-hint">Default is safe. Takeover requires explicit confirmation and must not run silently.</div>
+          <div class="form-hint">默认使用安全模式；接管模式必须显式确认，不能静默运行。</div>
         </div>
         <label class="form-check" style="align-items:flex-start;gap:10px;margin-top:4px">
           <input type="checkbox" id="hm-collab-open-review" checked style="margin-top:3px">

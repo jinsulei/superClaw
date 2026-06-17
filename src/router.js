@@ -117,8 +117,9 @@ async function retryLoad(loader, maxRetries, delayMs) {
     try {
       return await withTimeout(loader(), 15000, '模块加载超时')
     } catch (e) {
-      const isNetworkError = /fetch|network|connection|ERR_/i.test(String(e?.message || e))
-      if (i < maxRetries && isNetworkError) {
+      const message = String(e?.message || e)
+      const isRetryableLoadError = /fetch|network|connection|ERR_|timeout|超时/i.test(message)
+      if (i < maxRetries && isRetryableLoadError) {
         console.warn(`[router] 模块加载失败，${delayMs}ms 后重试 (${i + 1}/${maxRetries})...`)
         await new Promise(r => setTimeout(r, delayMs))
         continue

@@ -175,6 +175,7 @@ const riskLevelLabel = $("#riskLevelLabel");
 const imageUploadInput = $("#imageUploadInput");
 const voiceModeBtn = $("#voiceModeBtn");
 const attachmentPreview = $("#attachmentPreview");
+const composerInputWrap = document.querySelector(".composer-input-wrap");
 const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
 const composerModeButtons = Array.from(document.querySelectorAll("[data-composer-mode]"));
 const workspaceTabButtons = Array.from(document.querySelectorAll("[data-workspace-tab]"));
@@ -358,13 +359,6 @@ function handleSuperclawConsoleLinkClick(event) {
   event.preventDefault();
   const route = link.dataset.superclawRoute || "/h/chat";
   const overlay = showConsoleSwitchProgress(route);
-  if (route === "/h/claude-code" || route.startsWith("/h/claude-code")) {
-    startNativeClaudeTerminal({ overlay }).catch((error) => {
-      clearConsoleSwitchProgress();
-      addMessage("error", "Claude Code 原生终端", error.message || String(error));
-    });
-    return;
-  }
   consoleSwitchProgressTimer = setTimeout(() => {
     setConsoleSwitchProgress(overlay, 100);
     window.location.assign(href);
@@ -479,7 +473,9 @@ const petTriggerRules = [
     bubble: "稳住，今天能拿下。",
   },
 ];
-const maxUploadBytes = 8 * 1024 * 1024;
+const maxUploadBytes = 25 * 1024 * 1024;
+const attachmentAccept = "image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp";
+const attachmentExtensions = new Set(["txt", "md", "json", "csv", "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "webp"]);
 
 const modeNotes = {
   safe: {
@@ -727,6 +723,7 @@ let conversations = loadConversations();
 let conversationSearchTerm = "";
 let openConversationMenuId = null;
 let selectedAttachments = [];
+let composerDragDepth = 0;
 let automations = loadStoredList(automationsStorageKey);
 let schedules = loadStoredList(schedulesStorageKey);
 let temporaryTask = loadTemporaryTask();
@@ -3966,16 +3963,19 @@ async function submitPromptText(prompt, options = {}) {
   if (!text) return;
   if (await executeSlashCommand(text)) {
     promptInput.value = "";
+    resizePromptInput();
     closeSlashCommandMenu();
     return;
   }
   if (createTemporaryTaskFromPrompt(text, options.source)) {
     promptInput.value = "";
+    resizePromptInput();
     closeSlashCommandMenu();
     return;
   }
   if (tryCreateScheduleFromPrompt(text, { source: options.source || "chat_input" })) {
     promptInput.value = "";
+    resizePromptInput();
     return;
   }
   await startRun(text, options.source === "voice" ? { voiceInput: true } : {});
@@ -4179,6 +4179,7 @@ function startNewConversation() {
   currentConversationId = null;
   activeAssistantMessage = null;
   promptInput.value = "";
+  resizePromptInput();
   setRunState("idle", "准备就绪");
   setEmptyState();
   promptInput.focus();
@@ -4610,15 +4611,17 @@ function handlePacket(packet) {
 
 function attachmentSummary() {
   if (!selectedAttachments.length) return "";
-  const paths = selectedAttachments
-    .map((item) => `- ${item.name}：${item.path || "上传路径缺失"}`)
+  const lines = selectedAttachments
+    .map((item) => {
+      const status = item.path ? `uploaded local path: ${item.path}` : "frontend metadata only; file content was not uploaded";
+      return `- ${item.name} (${formatFileSize(item.size)}, ${item.kind || "file"}): ${status}`;
+    })
     .join("\n");
   return [
     "",
     "",
-    "[本次对话包含图片附件，已保存到本机路径：",
-    paths,
-    "本轮已触发图片识别，请直接调用可用的视觉/图片读取能力分析这些图片，不要等待用户再次确认；该能力只在本轮图片输入时触发。若当前工具链无法看图，请明确说明无法读取图片。]",
+    "[本次对话包含本地附件元信息。图片可能包含本机上传路径；非图片文件只保留前端元信息，尚未持久化或上传。除非存在可读路径，否则不要声称已经读取文件内容。]",
+    lines,
   ].join("\n");
 }
 
@@ -4627,8 +4630,41 @@ function clearAttachments() {
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
   }
   selectedAttachments = [];
-  imageUploadInput.value = "";
+  if (imageUploadInput) imageUploadInput.value = "";
   renderAttachmentPreview();
+}
+
+function formatFileSize(size) {
+  const bytes = Number(size) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isImageFile(file) {
+  return String(file?.type || "").startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file?.name || "");
+}
+
+function isSupportedAttachmentFile(file) {
+  if (!file) return false;
+  if (isImageFile(file)) return true;
+  const ext = String(file.name || "").split(".").pop()?.toLowerCase() || "";
+  return attachmentExtensions.has(ext);
+}
+
+function makeAttachmentMetadata(item) {
+  return {
+    id: item.id,
+    name: item.name,
+    size: item.size,
+    type: item.type,
+    lastModified: item.lastModified,
+    kind: item.kind || (String(item.type || "").startsWith("image/") ? "image" : "file"),
+    path: item.path || "",
+    localPreviewUrl: item.previewUrl || "",
+    uploaded: Boolean(item.path),
+    localOnly: !item.path,
+  };
 }
 
 function confirmHighRiskRun(config) {
@@ -4677,23 +4713,15 @@ async function startRun(prompt, overrides = {}) {
     assistantTextFlushTimer = null;
   }
   const finalPrompt = `${prompt}${attachmentSummary()}`;
-  const outgoingAttachments = selectedAttachments.map((item) => ({
-    id: item.id,
-    name: item.name,
-    size: item.size,
-    type: item.type,
-    path: item.path,
-  }));
+  const outgoingAttachments = selectedAttachments.map(makeAttachmentMetadata);
   inspectPromptForPetMood(prompt);
   createOrUpdateProjectConversation(finalPrompt, prompt);
   activeRunConversationId = currentConversationId;
   appendActiveRunConversationMessage("user", "你", finalPrompt);
   addMessage("user", "你", finalPrompt);
   if (selectedAttachments.length) {
-    addMessage("system", "附件", "图片已上传到本机，并已把本地路径随本次消息发送给 Claude Code。");
+    addMessage("system", "附件", "已把附件元信息随本次消息发送给 Claude Code；未上传的文件只保留前端元信息。");
   }
-  clearAttachments();
-  promptInput.value = "";
   modelInput.value = modelInput.value.trim();
   window.localStorage.setItem(modelStorageKey, modelInput.value);
 
@@ -4759,6 +4787,9 @@ async function startRun(prompt, overrides = {}) {
       return;
     }
 
+    clearAttachments();
+    promptInput.value = "";
+    resizePromptInput();
     await readSse(response);
   } catch (error) {
     if (error.name !== "AbortError") {
@@ -4798,27 +4829,31 @@ function typedToolAuthorizationChoice(prompt) {
 
 async function runPrompt(event) {
   event.preventDefault();
-  const prompt = promptInput.value.trim() || (selectedAttachments.length ? "请查看我上传的图片。" : "");
+  const prompt = promptInput.value.trim() || (selectedAttachments.length ? "请查看我添加的附件。" : "");
   if (!prompt) return;
   const authorizationChoice = typedToolAuthorizationChoice(prompt);
   if (authorizationChoice) {
     promptInput.value = "";
+    resizePromptInput();
     closeSlashCommandMenu();
     await submitToolAuthorization(authorizationChoice);
     return;
   }
   if (await executeSlashCommand(prompt)) {
     promptInput.value = "";
+    resizePromptInput();
     closeSlashCommandMenu();
     return;
   }
   if (createTemporaryTaskFromPrompt(prompt)) {
     promptInput.value = "";
+    resizePromptInput();
     closeSlashCommandMenu();
     return;
   }
   if (tryCreateScheduleFromPrompt(prompt, { source: "chat_input" })) {
     promptInput.value = "";
+    resizePromptInput();
     return;
   }
   await startRun(prompt);
@@ -4826,6 +4861,7 @@ async function runPrompt(event) {
 
 function fillPrompt(text) {
   promptInput.value = text;
+  resizePromptInput();
   closeSlashCommandMenu();
   promptInput.focus();
 }
@@ -4876,16 +4912,25 @@ function syncConversationSearch(value) {
 function renderAttachmentPreview() {
   attachmentPreview.innerHTML = "";
   attachmentPreview.hidden = selectedAttachments.length === 0;
+  if (selectedAttachments.length) {
+    const label = document.createElement("span");
+    label.className = "attachment-chip";
+    label.textContent = "已添加文件";
+    attachmentPreview.append(label);
+  }
   for (const attachment of selectedAttachments) {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
 
-    const image = document.createElement("img");
-    image.src = attachment.previewUrl;
-    image.alt = attachment.name;
+    if (attachment.kind === "image" && attachment.previewUrl) {
+      const image = document.createElement("img");
+      image.src = attachment.previewUrl;
+      image.alt = attachment.name;
+      chip.append(image);
+    }
 
     const text = document.createElement("span");
-    text.textContent = attachment.name;
+    text.textContent = `${attachment.name} · ${formatFileSize(attachment.size)}`;
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -4893,11 +4938,11 @@ function renderAttachmentPreview() {
     remove.textContent = "×";
     remove.addEventListener("click", () => {
       selectedAttachments = selectedAttachments.filter((item) => item.id !== attachment.id);
-      URL.revokeObjectURL(attachment.previewUrl);
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
       renderAttachmentPreview();
     });
 
-    chip.append(image, text, remove);
+    chip.append(text, remove);
     attachmentPreview.append(chip);
   }
 }
@@ -4941,65 +4986,108 @@ async function uploadImageFile(file) {
   return result.files[0];
 }
 
+async function addAttachmentFile(file) {
+  if (!isSupportedAttachmentFile(file)) {
+    addMessage("error", "附件类型不支持", `${file.name} 暂不支持添加。`);
+    return;
+  }
+  if (file.size > maxUploadBytes) {
+    addMessage("error", "文件过大", `${file.name} 文件过大，最大支持 25MB`);
+    return;
+  }
+
+  const isImage = isImageFile(file);
+  const previewUrl = isImage ? URL.createObjectURL(file) : "";
+
+  if (!isImage) {
+    selectedAttachments.push({
+      id: makeId(),
+      name: file.name,
+      size: file.size,
+      type: file.type || "application/octet-stream",
+      lastModified: file.lastModified,
+      kind: "file",
+      file,
+      previewUrl,
+      path: "",
+      localOnly: true,
+    });
+    return;
+  }
+
+  try {
+    const uploaded = await uploadImageFile(file);
+    selectedAttachments.push({
+      id: uploaded.id || makeId(),
+      name: uploaded.name || file.name,
+      size: uploaded.size || file.size,
+      type: uploaded.mimeType || file.type,
+      lastModified: file.lastModified,
+      kind: "image",
+      file,
+      path: uploaded.path || "",
+      previewUrl,
+      localOnly: !uploaded.path,
+    });
+  } catch (error) {
+    URL.revokeObjectURL(previewUrl);
+    addMessage("error", "图片上传失败", error.message || "图片上传失败");
+  }
+}
+
+async function handleAttachmentFiles(files) {
+  const list = Array.from(files || []);
+  for (const file of list) {
+    await addAttachmentFile(file);
+  }
+  if (imageUploadInput) imageUploadInput.value = "";
+  renderAttachmentPreview();
+}
+
 async function handleImageUpload() {
   const files = Array.from(imageUploadInput.files || []);
-  for (const file of files) {
-    if (!file.type.startsWith("image/")) {
-      addMessage("error", "附件类型不支持", `${file.name} 不是图片文件，暂不支持上传。`);
-      continue;
-    }
-    if (file.size > maxUploadBytes) {
-      addMessage("error", "图片过大", `${file.name} 超过 8MB，请压缩后再上传。`);
-      continue;
-    }
-    const previewUrl = URL.createObjectURL(file);
-    try {
-      const uploaded = await uploadImageFile(file);
-      selectedAttachments.push({
-        id: uploaded.id || makeId(),
-        name: uploaded.name || file.name,
-        size: uploaded.size || file.size,
-        type: uploaded.mimeType || file.type,
-        path: uploaded.path,
-        previewUrl,
-      });
-    } catch (error) {
-      URL.revokeObjectURL(previewUrl);
-      addMessage("error", "图片上传失败", error.message || "图片上传失败");
-    }
-  }
-  imageUploadInput.value = "";
-  renderAttachmentPreview();
+  await handleAttachmentFiles(files);
 }
 
 async function handleImagePaste(event) {
   const files = clipboardImageFiles(event);
   if (!files.length) return;
   event.preventDefault();
-  for (const file of files) {
-    if (!file.type.startsWith("image/")) continue;
-    if (file.size > maxUploadBytes) {
-      addMessage("error", "\u56fe\u7247\u8fc7\u5927", "\u526a\u8d34\u677f\u56fe\u7247\u8d85\u8fc7 8MB\uff0c\u8bf7\u538b\u7f29\u540e\u518d\u7c98\u8d34\u3002");
-      continue;
-    }
-    const previewUrl = URL.createObjectURL(file);
-    try {
-      const uploaded = await uploadImageFile(file);
-      selectedAttachments.push({
-        id: uploaded.id || makeId(),
-        name: uploaded.name || file.name || "clipboard-image.png",
-        size: uploaded.size || file.size,
-        type: uploaded.mimeType || file.type || "image/png",
-        path: uploaded.path,
-        previewUrl,
-      });
-      addMessage("system", "\u56fe\u7247", "\u5df2\u4ece\u526a\u8d34\u677f\u6dfb\u52a0\u56fe\u7247\uff0c\u53ef\u4ee5\u7ee7\u7eed\u8f93\u5165\u8981\u5206\u6790\u7684\u95ee\u9898\u3002");
-    } catch (error) {
-      URL.revokeObjectURL(previewUrl);
-      addMessage("error", "\u56fe\u7247\u7c98\u8d34\u5931\u8d25", error.message || "\u56fe\u7247\u7c98\u8d34\u5931\u8d25");
-    }
-  }
-  renderAttachmentPreview();
+  await handleAttachmentFiles(files);
+}
+
+async function handleComposerDrop(event) {
+  const files = Array.from(event?.dataTransfer?.files || []);
+  if (!files.length) return;
+  event.preventDefault();
+  composerDragDepth = 0;
+  setComposerDragActive(false);
+  await handleAttachmentFiles(files);
+}
+
+function setComposerDragActive(active) {
+  if (!composerInputWrap) return;
+  composerInputWrap.classList.toggle("is-drag-over", Boolean(active));
+  composerInputWrap.style.outline = active ? "1px solid rgba(245, 158, 11, 0.75)" : "";
+  composerInputWrap.style.background = active ? "rgba(245, 158, 11, 0.08)" : "";
+}
+
+function hasDraggedFiles(event) {
+  return Array.from(event?.dataTransfer?.types || []).includes("Files");
+}
+
+function resizePromptInput() {
+  if (!promptInput) return;
+  const style = window.getComputedStyle(promptInput);
+  const lineHeight = Number.parseFloat(style.lineHeight) || 23;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0;
+  const maxHeight = Math.ceil(lineHeight * 3 + paddingTop + paddingBottom);
+
+  promptInput.style.height = "auto";
+  promptInput.style.maxHeight = `${maxHeight}px`;
+  promptInput.style.height = `${Math.min(promptInput.scrollHeight, maxHeight)}px`;
+  promptInput.style.overflowY = promptInput.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
 function requestScreenshot() {
@@ -5206,8 +5294,42 @@ installedExtensionsBtn?.addEventListener("click", openInstalledExtensionsView);
 extensionsPageCloseBtn?.addEventListener("click", closeInstalledExtensionsPage);
 voiceModeBtn?.addEventListener("click", toggleVoiceMode);
 temporaryTaskCancelBtn?.addEventListener("click", cancelTemporaryTask);
+if (imageUploadInput) {
+  imageUploadInput.accept = attachmentAccept;
+  imageUploadInput.multiple = true;
+}
+if (promptForm && imageUploadInput && !$("#attachmentPickerBtn")) {
+  const attachmentPickerBtn = document.createElement("button");
+  attachmentPickerBtn.id = "attachmentPickerBtn";
+  attachmentPickerBtn.className = "attachment-entry";
+  attachmentPickerBtn.type = "button";
+  attachmentPickerBtn.title = "选择图片或文件";
+  attachmentPickerBtn.setAttribute("aria-label", "选择图片或文件");
+  attachmentPickerBtn.textContent = "+";
+  promptForm.insertBefore(attachmentPickerBtn, voiceModeBtn || composerInputWrap);
+  attachmentPickerBtn.addEventListener("click", () => imageUploadInput.click());
+}
 imageUploadInput?.addEventListener("change", handleImageUpload);
 document.addEventListener("paste", handleImagePaste, true);
+composerInputWrap?.addEventListener("dragenter", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  composerDragDepth += 1;
+  setComposerDragActive(true);
+});
+composerInputWrap?.addEventListener("dragover", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  event.preventDefault();
+  setComposerDragActive(true);
+});
+composerInputWrap?.addEventListener("dragleave", (event) => {
+  if (!hasDraggedFiles(event)) return;
+  composerDragDepth = Math.max(0, composerDragDepth - 1);
+  if (composerDragDepth === 0) setComposerDragActive(false);
+});
+composerInputWrap?.addEventListener("drop", (event) => {
+  handleComposerDrop(event).catch((error) => addMessage("error", "附件", error.message || "附件添加失败"));
+});
 
 for (const button of modeButtons) {
   button.addEventListener("click", () => {
@@ -5237,7 +5359,7 @@ for (const button of workspaceTabButtons) {
 }
 
 promptInput.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;
+  if (event.isComposing || event.keyCode === 229) return;
   const slashOpen = slashCommandMenu && !slashCommandMenu.hidden;
   if (slashOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
     event.preventDefault();
@@ -5267,6 +5389,7 @@ promptInput.addEventListener("keydown", (event) => {
 });
 
 promptInput.addEventListener("input", () => {
+  resizePromptInput();
   inspectDraftForPetMood();
   slashCommandIndex = 0;
   renderSlashCommandMenu();
@@ -5398,6 +5521,7 @@ renderConfigChecklist();
 applyCompactRightPanelDefaults();
 renderAccountMenu();
 applyPetSyncUi();
+resizePromptInput();
 loadFeishuTutorialStatus();
 loadVoiceCapabilities().catch(() => updateVoiceButtonHint());
 setInterval(checkSchedules, 30000);

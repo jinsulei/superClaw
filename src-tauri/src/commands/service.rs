@@ -65,12 +65,17 @@ struct GuardianEventPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GatewayOwnerRecord {
     pid: Option<u32>,
     port: u16,
+    #[serde(alias = "cli_path")]
     cli_path: Option<String>,
+    #[serde(alias = "openclaw_dir")]
     openclaw_dir: String,
+    #[serde(alias = "started_at")]
     started_at: String,
+    #[serde(alias = "started_by")]
     started_by: String,
 }
 
@@ -81,6 +86,32 @@ fn normalize_owned_path(path: impl AsRef<std::path::Path>) -> String {
         .unwrap_or_else(|_| path_ref.to_path_buf())
         .to_string_lossy()
         .to_string()
+}
+
+fn normalize_path_text_for_compare(value: &str) -> String {
+    let mut normalized = value.trim().replace('/', "\\");
+    while normalized.contains("\\\\") {
+        normalized = normalized.replace("\\\\", "\\");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        normalized.to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        normalized
+    }
+}
+
+fn normalize_owned_path_for_compare(path: impl AsRef<std::path::Path>) -> String {
+    normalize_path_text_for_compare(&normalize_owned_path(path))
+}
+
+fn paths_match_for_compare(
+    left: impl AsRef<std::path::Path>,
+    right: impl AsRef<std::path::Path>,
+) -> bool {
+    normalize_owned_path_for_compare(left) == normalize_owned_path_for_compare(right)
 }
 
 fn gateway_owner_path() -> std::path::PathBuf {
@@ -106,13 +137,13 @@ fn matches_current_gateway_owner_signature(owner: &GatewayOwnerRecord) -> bool {
     if owner.port != port {
         return false;
     }
-    if normalize_owned_path(&owner.openclaw_dir) != openclaw_dir {
+    if !paths_match_for_compare(&owner.openclaw_dir, &openclaw_dir) {
         return false;
     }
-    let owner_cli_path = owner.cli_path.as_ref().map(normalize_owned_path);
+    let owner_cli_path = owner.cli_path.as_deref();
     // 仅当双方都有 cli_path 且不同才视为不匹配；任一侧缺失时放宽为兼容（向后兼容旧记录/未绑定 CLI）
     match (owner_cli_path.as_deref(), cli_path.as_deref()) {
-        (Some(a), Some(b)) => a == b,
+        (Some(a), Some(b)) => paths_match_for_compare(a, b),
         _ => true,
     }
 }
@@ -155,6 +186,7 @@ fn is_current_gateway_owner(owner: &GatewayOwnerRecord, _pid: Option<u32>) -> bo
 }
 
 /// 判断是否可以安全地自动认领 Gateway：端口 + 数据目录匹配即可（忽略 started_by）
+#[allow(dead_code)]
 fn should_auto_claim_gateway(owner: &Option<GatewayOwnerRecord>) -> bool {
     let (port, openclaw_dir, _cli_path) = current_gateway_owner_signature();
     match owner {
@@ -162,6 +194,38 @@ fn should_auto_claim_gateway(owner: &Option<GatewayOwnerRecord>) -> bool {
         Some(record) => {
             // owner 文件存在但签名不完全匹配 → 仅按 port + openclaw_dir 判断
             record.port == port && normalize_owned_path(&record.openclaw_dir) == openclaw_dir
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn gateway_pid_belongs_to_current_project(pid: Option<u32>) -> bool {
+    pid.map(platform::gateway_pid_belongs_to_current_project)
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn gateway_pid_belongs_to_current_project(_pid: Option<u32>) -> bool {
+    false
+}
+
+fn should_auto_claim_gateway_with_pid(owner: &Option<GatewayOwnerRecord>, pid: Option<u32>) -> bool {
+    let (port, openclaw_dir, _cli_path) = current_gateway_owner_signature();
+    match owner {
+        None => true,
+        Some(record) => {
+            if record.port == port && paths_match_for_compare(&record.openclaw_dir, &openclaw_dir) {
+                return true;
+            }
+            if record.port == port && gateway_pid_belongs_to_current_project(pid) {
+                guardian_log(&format!(
+                    "Gateway owner mismatch, reclaiming bundled Gateway PID {:?}",
+                    pid
+                ));
+                return true;
+            }
+            guardian_log("Gateway owner mismatch, keeping Gateway as foreign");
+            false
         }
     }
 }
@@ -188,7 +252,7 @@ fn ensure_owned_gateway_or_err(pid: Option<u32>) -> Result<(), String> {
         }
     }
     // 无有效 owner 或签名不匹配 → 尝试自动认领（端口 + 数据目录匹配即可）
-    if should_auto_claim_gateway(&owner) {
+    if should_auto_claim_gateway_with_pid(&owner, pid) {
         write_gateway_owner(pid)?;
         return Ok(());
     }
@@ -1328,6 +1392,31 @@ mod platform {
         None
     }
 
+    pub(super) fn gateway_pid_belongs_to_current_project(pid: u32) -> bool {
+        let Some(command_line) = read_process_command_line(pid) else {
+            return false;
+        };
+        let text = super::normalize_path_text_for_compare(&command_line);
+        if !(text.contains("openclaw") && text.contains("gateway")) {
+            return false;
+        }
+        let mut candidates = Vec::new();
+        if let Some(dir) = crate::commands::bundled_openclaw_bin_dir() {
+            candidates.push(dir);
+        }
+        if let Some(cli_path) = crate::utils::resolve_openclaw_cli_path() {
+            let path = std::path::PathBuf::from(cli_path);
+            if let Some(parent) = path.parent() {
+                candidates.push(parent.to_path_buf());
+            }
+        }
+        candidates.push(crate::commands::openclaw_dir());
+        candidates.into_iter().any(|candidate| {
+            let signature = super::normalize_owned_path_for_compare(candidate);
+            !signature.is_empty() && text.contains(&signature)
+        })
+    }
+
     fn kill_process_tree(pid: u32) {
         // 先尝试 /ti（包含子进程）
         let _ = StdCommand::new("taskkill")
@@ -2142,7 +2231,7 @@ pub async fn get_services_status() -> Result<Vec<ServiceStatus>, String> {
             }
         }
         // 自动认领：Gateway 在运行但无有效 owner，且端口 + 数据目录匹配 → 自动写入 owner
-        if running && !owned_by_current_instance && should_auto_claim_gateway(&owner) {
+        if running && !owned_by_current_instance && should_auto_claim_gateway_with_pid(&owner, pid) {
             let _ = write_gateway_owner(pid);
             owned_by_current_instance = true;
         }

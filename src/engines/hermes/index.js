@@ -123,7 +123,7 @@ export default {
         { route: '/h/chat', label: t('sidebar.chat'), icon: 'chat' },
         { route: '/h/sessions', label: t('sidebar.sessions'), icon: 'inbox' },
         { route: '/h/logs', label: t('sidebar.logs'), icon: 'logs' },
-        { route: '/h/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
+        // HIDDEN: { route: '/h/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
       ]
     }, {
       section: t('sidebar.sectionManage'),
@@ -137,7 +137,7 @@ export default {
       section: '',
       items: [
         { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]

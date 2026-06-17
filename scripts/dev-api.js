@@ -3530,13 +3530,13 @@ function patchGatewayOrigins() {
 function readOpenclawConfigOptional() {
   ensureOpenclawConfigFile()
   if (!fs.existsSync(CONFIG_PATH)) return {}
-  return cleanLoadedConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')))
+  return cleanLoadedConfig(JSON.parse(decodeJsonFileContent(CONFIG_PATH)))
 }
 
 function readOpenclawConfigRequired() {
   ensureOpenclawConfigFile()
   if (!fs.existsSync(CONFIG_PATH)) throw new Error('openclaw.json 不存在')
-  return cleanLoadedConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')))
+  return cleanLoadedConfig(JSON.parse(decodeJsonFileContent(CONFIG_PATH)))
 }
 
 function ensureOpenclawConfigFile() {
@@ -4113,12 +4113,51 @@ function gatewayOwnerFilePath() {
   return path.join(OPENCLAW_DIR, 'gateway-owner.json')
 }
 
+function normalizePathTextForCompare(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const normalized = text.replace(/\//g, '\\').replace(/\\+/g, '\\')
+  return isWindows ? normalized.toLowerCase() : normalized
+}
+
+function normalizePathForCompare(value) {
+  if (typeof value !== 'string' || !value.trim()) return null
+  let resolved
+  try {
+    resolved = path.resolve(value)
+  } catch {
+    resolved = value
+  }
+  try {
+    resolved = fs.realpathSync.native(resolved)
+  } catch {}
+  return normalizePathTextForCompare(resolved)
+}
+
+function pathsMatchForCompare(left, right) {
+  const a = normalizePathForCompare(left)
+  const b = normalizePathForCompare(right)
+  return !!a && !!b && a === b
+}
+
+function normalizeGatewayOwnerRecord(owner) {
+  if (!owner || typeof owner !== 'object') return null
+  return {
+    ...owner,
+    cliPath: owner.cliPath || owner.cli_path || null,
+    openclawDir: owner.openclawDir || owner.openclaw_dir || '',
+    startedAt: owner.startedAt || owner.started_at || '',
+    startedBy: owner.startedBy || owner.started_by || '',
+  }
+}
+
 function readGatewayOwner() {
   try {
     const ownerPath = gatewayOwnerFilePath()
     if (!fs.existsSync(ownerPath)) return null
-    return JSON.parse(fs.readFileSync(ownerPath, 'utf8'))
-  } catch {
+    return normalizeGatewayOwnerRecord(JSON.parse(fs.readFileSync(ownerPath, 'utf8')))
+  } catch (error) {
+    console.warn(`[gateway-owner] read failed: ${error?.message || error}`)
     return null
   }
 }
@@ -4135,10 +4174,9 @@ function matchesCurrentGatewayOwnerSignature(owner) {
   if (!owner || owner.startedBy !== 'clawpanel') return false
   const current = currentGatewayOwnerSignature()
   if (Number(owner.port || 0) !== current.port) return false
-  if (!owner.openclawDir || path.resolve(owner.openclawDir) !== current.openclawDir) return false
+  if (!pathsMatchForCompare(owner.openclawDir, current.openclawDir)) return false
   // 仅当双方都有 cliPath 且不同时才视为不匹配；任一侧缺失时放宽为兼容（向后兼容旧记录/未绑定 CLI）
-  const ownerCliPath = canonicalCliPath(owner.cliPath)
-  if (ownerCliPath && current.cliPath && ownerCliPath !== current.cliPath) return false
+  if (owner.cliPath && current.cliPath && !pathsMatchForCompare(owner.cliPath, current.cliPath)) return false
   return true
 }
 
@@ -4162,7 +4200,7 @@ function writeGatewayOwner(pid = null) {
     pid: Number.isInteger(pid) && pid > 0 ? pid : null,
     startedAt: new Date().toISOString(),
     startedBy: 'clawpanel',
-  }, null, 2))
+  }, null, 2), 'utf8')
 }
 
 function clearGatewayOwner() {
@@ -4172,12 +4210,43 @@ function clearGatewayOwner() {
   } catch {}
 }
 
-function shouldAutoClaimGateway(owner) {
+function gatewayOwnerMismatchReason(owner) {
+  const current = currentGatewayOwnerSignature()
+  if (!owner) return 'missing owner'
+  if (owner.startedBy !== 'clawpanel') return `startedBy mismatch: ${owner.startedBy || '(empty)'}`
+  if (Number(owner.port || 0) !== current.port) return `port mismatch: ${owner.port || '(empty)'} != ${current.port}`
+  if (!pathsMatchForCompare(owner.openclawDir, current.openclawDir)) return 'openclawDir mismatch'
+  if (owner.cliPath && current.cliPath && !pathsMatchForCompare(owner.cliPath, current.cliPath)) return 'cliPath mismatch'
+  return 'unknown mismatch'
+}
+
+function windowsGatewayPidBelongsToCurrentProject(pid) {
+  if (!isWindows || !Number.isInteger(Number(pid))) return false
+  const commandLine = readWindowsProcessCommandLine(Number(pid))
+  if (!looksLikeGatewayCommandLine(commandLine)) return false
+  const text = normalizePathTextForCompare(commandLine)
+  const candidates = [
+    bundledOpenclawBinDir(),
+    resolveOpenclawCliPath() ? path.dirname(resolveOpenclawCliPath()) : null,
+    appResourcesDir(),
+    appRootDir(),
+  ].map(normalizePathForCompare).filter(Boolean)
+  return candidates.some(candidate => text.includes(candidate))
+}
+
+function shouldAutoClaimGateway(owner, pid = null) {
   const current = currentGatewayOwnerSignature()
   if (!owner) return true // 无 owner 文件 → 自动认领
   // owner 文件存在但签名不完全匹配 → 仅按 port + openclaw_dir 判断
-  return Number(owner.port || 0) === current.port
-    && !!owner.openclawDir && path.resolve(owner.openclawDir) === current.openclawDir
+  if (Number(owner.port || 0) === current.port && pathsMatchForCompare(owner.openclawDir, current.openclawDir)) {
+    return true
+  }
+  if (Number(owner.port || 0) === current.port && windowsGatewayPidBelongsToCurrentProject(pid)) {
+    console.warn(`[gateway-owner] ${gatewayOwnerMismatchReason(owner)}; reclaiming bundled Gateway PID ${pid || 'unknown'}`)
+    return true
+  }
+  console.warn(`[gateway-owner] ${gatewayOwnerMismatchReason(owner)}; keeping Gateway as foreign`)
+  return false
 }
 
 function foreignGatewayError(pid = null) {
@@ -4193,7 +4262,7 @@ function ensureOwnedGatewayOrThrow(pid = null) {
     return true
   }
   // 无有效 owner 或签名不匹配 → 尝试自动认领（端口 + 数据目录匹配即可）
-  if (shouldAutoClaimGateway(owner)) {
+  if (shouldAutoClaimGateway(owner, pid)) {
     writeGatewayOwner(pid)
     return true
   }
