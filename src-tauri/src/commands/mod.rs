@@ -362,17 +362,6 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         );
         changed = true;
     }
-    if let Some(models) = obj.get_mut("models").and_then(|v| v.as_object_mut()) {
-        let providers = models
-            .entry("providers")
-            .or_insert_with(|| serde_json::json!({}));
-        if let Some(providers_obj) = providers.as_object_mut() {
-            if providers_obj.remove("minimax").is_some() {
-                changed = true;
-            }
-        }
-    }
-
     let yyapi_primary = obj
         .get("models")
         .and_then(|v| v.get("providers"))
@@ -398,55 +387,28 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
         if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
             if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
-                if model
-                    .get("primary")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|v| v.starts_with("minimax/"))
-                {
-                    model.insert("primary".into(), serde_json::json!(yyapi_primary.clone()));
-                    changed = true;
-                }
                 if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
-                    let before = fallbacks.len();
-                    fallbacks.retain(|v| !v.as_str().is_some_and(|s| s.starts_with("minimax/")));
-                    if fallbacks.is_empty() && !yyapi_fallback.is_empty() {
+                    if fallbacks.is_empty()
+                        && !yyapi_fallback.is_empty()
+                        && !yyapi_primary.is_empty()
+                    {
                         fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
-                    }
-                    if fallbacks.len() != before {
                         changed = true;
                     }
-                }
-            }
-            if let Some(agent_models) = defaults.get_mut("models").and_then(|v| v.as_object_mut()) {
-                let keys: Vec<String> = agent_models
-                    .keys()
-                    .filter(|key| key.starts_with("minimax/"))
-                    .cloned()
-                    .collect();
-                for key in keys {
-                    agent_models.remove(&key);
-                    changed = true;
                 }
             }
         }
         if let Some(list) = agents.get_mut("list").and_then(|v| v.as_array_mut()) {
             for agent in list.iter_mut().filter_map(|v| v.as_object_mut()) {
                 if let Some(model) = agent.get_mut("model").and_then(|v| v.as_object_mut()) {
-                    if model
-                        .get("primary")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|v| v.starts_with("minimax/"))
+                    if let Some(fallbacks) =
+                        model.get_mut("fallbacks").and_then(|v| v.as_array_mut())
                     {
-                        model.insert("primary".into(), serde_json::json!(yyapi_primary.clone()));
-                        changed = true;
-                    }
-                    if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
-                        let before = fallbacks.len();
-                        fallbacks.retain(|v| !v.as_str().is_some_and(|s| s.starts_with("minimax/")));
-                        if fallbacks.is_empty() && !yyapi_fallback.is_empty() {
+                        if fallbacks.is_empty()
+                            && !yyapi_fallback.is_empty()
+                            && !yyapi_primary.is_empty()
+                        {
                             fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
-                        }
-                        if fallbacks.len() != before {
                             changed = true;
                         }
                     }
@@ -464,9 +426,6 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            if entries_obj.remove("minimax").is_some() {
-                changed = true;
-            }
             for key in ["browser", "desktop-control", "skill-manager"] {
                 let enabled = entries_obj
                     .get(key)

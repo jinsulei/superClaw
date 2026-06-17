@@ -8770,11 +8770,11 @@ const handlers = {
       fs.mkdirSync(path.join(home, d), { recursive: true })
     }
     const providerName = String(provider || 'custom').trim() || 'custom'
-    const modelStr = model || 'gpt-5.5'
-    const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
     const lowerProvider = providerName.toLowerCase()
+    const modelStr = model || (['minimax', 'minimax-cn'].includes(lowerProvider) ? 'MiniMax-M3' : 'gpt-5.5')
+    const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
     const isYyapi = lowerProvider === 'custom' || lowerProvider === 'yyapi'
-    const isOpenAiChat = isYyapi || ['openai', 'openrouter', 'deepseek'].includes(lowerProvider)
+    const isOpenAiChat = isYyapi || ['openai', 'openai-api', 'openrouter', 'deepseek', 'minimax', 'minimax-cn'].includes(lowerProvider)
     const providerLine = `  provider: ${isYyapi ? 'custom' : providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`
     const baseUrlLine = baseUrlValue ? `  base_url: ${baseUrlValue}\n` : ''
     const customProvidersBlock = isYyapi && baseUrlValue
@@ -9048,19 +9048,73 @@ const handlers = {
   // Web-mode stub: the authoritative 22-provider registry lives in Rust.
   // Web mode is primarily used for remote admin on headless Linux where
   hermes_list_providers() {
-    return [{
-      id: 'custom',
-      name: 'YYAPI',
-      authType: 'api_key',
-      baseUrl: configuredYyapiBaseUrl(),
-      baseUrlEnvVar: 'OPENAI_BASE_URL',
-      apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
-      transport: 'openai_chat',
-      modelsProbe: 'openai',
-      models: ['gpt-5.5'],
-      isAggregator: true,
-      cliAuthHint: '',
-    }]
+    return [
+      {
+        id: 'minimax',
+        name: 'MiniMax',
+        authType: 'api_key',
+        baseUrl: process.env.MINIMAX_BASE_URL || 'https://api.minimax.io/v1',
+        baseUrlEnvVar: 'MINIMAX_BASE_URL',
+        apiKeyEnvVars: ['MINIMAX_API_KEY'],
+        transport: 'openai_chat',
+        modelsProbe: 'openai',
+        models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5'],
+        isAggregator: false,
+        cliAuthHint: '',
+      },
+      {
+        id: 'minimax-cn',
+        name: 'MiniMax (CN)',
+        authType: 'api_key',
+        baseUrl: process.env.MINIMAX_CN_BASE_URL || 'https://api.minimaxi.com/v1',
+        baseUrlEnvVar: 'MINIMAX_CN_BASE_URL',
+        apiKeyEnvVars: ['MINIMAX_CN_API_KEY'],
+        transport: 'openai_chat',
+        modelsProbe: 'openai',
+        models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5'],
+        isAggregator: false,
+        cliAuthHint: '',
+      },
+      {
+        id: 'openai-api',
+        name: 'OpenAI Compatible',
+        authType: 'api_key',
+        baseUrl: process.env.OPENAI_BASE_URL || '',
+        baseUrlEnvVar: 'OPENAI_BASE_URL',
+        apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
+        transport: 'openai_chat',
+        modelsProbe: 'openai',
+        models: [],
+        isAggregator: true,
+        cliAuthHint: '',
+      },
+      {
+        id: 'yyapi',
+        name: 'YYAPI',
+        authType: 'api_key',
+        baseUrl: configuredYyapiBaseUrl(),
+        baseUrlEnvVar: 'OPENAI_BASE_URL',
+        apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
+        transport: 'openai_chat',
+        modelsProbe: 'openai',
+        models: ['gpt-5.5'],
+        isAggregator: true,
+        cliAuthHint: '',
+      },
+      {
+        id: 'custom',
+        name: 'Custom OpenAI-Compatible',
+        authType: 'api_key',
+        baseUrl: '',
+        baseUrlEnvVar: 'OPENAI_BASE_URL',
+        apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
+        transport: 'openai_chat',
+        modelsProbe: 'openai',
+        models: [],
+        isAggregator: true,
+        cliAuthHint: '',
+      },
+    ]
   },
 
   // -----------------------------------------------------------------------

@@ -430,7 +430,7 @@ export function render() {
           <div class="hm-field-row">
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
-              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimaxi.com/v1" ${yyapiManaged ? 'readonly aria-readonly="true"' : ''}>
+              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimax.io/v1" ${yyapiManaged ? 'readonly aria-readonly="true"' : ''}>
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiKey')}</span>
@@ -450,7 +450,7 @@ export function render() {
             <label class="hm-field" style="flex:1">
               <span class="hm-field-label">${t('engine.configModel')}</span>
               <div style="position:relative">
-                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="MiniMax-M2.7-highspeed">
+                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="MiniMax-M3">
                 ${dropdownHtml}
               </div>
             </label>

@@ -6,7 +6,7 @@ import { api } from '../lib/tauri-api.js'
 import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon, statusIcon } from '../lib/icons.js'
-import { API_TYPES, MODEL_PRESETS } from '../lib/model-presets.js'
+import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl, getYyapiConsoleUrl } from '../lib/yyapi-config.js'
@@ -1334,19 +1334,32 @@ function bindTopActions(page, state) {
 // 模型配置对话框（默认 YYApi，API Key 可下拉选择也可手动输入）
 function addProvider(page, state) {
   const yyapiBaseUrl = getYyapiBaseUrl()
+  const minimaxPreset = PROVIDER_PRESETS.find(p => p.key === 'minimax') || { key: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions' }
+  const quickPresets = [
+    minimaxPreset,
+    { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions' },
+    ...(yyapiBaseUrl ? [{ key: YYAPI_PROVIDER_KEY, label: 'YYAPI', baseUrl: yyapiBaseUrl, api: 'openai-completions' }] : []),
+  ]
   const overlay = document.createElement('div')
   overlay.className = 'modal-overlay'
   overlay.innerHTML = `
     <div class="modal" style="max-height:85vh;overflow-y:auto">
       <div class="modal-title">${t('models.addProviderTitle')}</div>
       <div class="form-group">
+        <label class="form-label">${t('models.quickAdd')}</label>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${quickPresets.map(p => `<button class="btn btn-sm btn-secondary provider-preset-btn" type="button" data-key="${escapeHtml(p.key)}" data-url="${escapeHtml(p.baseUrl || '')}" data-api="${escapeHtml(p.api || 'openai-completions')}">${escapeHtml(p.label)}</button>`).join('')}
+        </div>
+        <div class="form-hint">${t('models.quickAddHint')}</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">${t('models.providerName')}</label>
-        <input class="form-input" data-name="key" value="YYAPI" placeholder="deepseek">
+        <input class="form-input" data-name="key" value="${escapeHtml(minimaxPreset.key)}" placeholder="deepseek">
         <div class="form-hint">${t('models.providerNameHint')}</div>
       </div>
       <div class="form-group">
         <label class="form-label">${t('models.baseUrl')}</label>
-        <input class="form-input" data-name="baseUrl" value="${escapeHtml(yyapiBaseUrl)}" placeholder="https://api.openai.com/v1">
+        <input class="form-input" data-name="baseUrl" value="${escapeHtml(minimaxPreset.baseUrl)}" placeholder="https://api.openai.com/v1">
         <div class="form-hint">${t('models.baseUrlHint')}</div>
       </div>
       <div class="form-group">
@@ -1360,7 +1373,7 @@ function addProvider(page, state) {
       <div class="form-group">
         <label class="form-label">${t('models.apiType')}</label>
         <select class="form-input" data-name="api">
-          ${API_TYPES.map(at => `<option value="${at.value}" ${at.value === 'openai-completions' ? 'selected' : ''}>${at.label}</option>`).join('')}
+          ${API_TYPES.map(at => `<option value="${at.value}" ${at.value === (minimaxPreset.api || 'openai-completions') ? 'selected' : ''}>${at.label}</option>`).join('')}
         </select>
         <div class="form-hint">${t('models.apiTypeHint')}</div>
       </div>
@@ -1372,6 +1385,17 @@ function addProvider(page, state) {
   `
 
   document.body.appendChild(overlay)
+
+  overlay.querySelectorAll('.provider-preset-btn').forEach(btn => {
+    btn.onclick = () => {
+      const keyInput = overlay.querySelector('[data-name="key"]')
+      const baseUrlInput = overlay.querySelector('[data-name="baseUrl"]')
+      const apiSelect = overlay.querySelector('[data-name="api"]')
+      if (keyInput) keyInput.value = btn.dataset.key || ''
+      if (baseUrlInput) baseUrlInput.value = btn.dataset.url || ''
+      if (apiSelect) apiSelect.value = btn.dataset.api || 'openai-completions'
+    }
+  })
 
   // 异步加载 API Key 列表填充下拉框
   ;(async () => {
@@ -1454,12 +1478,17 @@ function addProvider(page, state) {
       }
     }
 
+    const presetModels = MODEL_PRESETS[key] || MODEL_PRESETS[key.toLowerCase()] || []
+    const initialModels = key.toLowerCase() === 'minimax' && presetModels.length
+      ? [{ ...presetModels[0], input: ['text', 'image'] }]
+      : []
+
     state.config.models.providers[key] = {
       baseUrl: baseUrl,
       apiKey: finalApiKey || '',
       api: apiType,
       managed: false,
-      models: [],
+      models: initialModels,
     }
     overlay.remove()
     renderProviders(page, state)

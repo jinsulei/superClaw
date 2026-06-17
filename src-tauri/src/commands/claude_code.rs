@@ -96,7 +96,11 @@ fn read_env_file(path: &Path) -> HashMap<String, String> {
         if key.is_empty() {
             continue;
         }
-        let value = value.trim().trim_matches('"').trim_matches('\'').to_string();
+        let value = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
         out.insert(key.to_string(), value);
     }
     out
@@ -113,8 +117,7 @@ fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String)> {
         .get("MINIMAX_BASE_URL")
         .or_else(|| env.get("MINIMAX_CN_BASE_URL"))
         .cloned()
-        .filter(|v| !v.trim().is_empty() && !v.contains("${"))
-        .unwrap_or_else(|| "https://api.minimaxi.com/anthropic/v1".to_string());
+        .filter(|v| !v.trim().is_empty() && !v.contains("${"))?;
     Some((key, base))
 }
 
@@ -427,11 +430,11 @@ fn write_native_launcher(
         "set \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\"".to_string(),
         minimax_env
             .as_ref()
-            .map(|(key, _)| format!("set \"MINIMAX_API_KEY={}\"", key))
+            .map(|(key, _)| format!("set \"{}={}\"", "MINIMAX_API_KEY", key))
             .unwrap_or_else(|| "rem MINIMAX_API_KEY not configured".to_string()),
         minimax_env
             .as_ref()
-            .map(|(_, base)| format!("set \"MINIMAX_BASE_URL={}\"", base))
+            .map(|(_, base)| format!("set \"{}={}\"", "MINIMAX_BASE_URL", base))
             .unwrap_or_else(|| "rem MINIMAX_BASE_URL not configured".to_string()),
         minimax_env
             .as_ref()
@@ -496,14 +499,14 @@ fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
         let mut cmd = Command::new("cmd.exe");
         cmd.args(["/d", "/c", "start", "", "cmd.exe", "/k"])
             .arg(&launcher)
-        .current_dir(&run_cwd)
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("APPDATA", home.join("AppData").join("Roaming"))
-        .env("LOCALAPPDATA", home.join("AppData").join("Local"))
-        .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
-        .env("CLAUDE_CODE_PROJECTS_DIR", &projects)
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+            .current_dir(&run_cwd)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("APPDATA", home.join("AppData").join("Roaming"))
+            .env("LOCALAPPDATA", home.join("AppData").join("Local"))
+            .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
+            .env("CLAUDE_CODE_PROJECTS_DIR", &projects)
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
         apply_minimax_env(&mut cmd, &resources);
         launcher_path = Some(launcher);
         cmd.spawn()
@@ -623,7 +626,10 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or_else(|| json!({}));
 
-    let force = config.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = config
+        .get("force")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let managed = existing
         .get("managedBy")
         .and_then(|v| v.as_str())

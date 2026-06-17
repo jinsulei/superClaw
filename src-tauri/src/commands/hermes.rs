@@ -369,9 +369,12 @@ async fn do_restart_gateway() -> Result<(), String> {
         return Err(format!("Hermes gateway run failed: {runtime_error}"));
     }
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("Hermes gateway run failed: {e}\n{}", hermes_runtime_diagnostics()))?;
+    let child = cmd.spawn().map_err(|e| {
+        format!(
+            "Hermes gateway run failed: {e}\n{}",
+            hermes_runtime_diagnostics()
+        )
+    })?;
     GW_PID.store(child.id(), Ordering::SeqCst);
 
     // 4. 等待端口可达（最多 15s）
@@ -1701,7 +1704,9 @@ fn hermes_portable_runtime_error() -> Option<String> {
         || app_root.join("uv-python").is_dir()
         || app_root.join("uv-tools").is_dir();
     let should_require_bundle = has_portable_layout || !cfg!(debug_assertions);
-    if should_require_bundle && (hermes_agent_python().is_none() || hermes_agent_site_packages().is_none()) {
+    if should_require_bundle
+        && (hermes_agent_python().is_none() || hermes_agent_site_packages().is_none())
+    {
         Some(hermes_runtime_diagnostics())
     } else {
         None
@@ -3005,10 +3010,13 @@ pub async fn configure_hermes(
     } else {
         String::new()
     };
-    let transport = pcfg.map(|p| p.transport).unwrap_or(hermes_providers::TRANSPORT_OPENAI_CHAT);
+    let transport = pcfg
+        .map(|p| p.transport)
+        .unwrap_or(hermes_providers::TRANSPORT_OPENAI_CHAT);
     let openai_chat_transport = transport == hermes_providers::TRANSPORT_OPENAI_CHAT;
     let custom_provider = provider == "custom";
-    let api_mode_line = if custom_provider || (!base_url_value.is_empty() && openai_chat_transport) {
+    let api_mode_line = if custom_provider || (!base_url_value.is_empty() && openai_chat_transport)
+    {
         "  api_mode: chat_completions\n".to_string()
     } else {
         String::new()
@@ -3964,7 +3972,9 @@ pub async fn hermes_gateway_action(
                 emit_gateway_status(false);
             } else {
                 emit_gateway_status(true);
-                return Err("Gateway stop requested, but the health endpoint is still reachable".into());
+                return Err(
+                    "Gateway stop requested, but the health endpoint is still reachable".into(),
+                );
             }
 
             match stop_result {
@@ -4720,14 +4730,20 @@ fn compact_hermes_history_content(content: &Value) -> String {
             if (typ == "text" || typ == "input_text" || typ.is_empty())
                 && obj.get("text").and_then(|v| v.as_str()).is_some()
             {
-                let text = obj.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let text = obj
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
                 if !text.is_empty() {
                     parts.push(text.to_string());
                 }
                 continue;
             }
 
-            if typ == "image" || typ == "input_image" || typ == "image_url"
+            if typ == "image"
+                || typ == "input_image"
+                || typ == "image_url"
                 || obj.contains_key("image_url")
                 || obj.get("source").and_then(|v| v.get("data")).is_some()
             {
@@ -4756,7 +4772,9 @@ fn build_hermes_conversation_history_from_session(
         return None;
     }
 
-    let path = hermes_home().join("sessions").join(format!("session_{sid}.json"));
+    let path = hermes_home()
+        .join("sessions")
+        .join(format!("session_{sid}.json"));
     let raw = std::fs::read_to_string(path).ok()?;
     let parsed: Value = serde_json::from_str(&raw).ok()?;
     let messages = parsed.get("messages")?.as_array()?;
@@ -4783,13 +4801,15 @@ fn build_hermes_conversation_history_from_session(
 
     while history
         .last()
-        .and_then(|item| item.get("role").and_then(|v| v.as_str()).map(|role| {
-            role == "user"
-                && same_hermes_history_text(
-                    item.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-                    current_input,
-                )
-        }))
+        .and_then(|item| {
+            item.get("role").and_then(|v| v.as_str()).map(|role| {
+                role == "user"
+                    && same_hermes_history_text(
+                        item.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        current_input,
+                    )
+            })
+        })
         .unwrap_or(false)
     {
         history.pop();
@@ -4863,7 +4883,9 @@ pub async fn hermes_agent_run(
     }
     if let Some(hist) = &conversation_history {
         payload["conversation_history"] = hist.clone();
-    } else if let Some(hist) = build_hermes_conversation_history_from_session(session_id.as_ref(), &input) {
+    } else if let Some(hist) =
+        build_hermes_conversation_history_from_session(session_id.as_ref(), &input)
+    {
         payload["conversation_history"] = hist;
     }
     if let Some(inst) = &instructions {
@@ -7800,7 +7822,7 @@ mod guardian_tests {
     fn detects_enabled_variants() {
         let yaml = "\
 model:
-  default: MiniMax-M2.7-highspeed
+  default: MiniMax-M3
 platforms:
   api_server:
     enabled: true
