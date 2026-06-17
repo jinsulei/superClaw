@@ -195,7 +195,7 @@ const temporaryTaskStorageKey = "cleanClaude.temporaryTask.v1";
 const automaticScheduleExecutionEnabled = false;
 const setupDismissedKey = "cleanClaude.setupDismissed.session";
 const superclawBaseStorageKey = "cleanClaude.superclawBase.v1";
-const fallbackSuperclawBase = "";
+const fallbackSuperclawBase = "http://127.0.0.1:1420";
 let consoleSwitchProgressFrame = null;
 let consoleSwitchProgressTimer = null;
 let nativeClaudeRunning = false;
@@ -249,7 +249,7 @@ function resolveSuperclawBase() {
   } catch {
     base = "";
   }
-  return base || fallbackSuperclawBase || "#";
+  return base || fallbackSuperclawBase;
 }
 
 function getSuperclawTargetCopy(route) {
@@ -715,7 +715,6 @@ let takeoverModeAccepted = false;
 let pendingToolAuthorization = null;
 let slashCommandIndex = 0;
 let activeAssistantMessage = null;
-let activeRunActivity = null;
 let assistantTextBuffer = "";
 let assistantTextFlushTimer = null;
 let transcriptScrollFrame = null;
@@ -1279,85 +1278,6 @@ function addMessage(kind, title, text = "") {
   transcript.append(message);
   scheduleTranscriptScroll();
   return { message, body };
-}
-
-function summarizeToolInput(input) {
-  if (!input || typeof input !== "object") return "";
-  const command = input.command || input.cmd || input.shell || "";
-  if (command) return String(command).slice(0, 160);
-  const file = input.file_path || input.path || input.url || input.pattern || "";
-  if (file) return String(file).slice(0, 160);
-  const keys = Object.keys(input).slice(0, 4);
-  return keys.length ? keys.join(" / ") : "";
-}
-
-function ensureRunActivityCard() {
-  clearEmptyState();
-  if (activeRunActivity?.message?.isConnected) return activeRunActivity;
-  const message = document.createElement("section");
-  message.className = "run-activity-card";
-  message.innerHTML = `
-    <div class="run-activity-head">
-      <span class="run-activity-dot"></span>
-      <strong>运行过程</strong>
-      <small></small>
-    </div>
-    <div class="run-activity-list"></div>
-  `;
-  transcript.append(message);
-  activeRunActivity = {
-    message,
-    list: message.querySelector(".run-activity-list"),
-    seen: new Set(),
-  };
-  scheduleTranscriptScroll();
-  return activeRunActivity;
-}
-
-function appendRunActivity(type, title, detail = "") {
-  const card = ensureRunActivityCard();
-  const normalized = `${type}:${title}:${detail}`.replace(/\s+/g, " ").trim();
-  if (card.seen.has(normalized)) return;
-  card.seen.add(normalized);
-  const row = document.createElement("div");
-  row.className = `run-activity-row is-${type}`;
-  const label = document.createElement("span");
-  label.className = "run-activity-label";
-  label.textContent = title;
-  row.append(label);
-  if (detail) {
-    const desc = document.createElement("span");
-    desc.className = "run-activity-detail";
-    desc.textContent = detail.length > 220 ? `${detail.slice(0, 220)}...` : detail;
-    row.append(desc);
-  }
-  card.list.append(row);
-  scheduleTranscriptScroll();
-}
-
-function appendToolActivity(payload = {}) {
-  const name = String(payload.name || "tool");
-  const display = name === "Bash"
-    ? "执行命令"
-    : name === "Read"
-      ? "读取文件"
-      : name === "Edit" || name === "Write" || name === "MultiEdit"
-        ? "修改文件"
-        : name.startsWith("mcp__playwright")
-          ? "调用浏览器工具"
-          : `调用工具 ${name}`;
-  appendRunActivity("tool", display, summarizeToolInput(payload.input));
-}
-
-function appendLogActivity(text = "") {
-  const value = String(text || "").trim();
-  if (!value || isRuntimeSummaryMessage("system", "运行信息", value)) return;
-  const friendly = /Bash|command|cmd|powershell|shell/i.test(value)
-    ? "命令输出"
-    : /tool|mcp|function/i.test(value)
-      ? "工具状态"
-      : "运行日志";
-  appendRunActivity("log", friendly, value);
 }
 
 function closeSlashCommandMenu() {
@@ -1987,57 +1907,6 @@ function loadConversations() {
   }
 }
 
-function conversationUpdatedMs(conversation) {
-  const value = Date.parse(conversation?.updatedAt || conversation?.createdAt || "");
-  return Number.isFinite(value) ? value : 0;
-}
-
-function mergeConversationLists(primary = [], secondary = []) {
-  const map = new Map();
-  for (const item of [...secondary, ...primary]) {
-    if (!item?.id) continue;
-    const existing = map.get(item.id);
-    if (!existing || conversationUpdatedMs(item) >= conversationUpdatedMs(existing)) {
-      map.set(item.id, {
-        ...item,
-        status: normalizeConversationStatus(item.status),
-        pinned: Boolean(item.pinned),
-        archived: Boolean(item.archived),
-        messages: normalizeConversationMessages(item.messages || []),
-      });
-    }
-  }
-  return Array.from(map.values())
-    .sort((a, b) => conversationUpdatedMs(b) - conversationUpdatedMs(a))
-    .slice(0, 120);
-}
-
-async function hydrateConversationsFromPortableStore() {
-  try {
-    const response = await fetch("/api/conversations", { cache: "no-store" });
-    if (!response.ok) return;
-    const payload = await response.json();
-    const portableConversations = Array.isArray(payload.conversations) ? payload.conversations : [];
-    if (!portableConversations.length) {
-      if (conversations.length) saveConversations(true);
-      return;
-    }
-    const merged = mergeConversationLists(portableConversations, conversations);
-    const changed = JSON.stringify(merged) !== JSON.stringify(conversations);
-    conversations = merged;
-    if (changed) {
-      persistConversationsNow();
-      scheduleConversationRender();
-      if (currentConversationId) {
-        const active = getConversation(currentConversationId);
-        if (active) showConversation(active);
-      }
-    }
-  } catch {
-    // Keep localStorage as a fallback if the portable data store is unavailable.
-  }
-}
-
 function normalizeConversationStatus(status) {
   if (!status) return "已完成";
   if (status === "success" || status === "完成") return "已完成";
@@ -2052,19 +1921,6 @@ function persistConversationsNow() {
     messages: compactConversationMessages(conversation.messages || []),
   }));
   window.localStorage.setItem(conversationsStorageKey, JSON.stringify(compacted));
-  const payload = JSON.stringify({ conversations: compacted });
-  try {
-    if (navigator.sendBeacon) {
-      const blob = new Blob([payload], { type: "application/json" });
-      if (navigator.sendBeacon("/api/conversations", blob)) return;
-    }
-  } catch {}
-  fetch("/api/conversations", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: payload,
-    keepalive: true,
-  }).catch(() => {});
 }
 
 function saveConversations(immediate = false) {
@@ -4717,21 +4573,11 @@ function handlePacket(packet) {
 
   if (event === "text") {
     appendAssistantText(payload.text || "");
-  } else if (event === "meta") {
-    if (payload.tools) appendRunActivity("meta", "工具已就绪", `${payload.tools} 个可用工具`);
-    if (payload.sessionId) appendRunActivity("meta", "会话已连接", payload.sessionId);
-    if (payload.sessionId) {
-      updateActiveRunConversation({
-        nativeSessionId: payload.sessionId,
-        updatedAt: new Date().toISOString(),
-      });
-    }
-  } else if (event === "tool") {
-    appendToolActivity(payload);
-  } else if (event === "log") {
-    appendLogActivity(payload.text || "");
   } else if (event === "stderr") {
-    appendLogActivity(payload.text || "");
+    const text = payload.text || "";
+    if (!isRuntimeSummaryMessage("system", "运行信息", text)) {
+      addMessage("system", "运行信息", text);
+    }
   } else if (event === "error") {
     flushAssistantTextBuffer();
     setRunState("error", "运行异常");
@@ -4752,8 +4598,13 @@ function handlePacket(packet) {
       speakVoiceReply(replyText || "已完成。");
       voiceReplyPending = false;
     }
-  } else if (event === "exit") {
-    appendRunActivity(Number(payload.code) === 0 ? "done" : "error", "进程结束", `退出码 ${payload.code ?? "未知"}`);
+  } else if (event === "meta") {
+    if (payload.sessionId) {
+      updateActiveRunConversation({
+        nativeSessionId: payload.sessionId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
   }
 }
 
@@ -4820,7 +4671,6 @@ async function startRun(prompt, overrides = {}) {
   }
 
   activeAssistantMessage = null;
-  activeRunActivity = null;
   assistantTextBuffer = "";
   if (assistantTextFlushTimer) {
     clearTimeout(assistantTextFlushTimer);
@@ -5550,7 +5400,6 @@ renderAccountMenu();
 applyPetSyncUi();
 loadFeishuTutorialStatus();
 loadVoiceCapabilities().catch(() => updateVoiceButtonHint());
-hydrateConversationsFromPortableStore();
 setInterval(checkSchedules, 30000);
 setInterval(renderTemporaryTask, 30000);
 setInterval(checkWorkRestReminder, 60000);
