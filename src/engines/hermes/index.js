@@ -130,13 +130,13 @@ export default {
       items: [
         { route: '/h/skills', label: t('sidebar.skills'), icon: 'skills' },
         { route: '/h/memory', label: t('sidebar.memory'), icon: 'memory' },
-        { route: '/h/cron', label: t('sidebar.cron'), icon: 'clock' },
+        // HIDDEN: { route: '/h/cron', label: t('sidebar.cron'), icon: 'clock' },
         { route: '/h/extensions', label: t('sidebar.extensions'), icon: 'package' },
       ]
     }, {
       section: '',
       items: [
-        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+        // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
         // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },

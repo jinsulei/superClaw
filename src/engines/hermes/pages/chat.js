@@ -25,6 +25,9 @@ import {
   buildReviewBrief,
   createTaskRequest,
   createCollaborationTask,
+  createTaskProgress,
+  createTaskResult,
+  consumePendingDispatch,
   listAgentTaskMessages,
   normalizeClaudeCodeMode,
   openCollaborationPanel,
@@ -1064,6 +1067,75 @@ export function render() {
     persistRenderedInboxMessages()
     forceScrollBottom = true
     scheduleDraw('full')
+  }
+
+  let hermesDispatchBusy = false
+
+  async function consumeHermesExecutionDispatch() {
+    if (hermesDispatchBusy || store.state.streaming) return
+    const pending = consumePendingDispatch(COLLAB_TARGETS.hermes)
+    if (!pending?.message) return
+    hermesDispatchBusy = true
+    const taskId = pending.taskId || `hermes-${Date.now().toString(36)}`
+    const sessionId = pending.session_id || pending.sessionId
+    const context = buildTaskContext({
+      sessionId,
+      taskId,
+      context: pending.context || {},
+      artifacts: pending.artifacts || [],
+      content: pending.message,
+    })
+    const title = pending.title || `Hermes delegated task ${taskId}`
+    try {
+      if (!store.activeSession()) store.newChat({ title: `Hermes 执行 - ${shortGoal(pending.message)}` })
+      createTaskProgress({
+        taskId,
+        sessionId: context.session_id,
+        fromAgent: COLLAB_TARGETS.hermes,
+        toAgent: pending.fromAgent || pending.from_agent || COLLAB_TARGETS.hermes,
+        title: `${title} started`,
+        content: 'Hermes has accepted the delegated task and started execution.',
+        context,
+        artifacts: context.artifacts,
+      })
+      forceScrollBottom = true
+      await store.sendMessage(String(pending.message || '').trim(), {
+        instructions: [
+          'This message is a delegated task for Hermes from the SuperClaw collaboration queue.',
+          'Execute the task directly, report concrete progress/results, and do not merely acknowledge receipt.',
+          `Task id: ${taskId}`,
+          pending.stage ? `Stage: ${pending.stage}` : '',
+          pending.parentTaskId || pending.parent_task_id ? `Parent task: ${pending.parentTaskId || pending.parent_task_id}` : '',
+        ].filter(Boolean).join('\n'),
+      })
+      createTaskResult({
+        taskId,
+        sessionId: context.session_id,
+        fromAgent: COLLAB_TARGETS.hermes,
+        toAgent: pending.fromAgent || pending.from_agent || COLLAB_TARGETS.hermes,
+        title: `${title} accepted`,
+        content: 'Hermes execution run was started. See the active Hermes chat session for live output.',
+        context,
+        artifacts: context.artifacts,
+      })
+      updateCollaborationTask(taskId, { status: 'hermes_running', hermesStartedAt: Date.now(), context, artifacts: context.artifacts })
+    } catch (err) {
+      createTaskResult({
+        taskId,
+        sessionId: context.session_id,
+        fromAgent: COLLAB_TARGETS.hermes,
+        toAgent: pending.fromAgent || pending.from_agent || COLLAB_TARGETS.hermes,
+        title: `${title} failed`,
+        content: err?.message || String(err),
+        failed: true,
+        context,
+        artifacts: context.artifacts,
+      })
+      toast(`Hermes 执行委派任务失败：${err?.message || err}`, 'error')
+    } finally {
+      hermesDispatchBusy = false
+      scheduleDraw('full')
+    }
   }
 
   // Multi-select for batch session deletion. When non-null, the sidebar
@@ -3113,6 +3185,9 @@ export function render() {
   document.addEventListener('click', onGlobalClick)
   const onInboxMessage = (event) => {
     if (!event?.detail || event.detail.to_agent === COLLAB_TARGETS.hermes) renderHermesInboxMessages()
+    consumeHermesExecutionDispatch().catch(err => {
+      toast(`Hermes 执行队列读取失败：${err?.message || err}`, 'error')
+    })
   }
   window.addEventListener('superclaw-agent-task-message', onInboxMessage)
   window.addEventListener('storage', onInboxMessage)
@@ -3147,5 +3222,9 @@ export function render() {
 
   // Seed the initial draw (before store load resolves).
   draw()
+  renderHermesInboxMessages()
+  consumeHermesExecutionDispatch().catch(err => {
+    toast(`Hermes 执行队列读取失败：${err?.message || err}`, 'error')
+  })
   return el
 }

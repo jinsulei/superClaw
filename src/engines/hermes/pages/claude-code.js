@@ -1,6 +1,6 @@
 import { api } from '../../../lib/tauri-api.js'
 import { toast } from '../../../components/toast.js'
-import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, normalizeClaudeCodeMode, updateCollaborationTask } from '../../../lib/collaboration.js'
+import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, normalizeClaudeCodeMode, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
 
 const PRODUCT_VERSION = 'YY1.0.1'
@@ -157,7 +157,26 @@ function openHermesReturnBox(page, mode = 'result') {
         permission_level: modeInfo.permission_level,
         requires_confirmation: modeInfo.requires_confirmation,
       })
+      setPendingDispatch({
+        target: COLLAB_TARGETS.hermes,
+        taskId,
+        parentTaskId: taskId,
+        sessionId,
+        fromAgent: COLLAB_TARGETS.claudeCode,
+        stage: 'execute',
+        title,
+        message: content,
+        context,
+        mode: modeInfo.mode,
+        permission_level: modeInfo.permission_level,
+        requires_confirmation: modeInfo.requires_confirmation,
+      })
       updateCollaborationTask(taskId, { status: 'delegated', claudeCodeDelegatedAt: Date.now() })
+      openCollaborationPanel(COLLAB_TARGETS.hermes, taskId, {
+        title: `Hermes execution - ${taskId}`,
+      }).catch(err => {
+        toast(`Hermes panel open failed: ${err?.message || err}`, 'warning')
+      })
     } else {
       const context = buildTaskContext({
         sessionId,

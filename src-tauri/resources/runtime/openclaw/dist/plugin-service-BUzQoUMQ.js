@@ -144,6 +144,123 @@ function formatTabsToolResult(tabs) {
 		}
 	};
 }
+function reusableTargetIdFromTab(tab) {
+	if (!tab || typeof tab !== "object") return;
+	return readStringValue(tab.suggestedTargetId) ?? readStringValue(tab.tabId) ?? readStringValue(tab.targetId);
+}
+async function readBrowserTabsForSinglePage(params) {
+	const { baseUrl, profile, timeoutMs, proxyRequest } = params;
+	if (proxyRequest) return (await proxyRequest({
+		method: "GET",
+		path: "/tabs",
+		profile,
+		timeoutMs
+	})).tabs ?? [];
+	return await browserToolActionDeps.browserTabs(baseUrl, {
+		profile,
+		timeoutMs
+	}).catch(() => []);
+}
+async function resolveSinglePageTargetId(params) {
+	const explicit = normalizeOptionalString(params.targetId);
+	if (explicit) return explicit;
+	const tabs = await readBrowserTabsForSinglePage(params);
+	const firstTab = Array.isArray(tabs) ? tabs[0] : null;
+	return reusableTargetIdFromTab(firstTab);
+}
+async function navigateInSingleBrowserPage(params) {
+	const { baseUrl, profile, timeoutMs, proxyRequest, targetUrl } = params;
+	const targetId = await resolveSinglePageTargetId(params);
+	if (targetId) {
+		const result = proxyRequest ? await proxyRequest({
+			method: "POST",
+			path: "/navigate",
+			profile,
+			body: {
+				url: targetUrl,
+				targetId
+			},
+			timeoutMs
+		}) : await browserNavigate(baseUrl, {
+			url: targetUrl,
+			targetId,
+			profile
+		});
+		return {
+			result,
+			targetId: readStringValue(result.targetId) ?? targetId
+		};
+	}
+	const opened = proxyRequest ? await proxyRequest({
+		method: "POST",
+		path: "/tabs/open",
+		profile,
+		body: { url: targetUrl },
+		timeoutMs
+	}) : await browserOpenTab(baseUrl, targetUrl, {
+		profile,
+		timeoutMs
+	});
+	return {
+		result: opened,
+		targetId: readStringValue(opened.targetId) ?? readStringValue(opened.tabId) ?? readStringValue(opened.suggestedTargetId)
+	};
+}
+function browserSleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isLoginOrQrContent(value) {
+	const text = String(value || "").toLowerCase();
+	return /登录|扫码|请登录|二维码|驗證|验证/.test(text) || text.includes("login") || text.includes("passport") || text.includes("sso") || text.includes("qr") || text.includes("qrcode");
+}
+async function readSinglePageSnapshotForLogin(params) {
+	const { baseUrl, profile, proxyRequest, targetId } = params;
+	if (!targetId) return null;
+	try {
+		return proxyRequest ? await proxyRequest({
+			method: "GET",
+			path: "/snapshot",
+			profile,
+			query: {
+				targetId,
+				format: "ai",
+				maxChars: 4000
+			},
+			timeoutMs: 1e4
+		}) : await browserToolActionDeps.browserSnapshot(baseUrl, {
+			targetId,
+			format: "ai",
+			maxChars: 4000,
+			profile
+		});
+	} catch {
+		return null;
+	}
+}
+async function waitForUserLoginIfNeeded(params) {
+	const first = await readSinglePageSnapshotForLogin(params);
+	const firstText = `${first?.url || ""}\n${first?.snapshot || ""}\n${first?.title || ""}`;
+	if (!isLoginOrQrContent(firstText)) return {
+		needsUserAction: false,
+		finalUrl: readStringValue(first?.url)
+	};
+	for (let elapsed = 0; elapsed < 12e4; elapsed += 2e3) {
+		await browserSleep(2e3);
+		const current = await readSinglePageSnapshotForLogin(params);
+		const currentText = `${current?.url || ""}\n${current?.snapshot || ""}\n${current?.title || ""}`;
+		if (current && !isLoginOrQrContent(currentText)) return {
+			needsUserAction: false,
+			loginWaited: true,
+			finalUrl: readStringValue(current.url)
+		};
+	}
+	return {
+		needsUserAction: true,
+		action: "scan_qr",
+		message: "需要扫码登录，请在已打开的浏览器页面完成扫码。等待扫码登录超时，请重试。",
+		finalUrl: readStringValue(first?.url)
+	};
+}
 function formatConsoleToolResult(result) {
 	const wrapped = wrapBrowserExternalJson({
 		kind: "console",
@@ -219,7 +336,13 @@ async function executeSnapshotAction(params) {
 	const urls = typeof input.urls === "boolean" ? input.urls : void 0;
 	const refs = input.refs === "aria" || input.refs === "role" ? input.refs : void 0;
 	const hasMaxChars = Object.hasOwn(input, "maxChars");
-	const targetId = normalizeOptionalString(input.targetId);
+	const targetId = await resolveSinglePageTargetId({
+		baseUrl,
+		profile,
+		proxyRequest,
+		targetId: input.targetId
+	});
+	if (!targetId) throw new Error("没有可用浏览器页面，请先执行 browser_navigate。");
 	const limit = typeof input.limit === "number" && Number.isFinite(input.limit) ? input.limit : void 0;
 	const maxChars = typeof input.maxChars === "number" && Number.isFinite(input.maxChars) && input.maxChars > 0 ? Math.floor(input.maxChars) : void 0;
 	const interactive = typeof input.interactive === "boolean" ? input.interactive : void 0;
@@ -333,7 +456,13 @@ async function executeSnapshotAction(params) {
 async function executeConsoleAction(params) {
 	const { input, baseUrl, profile, proxyRequest } = params;
 	const level = normalizeOptionalString(input.level);
-	const targetId = normalizeOptionalString(input.targetId);
+	const targetId = await resolveSinglePageTargetId({
+		baseUrl,
+		profile,
+		proxyRequest,
+		targetId: input.targetId
+	});
+	if (!targetId) throw new Error("没有可用浏览器页面，请先执行 browser_navigate。");
 	if (proxyRequest) return formatConsoleToolResult(await proxyRequest({
 		method: "GET",
 		path: "/console",
@@ -895,22 +1024,33 @@ function createBrowserTool(opts) {
 				case "navigate": {
 					const targetUrl = readTargetUrlParam(params);
 					const targetId = readStringParam(params, "targetId");
-					if (proxyRequest) return jsonResult(await proxyRequest({
-						method: "POST",
-						path: "/navigate",
+					const nav = await navigateInSingleBrowserPage({
+						baseUrl,
 						profile,
-						body: {
-							url: targetUrl,
-							targetId
-						}
-					}));
-					const result = await browserToolDeps.browserNavigate(baseUrl, {
-						url: targetUrl,
+						proxyRequest,
+						timeoutMs: toolTimeoutMs,
 						targetId,
-						profile
+						targetUrl
 					});
-					touchTrackedTab(readStringValue(result.targetId) ?? targetId);
-					return jsonResult(result);
+					touchTrackedTab(nav.targetId);
+					const login = await waitForUserLoginIfNeeded({
+						baseUrl,
+						profile,
+						proxyRequest,
+						targetId: nav.targetId
+					});
+					return jsonResult({
+						...nav.result,
+						targetId: nav.targetId,
+						finalUrl: login.finalUrl ?? readStringValue(nav.result.url),
+						...login.needsUserAction ? {
+							ok: false,
+							needsUserAction: true,
+							action: login.action,
+							message: login.message
+						} : {},
+						...login.loginWaited ? { loginWaited: true } : {}
+					});
 				}
 				case "console": return await executeConsoleAction({
 					input: params,

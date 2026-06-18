@@ -7497,6 +7497,13 @@ pub fn hermes_toolsets_list() -> Result<Value, String> {
         };
         fallback.push_str(&format!("  {status}  {name}  {desc}\n"));
     }
+    fallback.push_str("Search backends:\n");
+    fallback.push_str("  ✓ enabled   duckduckgo  No API key required\n");
+    fallback.push_str("  ✗ disabled  exa  API key required\n");
+    fallback.push_str("  ✗ disabled  firecrawl  API key required\n");
+    fallback.push_str("  ✗ disabled  perplexity  API key required\n");
+    fallback.push_str("  ✗ disabled  searxng  endpoint not configured\n");
+    fallback.push_str("  ✗ disabled  tavily  API key required\n");
     Ok(serde_json::json!({ "raw": fallback }))
 }
 

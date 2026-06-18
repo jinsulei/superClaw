@@ -105,6 +105,7 @@ pub struct WorkspaceStatus {
     pub symlink_valid: bool,
     /// 是否有读取权限
     pub readable: bool,
+    pub writable: bool,
 }
 
 /// Workspace 状态检测结果（包含状态和警告信息）
@@ -116,6 +117,21 @@ pub struct WorkspaceCheckResult {
 
 /// 检测 workspace 路径的状态
 /// 使用 symlink_metadata 而非 metadata，避免跟随软链接
+fn workspace_is_writable(path: &std::path::Path) -> bool {
+    let test_path = path.join(format!(
+        ".workspace-write-test-{}-{}.tmp",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    match std::fs::File::create(&test_path).and_then(|mut file| file.write_all(b"ok")) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&test_path);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn check_workspace_status(path: &std::path::Path) -> WorkspaceCheckResult {
     let mut status = WorkspaceStatus {
         exists: false,
@@ -123,6 +139,7 @@ fn check_workspace_status(path: &std::path::Path) -> WorkspaceCheckResult {
         symlink_target: None,
         symlink_valid: false,
         readable: true,
+        writable: false,
     };
     let mut warning = None;
 
@@ -157,7 +174,10 @@ fn check_workspace_status(path: &std::path::Path) -> WorkspaceCheckResult {
             } else {
                 // 普通目录：验证读取权限
                 match std::fs::read_dir(path) {
-                    Ok(_) => status.readable = true,
+                    Ok(_) => {
+                        status.readable = true;
+                        status.writable = workspace_is_writable(path);
+                    },
                     Err(e) => {
                         status.readable = false;
                         warning = Some(format!("权限不足: {}", e));
@@ -166,6 +186,13 @@ fn check_workspace_status(path: &std::path::Path) -> WorkspaceCheckResult {
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::create_dir_all(path).is_ok() {
+                status.exists = true;
+                status.readable = true;
+                status.writable = workspace_is_writable(path);
+                warning = None;
+                return WorkspaceCheckResult { status, warning };
+            }
             warning = Some("工作目录不存在".to_string());
         }
         Err(e) => {
@@ -391,10 +418,13 @@ pub async fn write_agent_file(id: String, name: String, content: String) -> Resu
 pub async fn get_agent_workspace_info(id: String) -> Result<Value, String> {
     let config = super::config::load_openclaw_json()?;
     let workspace_dir = resolve_agent_workspace_path(&id, &config);
+    let check_result = check_workspace_status(&workspace_dir);
     Ok(json!({
         "agentId": id,
         "workspacePath": workspace_dir.to_string_lossy().to_string(),
-        "exists": workspace_dir.exists(),
+        "exists": check_result.status.exists,
+        "writable": check_result.status.writable,
+        "warning": check_result.warning,
         "isDefault": id == "main",
     }))
 }

@@ -74,6 +74,91 @@
   --shadow-glow: 0 0 20px rgba(255, 204, 102, 0.25);
 }
 
+[data-color-theme="midnight"][data-theme="light"] {
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-muted: rgba(37, 99, 235, 0.14);
+  --border-focus: rgba(37, 99, 235, 0.42);
+}
+
+[data-color-theme="midnight"][data-theme="dark"] {
+  --bg-primary: #0b1120;
+  --bg-secondary: #111827;
+  --bg-tertiary: #1f2937;
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-muted: rgba(56, 189, 248, 0.18);
+  --border-focus: rgba(56, 189, 248, 0.5);
+}
+
+[data-color-theme="ember"][data-theme="light"] {
+  --accent: #f97316;
+  --accent-hover: #ea580c;
+  --accent-muted: rgba(249, 115, 22, 0.14);
+  --border-focus: rgba(249, 115, 22, 0.42);
+}
+
+[data-color-theme="ember"][data-theme="dark"] {
+  --bg-primary: #1c120b;
+  --bg-secondary: #24160d;
+  --bg-tertiary: #3a2111;
+  --accent: #fb923c;
+  --accent-hover: #fdba74;
+  --accent-muted: rgba(251, 146, 60, 0.2);
+  --border-focus: rgba(251, 146, 60, 0.5);
+}
+
+[data-color-theme="mono"][data-theme="light"] {
+  --accent: #525252;
+  --accent-hover: #262626;
+  --accent-muted: rgba(82, 82, 82, 0.12);
+  --border-focus: rgba(82, 82, 82, 0.35);
+}
+
+[data-color-theme="mono"][data-theme="dark"] {
+  --bg-primary: #0f0f0f;
+  --bg-secondary: #171717;
+  --bg-tertiary: #262626;
+  --accent: #a3a3a3;
+  --accent-hover: #d4d4d4;
+  --accent-muted: rgba(163, 163, 163, 0.16);
+  --border-focus: rgba(163, 163, 163, 0.45);
+}
+
+[data-color-theme="cyberpunk"][data-theme="light"] {
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-muted: rgba(124, 58, 237, 0.13);
+  --border-focus: rgba(124, 58, 237, 0.38);
+}
+
+[data-color-theme="cyberpunk"][data-theme="dark"] {
+  --bg-primary: #160b2e;
+  --bg-secondary: #21103f;
+  --bg-tertiary: #30165f;
+  --accent: #22d3ee;
+  --accent-hover: #67e8f9;
+  --accent-muted: rgba(34, 211, 238, 0.17);
+  --border-focus: rgba(34, 211, 238, 0.46);
+}
+
+[data-color-theme="rose"][data-theme="light"] {
+  --accent: #e11d48;
+  --accent-hover: #be123c;
+  --accent-muted: rgba(225, 29, 72, 0.12);
+  --border-focus: rgba(225, 29, 72, 0.36);
+}
+
+[data-color-theme="rose"][data-theme="dark"] {
+  --bg-primary: #1f0b12;
+  --bg-secondary: #2a1018;
+  --bg-tertiary: #3d1722;
+  --accent: #fb7185;
+  --accent-hover: #fda4af;
+  --accent-muted: rgba(251, 113, 133, 0.18);
+  --border-focus: rgba(251, 113, 133, 0.45);
+}
+
 /* 共享变量（不随主题变化） */
 :root {
   --space-xs: 4px;

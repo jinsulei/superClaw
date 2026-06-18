@@ -646,6 +646,24 @@
   color: #b45309;
 }
 
+.skills-market-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-sm);
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 141, 0, 0.18);
+  border-radius: var(--radius-md);
+  background: rgba(217, 141, 0, 0.06);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.skills-market-status strong {
+  color: var(--text-primary);
+}
+
 .clawhub-list {
   display: flex;
   flex-direction: column;
@@ -854,6 +872,18 @@
   color: #16a34a;
 }
 
+.clawhub-badge.skill-state-builtin,
+.clawhub-badge.skill-state-market {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
+}
+
+.clawhub-badge.skill-state-note {
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+}
+
 .clawhub-empty {
   color: var(--text-tertiary);
   padding: var(--space-md);
@@ -865,6 +895,52 @@
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-lg);
   background: var(--bg-secondary);
+  box-shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
+}
+
+.skill-detail-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.skill-detail-modal {
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  padding: var(--space-lg);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
+.skill-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.skill-detail-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-lg);
+  line-height: 1.35;
+}
+
+.clawhub-detail-kicker {
+  margin-bottom: 6px;
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .clawhub-detail-title {
@@ -878,6 +954,50 @@
 .clawhub-detail-stats {
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.clawhub-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-bottom: var(--space-md);
+  font-size: var(--font-size-sm);
+}
+
+.skill-detail-section {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.skill-detail-section-title {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-weight: 800;
+}
+
+.skill-detail-cn-text,
+.skill-detail-usage {
+  color: var(--text-secondary);
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.skill-detail-original pre {
+  max-height: 360px;
+  margin: 10px 0 0;
+  padding: var(--space-md);
+  overflow: auto;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .clawhub-detail-stats {

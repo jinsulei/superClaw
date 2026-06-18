@@ -96,6 +96,7 @@ const PLATFORM_REGISTRY = {
     guideFooter: t('channels.telegramGuideFooter'),
     fields: [
       { key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11', secret: true, required: true },
+      { key: 'chatId', label: 'Chat ID', placeholder: '123456789 或 @channel', required: true },
     ],
     configKey: 'telegram',
     pairingChannel: 'telegram',
@@ -138,6 +139,7 @@ const PLATFORM_REGISTRY = {
         ],
       },
       { key: 'botToken', label: 'Bot Token', placeholder: 'xoxb-xxxxxxxxxxxx', secret: true, required: true },
+      { key: 'channelId', label: 'Channel ID', placeholder: 'C0123456789', required: true },
       { key: 'appToken', label: 'App Token', placeholder: 'xapp-xxxxxxxxxxxx', secret: true, requiredWhen: { mode: 'socket' }, hint: t('channels.slackAppTokenHint') },
       { key: 'signingSecret', label: 'Signing Secret', placeholder: t('channels.slackSigningSecretPh'), secret: true, requiredWhen: { mode: 'http' }, hint: t('channels.slackSigningSecretHint') },
       { key: 'teamId', label: 'Team ID', placeholder: t('channels.slackTeamIdPh'), required: false },
@@ -207,8 +209,8 @@ const PLATFORM_REGISTRY = {
     ],
     guideFooter: t('channels.signalGuideFooter'),
     fields: [
-      { key: 'account', label: t('channels.signalAccountLabel'), placeholder: t('channels.signalAccountPh'), required: true },
-      { key: 'cliPath', label: t('channels.signalCliPathLabel'), placeholder: t('channels.signalCliPathPh'), required: false },
+      { key: 'phoneNumber', label: 'Phone Number', placeholder: '+8613800000000', required: true },
+      { key: 'signalCliPath', label: 'signal-cli Path', placeholder: t('channels.signalCliPathPh'), required: true },
       { key: 'httpUrl', label: 'HTTP URL', placeholder: t('channels.optionalEg', { example: 'http://127.0.0.1:8080' }), required: false },
       { key: 'httpHost', label: 'HTTP Host', placeholder: t('channels.optionalEg', { example: '127.0.0.1' }), required: false },
       { key: 'httpPort', label: 'HTTP Port', placeholder: t('channels.optionalEg', { example: '8080' }), required: false },
@@ -230,7 +232,8 @@ const PLATFORM_REGISTRY = {
     guideFooter: t('channels.matrixGuideFooter'),
     fields: [
       { key: 'homeserver', label: 'Homeserver', placeholder: 'https://matrix.org', required: true },
-      { key: 'accessToken', label: 'Access Token', placeholder: 'syt_xxxxx', secret: true, required: false, hint: t('channels.matrixAccessTokenHint') },
+      { key: 'accessToken', label: 'Access Token', placeholder: 'syt_xxxxx', secret: true, required: true, hint: t('channels.matrixAccessTokenHint') },
+      { key: 'roomId', label: 'Room ID', placeholder: '!room:matrix.org', required: true },
       { key: 'userId', label: 'User ID', placeholder: '@bot:matrix.org', required: false },
       { key: 'password', label: 'Password', placeholder: t('channels.matrixPasswordPh'), secret: true, required: false },
       { key: 'deviceId', label: 'Device ID', placeholder: t('channels.optionalEg', { example: 'SUPERCLAW' }), required: false },
@@ -242,6 +245,43 @@ const PLATFORM_REGISTRY = {
     configKey: 'matrix',
     pluginRequired: '@openclaw/matrix@latest',
     pluginId: 'matrix',
+  },
+  irc: {
+    label: 'IRC',
+    iconName: 'hash',
+    desc: 'IRC 渠道插件已安装，需要配置服务器和频道后才能使用。',
+    guide: ['填写 IRC server、port、nickname 和 channel。', '未配置凭证/地址前不会尝试连接。'],
+    guideFooter: '',
+    fields: [
+      { key: 'server', label: 'Server', placeholder: 'irc.libera.chat', required: true },
+      { key: 'port', label: 'Port', placeholder: '6697', required: true },
+      { key: 'nickname', label: 'Nickname', placeholder: 'superclaw-bot', required: true },
+      { key: 'channel', label: 'Channel', placeholder: '#superclaw', required: true },
+    ],
+    configKey: 'irc',
+  },
+  mattermost: {
+    label: 'Mattermost',
+    iconName: 'message-square',
+    desc: 'Mattermost 渠道插件已安装，需要配置 Server URL、Token 和 Channel ID 后才能使用。',
+    guide: ['填写 Mattermost serverUrl、token 和 channelId。', '未配置凭证前不会测试连接。'],
+    guideFooter: '',
+    fields: [
+      { key: 'serverUrl', label: 'Server URL', placeholder: 'https://mattermost.example.com', required: true },
+      { key: 'token', label: 'Token', placeholder: 'Mattermost token', secret: true, required: true },
+      { key: 'channelId', label: 'Channel ID', placeholder: 'channel-id', required: true },
+    ],
+    configKey: 'mattermost',
+  },
+  imessage: {
+    label: 'iMessage',
+    iconName: 'message-circle',
+    desc: 'iMessage 在 Windows 下不支持，保持未启用。',
+    guide: ['当前平台不支持 iMessage 自动接入。'],
+    guideFooter: '',
+    fields: [],
+    configKey: 'imessage',
+    disabledReason: '不支持当前平台',
   },
 }
 
@@ -388,6 +428,16 @@ function platformLabel(pid) {
   return PLATFORM_REGISTRY[pid]?.label || CHANNEL_LABELS[pid] || pid
 }
 
+function platformUiState(platform) {
+  if (platform?.unsupported || platform?.id === 'imessage') {
+    return { configured: false, enabled: false, label: '未启用', hint: platform?.disabledReason || '不支持当前平台' }
+  }
+  const configured = platform?.configured === true
+  const enabled = configured && platform?.enabled !== false
+  if (!configured) return { configured: false, enabled: false, label: '已安装，未配置', hint: '请先配置凭证' }
+  return { configured: true, enabled, label: enabled ? '已配置，可测试' : '已配置，未启用', hint: enabled ? '可以测试连接' : '已保存配置但当前未启用' }
+}
+
 function renderConfigured(page, state) {
   const el = page.querySelector('#platforms-configured')
   if (!state.configured.length) {
@@ -403,6 +453,7 @@ function renderConfigured(page, state) {
           const reg = PLATFORM_REGISTRY[p.id]
           const label = platformLabel(p.id)
           const ic = icon(reg?.iconName || 'radio', 22)
+          const ui = platformUiState(p)
           const channelKey = getChannelBindingKey(p.id)
           const accounts = Array.isArray(p.accounts) ? p.accounts : []
           const hasAccounts = accounts.length > 0
@@ -433,18 +484,20 @@ function renderConfigured(page, state) {
             }).join('')
 
             return `
-              <div class="platform-card ${p.enabled ? 'active' : 'inactive'}" data-pid="${p.id}">
+              <div class="platform-card ${ui.enabled ? 'active' : 'inactive'}" data-pid="${p.id}">
                 <div class="platform-card-header">
                   <span class="platform-emoji">${ic}</span>
                   <span class="platform-name">${label}</span>
                   <span class="account-count">${t('channels.accountCount', { count: accounts.length })}</span>
-                  <span class="platform-status-dot ${p.enabled ? 'on' : 'off'}"></span>
+                  <span class="platform-pick-badge" style="color:${ui.configured ? 'var(--success)' : 'var(--warning)'}">${ui.label}</span>
+                  <span class="platform-status-dot ${ui.enabled ? 'on' : 'off'}"></span>
                 </div>
+                <div class="form-hint" style="margin:4px 0 8px 32px">${escapeAttr(ui.hint)}</div>
                 <div class="platform-accounts">${accountsHtml}</div>
                 <div class="platform-card-actions">
                   ${supportsMulti ? `<button class="btn btn-sm btn-secondary" data-action="add-account">${icon('plus', 14)} ${t('channels.addAccount')}</button>` : ''}
                   ${reg ? `<button class="btn btn-sm btn-secondary" data-action="edit">${icon('edit', 14)} ${t('channels.editDefault')}</button>` : `<span class="form-hint" style="align-self:center">${t('channels.noGuide')}</span>`}
-                  <button class="btn btn-sm btn-secondary" data-action="toggle">${p.enabled ? icon('pause', 14) + ' ' + t('channels.disable') : icon('play', 14) + ' ' + t('channels.enable')}</button>
+                  <button class="btn btn-sm btn-secondary" data-action="toggle" ${ui.configured ? '' : 'disabled title="请先配置凭证"'}>${ui.enabled ? icon('pause', 14) + ' ' + t('channels.disable') : icon('play', 14) + ' ' + t('channels.enable')}</button>
                   <button class="btn btn-sm btn-danger" data-action="remove">${icon('trash', 14)}</button>
                 </div>
               </div>
@@ -458,17 +511,19 @@ function renderConfigured(page, state) {
             `<span style="font-size:var(--font-size-xs);color:var(--accent);background:var(--accent-muted);padding:1px 6px;border-radius:10px;white-space:nowrap">\u2192 ${escapeAttr(a)}</span>`
           ).join(' ') : ''
           return `
-            <div class="platform-card ${p.enabled ? 'active' : 'inactive'}" data-pid="${p.id}">
+            <div class="platform-card ${ui.enabled ? 'active' : 'inactive'}" data-pid="${p.id}">
               <div class="platform-card-header">
                 <span class="platform-emoji">${ic}</span>
                 <span class="platform-name">${label}</span>
                 ${agentBadges}
-                <span class="platform-status-dot ${p.enabled ? 'on' : 'off'}"></span>
+                <span class="platform-pick-badge" style="color:${ui.configured ? 'var(--success)' : 'var(--warning)'}">${ui.label}</span>
+                <span class="platform-status-dot ${ui.enabled ? 'on' : 'off'}"></span>
               </div>
+              <div class="form-hint" style="margin:4px 0 8px 32px">${escapeAttr(ui.hint)}</div>
               <div class="platform-card-actions">
                 ${supportsMulti ? `<button class="btn btn-sm btn-secondary" data-action="add-account">${icon('plus', 14)} ${t('channels.addAccount')}</button>` : ''}
                 ${reg ? `<button class="btn btn-sm btn-secondary" data-action="edit">${icon('edit', 14)} ${t('channels.editAccount')}</button>` : `<span class="form-hint" style="align-self:center">${t('channels.noGuide')}</span>`}
-                <button class="btn btn-sm btn-secondary" data-action="toggle">${p.enabled ? icon('pause', 14) + ' ' + t('channels.disable') : icon('play', 14) + ' ' + t('channels.enable')}</button>
+                <button class="btn btn-sm btn-secondary" data-action="toggle" ${ui.configured ? '' : 'disabled title="请先配置凭证"'}>${ui.enabled ? icon('pause', 14) + ' ' + t('channels.disable') : icon('play', 14) + ' ' + t('channels.enable')}</button>
                 <button class="btn btn-sm btn-danger" data-action="remove">${icon('trash', 14)}</button>
               </div>
             </div>
@@ -739,19 +794,21 @@ function renderAvailable(page, state) {
 
   el.innerHTML = Object.entries(PLATFORM_REGISTRY).map(([pid, reg]) => {
     const done = configuredIds.has(pid)
+    const disabled = !!reg.disabledReason
     return `
-      <button class="platform-pick" data-pid="${pid}">
+      <button class="platform-pick" data-pid="${pid}" ${disabled ? 'disabled title="不支持当前平台"' : ''}>
         <span class="platform-emoji">${icon(reg.iconName, 28)}</span>
         <span class="platform-pick-name">${reg.label}</span>
         <span class="platform-pick-desc">${reg.desc}</span>
         ${reg.actions?.length ? `<span class="platform-pick-badge" style="color:var(--accent)">${t('channels.supportsActions')}</span>` : ''}
-        ${done ? `<span class="platform-pick-badge" style="color:var(--success)">${t('channels.connectedClickEdit')}</span>` : ''}
+        ${disabled ? `<span class="platform-pick-badge" style="color:var(--text-tertiary)">未启用</span>` : done ? `<span class="platform-pick-badge" style="color:var(--warning)">已安装，未配置/可编辑</span>` : ''}
       </button>
     `
   }).join('')
 
   el.querySelectorAll('.platform-pick').forEach(btn => {
     const pid = btn.dataset.pid
+    if (btn.disabled) return
     btn.onclick = () => openConfigDialog(pid, page, state)
   })
 }
@@ -1890,6 +1947,23 @@ async function openConfigDialog(pid, page, state, accountId) {
   const btnSave = modal.querySelector('#btn-save')
   const resultEl = modal.querySelector('#verify-result')
   const actionResultEl = modal.querySelector('#channel-action-result')
+
+  const isVerifyReady = () => {
+    if (reg.disabledReason) return false
+    const form = collectForm()
+    return reg.fields.every(f => !isFieldRequired(f, form) || !!form[f.key])
+  }
+  const updateVerifyState = () => {
+    if (!btnVerify) return
+    const ready = isVerifyReady()
+    btnVerify.disabled = !ready
+    btnVerify.title = ready ? '' : '请先配置凭证'
+  }
+  modal.querySelectorAll(`#${formId} input, #${formId} select`).forEach(el => {
+    el.addEventListener('input', updateVerifyState)
+    el.addEventListener('change', updateVerifyState)
+  })
+  updateVerifyState()
   const pairingInput = modal.querySelector('input[name="pairingCode"]')
   const pairingResultEl = modal.querySelector('#pairing-result')
   const btnPairingList = modal.querySelector('#btn-pairing-list')
@@ -2052,6 +2126,14 @@ async function openConfigDialog(pid, page, state, accountId) {
           </div>
           ${pid === 'qqbot' ? `<div class="form-hint" style="margin-top:8px;line-height:1.55">${t('channels.qqVerifyNote')}</div>` : ''}`
       } else {
+        if (res.code === 'CONFIG_PRESENT') {
+          const msg = (res.warnings || ['配置已存在，真实连接测试尚未接入。']).join('<br>')
+          resultEl.innerHTML = `
+          <div style="background:var(--warning-muted, #fef3c7);color:var(--warning);padding:10px 14px;border-radius:var(--radius-md);font-size:var(--font-size-sm)">
+            ${icon('info', 14)} ${msg}
+          </div>`
+          return
+        }
         const errs = (res.errors || [t('channels.verifyFailed')]).join('<br>')
         resultEl.innerHTML = `
           <div style="background:var(--error-muted, #fee2e2);color:var(--error);padding:10px 14px;border-radius:var(--radius-md);font-size:var(--font-size-sm)">

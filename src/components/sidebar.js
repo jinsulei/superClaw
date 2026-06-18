@@ -2,7 +2,7 @@
  * 侧边导航栏
  */
 import { navigate, getCurrentRoute, reloadCurrentRoute } from '../router.js'
-import { toggleTheme, getTheme } from '../lib/theme.js'
+import { toggleTheme, getTheme, getColorTheme, setColorTheme } from '../lib/theme.js'
 import { isOpenclawReady } from '../lib/app-state.js'
 import { api } from '../lib/tauri-api.js'
 import { toast } from './toast.js'
@@ -23,7 +23,7 @@ function NAV_ITEMS_FULL() { return [
       { route: '/dashboard', label: t('sidebar.dashboard'), icon: 'dashboard' },
       { route: '/assistant', label: t('sidebar.assistant'), icon: 'assistant' },
       { route: '/chat', label: t('sidebar.chat'), icon: 'chat' },
-      { route: '/route-map', label: t('sidebar.routeMap'), icon: 'route-map' },
+      // HIDDEN: { route: '/route-map', label: t('sidebar.routeMap'), icon: 'route-map' },
       // HIDDEN: { route: '/services', label: t('sidebar.services'), icon: 'services' },  // 取消注释即可恢复
       { route: '/logs', label: t('sidebar.logs'), icon: 'logs' },
     ]
@@ -44,8 +44,8 @@ function NAV_ITEMS_FULL() { return [
     items: [
       { route: '/memory', label: t('sidebar.memory'), icon: 'memory', gate: 'memory' },
       { route: '/dreaming', label: t('sidebar.dreaming'), icon: 'dreaming', gate: 'dreaming' },
-      { route: '/cron', label: t('sidebar.cron'), icon: 'clock', gate: 'cron' },
-      { route: '/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
+      // HIDDEN: { route: '/cron', label: t('sidebar.cron'), icon: 'clock', gate: 'cron' },
+      // HIDDEN: { route: '/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
     ]
   },
   {
@@ -58,8 +58,8 @@ function NAV_ITEMS_FULL() { return [
   {
     section: '',
     items: [
-      { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+      // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+      // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -78,7 +78,7 @@ function NAV_ITEMS_SETUP() { return [
   {
     section: '',
     items: [
-      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+      // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -544,8 +544,25 @@ export function renderSidebar(el) {
 
   // 主题切换按钮
   const isDark = getTheme() === 'dark'
+  const colorTheme = getColorTheme()
   const sunIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>'
   const moonIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>'
+  const paletteIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 5.8 2 10.5S5.8 19 10.5 19H12a2 2 0 002-2 1.5 1.5 0 011.5-1.5H17c2.8 0 5-2.1 5-4.8C22 5.9 17.5 2 12 2z"/></svg>'
+  const colorThemes = [
+    ['default', '默认'],
+    ['midnight', '午夜'],
+    ['ember', '暖橙'],
+    ['mono', '单色'],
+    ['cyberpunk', '霓虹'],
+    ['rose', '玫瑰'],
+  ]
+  const colorThemeOptions = colorThemes.map(([name, label]) => `
+    <button type="button" class="theme-color-option${name === colorTheme ? ' active' : ''}" data-color-theme="${name}" data-tone="${name}">
+      <span class="theme-color-swatch" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>${label}</span>
+      ${name === colorTheme ? '<span class="theme-color-check">✓</span>' : ''}
+    </button>
+  `).join('')
 
   const langCode = getLang()
   const langs = getAvailableLangs()
@@ -566,9 +583,20 @@ export function renderSidebar(el) {
 
   html += `
     <div class="sidebar-footer">
-      <div class="nav-item" id="btn-theme-toggle">
-        ${isDark ? sunIcon : moonIcon}
-        <span>${isDark ? t('sidebar.themeLight') : t('sidebar.themeDark')}</span>
+      <div class="theme-switcher" id="theme-switcher">
+        <div class="theme-switch-row">
+          <button type="button" class="nav-item theme-mode-trigger" id="btn-theme-toggle">
+            ${isDark ? sunIcon : moonIcon}
+            <span>${isDark ? t('sidebar.themeLight') : t('sidebar.themeDark')}</span>
+          </button>
+          <button type="button" class="theme-color-trigger" id="btn-theme-color-toggle" title="颜色主题">
+            ${paletteIcon}
+          </button>
+        </div>
+        <div class="theme-color-dropdown" id="theme-color-dropdown">
+          <div class="theme-color-title">颜色主题</div>
+          <div class="theme-color-options">${colorThemeOptions}</div>
+        </div>
       </div>
       <div class="lang-switcher" id="lang-switcher">
         <button class="nav-item lang-trigger" id="btn-lang-toggle">
@@ -618,6 +646,19 @@ export function renderSidebar(el) {
       const themeBtn = e.target.closest('#btn-theme-toggle')
       if (themeBtn) {
         toggleTheme(() => renderSidebar(el))
+        return
+      }
+      const themeColorBtn = e.target.closest('#btn-theme-color-toggle')
+      if (themeColorBtn) {
+        _toggleThemeColorDropdown()
+        return
+      }
+      const themeColorOpt = e.target.closest('.theme-color-option[data-color-theme]')
+      if (themeColorOpt) {
+        const name = themeColorOpt.dataset.colorTheme
+        setColorTheme(name)
+        _closeThemeColorDropdown()
+        renderSidebar(el)
         return
       }
       // 内核升级提示卡：dismiss 按钮 → 仅当前会话不再显示
@@ -798,6 +839,9 @@ export function renderSidebar(el) {
       if (!e.target.closest('.lang-switcher')) {
         _closeLangDropdown()
       }
+      if (!e.target.closest('.theme-switcher')) {
+        _closeThemeColorDropdown()
+      }
     })
 
   }
@@ -873,6 +917,26 @@ function _closeLangDropdown() {
   const dd = document.getElementById('lang-dropdown')
   if (dd) dd.classList.remove('open')
   if (sw) sw.classList.remove('open')
+}
+
+function _closeThemeColorDropdown() {
+  const sw = document.getElementById('theme-switcher')
+  const dd = document.getElementById('theme-color-dropdown')
+  if (dd) dd.classList.remove('open')
+  if (sw) sw.classList.remove('open')
+}
+
+function _toggleThemeColorDropdown() {
+  const sw = document.getElementById('theme-switcher')
+  const dd = document.getElementById('theme-color-dropdown')
+  if (!dd) return
+  if (dd.classList.contains('open')) {
+    dd.classList.remove('open')
+    if (sw) sw.classList.remove('open')
+    return
+  }
+  dd.classList.add('open')
+  if (sw) sw.classList.add('open')
 }
 
 function _toggleLangDropdown(sidebarEl) {

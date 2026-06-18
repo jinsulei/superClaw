@@ -94,7 +94,7 @@ export default {
         items: [
           { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
           { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
-          { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+          // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
@@ -104,7 +104,7 @@ export default {
       items: [
         { route: '/dashboard', label: t('sidebar.dashboard'), icon: 'dashboard' },
         { route: '/chat', label: t('sidebar.chat'), icon: 'chat' },
-        { route: '/route-map', label: t('sidebar.routeMap'), icon: 'route-map' },
+        // HIDDEN: { route: '/route-map', label: t('sidebar.routeMap'), icon: 'route-map' },
         // HIDDEN: { route: '/services', label: t('sidebar.services'), icon: 'services' },  // 取消注释即可恢复
         { route: '/logs', label: t('sidebar.logs'), icon: 'logs' },
       ]
@@ -123,8 +123,8 @@ export default {
       items: [
         { route: '/memory', label: t('sidebar.memory'), icon: 'memory', gate: 'memory' },
         { route: '/dreaming', label: t('sidebar.dreaming'), icon: 'dreaming', gate: 'dreaming' },
-        { route: '/cron', label: t('sidebar.cron'), icon: 'clock', gate: 'cron' },
-        { route: '/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
+        // HIDDEN: { route: '/cron', label: t('sidebar.cron'), icon: 'clock', gate: 'cron' },
+        // HIDDEN: { route: '/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
       ]
     }, {
       section: t('sidebar.sectionExtension'),
@@ -135,8 +135,8 @@ export default {
     }, {
       section: '',
       items: [
-        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+        // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },

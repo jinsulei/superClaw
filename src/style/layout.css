@@ -43,6 +43,12 @@
 #sidebar.sidebar-collapsed #btn-theme-toggle span {
   display: none;
 }
+#sidebar.sidebar-collapsed .theme-switch-row {
+  grid-template-columns: 1fr;
+}
+#sidebar.sidebar-collapsed .theme-color-trigger {
+  display: none;
+}
 
 .sidebar-header {
   padding: var(--space-lg) var(--space-lg);
@@ -385,6 +391,158 @@ body[data-active-engine="openclaw"] .engine-opt-badge {
 .sidebar-footer {
   padding: var(--space-sm);
   border-top: 1px solid var(--border-secondary);
+}
+
+.theme-switcher {
+  position: relative;
+  margin-bottom: 2px;
+}
+
+.theme-switch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 6px;
+  align-items: center;
+}
+
+.theme-mode-trigger {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.theme-color-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.theme-color-trigger svg {
+  width: 17px;
+  height: 17px;
+}
+
+.theme-color-trigger:hover,
+.theme-switcher.open .theme-color-trigger {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-primary));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary));
+  color: var(--accent);
+}
+
+.theme-color-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 120;
+  padding: 10px;
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  box-shadow: 0 -10px 28px rgba(15, 23, 42, 0.16);
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.theme-color-dropdown.open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.theme-color-title {
+  padding: 2px 4px 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.theme-color-options {
+  display: grid;
+  gap: 6px;
+}
+
+.theme-color-option {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 18px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.theme-color-option:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.theme-color-option.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-primary));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary));
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.theme-color-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.theme-color-swatch i {
+  display: block;
+  width: 10px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.theme-color-option[data-tone="default"] .theme-color-swatch i:nth-child(1) { background: #FAFAF9; }
+.theme-color-option[data-tone="default"] .theme-color-swatch i:nth-child(2) { background: #FFCC66; }
+.theme-color-option[data-tone="default"] .theme-color-swatch i:nth-child(3) { background: #1C1917; }
+.theme-color-option[data-tone="midnight"] .theme-color-swatch i:nth-child(1) { background: #111827; }
+.theme-color-option[data-tone="midnight"] .theme-color-swatch i:nth-child(2) { background: #38BDF8; }
+.theme-color-option[data-tone="midnight"] .theme-color-swatch i:nth-child(3) { background: #CBD5E1; }
+.theme-color-option[data-tone="ember"] .theme-color-swatch i:nth-child(1) { background: #451A03; }
+.theme-color-option[data-tone="ember"] .theme-color-swatch i:nth-child(2) { background: #FB923C; }
+.theme-color-option[data-tone="ember"] .theme-color-swatch i:nth-child(3) { background: #FDE68A; }
+.theme-color-option[data-tone="mono"] .theme-color-swatch i:nth-child(1) { background: #F5F5F5; }
+.theme-color-option[data-tone="mono"] .theme-color-swatch i:nth-child(2) { background: #737373; }
+.theme-color-option[data-tone="mono"] .theme-color-swatch i:nth-child(3) { background: #171717; }
+.theme-color-option[data-tone="cyberpunk"] .theme-color-swatch i:nth-child(1) { background: #2E1065; }
+.theme-color-option[data-tone="cyberpunk"] .theme-color-swatch i:nth-child(2) { background: #22D3EE; }
+.theme-color-option[data-tone="cyberpunk"] .theme-color-swatch i:nth-child(3) { background: #F0ABFC; }
+.theme-color-option[data-tone="rose"] .theme-color-swatch i:nth-child(1) { background: #FFF1F2; }
+.theme-color-option[data-tone="rose"] .theme-color-swatch i:nth-child(2) { background: #FB7185; }
+.theme-color-option[data-tone="rose"] .theme-color-swatch i:nth-child(3) { background: #881337; }
+
+.theme-color-check {
+  color: var(--accent);
+  font-weight: 800;
+  text-align: right;
 }
 
 /* === 内核可升级提示卡（侧边栏 footer 之上） === */

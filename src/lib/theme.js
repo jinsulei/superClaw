@@ -8,6 +8,7 @@
 import { isTauriRuntime } from './tauri-api.js'
 
 const THEME_KEY = 'superclaw-theme'
+const COLOR_THEME_KEY = 'superclaw-color-theme'
 
 // 延迟加载 Tauri window 模块，Web 构建不会真正拉取
 let _tauriWindowModule = null
@@ -44,6 +45,7 @@ export function initTheme() {
   const saved = localStorage.getItem(THEME_KEY)
   const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
   applyTheme(theme)
+  applyColorTheme(localStorage.getItem(COLOR_THEME_KEY) || 'default')
 }
 
 export function toggleTheme(onApply) {
@@ -73,9 +75,44 @@ export function getTheme() {
   return document.documentElement.dataset.theme || 'light'
 }
 
+export function setTheme(theme, onApply) {
+  const next = theme === 'dark' ? 'dark' : 'light'
+  const doApply = () => {
+    applyTheme(next)
+    if (onApply) onApply(next)
+  }
+  if (document.startViewTransition) {
+    document.startViewTransition(doApply)
+  } else {
+    doApply()
+  }
+  return next
+}
+
+export function setColorTheme(name) {
+  const normalized = normalizeColorTheme(name)
+  applyColorTheme(normalized)
+  return normalized
+}
+
+export function getColorTheme() {
+  return document.documentElement.dataset.colorTheme || 'default'
+}
+
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme
   localStorage.setItem(THEME_KEY, theme)
   // Fire-and-forget，不等待 Tauri IPC 返回，避免阻塞 DOM 更新和过渡动画
   syncTauriTitleBar(theme)
+}
+
+function normalizeColorTheme(name) {
+  return ['default', 'midnight', 'ember', 'mono', 'cyberpunk', 'rose'].includes(name) ? name : 'default'
+}
+
+function applyColorTheme(name) {
+  const normalized = normalizeColorTheme(name)
+  document.documentElement.dataset.colorTheme = normalized
+  document.documentElement.dataset.hermesDashboardTheme = normalized
+  localStorage.setItem(COLOR_THEME_KEY, normalized)
 }

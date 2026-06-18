@@ -371,10 +371,6 @@ function bundledSkillSources() {
 
 function ensureBuiltinHermesSkills() {
   const target = path.join(hermesHome(), 'skills')
-  if (fs.existsSync(target) && hasVisibleEntries(target)) {
-    return { seeded: false, reason: 'already_exists' }
-  }
-
   const source = bundledSkillSources().find(candidate =>
     fs.existsSync(candidate) &&
     hasVisibleEntries(candidate) &&
@@ -386,10 +382,37 @@ function ensureBuiltinHermesSkills() {
   }
 
   fs.mkdirSync(target, { recursive: true })
-  copyDirRecursive(source, target)
+  let filesCopied = 0
+  let filesSkipped = 0
+  let dirsCreated = 0
+  const copyMissing = (src, dst) => {
+    if (!fs.existsSync(dst)) {
+      fs.mkdirSync(dst, { recursive: true })
+      dirsCreated += 1
+    }
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      const srcPath = path.join(src, entry.name)
+      const dstPath = path.join(dst, entry.name)
+      if (entry.isDirectory()) {
+        copyMissing(srcPath, dstPath)
+      } else if (!fs.existsSync(dstPath)) {
+        fs.copyFileSync(srcPath, dstPath)
+        filesCopied += 1
+      } else {
+        filesSkipped += 1
+      }
+    }
+  }
+  copyMissing(source, target)
   let categories = 0
   try { categories = fs.readdirSync(target).length } catch {}
-  return { seeded: true, count: { categories }, source, target }
+  return {
+    seeded: filesCopied > 0,
+    merged: true,
+    count: { categories, filesCopied, filesSkipped, dirsCreated },
+    source,
+    target,
+  }
 }
 
 /**
@@ -3125,6 +3148,23 @@ function generateCalibrationToken() {
 
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
+const OPENCLAW_STATUS_ENABLED_PLUGINS = [
+  'browser',
+  'desktop-control',
+  'skill-manager',
+  'duckduckgo',
+  'exa',
+  'firecrawl',
+  'perplexity',
+  'searxng',
+  'tavily',
+  'llm-task',
+  'memory-core',
+  'active-memory',
+  'memory-wiki',
+]
+const OPENCLAW_WEB_SEARCH_PLUGIN_IDS = ['duckduckgo', 'exa', 'firecrawl', 'perplexity', 'searxng', 'tavily']
+const OPENCLAW_MEMORY_PLUGIN_IDS = ['memory-core', 'active-memory', 'memory-wiki']
 
 function normalizeOpenClawDirectTools(tools, { includeExecConfig = false } = {}) {
   const next = tools && typeof tools === 'object' && !Array.isArray(tools) ? tools : {}
@@ -3265,9 +3305,10 @@ function ensurePortableDesktopToolDefaults(config) {
   config.plugins.entries = config.plugins.entries && typeof config.plugins.entries === 'object' && !Array.isArray(config.plugins.entries)
     ? config.plugins.entries
     : {}
-  config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
-  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
-  config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
+  for (const pluginId of OPENCLAW_STATUS_ENABLED_PLUGINS) {
+    if (!bundledOpenClawExtensionExists(pluginId)) continue
+    config.plugins.entries[pluginId] = { ...(config.plugins.entries[pluginId] || {}), enabled: true }
+  }
 
   config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
@@ -3576,7 +3617,7 @@ function writeOpenclawConfigFile(config, options = {}) {
   ensureOpenClawExecApprovalsFile()
   const preserveExisting = options.preserveExisting !== false
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
-    ? mergeConfigsPreservingFields(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')), config)
+    ? mergeConfigsPreservingFields(JSON.parse(decodeJsonFileContent(CONFIG_PATH)), config)
     : config
   const cleaned = stripUiFields(base)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
@@ -3613,6 +3654,154 @@ function findAgentConfig(config, id) {
 
 function resolveDefaultWorkspace(config) {
   return expandHomePath(config.agents?.defaults?.workspace) || path.join(OPENCLAW_DIR, 'workspace')
+}
+
+function ensureOpenClawWorkspaceConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return false
+  let changed = false
+  config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
+  config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
+  const defaultWorkspace = path.join(OPENCLAW_DIR, 'workspace')
+  const configuredDefault = String(config.agents.defaults.workspace || '').trim()
+  if (!configuredDefault || !path.isAbsolute(expandHomePath(configuredDefault) || '')) {
+    config.agents.defaults.workspace = defaultWorkspace
+    changed = true
+  }
+  config.agents.list = Array.isArray(config.agents.list) ? config.agents.list : []
+  let mainAgent = config.agents.list.find(agent => String(agent?.id || 'main') === 'main')
+  if (!mainAgent) {
+    mainAgent = { id: 'main', name: 'Main Agent' }
+    config.agents.list.unshift(mainAgent)
+    changed = true
+  }
+  const mainWorkspace = String(mainAgent.workspace || '').trim()
+  if (!mainWorkspace || !path.isAbsolute(expandHomePath(mainWorkspace) || '')) {
+    mainAgent.workspace = config.agents.defaults.workspace || defaultWorkspace
+    changed = true
+  }
+  return changed
+}
+
+function ensureOpenClawWorkspaceDir(workspaceDir) {
+  const status = { exists: false, writable: false, warning: null }
+  try {
+    if (!workspaceDir || typeof workspaceDir !== 'string') {
+      status.warning = 'workspaceDir is empty'
+      return status
+    }
+    fs.mkdirSync(workspaceDir, { recursive: true })
+    const stat = fs.statSync(workspaceDir)
+    status.exists = stat.isDirectory()
+    if (!status.exists) {
+      status.warning = 'workspace path is not a directory'
+      return status
+    }
+    const testPath = path.join(workspaceDir, `.workspace-write-test-${process.pid}-${Date.now()}.tmp`)
+    fs.writeFileSync(testPath, 'ok', 'utf8')
+    fs.unlinkSync(testPath)
+    status.writable = true
+  } catch (err) {
+    status.warning = err?.message || String(err)
+    status.exists = !!(workspaceDir && fs.existsSync(workspaceDir))
+  }
+  return status
+}
+
+function bundledOpenClawExtensionExists(pluginId) {
+  const candidates = [
+    path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'openclaw', 'dist', 'extensions', pluginId),
+    path.join(appRootDir(), 'resources', 'runtime', 'openclaw', 'dist', 'extensions', pluginId),
+  ]
+  return candidates.some(dir => fs.existsSync(path.join(dir, 'openclaw.plugin.json')) || fs.existsSync(dir))
+}
+
+function ensureOpenClawStatusPluginDefaults(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return false
+  let changed = false
+  config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins) ? config.plugins : {}
+  config.plugins.entries = config.plugins.entries && typeof config.plugins.entries === 'object' && !Array.isArray(config.plugins.entries)
+    ? config.plugins.entries
+    : {}
+  for (const pluginId of OPENCLAW_STATUS_ENABLED_PLUGINS) {
+    if (!bundledOpenClawExtensionExists(pluginId)) continue
+    const current = config.plugins.entries[pluginId] && typeof config.plugins.entries[pluginId] === 'object' && !Array.isArray(config.plugins.entries[pluginId])
+      ? config.plugins.entries[pluginId]
+      : {}
+    if (current.enabled !== true) {
+      config.plugins.entries[pluginId] = { ...current, enabled: true }
+      changed = true
+    } else if (config.plugins.entries[pluginId] !== current) {
+      config.plugins.entries[pluginId] = current
+      changed = true
+    }
+  }
+  return changed
+}
+
+function pluginEntryHasConfiguredSecret(entry, keys) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+  const queue = [entry, entry.config, entry.webSearch, entry.config?.webSearch]
+  for (const obj of queue) {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) continue
+    for (const key of keys) {
+      if (typeof obj[key] === 'string' && obj[key].trim()) return true
+    }
+  }
+  return false
+}
+
+function summarizeOpenClawPluginStatus(config) {
+  const entries = config?.plugins?.entries && typeof config.plugins.entries === 'object' ? config.plugins.entries : {}
+  const webSearch = {}
+  for (const pluginId of OPENCLAW_WEB_SEARCH_PLUGIN_IDS) {
+    const entry = entries[pluginId] || {}
+    const needsApiKey = ['exa', 'firecrawl', 'perplexity', 'tavily'].includes(pluginId)
+    const needsUrl = pluginId === 'searxng'
+    webSearch[pluginId] = {
+      installed: bundledOpenClawExtensionExists(pluginId),
+      enabled: entry.enabled === true,
+      usable: entry.enabled === true && (!needsApiKey || pluginEntryHasConfiguredSecret(entry, ['apiKey', 'api_key'])) && (!needsUrl || pluginEntryHasConfiguredSecret(entry, ['baseUrl', 'base_url', 'url'])),
+      missingApiKey: entry.enabled === true && needsApiKey && !pluginEntryHasConfiguredSecret(entry, ['apiKey', 'api_key']),
+      missingUrl: entry.enabled === true && needsUrl && !pluginEntryHasConfiguredSecret(entry, ['baseUrl', 'base_url', 'url']),
+    }
+  }
+  const memory = {}
+  for (const pluginId of OPENCLAW_MEMORY_PLUGIN_IDS) {
+    const entry = entries[pluginId] || {}
+    memory[pluginId] = {
+      installed: bundledOpenClawExtensionExists(pluginId),
+      enabled: entry.enabled === true,
+      status: bundledOpenClawExtensionExists(pluginId) ? (entry.enabled === true ? 'enabled' : 'disabled') : 'missing',
+    }
+  }
+  return { webSearch, memory }
+}
+
+function ensureOpenClawMemoryFiles() {
+  const memoryDir = path.join(OPENCLAW_DIR, 'memory')
+  const status = { path: memoryDir, exists: false, writable: false, files: {} }
+  try {
+    fs.mkdirSync(memoryDir, { recursive: true })
+    const metadataPath = path.join(memoryDir, 'metadata.json')
+    const readmePath = path.join(memoryDir, 'README.md')
+    if (!fs.existsSync(metadataPath)) {
+      fs.writeFileSync(metadataPath, JSON.stringify({ version: 1, kind: 'openclaw-memory', createdAt: new Date().toISOString() }, null, 2), 'utf8')
+    }
+    if (!fs.existsSync(readmePath)) {
+      fs.writeFileSync(readmePath, '# OpenClaw Memory\n\nThis directory stores OpenClaw memory files.\n', 'utf8')
+    }
+    const testPath = path.join(memoryDir, `.memory-write-test-${process.pid}-${Date.now()}.tmp`)
+    fs.writeFileSync(testPath, 'ok', 'utf8')
+    fs.unlinkSync(testPath)
+    status.exists = true
+    status.writable = true
+    status.files.metadata = fs.existsSync(metadataPath)
+    status.files.readme = fs.existsSync(readmePath)
+  } catch (err) {
+    status.warning = err?.message || String(err)
+    status.exists = fs.existsSync(memoryDir)
+  }
+  return status
 }
 
 function resolveAgentDir(config, id) {
@@ -3780,6 +3969,38 @@ function listPlatformAccounts(channelRoot) {
       return entry
     })
     .sort((a, b) => (a.accountId || '').localeCompare(b.accountId || ''))
+}
+
+const DEFAULT_MESSAGE_CHANNELS = ['telegram', 'signal', 'slack', 'irc', 'matrix', 'mattermost', 'imessage']
+const CHANNEL_REQUIRED_FIELDS = {
+  telegram: ['botToken', 'chatId'],
+  slack: ['botToken', 'channelId'],
+  signal: ['phoneNumber', 'signalCliPath'],
+  irc: ['server', 'port', 'nickname', 'channel'],
+  matrix: ['homeserver', 'accessToken', 'roomId'],
+  mattermost: ['serverUrl', 'token', 'channelId'],
+}
+
+function channelConfigHasRequiredFields(platform, entry) {
+  if (!entry || typeof entry !== 'object') return false
+  const fields = CHANNEL_REQUIRED_FIELDS[platformListId(platform)] || []
+  if (!fields.length) return false
+  return fields.every(key => typeof entry[key] === 'string' && entry[key].trim())
+}
+
+function normalizeMessageChannelEntry(id, val) {
+  const platformId = platformListId(id)
+  const unsupported = platformId === 'imessage'
+  const configured = !unsupported && channelConfigHasRequiredFields(platformId, val)
+  return {
+    id: platformId,
+    installed: !unsupported,
+    unsupported,
+    disabledReason: unsupported ? '不支持当前平台' : '',
+    configured,
+    enabled: configured && val?.enabled === true,
+    accounts: listPlatformAccounts(val),
+  }
 }
 
 function normalizeBindingMatchValue(value) {
@@ -5141,7 +5362,13 @@ async function fetchReadableUrlContent(rawUrl) {
 const handlers = {
   // 配置读写
   read_openclaw_config() {
-    return readOpenclawConfigRequired()
+    const cfg = readOpenclawConfigRequired()
+    let changed = ensureOpenClawWorkspaceConfig(cfg)
+    changed = ensureOpenClawStatusPluginDefaults(cfg) || changed
+    ensureOpenClawWorkspaceDir(resolveDefaultWorkspace(cfg))
+    ensureOpenClawMemoryFiles()
+    if (changed) writeOpenclawConfigFile(cfg)
+    return cfg
   },
 
   calibrate_openclaw_config({ mode } = {}) {
@@ -5309,11 +5536,12 @@ const handlers = {
     if (!fs.existsSync(CONFIG_PATH)) return []
     const cfg = readOpenclawConfigOptional()
     const channels = cfg.channels || {}
-    return Object.entries(channels).map(([id, val]) => ({
-      id: platformListId(id),
-      enabled: val?.enabled !== false,
-      accounts: listPlatformAccounts(val),
-    }))
+    const rows = Object.entries(channels).map(([id, val]) => normalizeMessageChannelEntry(id, val))
+    const seen = new Set(rows.map(row => row.id))
+    for (const id of DEFAULT_MESSAGE_CHANNELS) {
+      if (!seen.has(id)) rows.push(normalizeMessageChannelEntry(id, channels[id] || {}))
+    }
+    return rows
   },
 
   read_platform_config({ platform, accountId }) {
@@ -5334,6 +5562,7 @@ const handlers = {
       if (clientSecret) form.clientSecret = clientSecret
     } else if (platform === 'telegram') {
       if (saved.botToken) form.botToken = saved.botToken
+      if (saved.chatId) form.chatId = saved.chatId
       if (saved.allowFrom) form.allowedUsers = saved.allowFrom.join(', ')
     } else if (platform === 'discord') {
       if (saved.token) form.token = saved.token
@@ -5346,6 +5575,10 @@ const handlers = {
     } else {
       for (const [k, v] of Object.entries(saved)) {
         if (k !== 'enabled' && k !== 'accounts' && typeof v === 'string') form[k] = v
+      }
+      if (platform === 'signal') {
+        if (!form.phoneNumber && saved.account) form.phoneNumber = saved.account
+        if (!form.signalCliPath && saved.cliPath) form.signalCliPath = saved.cliPath
       }
     }
     return { exists: true, values: form }
@@ -5396,6 +5629,7 @@ const handlers = {
       cfg.channels.qqbot = current
     } else if (platform === 'telegram') {
       entry.botToken = form.botToken
+      entry.chatId = form.chatId
       if (form.allowedUsers) entry.allowFrom = form.allowedUsers.split(',').map(s => s.trim()).filter(Boolean)
     } else if (platform === 'discord') {
       entry.token = form.token
@@ -5422,12 +5656,20 @@ const handlers = {
       }
     } else {
       Object.assign(entry, form)
+      if (platform === 'signal') {
+        entry.account = form.phoneNumber || form.account || ''
+        entry.cliPath = form.signalCliPath || form.cliPath || ''
+      }
       setRootChannelEntry(entry)
     }
 
     if (platform !== 'qqbot' && platform !== 'feishu' && platform !== 'dingtalk' && platform !== 'dingtalk-connector') {
       // 合并模式：保留用户通过 CLI 或手动编辑的自定义字段
       const existing = cfg.channels[storageKey]
+      if (DEFAULT_MESSAGE_CHANNELS.includes(platformListId(platform))) {
+        entry.configured = channelConfigHasRequiredFields(platform, entry)
+        entry.enabled = entry.configured === true
+      }
       cfg.channels[storageKey] = (existing && typeof existing === 'object')
         ? { ...existing, ...entry }
         : entry
@@ -5485,6 +5727,12 @@ const handlers = {
   },
 
   async verify_bot_token({ platform, form }) {
+    const platformId = platformListId(platform)
+    const required = CHANNEL_REQUIRED_FIELDS[platformId] || []
+    const missing = required.filter(key => !String(form?.[key] || '').trim())
+    if (missing.length) {
+      return { valid: false, code: 'CONFIG_MISSING', errors: ['请先配置凭证'] }
+    }
     if (platform === 'feishu') {
       const domain = (form.domain || '').trim()
       const base = domain === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'
@@ -5527,6 +5775,9 @@ const handlers = {
       } catch (e) {
         return { valid: false, errors: [`Telegram API 连接失败: ${e.message}`] }
       }
+    }
+    if (['slack', 'signal', 'irc', 'matrix', 'mattermost'].includes(platformId)) {
+      return { valid: false, code: 'CONFIG_PRESENT', warnings: ['配置已保存；真实连接测试尚未接入。'] }
     }
     if (platform === 'discord') {
       try {
@@ -7258,12 +7509,14 @@ const handlers = {
   list_agents() {
     // 从 openclaw.json 的 agents.list[] 读取完整配置
     const cfg = readOpenclawConfigOptional()
+    if (ensureOpenClawWorkspaceConfig(cfg)) writeOpenclawConfigFile(cfg)
     const agentsList = Array.isArray(cfg.agents?.list) ? cfg.agents.list : []
     const defaults = cfg.agents?.defaults || {}
 
     if (agentsList.length === 0) {
       // 无 agents.list 配置 → 回退扫描目录模式
-      const result = [{ id: 'main', isDefault: true, identityName: null, identityEmoji: null, model: null, workspace: resolveDefaultWorkspace(cfg) }]
+      const mainWorkspace = resolveDefaultWorkspace(cfg)
+      const result = [{ id: 'main', isDefault: true, identityName: null, identityEmoji: null, model: null, workspace: mainWorkspace, workspaceStatus: ensureOpenClawWorkspaceDir(mainWorkspace) }]
       const agentsDir = path.join(OPENCLAW_DIR, 'agents')
       if (fs.existsSync(agentsDir)) {
         try {
@@ -7271,7 +7524,8 @@ const handlers = {
             if (entry === 'main') continue
             const p = path.join(agentsDir, entry)
             if (fs.statSync(p).isDirectory()) {
-              result.push({ id: entry, isDefault: false, identityName: null, identityEmoji: null, model: null, workspace: path.join(agentsDir, entry, 'workspace') })
+              const workspace = path.join(agentsDir, entry, 'workspace')
+              result.push({ id: entry, isDefault: false, identityName: null, identityEmoji: null, model: null, workspace, workspaceStatus: ensureOpenClawWorkspaceDir(workspace) })
             }
           }
         } catch {}
@@ -7291,13 +7545,15 @@ const handlers = {
       // 模型：可以是 string 或 { primary, fallbacks }
       let model = a.model || defaults.model || null
       if (model && typeof model === 'object') model = model.primary || JSON.stringify(model)
+      const workspace = expandHomePath(a.workspace) || resolveAgentWorkspace(cfg, id)
       return {
         id,
         isDefault,
         identityName: a.identity?.name || a.name || null,
         identityEmoji: a.identity?.emoji || null,
         model,
-        workspace: expandHomePath(a.workspace) || resolveAgentWorkspace(cfg, id),
+        workspace,
+        workspaceStatus: ensureOpenClawWorkspaceDir(workspace),
         thinkingDefault: a.thinkingDefault || defaults.thinkingDefault || null,
       }
     })
@@ -7417,11 +7673,15 @@ const handlers = {
   get_agent_workspace_info({ id }) {
     if (!id) throw new Error('Agent ID 不能为空')
     const cfg = readOpenclawConfigOptional()
+    if (ensureOpenClawWorkspaceConfig(cfg)) writeOpenclawConfigFile(cfg)
     const workspaceDir = resolveAgentWorkspace(cfg, id)
+    const workspaceStatus = ensureOpenClawWorkspaceDir(workspaceDir)
     return {
       agentId: id,
       workspacePath: workspaceDir,
-      exists: fs.existsSync(workspaceDir),
+      exists: workspaceStatus.exists,
+      writable: workspaceStatus.writable,
+      warning: workspaceStatus.warning,
       isDefault: id === 'main',
     }
   },
@@ -9752,7 +10012,49 @@ const handlers = {
 
   hermes_toolsets_list() {
     const r = runHermesSilent('hermes', ['tools', 'list', '--platform', 'cli'])
-    return { raw: r.ok ? r.stdout : '' }
+    if (r.ok && String(r.stdout || '').trim()) return { raw: r.stdout }
+    const defaultOff = new Set(['moa', 'homeassistant', 'spotify', 'discord', 'discord_admin', 'video', 'video_gen', 'x_search'])
+    const builtin = [
+      ['web', '🔍 Web Search & Scraping (duckduckgo enabled; API-key providers stay disabled)'],
+      ['browser', '🌐 Browser Automation'],
+      ['terminal', '💻 Terminal & Process Management'],
+      ['file', '📁 File IO & Search'],
+      ['code_execution', '⚡ Code Execution'],
+      ['vision', '👁️ Vision Analysis'],
+      ['video', '🎬 Video Analysis'],
+      ['image_gen', '🎨 Image Generation'],
+      ['video_gen', '🎬 Video Generation'],
+      ['x_search', '🐦 X / Twitter Search'],
+      ['moa', '🧠 Multi-Agent Collaboration'],
+      ['tts', '🔊 Text To Speech'],
+      ['skills', '📚 Skill View & Management'],
+      ['skills_hub', '📦 Skill Search & Download'],
+      ['todo', '📋 Todo Planning'],
+      ['memory', '💾 Long-Term Memory'],
+      ['session_search', '🔎 Session Search'],
+      ['clarify', '❓ Clarifying Questions'],
+      ['delegation', '👥 Task Delegation'],
+      ['cronjob', '⏰ Cron Jobs'],
+      ['messaging', '📨 Cross-Platform Messaging'],
+      ['homeassistant', '🏠 Home Assistant'],
+      ['spotify', '🎵 Spotify'],
+      ['discord', '💬 Discord'],
+      ['discord_admin', '🛡️ Discord Admin'],
+      ['yuanbao', '🤖 Yuanbao'],
+      ['computer_use', '🖱️ Computer Use'],
+    ]
+    const raw = [
+      'Built-in toolsets (cli):',
+      ...builtin.map(([name, desc]) => `  ${defaultOff.has(name) ? '✗ disabled' : '✓ enabled'}  ${name}  ${desc}`),
+      'Search backends:',
+      '  ✓ enabled   duckduckgo  No API key required',
+      '  ✗ disabled  exa  API key required',
+      '  ✗ disabled  firecrawl  API key required',
+      '  ✗ disabled  perplexity  API key required',
+      '  ✗ disabled  searxng  endpoint not configured',
+      '  ✗ disabled  tavily  API key required',
+    ].join('\n')
+    return { raw }
   },
 
   hermes_cron_jobs_list() {
@@ -10238,6 +10540,7 @@ const handlers = {
   },
 
   hermes_skills_list() {
+    ensureBuiltinHermesSkills()
     const skillsDir = path.join(hermesHome(), 'skills')
     if (!fs.existsSync(skillsDir)) return []
     const disabled = handlers._readHermesDisabledSkills()
@@ -10604,7 +10907,30 @@ const handlers = {
     try {
       const cfg = readOpenclawConfigOptional()
       if (!cfg || typeof cfg !== 'object') throw new Error('配置文件为空或格式错误')
-      return { ok: true, warnings: [] }
+      let changed = ensureOpenClawWorkspaceConfig(cfg)
+      changed = ensureOpenClawStatusPluginDefaults(cfg) || changed
+      const workspaceDir = resolveDefaultWorkspace(cfg)
+      const workspaceStatus = ensureOpenClawWorkspaceDir(workspaceDir)
+      const memoryFiles = ensureOpenClawMemoryFiles()
+      if (changed) writeOpenclawConfigFile(cfg)
+      const warnings = []
+      if (!workspaceStatus.exists) warnings.push(`工作区目录不存在: ${workspaceDir}`)
+      else if (!workspaceStatus.writable) warnings.push(`工作区目录不可写: ${workspaceDir}`)
+      const skillsData = scanLocalSkillsFallback()
+      const installedSkills = skillsData.skills.filter(skill => !skill.bundled && skill.eligible && !skill.disabled)
+      return {
+        ok: true,
+        warnings,
+        workspace: { path: workspaceDir, ...workspaceStatus },
+        skills: {
+          installed: installedSkills.length,
+          enabledCallable: installedSkills.length,
+          totalVisible: skillsData.skills.length,
+          builtin: skillsData.skills.filter(skill => skill.bundled).length,
+        },
+        plugins: summarizeOpenClawPluginStatus(cfg),
+        memoryFiles,
+      }
     } catch (e) {
       return { ok: false, errors: [String(e?.message || e)] }
     }
@@ -11958,7 +12284,17 @@ if(typeof yyUser!=='undefined'){localStorage.setItem('user',yyUser);}
   if (!isAuthenticated(req)) {
     res.statusCode = 401
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: '未登录', code: 'AUTH_REQUIRED' }))
+    if (cmd === 'validate_openclaw_config') {
+      res.end(JSON.stringify({
+        error: 'AUTH_REQUIRED',
+        code: 'AUTH_REQUIRED',
+        severity: 'info',
+        expectedForDirectAccess: true,
+        message: 'validate 接口需要页面会话鉴权；直连 401 属预期。',
+      }))
+    } else {
+      res.end(JSON.stringify({ error: '未登录', code: 'AUTH_REQUIRED' }))
+    }
     return
   }
 

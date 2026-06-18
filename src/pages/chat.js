@@ -12,7 +12,7 @@ import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../lib/voice.js'
-import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, updateCollaborationTask } from '../lib/collaboration.js'
+import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import {
@@ -2227,6 +2227,30 @@ function toggleCmdPanel() {
 
 // ── 消息发送 ──
 
+function isHermesDelegationQuestion(text) {
+  const raw = String(text || '').trim()
+  if (!raw) return false
+  const lower = raw.toLowerCase()
+  const asksCapability = /(能不能|可以吗|可不可以|能否|有没有|怎么|如何|是否|行不行|支持|把工作|分配|委派|派发|交给|汇报)/.test(raw)
+  const mentionsHermes = /\bhermes\b|Hermes|赫尔墨斯/i.test(raw)
+  const mentionsDelegation = /(工作|任务|分配|委派|派发|交给|汇报|协作|收件箱|delegate)/i.test(raw)
+  return asksCapability && mentionsHermes && mentionsDelegation && !/^\/(?:hermes|delegate-hermes)\s+/i.test(lower)
+}
+
+function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
+  appendUserMessage(text, attachments)
+  appendSystemMessage([
+    '可以把工作交给 Hermes 执行。',
+    '',
+    '当前可用方式：',
+    '1. 在 OpenClaw 输入 `/hermes 任务内容` 或 `/delegate-hermes 任务内容`，会把任务写入 Hermes 执行队列。',
+    '2. Hermes 页面里的“协作任务”可以把任务分配给 OpenClaw 或 Claude Code。',
+    '3. OpenClaw / Claude Code 可以向 Hermes 回传进度、结果、失败原因，或继续委派。',
+    '',
+    '准确结论：可委派到 Hermes；系统会打开 Hermes 面板并自动启动执行。它仍不是无界面后台 worker，执行过程在 Hermes 会话里可见。',
+  ].join('\n'))
+}
+
 async function sendMessage() {
   let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
@@ -2250,6 +2274,10 @@ async function sendMessage() {
       appendSystemMessage(formatOcrResult(result))
     }
   }
+  if (isHermesDelegationQuestion(text)) {
+    appendHermesDelegationCapabilityAnswer(text, attachments)
+    return
+  }
   const hermesDelegateMatch = /^\/(?:hermes|delegate-hermes)\s+([\s\S]+)/i.exec(text)
   if (hermesDelegateMatch) {
     const content = hermesDelegateMatch[1].trim()
@@ -2267,9 +2295,25 @@ async function sendMessage() {
         content,
         context,
       })
+      setPendingDispatch({
+        target: COLLAB_TARGETS.hermes,
+        taskId,
+        parentTaskId: task?.taskId || null,
+        sessionId: context.session_id,
+        fromAgent: COLLAB_TARGETS.openclaw,
+        stage: 'execute',
+        title: 'OpenClaw delegated task to Hermes',
+        message: content,
+        context,
+      })
       appendUserMessage(text, attachments)
-      appendSystemMessage('已委派给 Hermes 收件箱。')
-      toast('已委派给 Hermes 收件箱', 'success')
+      appendSystemMessage('已委派给 Hermes 执行队列。Hermes 面板打开后会自动接单执行。')
+      openCollaborationPanel(COLLAB_TARGETS.hermes, taskId, {
+        title: `Hermes 执行 - ${taskId}`,
+      }).catch(err => {
+        toast(`Hermes 面板打开失败：${err?.message || err}`, 'warning')
+      })
+      toast('已委派给 Hermes 执行队列', 'success')
       return
     }
   }

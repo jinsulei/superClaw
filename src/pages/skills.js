@@ -9,6 +9,7 @@ import { wsClient } from '../lib/ws-client.js'
 
 let _loadSeq = 0
 let _selectedAgentId = null // null = default (main)
+const CLAWHUB_EXPECTED_COUNT = 113
 
 function esc(str) {
   if (!str) return ''
@@ -225,6 +226,201 @@ function getSkillDisplay(skill) {
   }
 }
 
+function getStringField(...values) {
+  return values.find((value) => typeof value === 'string' && value.trim())?.trim() || ''
+}
+
+function getSkillRawContent(skill) {
+  return getStringField(skill?.skillMd, skill?.readme, skill?.rawContent, skill?.content, skill?.markdown)
+}
+
+function getSkillChineseDescription(skill, display) {
+  const direct = getStringField(
+    skill?.zhDescription,
+    skill?.chineseDescription,
+    skill?.localizedDescription,
+    skill?.cnDescription,
+    skill?.cnSummary,
+    skill?.note,
+    skill?.summaryZh,
+    skill?.metadata?.zhDescription,
+    skill?.metadata?.chineseDescription,
+    skill?.metadata?.localizedDescription,
+    skill?.metadata?.note
+  )
+  if (direct) return direct
+
+  const desc = getStringField(
+    skill?.description,
+    skill?.summary,
+    skill?.metadata?.description,
+    skill?.metadata?.summary
+  )
+  if (desc && hasChineseText(desc)) return desc
+
+  const raw = getSkillRawContent(skill)
+  if (raw) {
+    const zhLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^[-*>#\s]+/, ''))
+      .find((line) => hasChineseText(line) && line.length >= 6)
+    if (zhLine) return zhLine
+  }
+
+  if (display?.note && hasChineseText(display.note)) return display.note
+  return '中文介绍暂无，请查看英文原文。'
+}
+
+function getSkillOriginalText(skill) {
+  const raw = getSkillRawContent(skill)
+  if (raw) return raw.trim()
+  return getStringField(
+    skill?.description,
+    skill?.summary,
+    skill?.metadata?.description,
+    skill?.metadata?.summary
+  ) || '暂无英文原文。'
+}
+
+function getSkillUsageText(skill) {
+  const usage = getStringField(
+    skill?.usage,
+    skill?.example,
+    skill?.examples,
+    skill?.commands,
+    skill?.metadata?.usage,
+    skill?.metadata?.examples
+  )
+  if (usage) return usage
+  const scripts = Array.isArray(skill?.scripts) ? skill.scripts.filter(Boolean) : []
+  if (scripts.length) return `可用脚本：${scripts.join('、')}`
+  const install = Array.isArray(skill?.install) ? skill.install.map((item) => item?.label).filter(Boolean) : []
+  if (install.length) return `可按需安装依赖：${install.join('、')}`
+  return '暂无使用示例。'
+}
+
+function getSkillStatusLabel(skill) {
+  if (isOpenClawBuiltinSkill(skill)) return '内置未启用 / 需安装后使用'
+  if (skill?.eligible && !skill?.disabled && !skill?.blockedByAllowlist) return '已启用 / 可直接调用'
+  if (skill?.disabled) return '已禁用'
+  if (skill?.blockedByAllowlist) return '已阻止'
+  return '缺依赖 / 暂不可用'
+}
+
+function formatOpenClawSkillNameForChinese(skill) {
+  const raw = String(skill?.display_name || skill?.displayName || skill?.name || skill?.slug || '').trim()
+  const normalized = normalizeSkillKey(raw)
+  const source = raw || normalized
+  if (!source) return '该技能'
+  return source
+    .replace(/^cli[-_\s]+anything[-_\s]+/i, 'CLI anything ')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function getOpenClawSkillChineseDescription(skill, display) {
+  const direct = getStringField(
+    skill?.zhDescription,
+    skill?.chineseDescription,
+    skill?.localizedDescription,
+    skill?.cnDescription,
+    skill?.cnSummary,
+    skill?.note,
+    skill?.summaryZh,
+    skill?.comment,
+    skill?.annotation,
+    skill?.metadata?.zhDescription,
+    skill?.metadata?.chineseDescription,
+    skill?.metadata?.localizedDescription,
+    skill?.metadata?.note,
+    skill?.metadata?.comment,
+    skill?.metadata?.annotation
+  )
+  if (direct) return direct
+
+  const desc = getStringField(
+    skill?.description,
+    skill?.summary,
+    skill?.metadata?.description,
+    skill?.metadata?.summary
+  )
+  if (desc && hasChineseText(desc)) return desc
+
+  const raw = getSkillRawContent(skill)
+  if (raw) {
+    const zhLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^[-*>#\s]+/, ''))
+      .find((line) => hasChineseText(line) && line.length >= 6)
+    if (zhLine) return zhLine
+  }
+
+  if (display?.note && hasChineseText(display.note)) {
+    const cliAnythingNote = display.note.replace(/^用于CLI anything\s+(.+?)相关任务。$/, '用于 CLI anything $1 相关任务。')
+    return cliAnythingNote === display.note
+      ? display.note.replace(/^用于(.+?)相关任务。$/, '用于 $1 相关任务。').replace(/\s+/g, ' ')
+      : cliAnythingNote.replace(/\s+/g, ' ')
+  }
+  return `用于 ${formatOpenClawSkillNameForChinese(skill)} 相关任务。`
+}
+
+function getOpenClawSkillUsage(skill) {
+  const usage = getStringField(
+    skill?.usage,
+    skill?.example,
+    skill?.examples,
+    skill?.commands,
+    skill?.metadata?.usage,
+    skill?.metadata?.examples
+  )
+  return usage || '暂无使用示例。'
+}
+
+function getOpenClawSkillRawText(skill) {
+  return getSkillRawContent(skill)
+    || getStringField(skill?.description, skill?.summary, skill?.metadata?.description, skill?.metadata?.summary)
+    || '暂无英文原文。'
+}
+
+function getOpenClawSkillStatusLabel(skill) {
+  if (isOpenClawBuiltinSkill(skill)) return '内置未启用 / 需安装后使用'
+  if (skill?.eligible && !skill?.disabled && !skill?.blockedByAllowlist) return '已启用 / 可直接调用'
+  if (skill?.disabled) return '已禁用'
+  if (skill?.blockedByAllowlist) return '已阻止'
+  return '缺依赖 / 暂不可用'
+}
+
+async function readSkillMarkdown(skill) {
+  const filePath = getStringField(skill?.filePath, skill?.fullPath)
+  if (!filePath) return ''
+  const normalized = filePath.replace(/\\/g, '/')
+  const skillMdPath = normalized.toLowerCase().endsWith('/skill.md')
+    ? filePath
+    : `${filePath.replace(/[\\/]+$/, '')}\\SKILL.md`
+  try {
+    return await api.assistantReadFile(skillMdPath)
+  } catch {
+    return ''
+  }
+}
+
+function normalizePathForSkill(pathValue) {
+  return String(pathValue || '').replace(/\\/g, '/').toLowerCase()
+}
+
+function isOpenClawBuiltinSkill(skill) {
+  const filePath = normalizePathForSkill(skill?.filePath || skill?.fullPath || '')
+  return filePath.includes('/runtime/openclaw/skills/')
+}
+
+function isCallableOpenClawSkill(skill) {
+  return !isOpenClawBuiltinSkill(skill)
+    && !!skill?.eligible
+    && !skill?.disabled
+    && !skill?.blockedByAllowlist
+}
+
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page openclaw-skills-page'
@@ -324,12 +520,15 @@ function renderSkills(el, data) {
   const cliAvailable = data?.cliAvailable !== false
   const source = data?.source || ''
   const cliDiag = data?.diagnostic?.cli || null
-  const eligible = skills.filter(s => s.eligible && !s.disabled)
-  const missing = skills.filter(s => !s.eligible && !s.disabled && !s.blockedByAllowlist)
-  const disabled = skills.filter(s => s.disabled)
-  const blocked = skills.filter(s => s.blockedByAllowlist && !s.disabled)
+  const builtin = skills.filter(isOpenClawBuiltinSkill)
+  const installed = skills.filter(s => !isOpenClawBuiltinSkill(s))
+  const available = installed.filter(isCallableOpenClawSkill)
+  const eligible = available
+  const missing = installed.filter(s => !s.eligible && !s.disabled && !s.blockedByAllowlist)
+  const disabled = installed.filter(s => s.disabled)
+  const blocked = installed.filter(s => s.blockedByAllowlist && !s.disabled)
 
-  const summary = t('skills.summaryDetail', { eligible: eligible.length, missing: missing.length, disabled: disabled.length })
+  const summary = `${available.length} 已启用 / ${builtin.length} 内置未启用 / ClawHub ${CLAWHUB_EXPECTED_COUNT} 可安装`
 
   el.innerHTML = `
     <div class="clawhub-toolbar">
@@ -340,11 +539,13 @@ function renderSkills(el, data) {
     <div class="skills-overview-card">
       <div class="skills-overview-copy">
         <div class="skills-overview-eyebrow">中文批注已开启</div>
-        <div class="skills-overview-title">${t('skills.summary', { total: skills.length, detail: summary })}</div>
+        <div class="skills-overview-title">共 ${installed.length} 个已安装 Skills：${summary}</div>
         <div class="skills-overview-sub">每个 Skill 都会显示中文用途说明；新安装的技能也会根据名称和英文描述自动生成中文批注。</div>
       </div>
       <div class="skills-overview-metrics" aria-label="Skills 状态统计">
-        <span class="skills-overview-pill is-ok">${eligible.length} 可用</span>
+        <span class="skills-overview-pill is-ok">${eligible.length} 已启用</span>
+        <span class="skills-overview-pill">${builtin.length} 内置未启用</span>
+        <span class="skills-overview-pill">${CLAWHUB_EXPECTED_COUNT} 可安装</span>
         <span class="skills-overview-pill is-warn">${missing.length} 缺依赖</span>
         <span class="skills-overview-pill">${disabled.length} 已禁用</span>
       </div>
@@ -352,9 +553,17 @@ function renderSkills(el, data) {
 
     ${eligible.length ? `
     <div class="clawhub-panel" style="margin-bottom:var(--space-lg)">
-      <div class="clawhub-panel-title" style="color:var(--success)">${t('skills.eligibleGroup')} (${eligible.length})</div>
+      <div class="clawhub-panel-title" style="color:var(--success)">已启用 / 可直接调用 (${eligible.length})</div>
       <div class="clawhub-list skills-scroll-area skills-trending-scroll" id="skills-eligible">
         ${eligible.map(s => renderSkillCard(s, 'eligible')).join('')}
+      </div>
+    </div>` : ''}
+
+    ${builtin.length ? `
+    <div class="clawhub-panel" style="margin-bottom:var(--space-lg)">
+      <div class="clawhub-panel-title" style="color:var(--warning)">内置未启用 / 需安装后使用 (${builtin.length})</div>
+      <div class="clawhub-list skills-scroll-area skills-installed-scroll" id="skills-builtin">
+        ${builtin.map(s => renderSkillCard(s, 'builtin')).join('')}
       </div>
     </div>` : ''}
 
@@ -423,7 +632,8 @@ function renderSkillCard(skill, status) {
   const installOpts = skill.install || []
 
   let statusBadge = ''
-  if (status === 'eligible') statusBadge = `<span class="clawhub-badge installed">${t('skills.eligible')}</span>`
+  if (status === 'eligible') statusBadge = `<span class="clawhub-badge installed">已启用</span><span class="clawhub-badge skill-state-note">可直接调用</span>`
+  else if (status === 'builtin') statusBadge = `<span class="clawhub-badge skill-state-builtin">内置未启用</span><span class="clawhub-badge skill-state-note">需安装后使用</span>`
   else if (status === 'missing') statusBadge = `<span class="clawhub-badge" style="background:rgba(245,158,11,0.14);color:#d97706">${t('skills.missingDeps')}</span>`
   else if (status === 'disabled') statusBadge = `<span class="clawhub-badge" style="background:rgba(107,114,128,0.14);color:#6b7280">${t('skills.disabled')}</span>`
   else if (status === 'blocked') statusBadge = `<span class="clawhub-badge" style="background:rgba(239,68,68,0.14);color:#ef4444">${t('skills.blocked')}</span>`
@@ -434,7 +644,9 @@ function renderSkillCard(skill, status) {
   if (missingConfig.length) missingHtml += `<div class="form-hint" style="margin-top:4px">${t('skills.missingConfig')}: ${missingConfig.map(c => `<code>${esc(c)}</code>`).join(', ')} <span style="color:var(--text-tertiary);font-size:var(--font-size-xs)">${t('skills.missingConfigHint')}</span></div>`
 
   let installHtml = ''
-  if (status === 'missing') {
+  if (status === 'builtin') {
+    installHtml = `<div class="form-hint" style="margin-top:6px;color:var(--text-tertiary);font-size:var(--font-size-xs)">这是内置 SKILL.md 资源，当前未注册到 available_skills；安装接口未接入前不会加入可调用列表。</div>`
+  } else if (status === 'missing') {
     if (installOpts.length) {
       installHtml = `<div style="margin-top:6px">${installOpts.map(opt =>
         `<button class="btn btn-primary btn-sm" style="margin-right:6px;margin-top:4px" data-action="skill-install-dep" data-kind="${esc(opt.kind)}" data-install='${esc(JSON.stringify(opt))}' data-skill-name="${esc(name)}">${esc(opt.label)}</button>`
@@ -466,6 +678,7 @@ function renderSkillCard(skill, status) {
       </div>
       <div class="clawhub-item-actions">
         <button class="btn btn-secondary btn-sm" data-action="skill-info" data-name="${esc(name)}">${t('skills.detail')}</button>
+        ${status === 'builtin' ? `<button class="btn btn-secondary btn-sm" disabled title="安装接口尚未接入">安装到 OpenClaw</button>` : ''}
         ${!skill.bundled ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}">${t('skills.uninstall')}</button>` : ''}
         ${statusBadge}
       </div>
@@ -473,6 +686,90 @@ function renderSkillCard(skill, status) {
   `
 }
 
+function closeOpenClawSkillDetailModal() {
+  document.querySelector('#openclaw-skill-detail-modal-root')?.remove()
+}
+
+function renderOpenClawSkillDetailModal(bodyHtml) {
+  closeOpenClawSkillDetailModal()
+  const root = document.createElement('div')
+  root.id = 'openclaw-skill-detail-modal-root'
+  root.innerHTML = bodyHtml
+  root.addEventListener('click', (event) => {
+    const clickedClose = event.target.closest('[data-action="skill-detail-close"]')
+    const clickedModal = event.target.closest('.skill-detail-modal')
+    if (clickedClose || !clickedModal) closeOpenClawSkillDetailModal()
+  })
+  document.body.appendChild(root)
+}
+
+async function showOpenClawSkillDetail(page, name) {
+  renderOpenClawSkillDetailModal(`<div class="skill-detail-modal-backdrop" data-action="skill-detail-close">
+    <div class="skill-detail-modal" role="dialog" aria-modal="true" aria-label="Skill detail">
+      <div class="skill-detail-header">
+        <h3>\u6280\u80fd\u8be6\u60c5</h3>
+        <button class="btn btn-secondary btn-sm" data-action="skill-detail-close">\u5173\u95ed</button>
+      </div>
+      <div class="form-hint">${t('skills.loadingDetail')}</div>
+    </div>
+  </div>`)
+
+  try {
+    let skill = null
+    if (wsClient.connected && wsClient.gatewayReady) {
+      try { skill = await wsClient.skillsDetail(name) } catch {}
+    }
+    if (!skill) skill = await api.skillsInfo(name, _selectedAgentId)
+    const s = skill || { name }
+    const display = getSkillDisplay(s.name ? s : { ...s, name })
+    const skillMd = await readSkillMarkdown(s)
+    const detailSkill = skillMd ? { ...s, skillMd } : s
+    const chineseDescription = getOpenClawSkillChineseDescription(detailSkill, display)
+    const usageText = getOpenClawSkillUsage(detailSkill)
+    const originalText = getOpenClawSkillRawText(detailSkill)
+    const statusText = getOpenClawSkillStatusLabel(detailSkill)
+    const source = s.source || (s.bundled ? t('skills.bundled') : t('skills.custom')) || '\u672a\u77e5'
+
+    renderOpenClawSkillDetailModal(`<div class="skill-detail-modal-backdrop" data-action="skill-detail-close">
+      <div class="skill-detail-modal" role="dialog" aria-modal="true" aria-label="Skill detail">
+        <div class="skill-detail-header">
+          <div>
+            <div class="clawhub-detail-kicker">\u6280\u80fd\u8be6\u60c5</div>
+            <h3>${esc(s.emoji || '\ud83d\udce6')} ${esc(s.name || name)}</h3>
+          </div>
+          <button class="btn btn-secondary btn-sm" data-action="skill-detail-close">\u5173\u95ed</button>
+        </div>
+        <div class="clawhub-detail-meta">
+          <span>\u6765\u6e90\uff1a${esc(source)}</span>
+          <span>\u72b6\u6001\uff1a${esc(statusText)}</span>
+          ${s.filePath ? `<span>${t('skills.detailPath')}: <code>${esc(s.filePath)}</code></span>` : ''}
+        </div>
+        <section class="skill-detail-section">
+          <div class="skill-detail-section-title">\u4e2d\u6587\u4ecb\u7ecd</div>
+          <div class="skill-detail-cn-text">${esc(chineseDescription)}</div>
+        </section>
+        <section class="skill-detail-section">
+          <div class="skill-detail-section-title">\u4f7f\u7528\u65b9\u5f0f</div>
+          <div class="skill-detail-usage">${esc(usageText)}</div>
+        </section>
+        <details class="skill-original-desc skill-detail-original">
+          <summary>\u82f1\u6587\u539f\u6587</summary>
+          <pre>${esc(originalText)}</pre>
+        </details>
+      </div>
+    </div>`)
+  } catch (e) {
+    renderOpenClawSkillDetailModal(`<div class="skill-detail-modal-backdrop" data-action="skill-detail-close">
+      <div class="skill-detail-modal" role="dialog" aria-modal="true" aria-label="Skill detail">
+        <div class="skill-detail-header">
+          <h3>\u6280\u80fd\u8be6\u60c5</h3>
+          <button class="btn btn-secondary btn-sm" data-action="skill-detail-close">\u5173\u95ed</button>
+        </div>
+        <div style="color:var(--error)">${t('skills.detailLoadFailed')}: ${esc(e?.message || e)}</div>
+      </div>
+    </div>`)
+  }
+}
 async function handleInfo(page, name) {
   const detail = page.querySelector('#skill-detail-area')
   if (!detail) return
@@ -489,6 +786,12 @@ async function handleInfo(page, name) {
     const reqs = s.requirements || {}
     const miss = s.missing || {}
     const display = getSkillDisplay(s.name ? s : { ...s, name })
+    const skillMd = await readSkillMarkdown(s)
+    const detailSkill = skillMd ? { ...s, skillMd } : s
+    const chineseDescription = getSkillChineseDescription(detailSkill, display)
+    const usageText = getSkillUsageText(detailSkill)
+    const originalText = getSkillOriginalText(detailSkill)
+    const statusText = getSkillStatusLabel(detailSkill)
 
     let reqsHtml = ''
     if (reqs.bins?.length) {
@@ -506,19 +809,26 @@ async function handleInfo(page, name) {
 
     detail.innerHTML = `
       <div class="clawhub-detail-card">
+        <div class="clawhub-detail-kicker">技能详情</div>
         <div class="clawhub-detail-title">${esc(s.emoji || '📦')} ${esc(s.name || name)}</div>
         <div class="clawhub-detail-meta">
-          ${t('skills.detailSource')}: ${esc(s.source || '')} · ${t('skills.detailPath')}: <code>${esc(s.filePath || '')}</code>
+          <span>来源：${esc(s.source || '未知')}</span>
+          <span>状态：${esc(statusText)}</span>
+          ${s.filePath ? `<span>${t('skills.detailPath')}: <code>${esc(s.filePath)}</code></span>` : ''}
           ${s.homepage ? ` · <a href="${esc(s.homepage)}" target="_blank" rel="noopener">${esc(s.homepage)}</a>` : ''}
         </div>
-        <div class="skill-cn-note skill-detail-note">
-          <span class="skill-cn-note-label">中文批注</span>
-          <span>${esc(display.note)}</span>
+        <div class="skill-detail-section">
+          <div class="skill-detail-section-title">中文介绍</div>
+          <div class="skill-detail-cn-text">${esc(chineseDescription)}</div>
         </div>
-        ${display.originalDesc ? `<details class="skill-original-desc skill-detail-original">
+        <div class="skill-detail-section">
+          <div class="skill-detail-section-title">使用方式</div>
+          <div class="skill-detail-usage">${esc(usageText)}</div>
+        </div>
+        <details class="skill-original-desc skill-detail-original">
           <summary>英文原文</summary>
-          <div>${esc(display.originalDesc)}</div>
-        </details>` : ''}
+          <pre>${esc(originalText)}</pre>
+        </details>
         ${reqsHtml}
         ${(s.install || []).length && !s.eligible ? `<div style="margin-top:8px"><strong>${t('skills.installOptions')}:</strong> ${s.install.map(i => `<span class="form-hint">→ ${esc(i.label)}</span>`).join(' ')}</div>` : ''}
       </div>
@@ -559,7 +869,7 @@ async function loadStore(page) {
     // 获取已安装列表用于标记
     try {
       const data = await api.skillsList(_selectedAgentId)
-      _installedNames = new Set((data?.skills || []).map(s => s.name))
+      _installedNames = new Set((data?.skills || []).filter(s => !isOpenClawBuiltinSkill(s)).map(s => s.name))
     } catch { _installedNames = new Set() }
     renderStoreItems(results, _storeIndex)
   } catch (e) {
@@ -572,7 +882,8 @@ function renderStoreItems(el, items) {
     el.innerHTML = `<div class="clawhub-empty" style="padding:var(--space-xl);text-align:center">${t('skills.noResults')}</div>`
     return
   }
-  el.innerHTML = items.map(item => {
+  const marketTotal = _storeIndex?.length || items.length || CLAWHUB_EXPECTED_COUNT
+  const cardsHtml = items.map(item => {
     const slug = item.slug || ''
     const name = item.display_name || item.displayName || item.name || slug
     const desc = item.summary || item.description || ''
@@ -598,13 +909,20 @@ function renderStoreItems(el, items) {
         </div>
         <div class="clawhub-item-actions">
           ${installed
-            ? `<span class="clawhub-badge installed">${t('skills.installed')}</span>`
-            : `<button class="btn btn-primary btn-sm" data-action="store-install" data-slug="${esc(slug)}">${t('skills.install')}</button>`
+            ? `<span class="clawhub-badge installed">已安装</span><button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(slug)}">卸载</button>`
+            : `<span class="clawhub-badge skill-state-market">市场可安装</span><span class="clawhub-badge skill-state-note">未安装</span><button class="btn btn-primary btn-sm" data-action="store-install" data-slug="${esc(slug)}">安装</button>`
           }
         </div>
       </div>
     `
   }).join('')
+  el.innerHTML = `
+    <div class="skills-market-status">
+      <strong>ClawHub 市场 ${marketTotal} 个，可安装</strong>
+      <span>未安装的市场技能不会进入 OpenClaw 可调用列表。</span>
+    </div>
+    ${cardsHtml}
+  `
 }
 
 async function handleStoreSearch(page) {
@@ -656,11 +974,9 @@ async function handleStoreInstall(page, btn) {
   try {
     await api.skillhubInstall(slug, _selectedAgentId)
     toast(t('skills.skillInstalled', { name: slug }), 'success')
-    btn.textContent = t('skills.installed')
-    btn.classList.remove('btn-primary')
-    btn.classList.add('btn-secondary')
     _installedNames.add(slug)
-    loadSkills(page).catch(() => {})
+    await loadSkills(page)
+    if (_storeIndex) renderStoreItems(page.querySelector('#store-results'), _storeIndex)
   } catch (e) {
     toast(`${t('skills.installFailed')}: ${e?.message || e}`, 'error')
     btn.disabled = false
@@ -677,7 +993,9 @@ async function handleSkillUninstall(page, btn) {
   try {
     await api.skillsUninstall(name, _selectedAgentId)
     toast(t('skills.uninstalled', { name }), 'success')
+    _installedNames.delete(name)
     await loadSkills(page)
+    if (_storeIndex) renderStoreItems(page.querySelector('#store-results'), _storeIndex)
   } catch (e) {
     toast(`${t('skills.uninstallFailed')}: ${e?.message || e}`, 'error')
     btn.disabled = false
@@ -707,7 +1025,10 @@ function bindEvents(page) {
         await loadSkills(page)
         break
       case 'skill-info':
-        await handleInfo(page, btn.dataset.name)
+        await showOpenClawSkillDetail(page, btn.dataset.name)
+        break
+      case 'skill-detail-close':
+        page.querySelector('#skill-detail-area')?.replaceChildren()
         break
       case 'skill-install-dep':
         await handleInstallDep(page, btn)
