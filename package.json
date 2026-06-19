@@ -9,6 +9,7 @@
     "build": "vite build",
     "serve": "node scripts/serve.js",
     "smoke:life": "node --test tests/life-assistant.test.js",
+    "smoke:ecommerce-stage1": "node scripts/smoke-ecommerce-stage1.mjs",
     "smoke:compact-chat": "node scripts/smoke-compact-chat.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

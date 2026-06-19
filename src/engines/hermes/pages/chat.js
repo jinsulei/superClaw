@@ -48,6 +48,10 @@ import {
   transcribeWithModelVoice,
 } from '../../../lib/model-voice.js'
 import { renderScreenshotCardHtml, renderUserConfirmationCardHtml } from '../../../shared/life-assistant-ui.js'
+import { isStage1DesktopAssistEnabled } from '../../../shared/ecommerce-stage1/feature-flag.js'
+import { detectStage1Intent } from '../../../shared/ecommerce-stage1/planner.js'
+import { runStage1DesktopAssist } from '../../../shared/ecommerce-stage1/runner.js'
+import { Stage1MessageType } from '../../../shared/ecommerce-stage1/types.js'
 
 // ----------------------------------------------------------- helpers
 
@@ -2737,6 +2741,75 @@ export function render() {
     return result
   }
 
+  function createStage1BrowserContext() {
+    return {
+      readVisibleText: async () => ({
+        text: '',
+        title: '',
+        url: '',
+        error: '当前 Hermes 页面暂未接入真实浏览器可见文字读取能力。',
+      }),
+      captureScreenshot: async () => null,
+      findInteractiveTargets: async () => ({
+        buttons: [],
+        inputs: [],
+        links: [],
+        error: '当前 Hermes 页面暂未接入真实浏览器元素识别能力。',
+      }),
+    }
+  }
+
+  function appendStage1Event(event) {
+    if (!event) return
+    if (event.type === Stage1MessageType.SCREENSHOT_CARD) {
+      store.pushLocalAssistantMessage?.({
+        type: Stage1MessageType.SCREENSHOT_CARD,
+        card: event.card,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (event.type === Stage1MessageType.USER_CONFIRMATION) {
+      store.pushLocalAssistantMessage?.({
+        type: Stage1MessageType.USER_CONFIRMATION,
+        confirmation: event.confirmation,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function maybeRunStage1DesktopAssist(userText) {
+    if (!isStage1DesktopAssistEnabled()) return false
+
+    const detected = detectStage1Intent(userText)
+    if (!detected.matched) return false
+
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+
+    await runStage1DesktopAssist(
+      {
+        intent: detected.intent,
+        query: userText,
+      },
+      {
+        emit: appendStage1Event,
+        browser: createStage1BrowserContext(),
+      },
+    )
+
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
   function dispatchCollaborationTask({
     goal,
     executor = COLLAB_TARGETS.openclaw,
@@ -3008,6 +3081,10 @@ export function render() {
       )
       window.location.hash = '#' + target
       resetInput(); draw(); return
+    }
+
+    if (await maybeRunStage1DesktopAssist(text)) {
+      return
     }
 
     if (isCollaborationTaskRequest(text)) {
