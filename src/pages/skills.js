@@ -935,24 +935,25 @@ async function handleStoreSearch(page) {
   const results = page.querySelector('#store-results')
   if (!input || !results) return
   const q = input.value.trim().toLowerCase()
-  if (!q && _storeIndex) {
+  const hasStoreIndex = Array.isArray(_storeIndex) && _storeIndex.length > 0
+  if (!q && hasStoreIndex) {
     renderStoreItems(results, _storeIndex)
     return
   }
   if (!q) return
-  // 客户端过滤已有索引
-  if (_storeIndex) {
+  if (hasStoreIndex) {
     const filtered = _storeIndex.filter(item => {
       const slug = (item.slug || '').toLowerCase()
-      const name = (item.display_name || item.displayName || '').toLowerCase()
+      const name = (item.display_name || item.displayName || item.name || '').toLowerCase()
       const desc = (item.summary || item.description || '').toLowerCase()
-      const tags = (item.tags || []).join(' ').toLowerCase()
+      const tags = Array.isArray(item.tags) ? item.tags.join(' ').toLowerCase() : String(item.tags || '').toLowerCase()
       return slug.includes(q) || name.includes(q) || desc.includes(q) || tags.includes(q)
     })
-    renderStoreItems(results, filtered)
-    return
+    if (filtered.length) {
+      renderStoreItems(results, filtered)
+      return
+    }
   }
-  // 没有索引时走服务端搜索（优先 Gateway RPC，回退 Tauri）
   results.innerHTML = `<div class="form-hint" style="padding:var(--space-sm)">${t('skills.searching')}</div>`
   try {
     let items
