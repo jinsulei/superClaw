@@ -1021,7 +1021,7 @@ export function render() {
       apiKeyTokens = Array.isArray(tokens) ? tokens : []
       apiKeyListLoaded = true
       if (apiKeyTokens.length && !selectedApiKeyId && (selectFirst || formApiKey)) {
-        await applyUserApiKey(tokenId(apiKeyTokens[0]), { fetchModels: false })
+        await preloadUserApiKey(tokenId(apiKeyTokens[0]))
         return
       }
       if (apiKeyTokens.length && !selectedApiKeyId) {
@@ -1037,7 +1037,22 @@ export function render() {
     }
   }
 
-  async function applyUserApiKey(id, { fetchModels = true } = {}) {
+  async function preloadUserApiKey(id) {
+    if (!id) return
+    selectedApiKeyId = id
+    try {
+      const { getFullTokenKey } = await import('../../../lib/user-api.js')
+      const keyData = await getFullTokenKey(id)
+      const fullKey = extractFullTokenKey(keyData)
+      if (!fullKey || String(fullKey).includes('*')) return
+      formApiKey = String(fullKey).trim()
+      try { localStorage.setItem('superclaw_yyapi_key', formApiKey) } catch {}
+    } catch (err) {
+      console.warn('[hermes/dashboard] preload api key failed:', err)
+    }
+  }
+
+  async function applyUserApiKey(id, { fetchModels = true, silent = false } = {}) {
     if (!id) {
       selectedApiKeyId = ''
       formApiKey = ''
@@ -1056,7 +1071,11 @@ export function render() {
       if (!fullKey || String(fullKey).includes('*')) throw new Error('没有获取到完整 API Key')
       formApiKey = String(fullKey).trim()
       try { localStorage.setItem('superclaw_yyapi_key', formApiKey) } catch {}
-      cfgMsg = '<span style="color:var(--success)">API Key 已切换，正在重新获取模型...</span>'
+      cfgMsg = silent
+        ? ''
+        : (fetchModels
+          ? '<span style="color:var(--success)">API Key 已切换，正在重新获取模型...</span>'
+          : '<span style="color:var(--success)">API Key 已切换</span>')
       draw()
       if (fetchModels) await doFetchModels()
     } catch (err) {

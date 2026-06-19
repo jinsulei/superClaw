@@ -63,9 +63,13 @@ function ensurePortableOpenClawSkills(config) {
   if (!config.plugins.entries || typeof config.plugins.entries !== 'object' || Array.isArray(config.plugins.entries)) {
     config.plugins.entries = {}
   }
+  if (!Array.isArray(config.plugins.allow)) config.plugins.allow = []
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
   config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
+  for (const pluginId of ['browser', 'desktop-control', 'skill-manager']) {
+    if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
+  }
 
   if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
   config.tools.profile = config.tools.profile || 'minimal'
@@ -703,14 +707,14 @@ function renderProviders(page, state) {
     const collapsed = !!state._collapsed[key]
     const chevron = collapsed ? '▸' : '▾'
 
-    // managed provider 的按钮组：只有测试和删除（隐藏编辑/添加）
+    // managed provider 的按钮组：保留系统托管标识；自定义服务商恢复完整编辑能力。
     const actionButtons = isManaged ? `
       <span class="badge badge-primary" style="font-size:10px;background:var(--accent-muted);color:var(--accent);padding:1px 7px;border-radius:8px">${t('models.managedProvider')}</span>
       <button class="btn btn-sm btn-secondary" data-action="test-all-models">${t('models.testBtn')}</button>
       <button class="btn btn-sm btn-danger" data-action="delete-provider">${t('models.deleteProvider')}</button>
     ` : `
-      <button class="btn btn-sm btn-secondary" data-action="edit-provider" style="display:none">${t('models.editProvider')}</button>
-      <button class="btn btn-sm btn-secondary" data-action="add-model" style="display:none">${t('models.addModel')}</button>
+      <button class="btn btn-sm btn-secondary" data-action="edit-provider">${t('models.editProvider')}</button>
+      <button class="btn btn-sm btn-secondary" data-action="add-model">${t('models.addModel')}</button>
       <button class="btn btn-sm btn-secondary" data-action="fetch-models">${t('models.fetchList')}</button>
       <button class="btn btn-sm btn-danger" data-action="delete-provider">${t('models.deleteProvider')}</button>
     `
@@ -1334,12 +1338,13 @@ function bindTopActions(page, state) {
 // 模型配置对话框（默认 YYApi，API Key 可下拉选择也可手动输入）
 function addProvider(page, state) {
   const yyapiBaseUrl = getYyapiBaseUrl()
-  const minimaxPreset = PROVIDER_PRESETS.find(p => p.key === 'minimax') || { key: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions' }
-  const quickPresets = [
-    minimaxPreset,
-    { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions' },
-    ...(yyapiBaseUrl ? [{ key: YYAPI_PROVIDER_KEY, label: 'YYAPI', baseUrl: yyapiBaseUrl, api: 'openai-completions' }] : []),
-  ]
+  const presetMap = new Map()
+  if (yyapiBaseUrl) {
+    presetMap.set(YYAPI_PROVIDER_KEY, { key: YYAPI_PROVIDER_KEY, label: 'YYAPI', baseUrl: yyapiBaseUrl, api: 'openai-completions' })
+  }
+  for (const preset of PROVIDER_PRESETS) presetMap.set(preset.key, preset)
+  const quickPresets = Array.from(presetMap.values())
+  const defaultPreset = quickPresets[0] || { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions' }
   const overlay = document.createElement('div')
   overlay.className = 'modal-overlay'
   overlay.innerHTML = `
@@ -1347,19 +1352,19 @@ function addProvider(page, state) {
       <div class="modal-title">${t('models.addProviderTitle')}</div>
       <div class="form-group">
         <label class="form-label">${t('models.quickAdd')}</label>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px;max-height:220px;overflow:auto;padding-right:4px">
           ${quickPresets.map(p => `<button class="btn btn-sm btn-secondary provider-preset-btn" type="button" data-key="${escapeHtml(p.key)}" data-url="${escapeHtml(p.baseUrl || '')}" data-api="${escapeHtml(p.api || 'openai-completions')}">${escapeHtml(p.label)}</button>`).join('')}
         </div>
         <div class="form-hint">${t('models.quickAddHint')}</div>
       </div>
       <div class="form-group">
         <label class="form-label">${t('models.providerName')}</label>
-        <input class="form-input" data-name="key" value="${escapeHtml(minimaxPreset.key)}" placeholder="deepseek">
+        <input class="form-input" data-name="key" value="${escapeHtml(defaultPreset.key)}" placeholder="deepseek">
         <div class="form-hint">${t('models.providerNameHint')}</div>
       </div>
       <div class="form-group">
         <label class="form-label">${t('models.baseUrl')}</label>
-        <input class="form-input" data-name="baseUrl" value="${escapeHtml(minimaxPreset.baseUrl)}" placeholder="https://api.openai.com/v1">
+        <input class="form-input" data-name="baseUrl" value="${escapeHtml(defaultPreset.baseUrl || '')}" placeholder="https://api.openai.com/v1">
         <div class="form-hint">${t('models.baseUrlHint')}</div>
       </div>
       <div class="form-group">
@@ -1373,7 +1378,7 @@ function addProvider(page, state) {
       <div class="form-group">
         <label class="form-label">${t('models.apiType')}</label>
         <select class="form-input" data-name="api">
-          ${API_TYPES.map(at => `<option value="${at.value}" ${at.value === (minimaxPreset.api || 'openai-completions') ? 'selected' : ''}>${at.label}</option>`).join('')}
+          ${API_TYPES.map(at => `<option value="${at.value}" ${at.value === (defaultPreset.api || 'openai-completions') ? 'selected' : ''}>${at.label}</option>`).join('')}
         </select>
         <div class="form-hint">${t('models.apiTypeHint')}</div>
       </div>

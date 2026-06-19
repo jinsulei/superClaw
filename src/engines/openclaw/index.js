@@ -94,7 +94,7 @@ export default {
         items: [
           { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
           { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
-          // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+          { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
@@ -135,8 +135,8 @@ export default {
     }, {
       section: '',
       items: [
-        // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -177,7 +177,7 @@ export default {
       { path: '/activate', loader: () => import('../../pages/activate.js') },
       { path: '/register', loader: () => import('../../pages/register.js') },
       { path: '/claim', loader: () => import('../../pages/claim.js') },
-      { path: '/recharge', loader: () => import('../../pages/recharge-redirect.js') },
+      { path: '/recharge', loader: () => import('../../pages/payment.js') },
     ]
   },
 

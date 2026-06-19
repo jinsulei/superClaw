@@ -1150,6 +1150,12 @@ function openExternalUrl(href) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(href)).catch(() => window.open(href, '_blank'))
 }
 
+const BUNDLED_OPENCLAW_CMD = '.\\resources\\runtime\\openclaw\\openclaw.cmd'
+
+function bundledOpenclawCommand(args) {
+  return `${BUNDLED_OPENCLAW_CMD} ${args}`
+}
+
 function getManualCommandSpecs(pid, reg) {
   if (pid === 'weixin') {
     return [
@@ -1157,13 +1163,13 @@ function getManualCommandSpecs(pid, reg) {
         id: 'install',
         title: t('channels.manualInstallCommand'),
         hint: t('channels.manualInstallHint', { platform: reg.label }),
-        command: 'npx -y @tencent-weixin/openclaw-weixin-cli@latest install',
+        command: bundledOpenclawCommand('plugins install @tencent-weixin/openclaw-weixin@latest'),
       },
       {
         id: 'login',
         title: t('channels.manualLoginCommand'),
         hint: t('channels.manualLoginHint'),
-        command: 'openclaw channels login --channel openclaw-weixin',
+        command: bundledOpenclawCommand('channels login --channel openclaw-weixin'),
       },
     ]
   }
@@ -1176,7 +1182,7 @@ function getManualCommandSpecs(pid, reg) {
     id: 'install',
     title: t('channels.manualInstallCommand'),
     hint: t('channels.manualInstallHint', { platform: reg.label }),
-    command: `openclaw plugins install ${reg.pluginRequired}`,
+    command: bundledOpenclawCommand(`plugins install ${reg.pluginRequired}`),
   }]
 }
 

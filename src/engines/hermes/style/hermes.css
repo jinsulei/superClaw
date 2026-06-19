@@ -8464,3 +8464,36 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   border-color: rgba(150, 170, 210, 0.35);
   color: #eef4ff;
 }
+
+/* Keep the global Hermes sidebar selection visible after dashboard theme overrides. */
+body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active {
+  background: var(--hm-accent-soft, rgba(202, 138, 4, 0.10)) !important;
+  color: var(--hm-accent, #CA8A04) !important;
+  font-weight: 650;
+}
+body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before {
+  background: var(--hm-accent, #CA8A04) !important;
+}
+body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg {
+  color: var(--hm-accent, #CA8A04) !important;
+  opacity: 1;
+}
+[data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
+[data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
+[data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active {
+  background: var(--hm-accent-soft, rgba(234, 179, 8, 0.14)) !important;
+  color: var(--hm-accent, #EAB308) !important;
+}
+[data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
+[data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
+[data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before {
+  background: var(--hm-accent, #EAB308) !important;
+}
+[data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
+[data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
+[data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg {
+  color: var(--hm-accent, #EAB308) !important;
+}

@@ -1,7 +1,6 @@
 /**
- * SuperClaw 远程用户认证 API 服务层
- * Remote API base URL is provided by yyapi-config.js.
- * 处理 激活 → 注册（含登录）→ 领证 → 登录 流程
+ * SuperClaw remote user API service.
+ * Handles activation, login/register, YYApi token sync, quota and payment.
  */
 import {
   YYAPI_PROVIDER_KEY,
@@ -11,6 +10,8 @@ import {
   isYyapiBaseUrl,
 } from './yyapi-config.js'
 
+const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
+
 function getBaseUrl() {
   return getUserApiBaseUrl()
 }
@@ -19,52 +20,19 @@ function getBaseUrlV2() {
   return getUserApiBaseUrlV2()
 }
 
-function isLocalDevAuthBypass() {
-  const host = window.location.hostname
-  const isLocalHost = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  return !!import.meta.env.DEV
-    && isLocalHost
-    && (import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS !== '0')
-}
-
-const DELIVERY_DEFAULT_ROUTE = 'h/chat'
-const DELIVERY_AUTH_ROUTES = new Set(['login', 'register', 'activate', 'claim'])
-
-function normalizeDeliveryRoute(path) {
-  const cleanPath = String(path || '').replace(/^#?\/+/, '').split('?')[0]
-  return DELIVERY_AUTH_ROUTES.has(cleanPath) ? DELIVERY_DEFAULT_ROUTE : cleanPath
-}
-
-/**
- * 导航到指定页面（全量刷新，触发 boot 流程中的 JWT 检查）
- * 适用于从 auth 页面跳转到 app 内部页面（如 claim → dashboard）
- * @param {string} path - 如 '/dashboard', '/login'
- */
 export function navigateTo(path) {
-  // 必须先设置 hash，再 reload，确保页面重载后 hash 还在
-  window.location.hash = '#/' + normalizeDeliveryRoute(path)
+  window.location.hash = '#/' + String(path || '').replace(/^\/+/, '')
   window.location.reload()
 }
 
-/**
- * auth 页面之间的导航（不触发全量刷新，仅改 hash）
- * 适用于 login / register / activate 之间的互相跳转
- * @param {string} path - 如 'login', 'register', 'activate'
- */
 export function navigateToAuth(path) {
-  window.location.hash = '#/' + normalizeDeliveryRoute(path)
+  window.location.hash = '#/' + String(path || '').replace(/^\/+/, '')
 }
 
-/**
- * 获取存储的 JWT token
- */
 export function getToken() {
   return localStorage.getItem('superclaw_token')
 }
 
-/**
- * 存储 JWT token
- */
 export function setToken(token) {
   if (token) {
     localStorage.setItem('superclaw_token', token)
@@ -73,17 +41,16 @@ export function setToken(token) {
   }
 }
 
-/**
- * 获取当前登录用户信息（从 localStorage）
- */
 export function getStoredUser() {
   const raw = localStorage.getItem('superclaw_user')
-  return raw ? JSON.parse(raw) : null
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
 }
 
-/**
- * 存储当前用户信息
- */
 export function setStoredUser(user) {
   if (user) {
     localStorage.setItem('superclaw_user', JSON.stringify(user))
@@ -92,16 +59,10 @@ export function setStoredUser(user) {
   }
 }
 
-/**
- * 判断用户是否已登录（有 token）
- */
 export function isLoggedIn() {
   return !!getToken()
 }
 
-/**
- * 清除所有登录状态
- */
 export function clearAuth() {
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
@@ -109,8 +70,6 @@ export function clearAuth() {
     console.warn('[auth] clear configured models failed:', err?.message || err)
   })
 }
-
-const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
 
 export async function clearConfiguredModelsForLogout() {
   try { localStorage.removeItem('superclaw_yyapi_key') } catch {}
@@ -146,6 +105,7 @@ async function resetOpenclawManagedModelConfig(api) {
   if (!config.agents) config.agents = {}
   if (!config.agents.defaults) config.agents.defaults = {}
   if (!config.agents.defaults.model) config.agents.defaults.model = {}
+
   if (isManagedYyapiModelRef(config.agents.defaults.model.primary)) {
     config.agents.defaults.model.primary = ''
   }
@@ -205,20 +165,17 @@ function isAuthInvalidError(status, message = '') {
     || /令牌|未登录|unauthorized|forbidden|invalid\s*token|用户不存在/i.test(message)
 }
 
-// ========== 认证请求 ==========
-
-/**
- * 通用 fetch 封装，自动附加 JWT
- */
 async function request(path, options = {}) {
   const { method = 'POST', body, auth = false, suppressAuthRedirect = false, timeoutMs = 15000 } = options
   const baseUrl = getBaseUrl()
   if (!baseUrl) throw new Error('USER_API_BASE_URL 未配置')
+
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
+    if (token) headers.Authorization = `Bearer ${token}`
   }
+
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   const resp = await fetch(`${baseUrl}${path}`, {
@@ -227,28 +184,27 @@ async function request(path, options = {}) {
     signal: controller?.signal,
     body: body ? JSON.stringify(body) : undefined,
   }).finally(() => { if (timer) clearTimeout(timer) })
-  const data = await resp.json()
+
+  let data
+  try {
+    data = await resp.json()
+  } catch {
+    data = {}
+  }
+
   if (!resp.ok) {
     const msg = data.error || data.message || `HTTP ${resp.status}`
-    // 令牌失效 / 未登录 → 全局跳转登录页
     if (isAuthInvalidError(resp.status, msg)) {
-      sessionStorage.setItem('superclaw_authed', '1')
+      clearAuth()
+      if (!suppressAuthRedirect) navigateTo('login')
     }
     throw new Error(msg)
   }
-  // 后端统一返回 { success: true, data: { ... } }，展开 data 字段
-  if (data && data.success !== undefined && data.data !== undefined) {
-    return data.data
-  }
+
+  if (data && data.success !== undefined && data.data !== undefined) return data.data
   return data
 }
 
-/**
- * 激活码验证（无需登录）
- * POST /api/redemption/activate
- * @param {string} code - 32位激活码
- * @returns {{ amount: number }}
- */
 export async function activateCode(code, options = {}) {
   if (options.endpoint === 'v2') {
     return requestV2('/license/activate', {
@@ -262,84 +218,60 @@ export async function activateCode(code, options = {}) {
   return request('/redemption/activate', { body: { code } })
 }
 
-/**
- * 用户注册（含激活码绑定）
- * POST /api/auth/register
- * @param {{ username: string, phone: string, password: string, confirmPassword: string, activationCode: string }}
- * @returns {{ token: string, user: object }}
- */
 export async function register(data) {
   return request('/auth/register', { body: data })
 }
 
-/**
- * 用户登录
- * POST /api/auth/login
- * @param {{ username: string, password: string }}
- * @returns {{ token: string, user: object, tokenInfo?: { remaining_tokens: number } }}
- */
 export async function login(data) {
   return request('/auth/login', { body: data, suppressAuthRedirect: true })
 }
 
-/**
- * 用户登出
- * POST /api/auth/logout
- */
 export async function logout() {
   try {
-    await request('/auth/logout', { auth: true, method: 'POST' })
+    await request('/auth/logout', { auth: true, method: 'POST', suppressAuthRedirect: true })
   } catch {
-    // 忽略登出时的网络错误
+    // Logout should complete locally even if the server is unavailable.
   }
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
   await clearConfiguredModelsForLogout()
 }
 
-/**
- * 获取用户信息（含额度）
- * GET /api/user/info
- * @returns {{ user: object, amount: number, tokenInfo?: { remaining_tokens: number } }}
- */
 export async function getUserInfo() {
   return request('/user/info', { auth: true, method: 'GET', timeoutMs: 2500 })
 }
 
-/**
- * 绑定激活码到已登录账号
- * POST /api/auth/bind-activation
- * @param {string} code
- * @returns {{ amount: number, balance: number, tokenInfo: object }}
- */
 export async function bindActivation(code) {
   return request('/auth/bind-activation', { auth: true, body: { code } })
 }
 
-/**
- * 用户主动兑换激活码（已登录）
- * POST /api/user/redemption/activate
- * @param {string} code
- * @returns {{ amount: number, balance: number }}
- */
 export async function redeemCode(code) {
   return request('/user/redemption/activate', { auth: true, body: { code } })
 }
 
-// ========== v2 API（YYApi 中转站集成） ==========
-
 async function requestV2(path, options = {}) {
-  const { method = 'POST', body, params = {}, auth = false, suppressAuthRedirect = false, cache, timeoutMs = 15000 } = options
+  const {
+    method = 'POST',
+    body,
+    params = {},
+    auth = false,
+    suppressAuthRedirect = false,
+    cache,
+    timeoutMs = 15000,
+  } = options
   const baseUrl = getBaseUrlV2()
   if (!baseUrl) throw new Error('USER_API_BASE_URL 未配置')
+
   const headers = { 'Content-Type': 'application/json' }
   if (auth) {
     const token = getToken()
-    if (token) headers['Authorization'] = `Bearer ${token}`
+    if (token) headers.Authorization = `Bearer ${token}`
   }
+
   let url = `${baseUrl}${path}`
   const qs = new URLSearchParams(params).toString()
   if (qs) url += '?' + qs
+
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   const resp = await fetch(url, {
@@ -349,34 +281,32 @@ async function requestV2(path, options = {}) {
     signal: controller?.signal,
     body: body ? JSON.stringify(body) : undefined,
   }).finally(() => { if (timer) clearTimeout(timer) })
+
   let data
   try {
     data = await resp.json()
   } catch {
     data = {}
   }
+
   if (!resp.ok || data.success === false) {
     const msg = data.message || data.error || `HTTP ${resp.status}`
-    // 令牌失效 / 未登录 → 全局跳转登录页
-    if (isAuthInvalidError(resp.status, msg)) {
-      sessionStorage.setItem('superclaw_authed', '1')
+    if (isAuthInvalidError(resp.status, msg) && !suppressAuthRedirect) {
+      clearAuth()
+      navigateTo('login')
     }
     throw new Error(msg)
   }
-  // 兼容两种响应格式：
-  // 1. { success: true, data: { ... } }  → 取出 data
-  // 2. { success: true, orderId: '...', qrCode: '...', ... }  → 去除 success/message/error 后返回
+
   if (data.data !== undefined) return data.data
   const { success, message, error, ...rest } = data
   return rest
 }
 
-/** v2 注册（自动同步到 YYApi） POST /api/v2/auth/register */
 export async function registerV2(data) {
   return requestV2('/auth/register', { body: data })
 }
 
-/** 获取 API Key 列表 GET /api/v2/tokens */
 export async function getTokenList(params = {}) {
   const data = await requestV2('/tokens', {
     auth: true,
@@ -390,12 +320,10 @@ export async function getTokenList(params = {}) {
   return []
 }
 
-/** 创建 API Key POST /api/v2/tokens */
 export async function createToken(data) {
   return requestV2('/tokens', { auth: true, body: data })
 }
 
-/** 获取完整 API Key（明文） POST /api/v2/tokens/:id/key */
 export async function getFullTokenKey(id) {
   return requestV2(`/tokens/${id}/key`, {
     auth: true,
@@ -404,7 +332,6 @@ export async function getFullTokenKey(id) {
   })
 }
 
-/** 获取用户额度 GET /api/v2/user/quota */
 export async function getUserQuota(options = {}) {
   return requestV2('/user/quota', {
     auth: true,
@@ -414,28 +341,18 @@ export async function getUserQuota(options = {}) {
   })
 }
 
-/** 获取用户信息（v2 格式，兼容 v1） GET /api/v2/user/info */
 export async function getUserInfoV2() {
   return requestV2('/user/info', { auth: true, method: 'GET', timeoutMs: 3000 })
 }
 
-/** 同步用户到 YYApi POST /api/v2/user/sync */
 export async function syncUserToNewAPI(data) {
   return requestV2('/user/sync', { auth: true, body: data })
 }
 
-/** 增加额度 POST /api/v2/user/topup */
 export async function topupUser(amount) {
   return requestV2('/user/topup', { auth: true, body: { amount } })
 }
 
-// ========== 支付（V2 API） ==========
-
-/**
- * 获取充值配置（折扣 + 支付方式）
- * GET /api/v2/payment/topup-info
- * @returns {{ discount: object, pay_methods: Array }}
- */
 export async function getTopupInfo(options = {}) {
   return requestV2('/payment/topup-info', {
     auth: true,
@@ -445,12 +362,6 @@ export async function getTopupInfo(options = {}) {
   })
 }
 
-/**
- * 创建支付订单（调好收米 API 生成二维码，用户扫码付款）
- * POST /api/v2/payment/create-order
- * @param {number} amount - 充值金额（元）
- * @returns {{ orderId: string, amount: number, quotaAmount: number, paymentType: string, qrCode: string, payUrl: string|null }}
- */
 export async function createPaymentOrder(amount, type, options = {}) {
   return requestV2('/payment/create-order', {
     auth: true,
@@ -459,7 +370,6 @@ export async function createPaymentOrder(amount, type, options = {}) {
   })
 }
 
-/** Query local payment order status. */
 export async function getPaymentOrderStatus(orderId) {
   return requestV2(`/payment/order/${encodeURIComponent(orderId)}`, {
     auth: true,
@@ -470,16 +380,12 @@ export async function getPaymentOrderStatus(orderId) {
   })
 }
 
-/** 获取 YYApi 控制台登录会话（通过本地代理或 Tauri 命令）
- *  返回 { success: true, sessionCookie: string, sessionValue?: string }
- */
 export async function createYYApiSession(username, password) {
   const { invoke: tauriInvoke } = await import('./tauri-api.js')
   try {
-    const result = await tauriInvoke('yyapi_create_session', { username, password })
-    return result
+    return await tauriInvoke('yyapi_create_session', { username, password })
   } catch (e) {
-    console.warn('[user-api] createYYApiSession 失败:', e)
+    console.warn('[user-api] createYYApiSession failed:', e)
     throw e
   }
 }

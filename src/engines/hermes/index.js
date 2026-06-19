@@ -112,7 +112,6 @@ export default {
         section: '',
         items: [
           { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-          { route: '/h/recharge', label: t('sidebar.rechargePlan'), icon: 'recharge', className: 'nav-item-recharge-plan' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
@@ -138,10 +137,9 @@ export default {
     }, {
       section: '',
       items: [
-        // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-        { route: '/h/recharge', label: t('sidebar.rechargePlan'), icon: 'recharge', className: 'nav-item-recharge-plan' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]
     }]
@@ -171,7 +169,7 @@ export default {
       { path: '/assistant', loader: () => import('../../pages/assistant.js') },
       { path: '/settings', loader: () => import('../../pages/settings.js') },
       { path: '/about', loader: () => import('../../pages/about.js') },
-      { path: '/recharge', loader: () => import('../../pages/recharge-redirect.js') },
+      { path: '/recharge', loader: () => import('../../pages/payment.js') },
       { path: '/profile', loader: () => import('../../pages/profile.js') },
     ]
   },

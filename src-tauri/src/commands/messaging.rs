@@ -1256,7 +1256,7 @@ pub async fn check_weixin_plugin_status() -> Result<Value, String> {
         if oc_nums < vec![2026, 3, 22] {
             compatible = false;
             compat_error = format!(
-                "插件版本与当前 OpenClaw {} 不兼容（要求 >= 2026.3.22），请先升级 OpenClaw 或在终端执行: npx -y @tencent-weixin/openclaw-weixin-cli@latest install",
+                "插件版本与当前 OpenClaw {} 不兼容（要求 >= 2026.3.22），请先升级 OpenClaw 或在便携包根目录执行: .\\resources\\runtime\\openclaw\\openclaw.cmd plugins install @tencent-weixin/openclaw-weixin@latest",
                 oc_ver
             );
         }
@@ -1297,7 +1297,7 @@ pub async fn run_channel_action(
         // v2.0.1 需要 OpenClaw >= 2026.3.22 的 SDK，旧版用 v1.0.3（最后兼容版）
         let weixin_spec = if version.as_deref().is_some_and(|v| !v.is_empty()) {
             format!(
-                "@tencent-weixin/openclaw-weixin-cli@{}",
+                "@tencent-weixin/openclaw-weixin@{}",
                 version.as_deref().unwrap()
             )
         } else {
@@ -1346,7 +1346,7 @@ pub async fn run_channel_action(
                 let _ = app.emit(
                     "channel-action-log",
                     json!({ "platform": &platform, "action": &action, "kind": "info",
-                        "message": "  → npx -y @tencent-weixin/openclaw-weixin-cli@latest install" }),
+                        "message": "  → .\\resources\\runtime\\openclaw\\openclaw.cmd plugins install @tencent-weixin/openclaw-weixin@latest" }),
                 );
                 let _ = app.emit(
                     "channel-action-log",
@@ -1362,7 +1362,7 @@ pub async fn run_channel_action(
                     oc_ver
                 ));
             }
-            "@tencent-weixin/openclaw-weixin-cli@latest".to_string()
+            "@tencent-weixin/openclaw-weixin@latest".to_string()
         };
         // 先清理旧的不兼容插件目录 + openclaw.json 中的残留配置
         // （否则 OpenClaw 配置校验会报 unknown channel / plugin not found）
@@ -1411,7 +1411,7 @@ pub async fn run_channel_action(
             "channel-action-log",
             json!({
                 "platform": &platform, "action": &action, "kind": "info",
-                "message": format!("开始安装微信插件: npx -y {} install", weixin_spec),
+                "message": format!("开始安装微信插件: openclaw plugins install {}", weixin_spec),
             }),
         );
         let _ = app.emit(
@@ -1419,28 +1419,12 @@ pub async fn run_channel_action(
             json!({ "platform": &platform, "action": &action, "progress": 5 }),
         );
 
-        let path_env = super::enhanced_path();
-        #[cfg(target_os = "windows")]
-        let mut cmd = {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            let mut c = std::process::Command::new("cmd");
-            c.args(["/c", "npx", "-y", &weixin_spec, "install"]);
-            c.creation_flags(CREATE_NO_WINDOW);
-            c
-        };
-        #[cfg(not(target_os = "windows"))]
-        let mut cmd = {
-            let mut c = std::process::Command::new("npx");
-            c.args(["-y", &weixin_spec, "install"]);
-            c
-        };
-        cmd.env("PATH", &path_env);
+        let mut cmd = crate::utils::openclaw_command();
+        cmd.args(["plugins", "install", "--force", &weixin_spec]);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        crate::commands::apply_proxy_env(&mut cmd);
 
-        let mut child = cmd.spawn().map_err(|e| format!("启动 npx 失败: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| format!("启动内置 OpenClaw 失败: {}", e))?;
 
         let stderr = child.stderr.take();
         let app2 = app.clone();
@@ -2264,7 +2248,7 @@ pub async fn install_plugin(package_name: String) -> Result<Value, String> {
     let cli = crate::utils::resolve_openclaw_cli_path()
         .ok_or_else(|| "找不到 OpenClaw CLI，请先安装".to_string())?;
     let output = std::process::Command::new(&cli)
-        .args(["plugins", "install", &package_name])
+        .args(["plugins", "install", "--force", &package_name])
         .current_dir(dirs::home_dir().unwrap_or_default())
         .output()
         .map_err(|e| format!("执行 openclaw plugins install 失败: {e}"))?;
@@ -2967,7 +2951,7 @@ pub async fn install_channel_plugin(
 
     let _ = app.emit("plugin-log", format!("安装规格: {}", install_spec));
     let spawn_result = crate::utils::openclaw_command()
-        .args(["plugins", "install", &install_spec])
+        .args(["plugins", "install", "--force", &install_spec])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
@@ -3136,7 +3120,7 @@ pub async fn install_qqbot_plugin(
 
     let _ = app.emit("plugin-log", format!("安装规格: {}", install_spec));
     let spawn_result = crate::utils::openclaw_command()
-        .args(["plugins", "install", &install_spec])
+        .args(["plugins", "install", "--force", &install_spec])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();

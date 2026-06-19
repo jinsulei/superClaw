@@ -1,4 +1,4 @@
-use serde_json::Value;
+﻿use serde_json::Value;
 
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
@@ -144,7 +144,29 @@ pub async fn skillhub_install(slug: String, agent_id: Option<String>) -> Result<
     }))
 }
 
-/// 卸载 Skill（删除 skills/<name>/ 目录）
+/// 安装内置 Skill 到便携数据目录。
+#[tauri::command]
+pub async fn skills_install_builtin(name: String, agent_id: Option<String>) -> Result<Value, String> {
+    validate_skill_name(&name)?;
+    let runtime_dir = super::bundled_openclaw_bin_dir()
+        .ok_or_else(|| "未找到内置 OpenClaw runtime".to_string())?;
+    let source = runtime_dir.join("skills").join(&name);
+    if !source.is_dir() {
+        return Err(format!("内置 Skill 不存在: {name}"));
+    }
+    let skills_dir = match resolve_agent_skills_dir(agent_id.as_deref()) {
+        Some(dir) => dir,
+        None => super::openclaw_dir().join("skills"),
+    };
+    let target = skills_dir.join(&name);
+    copy_skill_dir_missing_only(&source, &target)?;
+    Ok(serde_json::json!({
+        "success": true,
+        "name": name,
+        "path": target.to_string_lossy(),
+    }))
+}
+
 #[tauri::command]
 pub async fn skills_uninstall(name: String, agent_id: Option<String>) -> Result<Value, String> {
     if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
@@ -158,6 +180,35 @@ pub async fn skills_uninstall(name: String, agent_id: Option<String>) -> Result<
     }
     std::fs::remove_dir_all(&skills_dir).map_err(|e| format!("删除失败: {e}"))?;
     Ok(serde_json::json!({ "success": true, "name": name }))
+}
+
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err("无效的 Skill 名称".to_string());
+    }
+    Ok(())
+}
+
+fn copy_skill_dir_missing_only(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|e| format!("创建 Skill 目录失败: {e}"))?;
+    let entries = std::fs::read_dir(source).map_err(|e| format!("读取内置 Skill 失败: {e}"))?;
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = target.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|e| format!("读取 Skill 文件类型失败: {e}"))?;
+        if file_type.is_dir() {
+            copy_skill_dir_missing_only(&src, &dst)?;
+        } else if file_type.is_file() && !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("创建 Skill 子目录失败: {e}"))?;
+            }
+            std::fs::copy(&src, &dst).map_err(|e| format!("复制 Skill 文件失败: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// 验证 Skill 配置是否正确

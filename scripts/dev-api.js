@@ -1755,6 +1755,10 @@ function addCommonOpenclawCandidates(candidates, seen) {
 function collectPreferredCliCandidates() {
   const candidates = []
   const seen = new Set()
+  const bundledDir = bundledOpenclawBinDir()
+  if (bundledDir) {
+    addCliCandidate(candidates, seen, path.join(bundledDir, isWindows ? 'openclaw.cmd' : 'openclaw'))
+  }
   addConfiguredOpenclawCandidates(candidates, seen)
   for (const candidate of readWhereWhichOpenclawCandidates()) addCliCandidate(candidates, seen, candidate)
   const envPath = process.env.PATH || ''

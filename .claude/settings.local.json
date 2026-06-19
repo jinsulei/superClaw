@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir /b \"c:\\Users\\ZXKJ\\Documents\\superClaw_code\\src-tauri\\resources\"\")"
+      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>&1\")",
+      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git rev-parse --abbrev-ref --symbolic-full-name ''@{upstream}'' 2>&1\")",
+      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git remote show origin 2>&1\")",
+      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git pull 2>&1\")"
     ],
     "deny": [],
     "ask": []

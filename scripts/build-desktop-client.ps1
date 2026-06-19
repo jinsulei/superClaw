@@ -349,6 +349,11 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     "weather"
   )
   New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "workspace") -Force | Out-Null
+  $RuntimeSkills = Join-Path $ResourcesDir "runtime\openclaw\skills"
+  $PortableSkills = Join-Path $OpenClawDataDir "skills"
+  if (Test-Path $RuntimeSkills -PathType Container) {
+    Copy-Directory $RuntimeSkills $PortableSkills
+  }
 
   $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
   $providers = [ordered]@{}
@@ -429,6 +434,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       restart = $true
     }
     plugins = [ordered]@{
+      allow = @("browser", "desktop-control", "skill-manager")
       entries = [ordered]@{
         browser = [ordered]@{ enabled = $true }
         "desktop-control" = [ordered]@{ enabled = $true }

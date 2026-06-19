@@ -457,6 +457,7 @@ export const api = {
   skillsInfo: (name, agentId) => invoke('skills_info', { name, agent_id: agentId || null }),
   skillsCheck: () => invoke('skills_check'),
   skillsInstallDep: (kind, spec) => invoke('skills_install_dep', { kind, spec }),
+  skillsInstallBuiltin: (name, agentId) => invoke('skills_install_builtin', { name, agent_id: agentId || null }),
   skillsUninstall: (name, agentId) => invoke('skills_uninstall', { name, agent_id: agentId || null }),
   // SkillHub SDK（内置 HTTP，不依赖 CLI）
   skillhubSearch: (query, limit) => invoke('skillhub_search', { query, limit }),

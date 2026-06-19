@@ -175,8 +175,72 @@ fn portable_openclaw_data_dir() -> Option<PathBuf> {
     }
 }
 
+fn copy_dir_missing_only(source: &Path, target: &Path) {
+    let Ok(entries) = std::fs::read_dir(source) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(target);
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = target.join(entry.file_name());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            copy_dir_missing_only(&src, &dst);
+        } else if file_type.is_file() && !dst.exists() {
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+}
+
+fn ensure_portable_openclaw_skills(openclaw_dir: &Path) {
+    let Some(runtime_dir) = bundled_openclaw_bin_dir() else {
+        return;
+    };
+    let source = runtime_dir.join("skills");
+    if source.is_dir() {
+        copy_dir_missing_only(&source, &openclaw_dir.join("skills"));
+    }
+}
+
+fn ensure_superclaw_openclaw_plugins() {
+    let Some(runtime_dir) = bundled_openclaw_bin_dir() else {
+        return;
+    };
+    let source_extensions = runtime_dir.join("dist").join("extensions");
+    let runtime_extensions = runtime_dir
+        .join("node_modules")
+        .join("@qingchencloud")
+        .join("openclaw-zh")
+        .join("dist")
+        .join("extensions");
+    for plugin in ["desktop-control", "skill-manager"] {
+        let source = source_extensions.join(plugin);
+        let target = runtime_extensions.join(plugin);
+        if source.join("openclaw.plugin.json").is_file() {
+            copy_dir_missing_only(&source, &target);
+        }
+    }
+    let source_agent = app_resources_dir()
+        .map(|dir| dir.join("bin").join("desktop-control-agent.exe"))
+        .unwrap_or_else(|| runtime_dir.join("bin").join("desktop-control-agent.exe"));
+    let target_agent = runtime_dir.join("bin").join("desktop-control-agent.exe");
+    if source_agent.is_file() && !target_agent.is_file() {
+        if let Some(parent) = target_agent.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(source_agent, target_agent);
+    }
+}
+
 fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     let _ = std::fs::create_dir_all(openclaw_dir);
+    ensure_portable_openclaw_skills(openclaw_dir);
+    ensure_superclaw_openclaw_plugins();
     let workspace = openclaw_dir.join("workspace");
     let logs = openclaw_dir.join("logs");
     let _ = std::fs::create_dir_all(&workspace);
@@ -422,6 +486,17 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         changed = true;
     }
     if let Some(plugins) = obj.get_mut("plugins").and_then(|v| v.as_object_mut()) {
+        let allow = plugins
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+        if let Some(allow_arr) = allow.as_array_mut() {
+            for key in ["browser", "desktop-control", "skill-manager"] {
+                if !allow_arr.iter().any(|v| v.as_str() == Some(key)) {
+                    allow_arr.push(serde_json::json!(key));
+                    changed = true;
+                }
+            }
+        }
         let entries = plugins
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));

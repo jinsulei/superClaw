@@ -421,6 +421,10 @@ function isCallableOpenClawSkill(skill) {
     && !skill?.blockedByAllowlist
 }
 
+function skillNameOf(skill) {
+  return String(skill?.name || '').trim().toLowerCase()
+}
+
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page openclaw-skills-page'
@@ -520,8 +524,9 @@ function renderSkills(el, data) {
   const cliAvailable = data?.cliAvailable !== false
   const source = data?.source || ''
   const cliDiag = data?.diagnostic?.cli || null
-  const builtin = skills.filter(isOpenClawBuiltinSkill)
   const installed = skills.filter(s => !isOpenClawBuiltinSkill(s))
+  const installedNames = new Set(installed.map(skillNameOf).filter(Boolean))
+  const builtin = skills.filter(s => isOpenClawBuiltinSkill(s) && !installedNames.has(skillNameOf(s)))
   const available = installed.filter(isCallableOpenClawSkill)
   const eligible = available
   const missing = installed.filter(s => !s.eligible && !s.disabled && !s.blockedByAllowlist)
@@ -678,7 +683,7 @@ function renderSkillCard(skill, status) {
       </div>
       <div class="clawhub-item-actions">
         <button class="btn btn-secondary btn-sm" data-action="skill-info" data-name="${esc(name)}">${t('skills.detail')}</button>
-        ${status === 'builtin' ? `<button class="btn btn-secondary btn-sm" disabled title="安装接口尚未接入">安装到 OpenClaw</button>` : ''}
+        ${status === 'builtin' ? `<button class="btn btn-secondary btn-sm" data-action="skill-install-builtin" data-name="${esc(name)}">安装到 OpenClaw</button>` : ''}
         ${!skill.bundled ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}">${t('skills.uninstall')}</button>` : ''}
         ${statusBadge}
       </div>
@@ -984,6 +989,22 @@ async function handleStoreInstall(page, btn) {
   }
 }
 
+async function handleInstallBuiltin(page, btn) {
+  const name = btn.dataset.name
+  if (!name) return
+  btn.disabled = true
+  btn.textContent = t('skills.installing')
+  try {
+    await api.skillsInstallBuiltin(name, _selectedAgentId)
+    toast(t('skills.skillInstalled', { name }), 'success')
+    await loadSkills(page)
+  } catch (e) {
+    toast(`${t('skills.installFailed')}: ${e?.message || e}`, 'error')
+    btn.disabled = false
+    btn.textContent = t('skills.install')
+  }
+}
+
 async function handleSkillUninstall(page, btn) {
   const name = btn.dataset.name
   if (!name) return
@@ -1038,6 +1059,9 @@ function bindEvents(page) {
         break
       case 'store-install':
         await handleStoreInstall(page, btn)
+        break
+      case 'skill-install-builtin':
+        await handleInstallBuiltin(page, btn)
         break
       case 'skill-uninstall':
         await handleSkillUninstall(page, btn)

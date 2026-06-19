@@ -8,7 +8,7 @@ window._splashModuleStart = Date.now()
 window._jsLoaded = true
 
 import { registerRoute, initRouter, navigate, setDefaultRoute } from './router.js'
-import { isLoggedIn } from './lib/user-api.js'
+import { isLoggedIn, navigateTo } from './lib/user-api.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
@@ -62,26 +62,11 @@ async function openGatewayConflict(error = null) {
 
 // === 远程用户认证（JWT） ===
 const isTauri = isTauriRuntime()
-const DELIVERY_DEFAULT_ROUTE = '/h/chat'
-const DELIVERY_AUTH_ROUTES = new Set(['/login', '/register', '/activate', '/claim'])
-
-function isDeliveryAuthRoute(route = window.location.hash.slice(1)) {
-  const cleanRoute = String(route || '').split('?')[0] || ''
-  return DELIVERY_AUTH_ROUTES.has(cleanRoute)
-}
-
-function normalizeDeliveryStartupRoute() {
-  if (isDeliveryAuthRoute()) {
-    window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
-  }
-}
-
 function isLocalDevAuthBypass() {
   const host = window.location.hostname
-  const isLocalHost = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  return !!import.meta.env.DEV
-    && isLocalHost
-    && (import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS !== '0')
+  return import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS === '1'
+    && !!import.meta.env.DEV
+    && (host === '127.0.0.1' || host === 'localhost' || host === '::1')
 }
 
 /**
@@ -89,8 +74,28 @@ function isLocalDevAuthBypass() {
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
-  sessionStorage.setItem('superclaw_authed', '1')
-  return { ok: true, deliveryBypass: true }
+  if (isLocalDevAuthBypass()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    return { ok: true }
+  }
+
+  if (isLoggedIn()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    try {
+      if (isTauri) {
+        await api.readPanelConfig()
+      } else {
+        await fetch('/__api/auth_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: '123456' }),
+        })
+      }
+    } catch {}
+    return { ok: true }
+  }
+
+  return { ok: false }
 }
 
 const _logoSvg = `<svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -181,10 +186,21 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
-  sessionStorage.setItem('superclaw_authed', '1')
-  if (isDeliveryAuthRoute()) {
-    window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
+  if (isLoggedIn()) {
+    try {
+      if (isTauri) {
+        await api.readPanelConfig()
+      } else {
+        fetch('/__api/auth_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: '123456' }),
+        }).catch(() => {})
+      }
+    } catch {}
+    return
   }
+  navigateTo('login')
 }
 
 const sidebar = document.getElementById('sidebar')
@@ -196,8 +212,27 @@ const content = document.getElementById('content')
  * @param {HTMLElement} app
  */
 async function renderAuthPage(app) {
-  window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
-  if (app) app.innerHTML = ''
+  const authRoute = (window.location.hash.slice(1) || '').split('?')[0]
+  let pageMod
+  try {
+    if (authRoute === '/register') {
+      pageMod = await import('./pages/register.js')
+    } else if (authRoute === '/activate') {
+      pageMod = await import('./pages/activate.js')
+    } else if (authRoute === '/claim') {
+      pageMod = await import('./pages/claim.js')
+    } else if (authRoute === '/login') {
+      pageMod = await import('./pages/login.js')
+    } else {
+      window.location.hash = '#/activate'
+      pageMod = await import('./pages/activate.js')
+    }
+    const page = await pageMod.render()
+    app.innerHTML = ''
+    app.appendChild(page)
+  } catch (e) {
+    app.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:var(--text-secondary);font-size:14px">${t('common.loadFailed')}: ${escapeHtml(e.message)}</div>`
+  }
 }
 
 async function renderLocalAccessPage(app) {
@@ -319,9 +354,13 @@ function ensurePortableOpenClawSkills(config) {
   if (!config.plugins.entries || typeof config.plugins.entries !== 'object' || Array.isArray(config.plugins.entries)) {
     config.plugins.entries = {}
   }
+  if (!Array.isArray(config.plugins.allow)) config.plugins.allow = []
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
   config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
+  for (const pluginId of ['browser', 'desktop-control', 'skill-manager']) {
+    if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
+  }
 
   if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
   config.tools.profile = config.tools.profile || 'minimal'
@@ -778,6 +817,9 @@ async function boot() {
 
   renderSidebar(sidebar)
   initRouter(content)
+  window.addEventListener('hashchange', () => {
+    try { renderSidebar(sidebar) } catch (e) { console.warn('[main] route-change renderSidebar 失败', e) }
+  })
 
   // 移动端顶栏（汉堡菜单 + 标题）
   const mainCol = document.getElementById('main-col')
@@ -1452,7 +1494,6 @@ function startUpdateChecker() {
   }
   // 进入 boot 后移除 auth hash 监听
   window.removeEventListener('hashchange', window._authHashHandler)
-  normalizeDeliveryStartupRoute()
   try {
     await boot()
     console.timeEnd('[boot] total')

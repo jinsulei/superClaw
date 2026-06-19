@@ -58,8 +58,8 @@ function NAV_ITEMS_FULL() { return [
   {
     section: '',
     items: [
-      // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-      // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+      { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
+      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -78,7 +78,7 @@ function NAV_ITEMS_SETUP() { return [
   {
     section: '',
     items: [
-      // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -116,6 +116,27 @@ const ICONS = {
 }
 
 let _delegated = false
+
+function _normalizeSidebarRoute(route) {
+  const clean = String(route || '').split('?')[0].replace(/^#/, '')
+  return clean || '/'
+}
+
+function _isSidebarItemActive(current, item) {
+  const route = _normalizeSidebarRoute(item?.route)
+  const activeRoutes = Array.isArray(item?.activeRoutes) ? item.activeRoutes.map(_normalizeSidebarRoute) : []
+  const currentRoute = _normalizeSidebarRoute(current)
+  if (currentRoute === route || activeRoutes.includes(currentRoute)) return true
+  if (item?.matchChildren && currentRoute.startsWith(route.endsWith('/') ? route : `${route}/`)) return true
+  return false
+}
+
+function _syncSidebarActiveRoute(el, route) {
+  const nextRoute = _normalizeSidebarRoute(route)
+  el.querySelectorAll('.nav-item[data-route]').forEach(node => {
+    node.classList.toggle('active', _normalizeSidebarRoute(node.dataset.route) === nextRoute)
+  })
+}
 
 // === 引擎切换器 ===
 function _renderEngineSwitcher() {
@@ -531,7 +552,7 @@ export function renderSidebar(el) {
     for (const item of section.items) {
       if (item.gate && engine && !engine.isFeatureAvailable(item.gate)) continue
       if (item.gate && !engine && !isFeatureAvailable(item.gate)) continue
-      const active = current === item.route ? ' active' : ''
+      const active = _isSidebarItemActive(current, item) ? ' active' : ''
       const extraClass = item.className ? ` ${_escSidebar(item.className)}` : ''
       html += `<div class="nav-item${active}${extraClass}" data-route="${item.route}">
         ${ICONS[item.icon] || ''}
@@ -627,6 +648,7 @@ export function renderSidebar(el) {
       // 导航点击
       const navItem = e.target.closest('.nav-item[data-route]')
       if (navItem) {
+        _syncSidebarActiveRoute(el, navItem.dataset.route)
         navigate(navItem.dataset.route)
         _closeMobileSidebar()
         return

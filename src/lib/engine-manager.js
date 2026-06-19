@@ -27,6 +27,8 @@ const OPENCLAW_ENTRY_ROUTES = new Set([
   '/setup',
   '/chat-debug',
   '/diagnose',
+  '/recharge',
+  '/profile',
 ])
 
 function inferEngineFromRoute(route) {
