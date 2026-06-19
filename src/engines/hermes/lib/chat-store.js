@@ -34,6 +34,10 @@ const STORAGE_MSGS_PREFIX = 'hermes_chat_msgs_v2_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
 const HISTORY_MAX_MESSAGES = 18
 const HISTORY_MAX_CHARS = 14000
+const HERMES_REPLY_STYLE_INSTRUCTION = [
+  '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
+  '\u4fdd\u6301\u81ea\u7136\u3001\u514b\u5236\u3001\u53ef\u8bfb\uff1a\u4e0d\u8981\u6bcf\u53e5\u90fd\u52a0\u8868\u60c5\uff0c\u4e0d\u8981\u5806\u780c\u56fe\u6807\uff0c\u4e0d\u8981\u5f71\u54cd\u4e13\u4e1a\u6027\u548c\u4fe1\u606f\u51c6\u786e\u6027\u3002',
+].join('\n')
 
 const SOURCE_LABELS = {
   telegram: 'Telegram',
@@ -74,6 +78,13 @@ function safeSet(key, value) {
 }
 function safeRemove(key) {
   try { localStorage.removeItem(key) } catch {}
+}
+
+function withHermesReplyStyleInstruction(instructions) {
+  const base = typeof instructions === 'string' ? instructions.trim() : ''
+  if (!base) return HERMES_REPLY_STYLE_INSTRUCTION
+  if (base.includes(HERMES_REPLY_STYLE_INSTRUCTION)) return base
+  return `${base}\n\n${HERMES_REPLY_STYLE_INSTRUCTION}`
 }
 
 function loadJson(key) {
@@ -1393,17 +1404,18 @@ function createStore() {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? opts.conversationHistory
         : buildDefaultConversationHistory(s, userMessage.id)
+      const runInstructions = withHermesReplyStyleInstruction(opts.instructions)
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id)
-        await api.hermesAgentRun(runText, s.id, conversationHistory, opts.instructions || null, attachments)
+        await api.hermesAgentRun(runText, s.id, conversationHistory, runInstructions, attachments)
       } else {
         streamAbortController = new AbortController()
         await api.hermesAgentRunStream(
           runText,
           s.id,
           conversationHistory,
-          opts.instructions || null,
+          runInstructions,
           attachments,
           (evt) => handleStreamEvent(s.id, evt),
           { signal: streamAbortController.signal },
