@@ -314,7 +314,7 @@ function Sync-SuperClawOpenClawPlugins {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
   $RuntimeExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
-  Assert-Dir $RuntimeExtensions "OpenClaw runtime plugin directory"
+  New-Item -ItemType Directory -Path $RuntimeExtensions -Force | Out-Null
 
   foreach ($plugin in @("skill-manager", "desktop-control")) {
     $source = Join-Path $SourceExtensions $plugin
