@@ -1475,7 +1475,7 @@
     "gatewayNotReadySend": "Gateway 未就绪，连接成功后再发送",
     "sendFailed": "发送失败: ",
     "usingTool": "正在使用工具: {name}",
-    "streamTimeout": "输出超时，已自动结束",
+    "streamTimeout": "回复等待时间较长，可能仍在生成。你可以继续等待，或手动停止后重试。",
     "generationStopped": "生成已停止",
     "errorPrefix": "错误: ",
     "connectionRejected": "连接被 Gateway 拒绝，请点击「修复并重连」",

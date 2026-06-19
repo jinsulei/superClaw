@@ -36,6 +36,7 @@ export default {
   routeMap: _('路由地图', 'Route Map'),
   about: _('关于', 'About'),
   recharge: _('充值', 'Recharge'),
+  rechargePlan: _('充值与套餐', 'Recharge & Plans'),
   profile: _('个人中心', 'Profile'),
   setup: _('初始设置', 'Setup'),
 }

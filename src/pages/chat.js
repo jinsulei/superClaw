@@ -15,6 +15,9 @@ import { createSpeechPlaybackController, createVoiceInputController } from '../l
 import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
+import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
+import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
+import { compactChatMessage } from '../shared/compact-chat-policy.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -93,6 +96,7 @@ const _toolEventSeen = new Set()
 let _errorTimer = null, _lastErrorMsg = null
 let _responseWatchdog = null, _postFinalCheck = null
 let _ultimateTimer = null, _sendTimestamp = 0
+let _generationTimeoutManager = null, _manualStopRequested = false
 let _attachments = []
 let _pasteHandler = null
 let _hasEverConnected = false
@@ -233,7 +237,7 @@ export async function render() {
           </div>
         </div>
       </div>
-      <div class="chat-messages" id="chat-messages">
+      <div class="chat-messages sc-chat-stage" id="chat-messages">
         <div class="typing-indicator" id="typing-indicator" style="display:none">
           <span></span><span></span><span></span>
           <span class="typing-hint"></span>
@@ -2336,11 +2340,13 @@ async function doSend(text, attachments = []) {
   showTyping(true)
   _isSending = true
   _startResponseWatchdog()
+  startGenerationTimeoutManager()
   try {
     await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined)
   } catch (err) {
     showTyping(false)
     _cancelResponseWatchdog()
+    clearGenerationTimeoutManager()
     _sendTimestamp = 0
     appendSystemMessage(`${t('chat.sendFailed')}${err.message}`)
   } finally {
@@ -2527,8 +2533,112 @@ function buildToolOnlyAssistantReply(tools = []) {
   ].join('\n')
 }
 
+function showOpenClawGenerationNotice(message) {
+  if (!_messagesEl || !_typingEl) return
+  let notice = _messagesEl.querySelector('[data-openclaw-generation-notice]')
+  if (!notice) {
+    notice = document.createElement('div')
+    notice.setAttribute('data-openclaw-generation-notice', '1')
+    notice.className = 'openclaw-generation-notice'
+    _messagesEl.insertBefore(notice, _typingEl)
+  }
+  notice.textContent = message
+  notice.hidden = false
+  scrollToBottom(true)
+}
+
+function clearOpenClawGenerationNotice() {
+  const notice = _messagesEl?.querySelector('[data-openclaw-generation-notice]')
+  if (notice) {
+    notice.hidden = true
+    notice.textContent = ''
+  }
+}
+
+function showOpenClawGenerationActions() {
+  if (!_messagesEl || !_typingEl) return
+  let actions = _messagesEl.querySelector('[data-openclaw-generation-actions]')
+  if (!actions) {
+    actions = document.createElement('div')
+    actions.setAttribute('data-openclaw-generation-actions', '1')
+    actions.className = 'openclaw-generation-actions'
+    actions.innerHTML = `
+      <button type="button" data-action="wait">继续等待</button>
+      <button type="button" data-action="stop">停止生成</button>
+      <button type="button" data-action="continue">继续生成</button>
+    `
+    actions.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action]')
+      if (!button) return
+      const action = button.getAttribute('data-action')
+
+      if (action === 'wait') {
+        clearOpenClawGenerationNotice()
+        actions.hidden = true
+        _generationTimeoutManager?.markHeartbeat()
+      } else if (action === 'stop') {
+        stopGeneration()
+        actions.hidden = true
+      } else if (action === 'continue') {
+        actions.hidden = true
+        clearOpenClawGenerationNotice()
+        appendSystemMessage('请继续输入“继续”，或重新发送需要续写的内容。')
+      }
+    })
+    _messagesEl.insertBefore(actions, _typingEl)
+  }
+  actions.hidden = false
+  scrollToBottom(true)
+}
+
+function hideOpenClawGenerationActions() {
+  const actions = _messagesEl?.querySelector('[data-openclaw-generation-actions]')
+  if (actions) actions.hidden = true
+}
+
+function clearGenerationTimeoutManager() {
+  if (_generationTimeoutManager) {
+    _generationTimeoutManager.stop()
+    _generationTimeoutManager = null
+  } else {
+    clearOpenClawGenerationNotice()
+    hideOpenClawGenerationActions()
+  }
+}
+
+function startGenerationTimeoutManager() {
+  clearGenerationTimeoutManager()
+  _manualStopRequested = false
+  _generationTimeoutManager = createGenerationTimeoutManager({
+    onFirstTokenSlow: ({ message }) => {
+      showOpenClawGenerationNotice(message)
+      showTyping(true, message)
+    },
+    onIdleTimeout: ({ message }) => {
+      showOpenClawGenerationNotice(message)
+      showOpenClawGenerationActions()
+    },
+    onClearNotice: () => {
+      clearOpenClawGenerationNotice()
+      hideOpenClawGenerationActions()
+    },
+  })
+  _generationTimeoutManager.start()
+}
+
+function markGenerationProgress() {
+  _generationTimeoutManager?.markProgress()
+}
+
+function markGenerationHeartbeat() {
+  _generationTimeoutManager?.markHeartbeat()
+}
+
 function stopGeneration() {
+  _manualStopRequested = true
+  _generationTimeoutManager?.stop()
   if (_currentRunId) wsClient.chatAbort(_sessionKey, _currentRunId).catch(() => {})
+  showOpenClawGenerationNotice('本次回复已停止。你可以继续生成或重新发送。')
 }
 
 // ── 事件处理（参照 clawapp 实现） ──
@@ -2541,6 +2651,7 @@ function handleEvent(msg) {
   if (event === 'agent') {
     // 任何 agent 事件都说明 OpenClaw 在活跃处理，重置看门狗
     _resetWatchdogOnActivity()
+    markGenerationProgress()
 
     const stream = payload?.stream
     const data = payload?.data || {}
@@ -2685,6 +2796,7 @@ function handleChatEvent(payload) {
   }
 
   if (state === 'delta') {
+    markGenerationProgress()
     _cancelResponseWatchdog()
     const c = extractChatContent(payload.message)
     if (c?.images?.length) _currentAiImages = c.images
@@ -2702,20 +2814,6 @@ function handleChatEvent(payload) {
         updateSendState()
       }
       _currentAiText = c.text
-      // 每次收到 delta 重置安全超时（90s 无新 delta 则强制结束）
-      clearTimeout(_streamSafetyTimer)
-      _streamSafetyTimer = setTimeout(() => {
-        if (_isStreaming) {
-          console.warn('[chat] 流式输出超时（90s 无新数据），强制结束')
-          if (_currentAiBubble && _currentAiText) {
-            _currentAiBubble.innerHTML = renderMarkdown(_currentAiText)
-            _lastRenderedAiText = _currentAiText
-          }
-          appendSystemMessage(t('chat.streamTimeout'))
-          resetStreamState()
-          processMessageQueue()
-        }
-      }, 90000)
       throttledRender()
     }
     return
@@ -2723,12 +2821,15 @@ function handleChatEvent(payload) {
 
   if (state === 'final') {
     _cancelResponseWatchdog()
+    clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
     const finalText = c?.text || ''
     const finalImages = c?.images || []
     const finalVideos = c?.videos || []
     const finalAudios = c?.audios || []
     const finalFiles = c?.files || []
+    const finalScreenshotCards = c?.screenshotCards || []
+    const finalConfirmations = c?.confirmations || []
     let finalTools = c?.tools || []
     if (!finalTools.length && runId) {
       const ids = _toolRunIndex.get(runId) || []
@@ -2742,7 +2843,7 @@ function handleChatEvent(payload) {
     if (!finalText && !_currentAiText && finalTools.length) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
     }
-    const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length
+    const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length || finalScreenshotCards.length || finalConfirmations.length
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
     if (!_currentAiBubble && !hasContent) return
     // 标记 runId 为已处理，防止重复
@@ -2761,7 +2862,7 @@ function handleChatEvent(payload) {
     }
     if (_currentAiBubble) {
       if (_currentAiText && _currentAiText !== _lastRenderedAiText) {
-        _currentAiBubble.innerHTML = renderMarkdown(_currentAiText)
+        renderCompactAssistantContent(_currentAiText, _currentAiBubble)
         _lastRenderedAiText = _currentAiText
       }
       appendImagesToEl(_currentAiBubble, _currentAiImages)
@@ -2769,12 +2870,13 @@ function handleChatEvent(payload) {
       appendAudiosToEl(_currentAiBubble, _currentAiAudios)
       appendFilesToEl(_currentAiBubble, _currentAiFiles)
       appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
+      appendLifeAssistantCardsToEl(_currentAiBubble, finalScreenshotCards, finalConfirmations)
     }
     // 添加时间戳 + 耗时 + token 消耗
     const wrapper = _currentAiBubble?.parentElement
     if (wrapper) {
       const meta = document.createElement('div')
-      meta.className = 'msg-meta'
+      meta.className = 'msg-meta sc-msg-meta'
       let parts = [`<span class="msg-time">${formatTime(new Date())}</span>`]
       // 计算响应耗时
       let durStr = ''
@@ -2798,7 +2900,8 @@ function handleChatEvent(payload) {
       }
       parts.push(`<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`)
       meta.innerHTML = parts.join('')
-      wrapper.appendChild(meta)
+      const group = _currentAiBubble?.closest('.sc-msg-group') || wrapper
+      group.appendChild(meta)
     }
     if (_currentAiText || _currentAiImages.length) {
       saveMessage({
@@ -2832,8 +2935,9 @@ function handleChatEvent(payload) {
 
   if (state === 'aborted') {
     showTyping(false)
+    clearGenerationTimeoutManager()
     if (_currentAiBubble && _currentAiText) {
-      _currentAiBubble.innerHTML = renderMarkdown(_currentAiText)
+      renderCompactAssistantContent(_currentAiText, _currentAiBubble)
       _lastRenderedAiText = _currentAiText
     }
     appendSystemMessage(t('chat.generationStopped'))
@@ -2873,6 +2977,7 @@ function handleChatEvent(payload) {
     }
 
     showTyping(false)
+    clearGenerationTimeoutManager()
     returnOpenClawCollaborationResult({
       runId: payload.runId,
       content: errMsg,
@@ -2889,7 +2994,16 @@ function handleChatEvent(payload) {
 function extractChatContent(message) {
   if (!message || typeof message !== 'object') return null
   const tools = []
+  const screenshotCards = []
+  const confirmations = []
   collectToolsFromMessage(message, tools)
+  if (message.type === 'screenshot_card' || message.card?.type === 'screenshot_card') {
+    const card = message.card || message
+    if (card?.imageUrl) screenshotCards.push(card)
+  }
+  if (message.type === 'user_confirmation' || message.confirmation?.type === 'user_confirmation') {
+    confirmations.push(message.confirmation || message)
+  }
   if (message.role === 'tool' || message.role === 'toolResult') {
     const output = typeof message.content === 'string' ? message.content : null
     if (!tools.length) {
@@ -2902,14 +3016,21 @@ function extractChatContent(message) {
     } else if (output && !tools[0].output) {
       tools[0].output = output
     }
-    return { text: '', images: [], videos: [], audios: [], files: [], tools }
+    return { text: '', images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
   }
   const content = message.content
-  if (typeof content === 'string') return { text: stripThinkingTags(content), images: [], videos: [], audios: [], files: [], tools }
+  if (typeof content === 'string') return { text: stripThinkingTags(content), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
   if (Array.isArray(content)) {
     const texts = [], images = [], videos = [], audios = [], files = []
     for (const block of content) {
       if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text)
+      else if (block.type === 'screenshot_card') {
+        const card = block.card || block
+        if (card?.imageUrl) screenshotCards.push(card)
+      }
+      else if (block.type === 'user_confirmation') {
+        confirmations.push(block.confirmation || block)
+      }
       else if (block.type === 'image' && !block.omitted) {
         if (block.data) images.push({ mediaType: block.mimeType || 'image/png', data: block.data })
         else if (block.source?.type === 'base64' && block.source.data) images.push({ mediaType: block.source.media_type || 'image/png', data: block.source.data })
@@ -2966,9 +3087,12 @@ function extractChatContent(message) {
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
     const text = texts.length ? stripThinkingTags(texts.join('\n')) : ''
-    return { text, images, videos, audios, files, tools }
+    return { text, images, videos, audios, files, tools, screenshotCards, confirmations }
   }
-  if (typeof message.text === 'string') return { text: stripThinkingTags(message.text), images: [], videos: [], audios: [], files: [], tools: [] }
+  if (screenshotCards.length || confirmations.length) {
+    return { text: '', images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
+  }
+  if (typeof message.text === 'string') return { text: stripThinkingTags(message.text), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   return null
 }
 
@@ -3061,14 +3185,68 @@ function createStreamBubble() {
   showTyping(false)
   _lastRenderedAiText = ''
   const wrap = document.createElement('div')
-  wrap.className = 'msg msg-ai'
+  wrap.className = 'msg msg-ai sc-msg-row assistant'
+  const group = document.createElement('div')
+  group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
-  bubble.className = 'msg-bubble'
+  bubble.className = 'msg-bubble sc-msg-bubble assistant'
   bubble.innerHTML = '<span class="stream-cursor"></span>'
-  wrap.appendChild(bubble)
+  group.appendChild(bubble)
+  wrap.appendChild(group)
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()
   return bubble
+}
+
+function renderCompactAssistantContent(rawText, container) {
+  if (!container) return
+  const compact = compactChatMessage(rawText)
+  container.innerHTML = ''
+
+  const wrapper = document.createElement('div')
+  wrapper.className = 'assistant-compact-message'
+  if (compact.collapsed) wrapper.classList.add('is-collapsed')
+
+  const content = document.createElement('div')
+  content.className = 'assistant-compact-message__content'
+  const mergeShortSectionLines = (text) => String(text || '').replace(
+    /^([\u4e00-\u9fffA-Za-z0-9 +/&_-]{2,18})\n\n([^\n`|][^\n]{1,180})(?=\n\n|$)/gm,
+    (_, heading, body) => `${heading}\uFF1A${body.trim()}`,
+  )
+
+  const renderContent = (text) => {
+    content.innerHTML = renderMarkdown(mergeShortSectionLines(text))
+  }
+  renderContent(compact.preview)
+  if (compact.preview || compact.content) wrapper.appendChild(content)
+
+  if (compact.collapsed) {
+    const toggle = document.createElement('button')
+    toggle.type = 'button'
+    toggle.className = 'assistant-compact-message__toggle'
+    toggle.textContent = '展开详情'
+    toggle.addEventListener('click', () => {
+      const expanded = wrapper.classList.toggle('is-expanded')
+      wrapper.classList.toggle('is-collapsed', !expanded)
+      toggle.textContent = expanded ? '收起详情' : '展开详情'
+      renderContent(expanded ? compact.content : compact.preview)
+    })
+    wrapper.appendChild(toggle)
+  }
+
+  if (compact.toolLines.length > 0) {
+    const details = document.createElement('details')
+    details.className = 'tool-log-summary'
+    const summary = document.createElement('summary')
+    summary.textContent = compact.toolSummary
+    const pre = document.createElement('pre')
+    pre.textContent = compact.toolLines.join('\n')
+    details.appendChild(summary)
+    details.appendChild(pre)
+    wrapper.appendChild(details)
+  }
+
+  container.appendChild(wrapper)
 }
 
 // ── 流式渲染（节流） ──
@@ -3088,32 +3266,32 @@ function doRender() {
   _lastRenderTime = performance.now()
   const text = _currentAiText || ''
   if (!_currentAiBubble || !text || text === _lastRenderedAiText) return
-  _currentAiBubble.innerHTML = renderMarkdown(text)
+  renderCompactAssistantContent(text, _currentAiBubble)
   _lastRenderedAiText = text
   scrollToBottom()
 }
 
 // ── 响应看门狗：防止页面卡在等待状态 ──
 const WATCHDOG_INTERVAL = 15000  // 15s 轮询间隔
-const ULTIMATE_TIMEOUT = 180000  // 3 分钟终极超时
+const ULTIMATE_TIMEOUT = 180000  // 3 分钟长等待提示
 
 function _startResponseWatchdog() {
-  // 只清除轮询定时器，不清除终极超时（终极超时应持续到收到响应）
+  // 只清除轮询定时器，不清除等待提示定时器（持续到收到响应或用户手动停止）
   clearTimeout(_responseWatchdog)
   _responseWatchdog = null
   _sendTimestamp = _sendTimestamp || Date.now()
 
-  // 启动终极超时（3分钟内如果没有收到任何 chat 事件则放弃）
+  // 首轮长时间无 chat 回复时只提示，不自动结束
   if (!_ultimateTimer) {
     _ultimateTimer = setTimeout(() => {
       _ultimateTimer = null
       if (!_isStreaming && _sessionKey && _pageActive) {
-        console.warn('[chat] 终极超时: 3分钟无 chat 回复')
-        showTyping(false)
-        appendSystemMessage(t('chat.responseTimeout', { seconds: Math.round(ULTIMATE_TIMEOUT / 1000) }))
-        _cancelResponseWatchdog()
-        resetStreamState()
-        processMessageQueue()
+        console.warn('[chat] 长时间无 chat 回复，显示可恢复等待提示')
+        const message = '回复等待时间较长，可能仍在生成。你可以继续等待，或手动停止后重试。'
+        showTyping(true, message)
+        showOpenClawGenerationNotice(message)
+        showOpenClawGenerationActions()
+        _startResponseWatchdog()
       }
     }, ULTIMATE_TIMEOUT)
   }
@@ -3144,7 +3322,7 @@ function _startResponseWatchdog() {
 }
 
 function _resetWatchdogOnActivity() {
-  // agent 事件说明 OpenClaw 在活跃处理，重置轮询看门狗（但不重置终极超时）
+  // agent 事件说明 OpenClaw 在活跃处理，重置轮询看门狗（但不重置长等待提示）
   if (_responseWatchdog) {
     clearTimeout(_responseWatchdog)
     _responseWatchdog = null
@@ -3177,11 +3355,12 @@ function _schedulePostFinalCheck() {
 // ensureAiBubble 已被 createStreamBubble 替代
 
 function resetStreamState() {
+  clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
   clearInterval(_typingElapsedInterval)
   _typingElapsedInterval = null
   if (_currentAiBubble && (_currentAiText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length)) {
-    _currentAiBubble.innerHTML = renderMarkdown(_currentAiText)
+    renderCompactAssistantContent(_currentAiText, _currentAiBubble)
     _lastRenderedAiText = _currentAiText
     appendImagesToEl(_currentAiBubble, _currentAiImages)
     appendVideosToEl(_currentAiBubble, _currentAiVideos)
@@ -3272,7 +3451,7 @@ async function loadHistory() {
     clearMessages()
     let hasOmittedImages = false
     deduped.forEach(msg => {
-      if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length) return
+      if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return
       const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
       if (msg.role === 'user') {
         const userAtts = msg.images?.length ? msg.images.map(i => ({
@@ -3283,7 +3462,7 @@ async function loadHistory() {
         if (msg.images?.length && !userAtts.length) hasOmittedImages = true
         appendUserMessage(msg.text, userAtts, msgTime)
       } else if (msg.role === 'assistant') {
-        appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools)
+        appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations)
       }
     })
     if (hasOmittedImages) {
@@ -3309,7 +3488,7 @@ function dedupeHistory(messages) {
   for (const msg of messages) {
     const role = (msg.role === 'tool' || msg.role === 'toolResult') ? 'assistant' : msg.role
     const c = extractContent(msg)
-    if (!c.text && !c.images.length && !c.videos.length && !c.audios.length && !c.files.length && !c.tools.length) continue
+    if (!c.text && !c.images.length && !c.videos.length && !c.audios.length && !c.files.length && !c.tools.length && !c.screenshotCards.length && !c.confirmations.length) continue
     const tools = (c.tools || []).map(t => {
       const id = t.id || t.tool_call_id
       const time = t.time || resolveToolTime(id, msg.timestamp)
@@ -3327,11 +3506,13 @@ function dedupeHistory(messages) {
         last.videos = [...(last.videos || []), ...c.videos]
         last.audios = [...(last.audios || []), ...c.audios]
         last.files = [...(last.files || []), ...c.files]
+        last.screenshotCards = [...(last.screenshotCards || []), ...c.screenshotCards]
+        last.confirmations = [...(last.confirmations || []), ...c.confirmations]
         tools.forEach(t => upsertTool(last.tools, t))
         continue
       }
     }
-    deduped.push({ role, text: c.text, images: c.images, videos: c.videos, audios: c.audios, files: c.files, tools, timestamp: msg.timestamp })
+    deduped.push({ role, text: c.text, images: c.images, videos: c.videos, audios: c.audios, files: c.files, tools, screenshotCards: c.screenshotCards, confirmations: c.confirmations, timestamp: msg.timestamp })
   }
   return deduped
 }
@@ -3359,7 +3540,17 @@ function cachedHistoryMessage(m) {
 
 function extractContent(msg) {
   const tools = []
+  const screenshotCards = []
+  const confirmations = []
   collectToolsFromMessage(msg, tools)
+  if (msg?.type === 'screenshot_card' || msg?.card?.type === 'screenshot_card') {
+    const card = msg.card || msg
+    if (card?.imageUrl) screenshotCards.push(card)
+  }
+  if (msg?.type === 'user_confirmation' || msg?.confirmation?.type === 'user_confirmation') {
+    const confirmation = msg.confirmation || msg
+    confirmations.push(confirmation)
+  }
   if (msg.role === 'tool' || msg.role === 'toolResult') {
     const output = typeof msg.content === 'string' ? msg.content : null
     if (!tools.length) {
@@ -3374,12 +3565,19 @@ function extractContent(msg) {
     } else if (output && !tools[0].output) {
       tools[0].output = output
     }
-    return { text: '', images: [], videos: [], audios: [], files: [], tools }
+    return { text: '', images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
   }
   if (Array.isArray(msg.content)) {
     const texts = [], images = [], videos = [], audios = [], files = []
     for (const block of msg.content) {
       if (block.type === 'text' && typeof block.text === 'string') texts.push(block.text)
+      else if (block.type === 'screenshot_card') {
+        const card = block.card || block
+        if (card?.imageUrl) screenshotCards.push(card)
+      }
+      else if (block.type === 'user_confirmation') {
+        confirmations.push(block.confirmation || block)
+      }
       else if (block.type === 'image' && !block.omitted) {
         if (block.data) images.push({ mediaType: block.mimeType || 'image/png', data: block.data })
         else if (block.source?.type === 'base64' && block.source.data) images.push({ mediaType: block.source.media_type || 'image/png', data: block.source.data })
@@ -3434,10 +3632,10 @@ function extractContent(msg) {
       else if (/\.(jpe?g|png|gif|webp|heic|svg)(\?|$)/i.test(url)) images.push({ url, mediaType: 'image/png' })
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
-    return { text: stripThinkingTags(texts.join('\n')), images, videos, audios, files, tools }
+    return { text: stripThinkingTags(texts.join('\n')), images, videos, audios, files, tools, screenshotCards, confirmations }
   }
   const text = typeof msg.text === 'string' ? msg.text : (typeof msg.content === 'string' ? msg.content : '')
-  return { text: stripThinkingTags(text), images: [], videos: [], audios: [], files: [], tools }
+  return { text: stripThinkingTags(text), images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
 }
 
 // ── DOM 操作 ──
@@ -3445,9 +3643,9 @@ function extractContent(msg) {
 function appendUserMessage(text, attachments = [], msgTime) {
   if (!_messagesEl || !_typingEl) return
   const wrap = document.createElement('div')
-  wrap.className = 'msg msg-user'
+  wrap.className = 'msg msg-user sc-msg-row user'
   const bubble = document.createElement('div')
-  bubble.className = 'msg-bubble'
+  bubble.className = 'msg-bubble sc-msg-bubble user'
 
   if (attachments && attachments.length > 0) {
     const mediaContainer = document.createElement('div')
@@ -3495,7 +3693,7 @@ function appendUserMessage(text, attachments = [], msgTime) {
   }
 
   const meta = document.createElement('div')
-  meta.className = 'msg-meta'
+  meta.className = 'msg-meta sc-msg-meta'
   const hasAudioAttachment = Array.isArray(attachments) && attachments.some(att => (att.category || att.type) === 'audio')
   const canSpeak = !!(text || '').trim() && !hasAudioAttachment
   meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
@@ -3506,16 +3704,19 @@ function appendUserMessage(text, attachments = [], msgTime) {
   scrollToBottom()
 }
 
-function appendAiMessage(text, msgTime, images, videos, audios, files, tools) {
+function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = []) {
   if (!_messagesEl || !_typingEl) return
   const wrap = document.createElement('div')
-  wrap.className = 'msg msg-ai'
+  wrap.className = 'msg msg-ai sc-msg-row assistant'
+  const group = document.createElement('div')
+  group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
-  bubble.className = 'msg-bubble'
+  bubble.className = 'msg-bubble sc-msg-bubble assistant'
   appendToolsToEl(bubble, tools)
+  appendLifeAssistantCardsToEl(bubble, screenshotCards, confirmations)
   const textEl = document.createElement('div')
   textEl.className = 'msg-text'
-  textEl.innerHTML = renderMarkdown(text || '')
+  renderCompactAssistantContent(text || '', textEl)
   bubble.appendChild(textEl)
   appendImagesToEl(bubble, images)
   appendVideosToEl(bubble, videos)
@@ -3525,13 +3726,28 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools) {
   bubble.querySelectorAll('img').forEach(img => { if (!img.onclick) img.onclick = () => showLightbox(img.src) })
 
   const meta = document.createElement('div')
-  meta.className = 'msg-meta'
+  meta.className = 'msg-meta sc-msg-meta'
   meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span><button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
 
-  wrap.appendChild(bubble)
-  wrap.appendChild(meta)
+  group.appendChild(bubble)
+  group.appendChild(meta)
+  wrap.appendChild(group)
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()
+}
+
+function appendLifeAssistantCardsToEl(el, screenshotCards = [], confirmations = []) {
+  if (!el) return
+  if (Array.isArray(screenshotCards)) {
+    screenshotCards.forEach(card => {
+      if (card?.imageUrl) el.appendChild(renderScreenshotCard(card))
+    })
+  }
+  if (Array.isArray(confirmations)) {
+    confirmations.forEach(confirmation => {
+      el.appendChild(renderUserConfirmationCard(confirmation))
+    })
+  }
 }
 
 /** 渲染图片到消息气泡（支持 Anthropic/OpenAI/直接格式） */
@@ -3731,7 +3947,7 @@ function showLightbox(src) {
 function appendSystemMessage(text) {
   if (!_messagesEl || !_typingEl) return
   const wrap = document.createElement('div')
-  wrap.className = 'msg msg-system'
+  wrap.className = 'msg msg-system sc-msg-row system'
   wrap.textContent = text
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()

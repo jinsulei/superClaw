@@ -46,16 +46,18 @@
 
 /* 卡片 */
 .card {
-  background: var(--bg-card);
+  background: var(--panel-bg, var(--bg-card));
   border: 1px solid var(--border-primary);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
   padding: var(--space-lg);
-  transition: all var(--transition-fast);
+  box-shadow: var(--card-shadow, var(--shadow-sm));
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .card:hover {
-  background: var(--bg-card-hover);
+  background: var(--panel-soft-bg, var(--bg-card-hover));
   border-color: var(--border-focus);
+  box-shadow: var(--shadow-md);
 }
 
 /* 状态卡片 */
@@ -67,10 +69,11 @@
 }
 
 .stat-card {
-  background: var(--bg-card);
+  background: var(--panel-bg, var(--bg-card));
   border: 1px solid var(--border-primary);
-  border-radius: var(--radius-lg);
+  border-radius: 12px;
   padding: var(--space-lg);
+  box-shadow: var(--card-shadow, var(--shadow-sm));
 }
 
 .stat-card-header {
@@ -123,23 +126,25 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-sm);
+  min-height: 36px;
   padding: var(--space-sm) var(--space-lg);
-  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  border-radius: 10px;
   font-size: var(--font-size-sm);
   font-weight: 500;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
   white-space: nowrap;
 }
 
 .btn-primary {
-  background: var(--accent);
-  color: var(--text-inverse);
+  background: var(--primary, var(--accent));
+  color: #ffffff;
 }
 
-.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:hover { background: var(--primary-hover, var(--accent-hover)); }
 
 .btn-secondary {
-  background: var(--bg-glass);
+  background: var(--panel-bg, var(--bg-glass));
   border: 1px solid var(--border-primary);
   color: var(--text-secondary);
 }

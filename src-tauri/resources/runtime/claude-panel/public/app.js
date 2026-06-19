@@ -130,6 +130,7 @@ const temporaryTaskTitle = $("#temporaryTaskTitle");
 const temporaryTaskMeta = $("#temporaryTaskMeta");
 const temporaryTaskCancelBtn = $("#temporaryTaskCancelBtn");
 const transcript = $("#transcript");
+transcript?.classList.add("sc-chat-stage");
 const sendBtn = $("#sendBtn");
 const stopBtn = $("#stopBtn");
 const refreshBtn = $("#refreshBtn");
@@ -1222,6 +1223,535 @@ function scheduleConversationRender() {
   });
 }
 
+function shouldShowRawClaudeCodeToolCalls() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return params.get("debugToolCalls") === "1"
+      || window.localStorage?.getItem("claude-panel-show-raw-tool-calls") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function formatClaudeCodeToolCallForZh(content) {
+  const text = String(content || "");
+  if (!text || shouldShowRawClaudeCodeToolCalls()) return text;
+
+  const xmlToolNameMap = {
+    Explore: "\u9879\u76ee\u63a2\u7d22",
+    explore: "\u9879\u76ee\u63a2\u7d22",
+    search_files: "\u641c\u7d22\u6587\u4ef6",
+    read_file: "\u8bfb\u53d6\u6587\u4ef6",
+    write_file: "\u5199\u5165\u6587\u4ef6",
+    edit_file: "\u7f16\u8f91\u6587\u4ef6",
+    run_command: "\u8fd0\u884c\u547d\u4ee4",
+    list_files: "\u5217\u51fa\u6587\u4ef6",
+    browser_snapshot: "\u83b7\u53d6\u9875\u9762\u5feb\u7167",
+    browser_take_screenshot: "\u83b7\u53d6\u9875\u9762\u622a\u56fe",
+    browser_tabs: "\u68c0\u67e5\u6d4f\u89c8\u5668\u6807\u7b7e\u9875",
+    browser_console_messages: "\u68c0\u67e5\u63a7\u5236\u53f0\u6d88\u606f",
+    browser_network_requests: "\u68c0\u67e5\u7f51\u7edc\u8bf7\u6c42",
+  };
+
+  const xmlParamLabelMap = {
+    message: "\u4efb\u52a1",
+    path: "\u8def\u5f84",
+    pattern: "\u5339\u914d\u89c4\u5219",
+    query: "\u67e5\u8be2",
+    command: "\u547d\u4ee4",
+    file: "\u6587\u4ef6",
+    url: "\u94fe\u63a5",
+  };
+
+  const decodeToolText = (value) => String(value || "")
+    .trim()
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+
+  const formatXmlToolCall = (toolName, body) => {
+    const displayName = xmlToolNameMap[toolName] || toolName || "\u5185\u90e8\u5de5\u5177";
+    const lines = [`\u6b63\u5728\u6267\u884c\u5de5\u5177\uff1a${displayName}`];
+    const paramRegex = /<parameter\s+name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
+    let match = paramRegex.exec(body || "");
+    while (match) {
+      const label = xmlParamLabelMap[match[1].trim()] || match[1].trim();
+      const value = decodeToolText(match[2]);
+      if (value) lines.push(`${label}\uff1a${value}`);
+      match = paramRegex.exec(body || "");
+    }
+    return lines.join("\n");
+  };
+
+  const functionCallMatch = text.match(
+    /<function-call>\s*<invoke\s+name=["']([^"']+)["'][^>]*>\s*([\s\S]*?)<\/invoke>\s*<\/function-call>/i
+  );
+  if (functionCallMatch) {
+    return formatXmlToolCall(functionCallMatch[1].trim(), functionCallMatch[2]);
+  }
+
+  const invokeOnlyMatch = text.match(/<invoke\s+name=["']([^"']+)["'][^>]*>\s*([\s\S]*?)<\/invoke>/i);
+  if (invokeOnlyMatch) {
+    return formatXmlToolCall(invokeOnlyMatch[1].trim(), invokeOnlyMatch[2]);
+  }
+
+  if (/<\/?(function-call|invoke|parameter)\b/i.test(text)) {
+    return "\u6b63\u5728\u6267\u884c\u5185\u90e8\u5de5\u5177\uff0c\u8bf7\u7a0d\u5019\u2026";
+  }
+
+  const toolNameMap = {
+    search_files: "搜索文件",
+    read_file: "读取文件",
+    write_file: "写入文件",
+    edit_file: "编辑文件",
+    run_command: "运行命令",
+    list_files: "列出文件",
+  };
+
+  const formatBody = (body) => String(body || "")
+    .trim()
+    .replace(/^path:/gim, "路径：")
+    .replace(/^pattern:/gim, "匹配规则：")
+    .replace(/^query:/gim, "查询：")
+    .replace(/^command:/gim, "命令：")
+    .replace(/^file:/gim, "文件：");
+
+  const searchFilesMatch = text.match(
+    /<search_files>\s*path:\s*([\s\S]*?)\s*pattern:\s*([\s\S]*?)\s*<\/search_files>/i
+  );
+  if (searchFilesMatch) {
+    const path = searchFilesMatch[1].trim();
+    const pattern = searchFilesMatch[2].trim();
+    return [
+      "正在搜索文件：",
+      `路径：${path}`,
+      `匹配规则：${pattern}`,
+    ].join("\n");
+  }
+
+  const genericToolMatch = text.match(/<([a-zA-Z0-9_-]+)>\s*([\s\S]*?)\s*<\/\1>/);
+  if (genericToolMatch) {
+    const toolName = genericToolMatch[1];
+    const body = genericToolMatch[2].trim();
+    const looksLikeToolParams = /^[a-zA-Z_][\w-]*\s*:/m.test(body);
+    if (toolNameMap[toolName] || looksLikeToolParams) {
+      const displayName = toolNameMap[toolName] || toolName;
+      return `正在执行工具：${displayName}\n${formatBody(body)}`;
+    }
+  }
+
+  const pendingToolMatch = text.match(/<([a-zA-Z0-9_-]+)>\s*([\s\S]*)$/);
+  if (pendingToolMatch && !new RegExp(`</${pendingToolMatch[1]}>`, "i").test(text)) {
+    const toolName = pendingToolMatch[1];
+    if (toolNameMap[toolName]) return `正在执行工具：${toolNameMap[toolName]}`;
+  }
+
+  return text;
+}
+
+const COMPACT_CHAT_OPTIONS = Object.freeze({
+  maxPreviewChars: 220,
+  maxPreviewLines: 5,
+  maxVisibleBullets: 3,
+  collapseWhenChars: 420,
+  collapseWhenLines: 8,
+  collapseWhenCodeBlocks: 1,
+});
+
+const COMPACT_TOOL_STATUS_RE = /^\s*(exec|tool|browser|bash|shell|python|powershell|cmd|node|npm|cargo)\b[^\n]{0,24}?(成功|success|done|完成|ok|passed|通过)(?:\b|$|[\s·:：|.-])/i;
+const COMPACT_CODE_BLOCK_RE = /```[\s\S]*?```/g;
+
+function normalizeCompactChatText(value) {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+const COMPACT_CODE_PLACEHOLDER_RE = /^__CODE_BLOCK_\d+__$/;
+const COMPACT_HEADING_RE = /^#{1,6}\s+/;
+const COMPACT_BULLET_RE = /^\s*[-*•]\s+(.+)$/;
+const COMPACT_NUMBERED_RE = /^\s*\d+[.)]\s+/;
+const COMPACT_TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const COMPACT_TABLE_SEPARATOR_RE = /^\s*\|?[\s:-]+\|[\s|:-]*\|?\s*$/;
+
+function isStandaloneCompactLine(line) {
+  const text = String(line || "").trim();
+  return COMPACT_HEADING_RE.test(text)
+    || COMPACT_BULLET_RE.test(text)
+    || COMPACT_NUMBERED_RE.test(text)
+    || COMPACT_CODE_PLACEHOLDER_RE.test(text)
+    || COMPACT_TABLE_ROW_RE.test(text)
+    || COMPACT_TABLE_SEPARATOR_RE.test(text);
+}
+
+function isCompactSectionHeading(line) {
+  const text = String(line || "").trim();
+  if (!text || isStandaloneCompactLine(text)) return false;
+  if (text.length > 18) return false;
+  return !/[。！？!?；;,，、]$/.test(text);
+}
+
+function cleanCompactBulletText(line) {
+  const match = String(line || "").match(COMPACT_BULLET_RE);
+  return (match?.[1] || "")
+    .replace(/\s+/g, " ")
+    .replace(/[。；;]\s*$/g, "")
+    .trim();
+}
+
+function canCompactBulletItems(items) {
+  return items.length >= 2
+    && items.length <= 8
+    && items.every((item) => item && item.length <= 72 && !COMPACT_CODE_PLACEHOLDER_RE.test(item));
+}
+
+function compactShortBulletSections(text) {
+  const lines = String(text || "").split("\n");
+  const output = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const nextLine = lines[index + 1] || "";
+    const nextBulletIndex = COMPACT_BULLET_RE.test(nextLine)
+      ? index + 1
+      : (!nextLine.trim() && COMPACT_BULLET_RE.test(lines[index + 2] || "") ? index + 2 : -1);
+
+    if (isCompactSectionHeading(line) && nextBulletIndex > -1) {
+      const bullets = [];
+      let cursor = nextBulletIndex;
+      while (cursor < lines.length && COMPACT_BULLET_RE.test(lines[cursor])) {
+        bullets.push(cleanCompactBulletText(lines[cursor]));
+        cursor += 1;
+      }
+      if (canCompactBulletItems(bullets)) {
+        const heading = line.trim().replace(/[：:]\s*$/g, "");
+        output.push(`${heading}：${bullets.join("；")}。`);
+        index = cursor - 1;
+        continue;
+      }
+    }
+
+    if (COMPACT_BULLET_RE.test(line)) {
+      const bullets = [];
+      let cursor = index;
+      while (cursor < lines.length && COMPACT_BULLET_RE.test(lines[cursor])) {
+        bullets.push(cleanCompactBulletText(lines[cursor]));
+        cursor += 1;
+      }
+      if (canCompactBulletItems(bullets)) {
+        output.push(`${bullets.join("；")}。`);
+        index = cursor - 1;
+        continue;
+      }
+    }
+
+    output.push(line);
+  }
+
+  return output.join("\n");
+}
+
+function compactMarkdownSpacing(rawText) {
+  const text = String(rawText ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+
+  const codeBlocks = [];
+  const protectedText = text.replace(COMPACT_CODE_BLOCK_RE, (block) => {
+    const key = `__CODE_BLOCK_${codeBlocks.length}__`;
+    codeBlocks.push(block);
+    return key;
+  });
+
+  const normalized = protectedText
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .reduce((lines, line) => {
+      const trimmed = line.trim();
+      const previous = lines[lines.length - 1] || "";
+
+      if (!trimmed) {
+        if (previous !== "") lines.push("");
+        return lines;
+      }
+
+      if (isStandaloneCompactLine(trimmed)) {
+        lines.push(trimmed);
+        return lines;
+      }
+
+      if (previous && previous !== "" && !isStandaloneCompactLine(previous)) {
+        lines[lines.length - 1] = `${previous} ${trimmed}`;
+      } else {
+        lines.push(trimmed);
+      }
+
+      return lines;
+    }, [])
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+
+  return compactShortBulletSections(normalized)
+    .replace(/__CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || "")
+    .replace(/(\n#{1,6} .+)\n{2,}/g, "$1\n")
+    .replace(/\n{2,}([-*•]\s+)/g, "\n$1")
+    .replace(/([-*•].+)\n{2,}/g, "$1\n");
+}
+
+function splitCompactToolStatusLines(text) {
+  const lines = normalizeCompactChatText(text).split("\n");
+  const toolLines = [];
+  const contentLines = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (COMPACT_TOOL_STATUS_RE.test(trimmed)) toolLines.push(trimmed);
+    else contentLines.push(line);
+  }
+  return { toolLines, content: contentLines.join("\n").trim() };
+}
+
+function shouldCollapseCompactMessage(text, options = {}) {
+  const opts = { ...COMPACT_CHAT_OPTIONS, ...options };
+  const normalized = normalizeCompactChatText(text);
+  if (!normalized) return false;
+  const lineCount = normalized.split("\n").length;
+  const codeBlockCount = (normalized.match(COMPACT_CODE_BLOCK_RE) || []).length;
+  return normalized.length > opts.collapseWhenChars
+    || lineCount > opts.collapseWhenLines
+    || codeBlockCount >= opts.collapseWhenCodeBlocks;
+}
+
+function createCompactPanelPreview(text, options = {}) {
+  const opts = { ...COMPACT_CHAT_OPTIONS, ...options };
+  const normalized = normalizeCompactChatText(text);
+  if (!normalized) return "";
+  const noCode = normalized.replace(COMPACT_CODE_BLOCK_RE, "[代码块已折叠]");
+  const lines = noCode.split("\n");
+  const previewLines = [];
+  let bulletCount = 0;
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      if (previewLines.length && previewLines[previewLines.length - 1] !== "") previewLines.push("");
+      continue;
+    }
+    const isBullet = /^\s*[-*•]\s+/.test(line);
+    if (isBullet) {
+      bulletCount += 1;
+      if (bulletCount > opts.maxVisibleBullets) continue;
+    }
+    previewLines.push(line);
+    if (previewLines.filter(Boolean).length >= opts.maxPreviewLines) break;
+  }
+  let preview = previewLines.join("\n").trim();
+  if (preview.length > opts.maxPreviewChars) preview = `${preview.slice(0, opts.maxPreviewChars).trim()}...`;
+  return preview;
+}
+
+const PANEL_LAYOUT_BULLET_RE = new RegExp("^\\s*[-*\\u2022]\\s+(.+)$");
+const PANEL_LAYOUT_CODE_TOKEN_RE = /^__PANEL_CODE_BLOCK_\d+__$/;
+const PANEL_LAYOUT_HEADING_RE = /^#{1,6}\s+/;
+const PANEL_LAYOUT_NUMBERED_RE = /^\s*\d+[.)]\s+/;
+const PANEL_LAYOUT_TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const PANEL_LAYOUT_TABLE_SEPARATOR_RE = /^\s*\|?[\s:-]+\|[\s|:-]*\|?\s*$/;
+const PANEL_LAYOUT_SENTENCE_END_RE = /[\u3002\uFF01\uFF1F!?；;,，、]$/;
+const PANEL_LAYOUT_TRAILING_COLON_RE = /[\uFF1A:]\s*$/g;
+const PANEL_LAYOUT_TRAILING_ITEM_PUNCT_RE = /[\u3002\uFF1B;]\s*$/g;
+const PANEL_LAYOUT_PLAIN_HEADING_RE = /^[\u4e00-\u9fffA-Za-z0-9 +/&_-]{2,18}$/;
+
+function isPanelLayoutStandaloneLine(line) {
+  const text = String(line || "").trim();
+  return PANEL_LAYOUT_HEADING_RE.test(text)
+    || PANEL_LAYOUT_BULLET_RE.test(text)
+    || PANEL_LAYOUT_NUMBERED_RE.test(text)
+    || PANEL_LAYOUT_CODE_TOKEN_RE.test(text)
+    || PANEL_LAYOUT_TABLE_ROW_RE.test(text)
+    || PANEL_LAYOUT_TABLE_SEPARATOR_RE.test(text);
+}
+
+function isPanelLayoutHeading(line) {
+  const text = String(line || "").trim();
+  return !!text
+    && text.length <= 18
+    && !isPanelLayoutStandaloneLine(text)
+    && !PANEL_LAYOUT_SENTENCE_END_RE.test(text);
+}
+
+function isPanelLayoutPlainHeading(line) {
+  const text = String(line || "").trim().replace(PANEL_LAYOUT_TRAILING_COLON_RE, "");
+  return isPanelLayoutHeading(text) && PANEL_LAYOUT_PLAIN_HEADING_RE.test(text);
+}
+
+function cleanPanelLayoutBullet(line) {
+  const match = String(line || "").match(PANEL_LAYOUT_BULLET_RE);
+  return (match?.[1] || "")
+    .replace(/\s+/g, " ")
+    .replace(PANEL_LAYOUT_TRAILING_ITEM_PUNCT_RE, "")
+    .trim();
+}
+
+function canCompactPanelBullets(items) {
+  return items.length >= 2
+    && items.length <= 8
+    && items.every((item) => item && item.length <= 72 && !PANEL_LAYOUT_CODE_TOKEN_RE.test(item));
+}
+
+function compactPanelBulletSections(text) {
+  const lines = String(text || "").split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const nextLine = lines[index + 1] || "";
+    const nextBulletIndex = PANEL_LAYOUT_BULLET_RE.test(nextLine)
+      ? index + 1
+      : (!nextLine.trim() && PANEL_LAYOUT_BULLET_RE.test(lines[index + 2] || "") ? index + 2 : -1);
+
+    if (isPanelLayoutHeading(line) && nextBulletIndex > -1) {
+      const bullets = [];
+      let cursor = nextBulletIndex;
+      while (cursor < lines.length && PANEL_LAYOUT_BULLET_RE.test(lines[cursor])) {
+        bullets.push(cleanPanelLayoutBullet(lines[cursor]));
+        cursor += 1;
+      }
+      if (canCompactPanelBullets(bullets)) {
+        const heading = line.trim().replace(PANEL_LAYOUT_TRAILING_COLON_RE, "");
+        output.push(`${heading}\uFF1A${bullets.join("\uFF1B")}\u3002`);
+        index = cursor - 1;
+        continue;
+      }
+    }
+
+    const nextContentIndex = nextLine.trim() ? index + 1 : index + 2;
+    const nextContentLine = lines[nextContentIndex] || "";
+    if (
+      isPanelLayoutPlainHeading(line)
+      && nextContentLine.trim()
+      && !isPanelLayoutStandaloneLine(nextContentLine)
+      && nextContentLine.trim().length <= 180
+    ) {
+      const heading = line.trim().replace(PANEL_LAYOUT_TRAILING_COLON_RE, "");
+      output.push(`${heading}\uFF1A${nextContentLine.trim()}`);
+      index = nextContentIndex;
+      continue;
+    }
+
+    if (PANEL_LAYOUT_BULLET_RE.test(line)) {
+      const bullets = [];
+      let cursor = index;
+      while (cursor < lines.length && PANEL_LAYOUT_BULLET_RE.test(lines[cursor])) {
+        bullets.push(cleanPanelLayoutBullet(lines[cursor]));
+        cursor += 1;
+      }
+      if (canCompactPanelBullets(bullets)) {
+        output.push(`${bullets.join("\uFF1B")}\u3002`);
+        index = cursor - 1;
+        continue;
+      }
+    }
+    output.push(line);
+  }
+  return output.join("\n");
+}
+
+function compactPanelMarkdownSpacing(rawText) {
+  const text = String(rawText ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+  const codeBlocks = [];
+  const protectedText = text.replace(COMPACT_CODE_BLOCK_RE, (block) => {
+    const key = `__PANEL_CODE_BLOCK_${codeBlocks.length}__`;
+    codeBlocks.push(block);
+    return key;
+  });
+  const normalized = protectedText
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .reduce((lines, line) => {
+      const trimmed = line.trim();
+      const previous = lines[lines.length - 1] || "";
+      if (!trimmed) {
+        if (previous !== "") lines.push("");
+        return lines;
+      }
+      if (isPanelLayoutStandaloneLine(trimmed)) {
+        lines.push(trimmed);
+        return lines;
+      }
+      if (previous && previous !== "" && !isPanelLayoutStandaloneLine(previous)) {
+        lines[lines.length - 1] = `${previous} ${trimmed}`;
+      } else {
+        lines.push(trimmed);
+      }
+      return lines;
+    }, [])
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n");
+  return compactPanelBulletSections(normalized)
+    .replace(/__PANEL_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || "")
+    .replace(/(\n#{1,6} .+)\n{2,}/g, "$1\n")
+    .replace(/\n{2,}([-*\u2022]\s+)/g, "\n$1")
+    .replace(/([-*\u2022].+)\n{2,}/g, "$1\n");
+}
+
+function compactClaudePanelMessage(rawText, options = {}) {
+  const { toolLines, content } = splitCompactToolStatusLines(rawText);
+  const layoutContent = compactPanelMarkdownSpacing(content);
+  const collapsed = shouldCollapseCompactMessage(layoutContent, options);
+  return {
+    content: layoutContent,
+    preview: collapsed ? createCompactPanelPreview(layoutContent, options) : layoutContent,
+    collapsed,
+    toolLines,
+    toolSummary: toolLines.length > 0 ? `工具日志 ${toolLines.length} 条` : "",
+  };
+}
+
+function renderCompactClaudePanelMessage(rawText, body) {
+  if (!body) return;
+  const compact = compactClaudePanelMessage(rawText);
+  body.innerHTML = "";
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "assistant-compact-message";
+  if (compact.collapsed) wrapper.classList.add("is-collapsed");
+
+  const content = document.createElement("div");
+  content.className = "assistant-compact-message__content";
+  const renderContent = (value) => {
+    content.textContent = value || "";
+  };
+  renderContent(compact.preview);
+  if (compact.preview || compact.content) wrapper.appendChild(content);
+
+  if (compact.collapsed) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "assistant-compact-message__toggle";
+    toggle.textContent = "展开详情";
+    toggle.addEventListener("click", () => {
+      const expanded = wrapper.classList.toggle("is-expanded");
+      wrapper.classList.toggle("is-collapsed", !expanded);
+      toggle.textContent = expanded ? "收起详情" : "展开详情";
+      renderContent(expanded ? compact.content : compact.preview);
+    });
+    wrapper.appendChild(toggle);
+  }
+
+  if (compact.toolLines.length > 0) {
+    const details = document.createElement("details");
+    details.className = "tool-log-summary";
+    const summary = document.createElement("summary");
+    summary.textContent = compact.toolSummary;
+    const pre = document.createElement("pre");
+    pre.textContent = compact.toolLines.join("\n");
+    details.append(summary, pre);
+    wrapper.appendChild(details);
+  }
+
+  body.appendChild(wrapper);
+}
+
 function flushAssistantTextBuffer() {
   if (!assistantTextBuffer) return;
   if (!activeAssistantMessage) {
@@ -1229,8 +1759,9 @@ function flushAssistantTextBuffer() {
   }
   const chunk = assistantTextBuffer;
   assistantTextBuffer = "";
-  activeAssistantMessage.body.textContent += chunk;
-  renderAuthorizationCard(activeAssistantMessage.message, activeAssistantMessage.body.textContent);
+  activeAssistantMessage.rawText = `${activeAssistantMessage.rawText || ""}${chunk}`;
+  renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText), activeAssistantMessage.body);
+  renderAuthorizationCard(activeAssistantMessage.message, activeAssistantMessage.rawText);
   scheduleTranscriptScroll();
 }
 
@@ -1253,7 +1784,10 @@ function removeRuntimeSummaryMessages() {
   if (!transcript) return;
   for (const message of transcript.querySelectorAll(".message.system")) {
     const text = message.textContent || "";
-    if (isRuntimeSummaryMessage("system", "", text)) message.remove();
+    if (isRuntimeSummaryMessage("system", "", text)) {
+      const row = message.closest(".message-row");
+      (row || message).remove();
+    }
   }
 }
 
@@ -1263,18 +1797,23 @@ function addMessage(kind, title, text = "") {
     return { message: placeholder, body: placeholder };
   }
   clearEmptyState();
+  const row = document.createElement("div");
+  row.className = `message-row ${kind} sc-msg-row ${kind}`;
   const message = document.createElement("article");
-  message.className = `message ${kind}`;
+  message.className = `message ${kind} sc-msg-bubble ${kind}`;
   const head = document.createElement("div");
   head.className = "message-head";
   head.textContent = kind === "user" && ["你", "我", "用户"].includes(title) ? "操作者" : title;
   const body = document.createElement("div");
   body.className = "message-body";
-  body.textContent = text;
+  const displayText = formatClaudeCodeToolCallForZh(text);
+  if (kind === "user") body.textContent = displayText;
+  else renderCompactClaudePanelMessage(displayText, body);
   message.append(head, body);
-  transcript.append(message);
+  row.append(message);
+  transcript.append(row);
   scheduleTranscriptScroll();
-  return { message, body };
+  return { row, message, body, rawText: String(text || "") };
 }
 
 function closeSlashCommandMenu() {

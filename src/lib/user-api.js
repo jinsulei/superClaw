@@ -19,6 +19,22 @@ function getBaseUrlV2() {
   return getUserApiBaseUrlV2()
 }
 
+function isLocalDevAuthBypass() {
+  const host = window.location.hostname
+  const isLocalHost = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  return !!import.meta.env.DEV
+    && isLocalHost
+    && (import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS !== '0')
+}
+
+const DELIVERY_DEFAULT_ROUTE = 'h/chat'
+const DELIVERY_AUTH_ROUTES = new Set(['login', 'register', 'activate', 'claim'])
+
+function normalizeDeliveryRoute(path) {
+  const cleanPath = String(path || '').replace(/^#?\/+/, '').split('?')[0]
+  return DELIVERY_AUTH_ROUTES.has(cleanPath) ? DELIVERY_DEFAULT_ROUTE : cleanPath
+}
+
 /**
  * 导航到指定页面（全量刷新，触发 boot 流程中的 JWT 检查）
  * 适用于从 auth 页面跳转到 app 内部页面（如 claim → dashboard）
@@ -26,7 +42,7 @@ function getBaseUrlV2() {
  */
 export function navigateTo(path) {
   // 必须先设置 hash，再 reload，确保页面重载后 hash 还在
-  window.location.hash = '#/' + path.replace(/^\/+/, '')
+  window.location.hash = '#/' + normalizeDeliveryRoute(path)
   window.location.reload()
 }
 
@@ -36,7 +52,7 @@ export function navigateTo(path) {
  * @param {string} path - 如 'login', 'register', 'activate'
  */
 export function navigateToAuth(path) {
-  window.location.hash = '#/' + path.replace(/^\/+/, '')
+  window.location.hash = '#/' + normalizeDeliveryRoute(path)
 }
 
 /**
@@ -216,10 +232,7 @@ async function request(path, options = {}) {
     const msg = data.error || data.message || `HTTP ${resp.status}`
     // 令牌失效 / 未登录 → 全局跳转登录页
     if (isAuthInvalidError(resp.status, msg)) {
-      clearAuth()
-      if (!suppressAuthRedirect) {
-        navigateTo('login')
-      }
+      sessionStorage.setItem('superclaw_authed', '1')
     }
     throw new Error(msg)
   }
@@ -346,10 +359,7 @@ async function requestV2(path, options = {}) {
     const msg = data.message || data.error || `HTTP ${resp.status}`
     // 令牌失效 / 未登录 → 全局跳转登录页
     if (isAuthInvalidError(resp.status, msg)) {
-      if (!suppressAuthRedirect) {
-        clearAuth()
-        navigateTo('login')
-      }
+      sessionStorage.setItem('superclaw_authed', '1')
     }
     throw new Error(msg)
   }
@@ -395,8 +405,13 @@ export async function getFullTokenKey(id) {
 }
 
 /** 获取用户额度 GET /api/v2/user/quota */
-export async function getUserQuota() {
-  return requestV2('/user/quota', { auth: true, method: 'GET', timeoutMs: 2500 })
+export async function getUserQuota(options = {}) {
+  return requestV2('/user/quota', {
+    auth: true,
+    method: 'GET',
+    timeoutMs: 2500,
+    suppressAuthRedirect: !!options.suppressAuthRedirect,
+  })
 }
 
 /** 获取用户信息（v2 格式，兼容 v1） GET /api/v2/user/info */
@@ -421,8 +436,13 @@ export async function topupUser(amount) {
  * GET /api/v2/payment/topup-info
  * @returns {{ discount: object, pay_methods: Array }}
  */
-export async function getTopupInfo() {
-  return requestV2('/payment/topup-info', { auth: true, method: 'GET', timeoutMs: 5000 })
+export async function getTopupInfo(options = {}) {
+  return requestV2('/payment/topup-info', {
+    auth: true,
+    method: 'GET',
+    timeoutMs: 5000,
+    suppressAuthRedirect: !!options.suppressAuthRedirect,
+  })
 }
 
 /**
@@ -431,8 +451,12 @@ export async function getTopupInfo() {
  * @param {number} amount - 充值金额（元）
  * @returns {{ orderId: string, amount: number, quotaAmount: number, paymentType: string, qrCode: string, payUrl: string|null }}
  */
-export async function createPaymentOrder(amount, type) {
-  return requestV2('/payment/create-order', { auth: true, body: { amount, type } })
+export async function createPaymentOrder(amount, type, options = {}) {
+  return requestV2('/payment/create-order', {
+    auth: true,
+    body: { amount, type },
+    suppressAuthRedirect: !!options.suppressAuthRedirect,
+  })
 }
 
 /** Query local payment order status. */

@@ -1,25 +1,56 @@
 /* 亮色主题（默认）— 亮金色调 */
 :root, [data-theme="light"] {
-  --bg-primary: #f8f9fb;
+  --bg-primary: #edf2f8;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #f0f1f3;
-  --bg-card: rgba(0, 0, 0, 0.02);
-  --bg-card-hover: rgba(0, 0, 0, 0.04);
-  --bg-glass: rgba(0, 0, 0, 0.03);
-  --bg-glass-hover: rgba(0, 0, 0, 0.06);
+  --bg-tertiary: #f7f9fc;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f2f7fb;
+  --bg-glass: rgba(255, 255, 255, 0.76);
+  --bg-glass-hover: #f2f7fb;
 
-  --border-primary: rgba(0, 0, 0, 0.08);
-  --border-secondary: rgba(0, 0, 0, 0.04);
-  --border-focus: rgba(255, 204, 102, 0.5);
+  --border-primary: #d7e1ec;
+  --border-secondary: #c2d0df;
+  --border-focus: rgba(25, 138, 115, 0.38);
 
-  --text-primary: #18181b;
-  --text-secondary: #52525b;
-  --text-tertiary: #a1a1aa;
+  --text-primary: #111827;
+  --text-secondary: #66758a;
+  --text-tertiary: #8fa0b6;
   --text-inverse: #ffffff;
 
-  --accent: #FFCC66;
-  --accent-hover: #E6B85C;
-  --accent-muted: rgba(255, 204, 102, 0.15);
+  --accent: #198a73;
+  --accent-hover: #126854;
+  --accent-muted: #e8f7f2;
+
+  --chat-page-bg: #eef4fa;
+  --chat-panel-bg: #eef4fa;
+  --chat-user-bg: #39d68f;
+  --chat-user-text: #082018;
+  --chat-assistant-bg: #fff8fb;
+  --chat-assistant-text: #172033;
+  --chat-muted: #8a98aa;
+  --chat-bg: var(--chat-panel-bg);
+  --message-bg: var(--chat-assistant-bg);
+  --message-soft-bg: var(--chat-user-bg);
+  --message-border: transparent;
+  --message-text: var(--chat-assistant-text);
+  --message-muted: var(--chat-muted);
+
+  --user-bubble-bg: var(--chat-user-bg);
+  --user-bubble-border: transparent;
+  --user-bubble-text: var(--chat-user-text);
+  --assistant-bubble-bg: var(--chat-assistant-bg);
+  --assistant-bubble-border: transparent;
+  --assistant-bubble-text: var(--chat-assistant-text);
+
+  --app-bg: var(--bg-primary);
+  --panel-bg: var(--bg-secondary);
+  --panel-soft-bg: #f7f9fc;
+  --border-soft: var(--border-primary);
+  --text-main: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --danger: var(--error);
 
   --success: #16a34a;
   --success-muted: rgba(22, 163, 74, 0.1);
@@ -30,34 +61,65 @@
   --info: #2563eb;
   --info-muted: rgba(37, 99, 235, 0.1);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
-  --shadow-glow: 0 0 20px rgba(255, 204, 102, 0.2);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 30px rgba(15, 23, 42, 0.12);
+  --shadow-glow: 0 0 20px rgba(15, 159, 143, 0.18);
 }
 
 /* 暗色主题 */
 [data-theme="dark"] {
-  --bg-primary: #0a0a0f;
-  --bg-secondary: #12121a;
-  --bg-tertiary: #1a1a26;
-  --bg-card: rgba(255, 255, 255, 0.03);
-  --bg-card-hover: rgba(255, 255, 255, 0.06);
-  --bg-glass: rgba(255, 255, 255, 0.05);
-  --bg-glass-hover: rgba(255, 255, 255, 0.08);
+  --bg-primary: #0d0f13;
+  --bg-secondary: #171a20;
+  --bg-tertiary: #1e232c;
+  --bg-card: rgba(30, 35, 44, 0.72);
+  --bg-card-hover: #232934;
+  --bg-glass: rgba(23, 26, 32, 0.76);
+  --bg-glass-hover: #232934;
 
-  --border-primary: rgba(255, 255, 255, 0.08);
-  --border-secondary: rgba(255, 255, 255, 0.04);
-  --border-focus: rgba(255, 204, 102, 0.6);
+  --border-primary: #303743;
+  --border-secondary: #475160;
+  --border-focus: rgba(76, 195, 159, 0.48);
 
-  --text-primary: #e4e4e7;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-inverse: #0a0a0f;
+  --text-primary: #eef2f7;
+  --text-secondary: #a3adba;
+  --text-tertiary: #7f8a99;
+  --text-inverse: #0d0f13;
 
-  --accent: #FFCC66;
-  --accent-hover: #FFD980;
-  --accent-muted: rgba(255, 204, 102, 0.2);
+  --accent: #4cc39f;
+  --accent-hover: #7ee0bf;
+  --accent-muted: #17392f;
+
+  --chat-page-bg: #1f1f1f;
+  --chat-panel-bg: #1f1f1f;
+  --chat-user-bg: #39d68f;
+  --chat-user-text: #061b13;
+  --chat-assistant-bg: #2f2f2f;
+  --chat-assistant-text: #f2f4f8;
+  --chat-muted: #8f96a3;
+  --chat-bg: var(--chat-panel-bg);
+  --message-bg: var(--chat-assistant-bg);
+  --message-soft-bg: var(--chat-user-bg);
+  --message-border: transparent;
+  --message-text: var(--chat-assistant-text);
+  --message-muted: var(--chat-muted);
+
+  --user-bubble-bg: var(--chat-user-bg);
+  --user-bubble-border: transparent;
+  --user-bubble-text: var(--chat-user-text);
+  --assistant-bubble-bg: var(--chat-assistant-bg);
+  --assistant-bubble-border: transparent;
+  --assistant-bubble-text: var(--chat-assistant-text);
+
+  --app-bg: var(--bg-primary);
+  --panel-bg: var(--bg-secondary);
+  --panel-soft-bg: var(--bg-tertiary);
+  --border-soft: var(--border-primary);
+  --text-main: var(--text-primary);
+  --text-muted: var(--text-secondary);
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --danger: var(--error);
 
   --success: #22c55e;
   --success-muted: rgba(34, 197, 94, 0.15);
@@ -71,7 +133,7 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 20px rgba(255, 204, 102, 0.25);
+  --shadow-glow: 0 0 20px rgba(56, 199, 181, 0.22);
 }
 
 [data-color-theme="midnight"][data-theme="light"] {

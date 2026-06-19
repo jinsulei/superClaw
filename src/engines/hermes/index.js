@@ -106,11 +106,13 @@ export default {
         section: '',
         items: [
           { route: '/h/setup', label: t('sidebar.setup'), icon: 'setup' },
+          { route: '/h/chat', label: t('sidebar.chat'), icon: 'chat' },
         ]
       }, {
         section: '',
         items: [
           { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
+          { route: '/h/recharge', label: t('sidebar.rechargePlan'), icon: 'recharge', className: 'nav-item-recharge-plan' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
@@ -139,6 +141,7 @@ export default {
         // HIDDEN: { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
         // HIDDEN: { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
+        { route: '/h/recharge', label: t('sidebar.rechargePlan'), icon: 'recharge', className: 'nav-item-recharge-plan' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]
     }]
@@ -163,11 +166,12 @@ export default {
       { path: '/h/config', loader: () => import('./pages/config.js') },
       { path: '/h/channels', loader: () => import('./pages/channels.js') },
       { path: '/h/env', loader: () => import('./pages/env-editor.js') },
+      { path: '/h/recharge', loader: () => import('../../pages/payment.js') },
       // 共用页面（引擎无关）
       { path: '/assistant', loader: () => import('../../pages/assistant.js') },
       { path: '/settings', loader: () => import('../../pages/settings.js') },
       { path: '/about', loader: () => import('../../pages/about.js') },
-      { path: '/recharge', loader: () => import('../../pages/payment.js') },
+      { path: '/recharge', loader: () => import('../../pages/recharge-redirect.js') },
       { path: '/profile', loader: () => import('../../pages/profile.js') },
     ]
   },

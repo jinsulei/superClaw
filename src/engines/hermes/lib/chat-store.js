@@ -103,19 +103,30 @@ function parseEpochMs(value) {
 }
 
 function normalizeHermesMessageContent(content) {
-  if (typeof content === 'string') return { text: content, attachments: [] }
+  if (typeof content === 'string') return { text: content, attachments: [], screenshotCards: [], confirmations: [] }
   if (!Array.isArray(content)) {
-    try { return { text: JSON.stringify(content || ''), attachments: [] } }
-    catch { return { text: String(content || ''), attachments: [] } }
+    try { return { text: JSON.stringify(content || ''), attachments: [], screenshotCards: [], confirmations: [] } }
+    catch { return { text: String(content || ''), attachments: [], screenshotCards: [], confirmations: [] } }
   }
 
   const texts = []
   const attachments = []
+  const screenshotCards = []
+  const confirmations = []
   for (const part of content) {
     if (!part || typeof part !== 'object') continue
     const type = String(part.type || '').toLowerCase()
     if ((type === 'text' || type === 'input_text' || !type) && typeof part.text === 'string') {
       texts.push(part.text)
+      continue
+    }
+    if (type === 'screenshot_card') {
+      const card = part.card || part
+      if (card?.imageUrl) screenshotCards.push(card)
+      continue
+    }
+    if (type === 'user_confirmation') {
+      confirmations.push(part.confirmation || part)
       continue
     }
 
@@ -135,7 +146,7 @@ function normalizeHermesMessageContent(content) {
       }
     }
   }
-  return { text: texts.join('\n'), attachments }
+  return { text: texts.join('\n'), attachments, screenshotCards, confirmations }
 }
 
 // ---------- message mapping ----------
@@ -212,7 +223,7 @@ function mapHermesMessages(msgs) {
 
     const normalized = normalizeHermesMessageContent(m.content)
     const content = normalized.text
-    if (m.role === 'assistant' && !content.trim() && !normalized.attachments.length) continue
+    if (m.role === 'assistant' && !content.trim() && !normalized.attachments.length && !normalized.screenshotCards.length && !normalized.confirmations.length) continue
 
     // Plain user/assistant/system message.
     out.push({
@@ -221,6 +232,8 @@ function mapHermesMessages(msgs) {
       content,
       timestamp: ts,
       attachments: normalized.attachments,
+      screenshotCards: normalized.screenshotCards,
+      confirmations: normalized.confirmations,
     })
   }
   return collapseConsecutiveAssistantMessages(out)
@@ -245,6 +258,12 @@ function collapseConsecutiveAssistantMessages(messages) {
       prev.content = joinAssistantChunks(prev.content, msg.content)
       if (msg.attachments?.length) {
         prev.attachments = [...(prev.attachments || []), ...msg.attachments]
+      }
+      if (msg.screenshotCards?.length) {
+        prev.screenshotCards = [...(prev.screenshotCards || []), ...msg.screenshotCards]
+      }
+      if (msg.confirmations?.length) {
+        prev.confirmations = [...(prev.confirmations || []), ...msg.confirmations]
       }
       prev.timestamp = Math.max(Number(prev.timestamp || 0), Number(msg.timestamp || 0)) || prev.timestamp
       continue

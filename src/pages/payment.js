@@ -42,13 +42,14 @@ export async function render() {
   // 异步加载充值配置
   loadTopupConfig(page).catch(err => {
     console.error('[payment] 加载配置失败:', err)
+    const errorMessage = getPaymentLoadErrorMessage(err)
     page.innerHTML = `
       <div class="page-header">
         <h1 class="page-title">${t('sidebar.recharge')}</h1>
       </div>
       <div class="card">
         <div class="card-body" style="padding:32px;text-align:center;color:var(--error)">
-          <p>${t('payment.loadError') || '加载充值配置失败'}</p>
+          <p>${errorMessage}</p>
           <button class="btn btn-primary" style="margin-top:16px" onclick="location.reload()">${t('common.retry') || '重试'}</button>
         </div>
       </div>
@@ -58,10 +59,34 @@ export async function render() {
   return page
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]))
+}
+
+function getPaymentLoadErrorMessage(err) {
+  const message = String(err?.message || '')
+  if (/USER_API_BASE_URL|base\s*url|未配置/i.test(message)) {
+    return '充值服务未配置：请先配置 VITE_USER_API_BASE_URL 或在面板设置中配置用户 API 地址。'
+  }
+  if (/未登录|令牌|unauthorized|forbidden|invalid\s*token|HTTP\s*401|401/i.test(message)) {
+    return '登录状态失效或未登录，请先完成登录后再打开充值与套餐。'
+  }
+  if (/Failed to fetch|NetworkError|abort|timeout|timed?\s*out|超时/i.test(message)) {
+    return '充值服务暂时无法连接，请检查网络或用户 API 服务后重试。'
+  }
+  return escapeHtml(t('payment.loadError') || '加载充值配置失败')
+}
+
 async function loadTopupConfig(page) {
   const [info, quota] = await Promise.all([
-    getTopupInfo(),
-    getUserQuota().catch(() => null),
+    getTopupInfo({ suppressAuthRedirect: true }),
+    getUserQuota({ suppressAuthRedirect: true }).catch(() => null),
   ])
   _quotaData = quota
 
@@ -272,7 +297,7 @@ async function handleConfirmPay(page) {
     btn.disabled = true
     btn.innerHTML = '<span class="btn-spinner"></span> 处理中...'
 
-    const result = await createPaymentOrder(_selectedAmount, _selectedMethod)
+    const result = await createPaymentOrder(_selectedAmount, _selectedMethod, { suppressAuthRedirect: true })
 
     // 保存订单状态
     _orderState = {
@@ -397,7 +422,7 @@ async function startPolling(page, overlay) {
   const orderNo = _orderState?.orderId
 
   // 额度接口依赖 YYApi 用户同步。老用户未同步时会 400，所以只作为兜底。
-  const initialQuota = await getUserQuota().catch(() => null)
+  const initialQuota = await getUserQuota({ suppressAuthRedirect: true }).catch(() => null)
   const initialBalance = initialQuota?.balance ?? initialQuota?.remaining_tokens ?? null
   let quotaPollingDisabled = initialBalance == null
   let orderStatusAvailable = true
@@ -435,7 +460,7 @@ async function startPolling(page, overlay) {
 
       if (!quotaPollingDisabled) {
         try {
-          const quota = await getUserQuota()
+          const quota = await getUserQuota({ suppressAuthRedirect: true })
           const currentBalance = quota?.balance ?? quota?.remaining_tokens ?? null
           if (initialBalance != null && currentBalance != null && currentBalance > initialBalance) {
             clearInterval(pollInterval)
@@ -471,7 +496,7 @@ function markPaymentSuccess(page, overlay, statusEl, timerEl) {
   }
 
   toast(t('payment.paySuccess') || '支付成功！', 'success')
-  getUserQuota().then(quota => { _quotaData = quota }).catch(() => {})
+  getUserQuota({ suppressAuthRedirect: true }).then(quota => { _quotaData = quota }).catch(() => {})
   setTimeout(() => {
     closeQRCode(page)
     resetPaymentState(page)

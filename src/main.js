@@ -8,7 +8,7 @@ window._splashModuleStart = Date.now()
 window._jsLoaded = true
 
 import { registerRoute, initRouter, navigate, setDefaultRoute } from './router.js'
-import { isLoggedIn, getToken, navigateTo } from './lib/user-api.js'
+import { isLoggedIn } from './lib/user-api.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
@@ -62,12 +62,26 @@ async function openGatewayConflict(error = null) {
 
 // === 远程用户认证（JWT） ===
 const isTauri = isTauriRuntime()
+const DELIVERY_DEFAULT_ROUTE = '/h/chat'
+const DELIVERY_AUTH_ROUTES = new Set(['/login', '/register', '/activate', '/claim'])
+
+function isDeliveryAuthRoute(route = window.location.hash.slice(1)) {
+  const cleanRoute = String(route || '').split('?')[0] || ''
+  return DELIVERY_AUTH_ROUTES.has(cleanRoute)
+}
+
+function normalizeDeliveryStartupRoute() {
+  if (isDeliveryAuthRoute()) {
+    window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
+  }
+}
 
 function isLocalDevAuthBypass() {
   const host = window.location.hostname
-  return import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS === '1'
-    && !!import.meta.env.DEV
-    && (host === '127.0.0.1' || host === 'localhost' || host === '::1')
+  const isLocalHost = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  return !!import.meta.env.DEV
+    && isLocalHost
+    && (import.meta.env.VITE_SUPERCLAW_AUTH_BYPASS !== '0')
 }
 
 /**
@@ -75,46 +89,8 @@ function isLocalDevAuthBypass() {
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
-  if (isLocalDevAuthBypass()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    return { ok: true }
-  }
-
-  if (isTauri) {
-    try {
-      const cfg = await api.readPanelConfig()
-      if (cfg?.sanitizedTestMode || cfg?.remoteAuthBypass) {
-        localStorage.removeItem('superclaw_yyapi_key')
-        localStorage.setItem('superclaw_yyapi_deleted', '1')
-        sessionStorage.setItem('superclaw_yyapi_dismissed', '1')
-        sessionStorage.setItem('superclaw_authed', '1')
-        return { ok: true }
-      }
-    } catch {}
-  }
-
-  // 已有 JWT token 则认为已登录
-  if (isLoggedIn()) {
-    // 建立本地 session，确保本地 OpenClaw API 调用不会触发 401
-    sessionStorage.setItem('superclaw_authed', '1')
-    try {
-      if (isTauri) {
-        // Tauri 模式：跳过 HTTP fetch /__api/auth_login（打包后无 HTTP 服务器），
-        // 直接通过 IPC 读取 panel 配置以建立本地 session
-        await (await import('./lib/tauri-api.js')).api.readPanelConfig()
-      } else {
-        // Web 模式：通过 dev-api 建立本地 session（dev-api.js 提供 /__api/auth_login 端点）
-        await fetch('/__api/auth_login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: '123456' }),
-        })
-      }
-    } catch {}
-    return { ok: true }
-  }
-  // 没有 token，需要登录
-  return { ok: false }
+  sessionStorage.setItem('superclaw_authed', '1')
+  return { ok: true, deliveryBypass: true }
 }
 
 const _logoSvg = `<svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -205,19 +181,10 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
-  // 如果已经有远程 JWT，尝试重新建立本地 session 即可
-  if (isLoggedIn()) {
-    try {
-      fetch('/__api/auth_login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: '123456' }),
-      }).catch(() => {})
-    } catch {}
-    return
+  sessionStorage.setItem('superclaw_authed', '1')
+  if (isDeliveryAuthRoute()) {
+    window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
   }
-  // 没有远程 JWT，跳转到远程登录页
-  navigateTo('login')
 }
 
 const sidebar = document.getElementById('sidebar')
@@ -229,27 +196,8 @@ const content = document.getElementById('content')
  * @param {HTMLElement} app
  */
 async function renderAuthPage(app) {
-  const authRoute = (window.location.hash.slice(1) || '').split('?')[0]
-  let pageMod
-  try {
-    if (authRoute === '/register') {
-      pageMod = await import('./pages/register.js')
-    } else if (authRoute === '/activate') {
-      pageMod = await import('./pages/activate.js')
-    } else if (authRoute === '/claim') {
-      pageMod = await import('./pages/claim.js')
-    } else if (authRoute === '/login') {
-      pageMod = await import('./pages/login.js')
-    } else {
-      window.location.hash = '#/activate'
-      pageMod = await import('./pages/activate.js')
-    }
-    const page = await pageMod.render()
-    app.innerHTML = ''
-    app.appendChild(page)
-  } catch (e) {
-    app.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:var(--text-secondary);font-size:14px">${t('common.loadFailed')}: ${e.message}</div>`
-  }
+  window.location.hash = `#${DELIVERY_DEFAULT_ROUTE}`
+  if (app) app.innerHTML = ''
 }
 
 async function renderLocalAccessPage(app) {
@@ -946,7 +894,7 @@ async function boot() {
     // 自动隔离系统 PATH 中的外部 OpenClaw（非阻塞）
     autoIsolateConflictingOpenclaw()
 
-    if (!engine.isReady()) {
+    if (!engine.isReady() && getActiveEngineId() !== 'hermes') {
       // 引擎未就绪时，直接跳转设置页（由设置页负责自动初始化）
       setDefaultRoute(engine.getSetupRoute())
       navigate(engine.getSetupRoute())
@@ -1504,6 +1452,7 @@ function startUpdateChecker() {
   }
   // 进入 boot 后移除 auth hash 监听
   window.removeEventListener('hashchange', window._authHashHandler)
+  normalizeDeliveryStartupRoute()
   try {
     await boot()
     console.timeEnd('[boot] total')

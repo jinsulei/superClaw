@@ -532,7 +532,8 @@ export function renderSidebar(el) {
       if (item.gate && engine && !engine.isFeatureAvailable(item.gate)) continue
       if (item.gate && !engine && !isFeatureAvailable(item.gate)) continue
       const active = current === item.route ? ' active' : ''
-      html += `<div class="nav-item${active}" data-route="${item.route}">
+      const extraClass = item.className ? ` ${_escSidebar(item.className)}` : ''
+      html += `<div class="nav-item${active}${extraClass}" data-route="${item.route}">
         ${ICONS[item.icon] || ''}
         <span>${item.label}</span>
       </div>`

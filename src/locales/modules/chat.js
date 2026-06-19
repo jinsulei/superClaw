@@ -41,7 +41,7 @@ export default {
   gatewayNotReadySend: _('Gateway 未就绪，连接成功后再发送', 'Gateway not ready, will send after connection'),
   sendFailed: _('发送失败: ', 'Send failed: '),
   usingTool: _('正在使用工具: {name}', 'Using tool: {name}'),
-  streamTimeout: _('输出超时，已自动结束', 'Output timed out, auto-ended'),
+  streamTimeout: _('回复等待时间较长，可能仍在生成。你可以继续等待，或手动停止后重试。', 'The reply is taking longer than usual and may still be generating. You can keep waiting, or stop manually and retry.'),
   elapsedTime: _('{seconds}秒', '{seconds}s'),
   generationStopped: _('生成已停止', 'Generation stopped'),
   errorPrefix: _('错误: ', 'Error: '),

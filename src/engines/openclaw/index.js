@@ -177,7 +177,7 @@ export default {
       { path: '/activate', loader: () => import('../../pages/activate.js') },
       { path: '/register', loader: () => import('../../pages/register.js') },
       { path: '/claim', loader: () => import('../../pages/claim.js') },
-      { path: '/recharge', loader: () => import('../../pages/payment.js') },
+      { path: '/recharge', loader: () => import('../../pages/recharge-redirect.js') },
     ]
   },
 

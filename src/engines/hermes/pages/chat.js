@@ -39,6 +39,7 @@ import {
 import { createSpeechPlaybackController, createVoiceInputController } from '../../../lib/voice.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../../../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
+import { compactChatMessage } from '../../../shared/compact-chat-policy.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -46,6 +47,7 @@ import {
   synthesizeWithModelVoice,
   transcribeWithModelVoice,
 } from '../../../lib/model-voice.js'
+import { renderScreenshotCardHtml, renderUserConfirmationCardHtml } from '../../../shared/life-assistant-ui.js'
 
 // ----------------------------------------------------------- helpers
 
@@ -1536,12 +1538,38 @@ export function render() {
     return failed || emptyDone
   }
 
+  function renderCompactAssistantHtml(rawText) {
+    const compact = compactChatMessage(rawText)
+    const previewHtml = compact.preview ? mdToHtml(compact.preview) : ''
+    const fullHtml = compact.content ? mdToHtml(compact.content) : ''
+    const toolHtml = compact.toolLines.length ? `
+      <details class="tool-log-summary">
+        <summary>${escHtml(compact.toolSummary)}</summary>
+        <pre>${escHtml(compact.toolLines.join('\n'))}</pre>
+      </details>
+    ` : ''
+    const toggleHtml = compact.collapsed ? `
+      <button type="button" class="assistant-compact-message__toggle" data-compact-toggle>
+        展开详情
+      </button>
+    ` : ''
+
+    return `
+      <div class="assistant-compact-message ${compact.collapsed ? 'is-collapsed' : ''}">
+        ${previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview">${previewHtml}</div>` : ''}
+        ${compact.collapsed ? `<div class="assistant-compact-message__content assistant-compact-message__full" hidden>${fullHtml}</div>` : ''}
+        ${toggleHtml}
+        ${toolHtml}
+      </div>
+    `
+  }
+
   function renderMessage(m) {
     if (m.role === 'tool') return shouldHideToolRow(m) ? '' : renderToolMessage(m)
     if (m.role === 'system') {
       return `
-        <div class="hm-chat-msg hm-chat-msg--system" data-mid="${escAttr(m.id)}">
-          <div class="hm-chat-msg-bubble">
+        <div class="hm-chat-msg hm-chat-msg--system sc-msg-row system" data-mid="${escAttr(m.id)}">
+          <div class="hm-chat-msg-bubble sc-msg-bubble system">
             <div class="hm-chat-msg-content">${mdToHtml(m.content)}</div>
           </div>
         </div>
@@ -1550,20 +1578,27 @@ export function render() {
     const isUser = m.role === 'user'
     const canCopy = !!(m.content || '').trim()
     const canSpeak = !isUser && canCopy
+    const lifeAssistantHtml = [
+      ...(Array.isArray(m.screenshotCards) ? m.screenshotCards.map(renderScreenshotCardHtml) : []),
+      ...(Array.isArray(m.confirmations) ? m.confirmations.map(renderUserConfirmationCardHtml) : []),
+      m.type === 'screenshot_card' && m.card ? renderScreenshotCardHtml(m.card) : '',
+      m.type === 'user_confirmation' && m.confirmation ? renderUserConfirmationCardHtml(m.confirmation) : '',
+    ].filter(Boolean).join('')
     const messageContentHtml = [
       renderMessageAttachments(m.attachments || []),
-      (m.content || '').trim() ? mdToHtml(m.content) : '',
+      (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content)) : '',
+      lifeAssistantHtml,
       m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
     ].filter(Boolean).join('')
     return `
-      <div class="hm-chat-msg hm-chat-msg--${escHtml(m.role)}" data-mid="${escAttr(m.id)}">
+      <div class="hm-chat-msg hm-chat-msg--${escHtml(m.role)} sc-msg-row ${isUser ? 'user' : 'assistant'}" data-mid="${escAttr(m.id)}">
         <div class="hm-chat-msg-body">
           ${!isUser ? `<div class="hm-chat-msg-avatar" aria-hidden="true">H</div>` : ''}
-          <div class="hm-chat-msg-content-wrap">
-            <div class="hm-chat-msg-bubble">
+          <div class="hm-chat-msg-content-wrap sc-msg-group ${isUser ? 'user' : 'assistant'}">
+            <div class="hm-chat-msg-bubble sc-msg-bubble ${isUser ? 'user' : 'assistant'}">
               <div class="hm-chat-msg-content">${messageContentHtml}</div>
             </div>
-            <div class="hm-chat-msg-footer">
+            <div class="hm-chat-msg-footer sc-msg-meta">
               <span class="hm-chat-msg-time">${escHtml(formatTime(m.timestamp))}</span>
               ${canSpeak ? `
                 <button class="hm-chat-msg-copy hm-chat-msg-voice ${voicePlaybackKey === m.id ? 'is-speaking' : ''}" data-voice-mid="${escAttr(m.id)}" title="${escHtml(voicePlaybackKey === m.id ? t('engine.chatVoiceStopSpeak') : t('engine.chatVoiceSpeak'))}">
@@ -1877,7 +1912,7 @@ export function render() {
         ${renderSidebar()}
         <section class="hm-chat-main">
           ${renderHeader()}
-          <div class="hm-chat-messages" id="hm-chat-messages">
+          <div class="hm-chat-messages sc-chat-stage" id="hm-chat-messages">
             ${renderMessages()}
           </div>
           <button class="hm-chat-jump-bottom" id="hm-chat-jump-bottom" type="button">
@@ -2060,6 +2095,21 @@ export function render() {
         if (expandedToolIds.has(id)) expandedToolIds.delete(id)
         else expandedToolIds.add(id)
         draw()
+      })
+    })
+
+    el.querySelectorAll('[data-compact-toggle]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        const wrapper = btn.closest('.assistant-compact-message')
+        if (!wrapper) return
+        const expanded = wrapper.classList.toggle('is-expanded')
+        wrapper.classList.toggle('is-collapsed', !expanded)
+        const preview = wrapper.querySelector('.assistant-compact-message__preview')
+        const full = wrapper.querySelector('.assistant-compact-message__full')
+        if (preview) preview.hidden = expanded
+        if (full) full.hidden = !expanded
+        btn.textContent = expanded ? '收起详情' : '展开详情'
       })
     })
   }
@@ -3175,6 +3225,12 @@ export function render() {
   // Close profile menu on outside click (capture so menu's own click handlers
   // still get to run before we close).
   function onGlobalClick(e) {
+    const screenshotButton = e.target?.closest?.('[data-open-screenshot]')
+    if (screenshotButton) {
+      const url = screenshotButton.getAttribute('data-open-screenshot')
+      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      return
+    }
     if (!profileMenuOpen) return
     if (!el.isConnected) return
     const wrap = el.querySelector('.hm-chat-sidebar-profile')
