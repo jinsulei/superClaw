@@ -568,16 +568,11 @@ skills:
     Set-Content -Path $configPath -Encoding UTF8 -Value $text
   }
 
-  $envText = if (Test-Path $envPath) { Get-Content -Raw -Path $envPath } else { "" }
-  $envText = $envText -replace '(?m)^OPENAI_API_KEY=.*$', 'OPENAI_API_KEY=superclaw-login-required'
-  if ($yyapiBaseUrl) {
-    $envText = $envText -replace '(?m)^OPENAI_BASE_URL=.*$', "OPENAI_BASE_URL=$yyapiBaseUrl"
-  }
-  if ($envText -notmatch '(?m)^OPENAI_API_KEY=') { $envText += "`nOPENAI_API_KEY=superclaw-login-required" }
-  if ($yyapiBaseUrl -and $envText -notmatch '(?m)^OPENAI_BASE_URL=') { $envText += "`nOPENAI_BASE_URL=$yyapiBaseUrl" }
-  if ($envText -notmatch '(?m)^GATEWAY_ALLOW_ALL_USERS=') { $envText += "`nGATEWAY_ALLOW_ALL_USERS=true" }
-  if ($envText -notmatch '(?m)^API_SERVER_KEY=') { $envText += "`nAPI_SERVER_KEY=clawpanel-local" }
-  Set-Content -Path $envPath -Encoding UTF8 -Value ($envText.Trim() + "`n")
+  Set-Content -Path $envPath -Encoding UTF8 -Value @"
+OPENAI_API_KEY=superclaw-login-required
+${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
+API_SERVER_KEY=clawpanel-local
+"@
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -588,7 +583,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks")) {
     Remove-IfExists (Join-Path $HermesData $name)
   }
-  foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "auth.lock", ".skills_prompt_snapshot.json", ".tirith-install-failed", "channel_directory.json")) {
+  foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "auth.lock", "auth.json", ".skills_prompt_snapshot.json", ".tirith-install-failed", "channel_directory.json")) {
     Remove-IfExists (Join-Path $HermesData $name)
   }
   foreach ($name in @("cache", "models_dev_cache.json")) {
@@ -639,6 +634,15 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
   foreach ($pattern in @("*.log", "*.pid", "*.lock")) {
     Get-ChildItem -Path $DataRoot -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
       Remove-Item -Force -ErrorAction SilentlyContinue
+  }
+
+  foreach ($rel in @(
+    "hermes\logs",
+    ".openclaw\logs",
+    "clawpanel\logs",
+    "claude-panel\logs"
+  )) {
+    Remove-IfExists (Join-Path $DataRoot $rel)
   }
 }
 
