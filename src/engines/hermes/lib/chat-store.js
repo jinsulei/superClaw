@@ -626,7 +626,10 @@ function createStore() {
         if (state.sessions.length) {
           await switchSession(state.sessions[0].id)
         } else {
-          createLocalSession()
+          state.activeSessionId = null
+          safeRemove(activeKey())
+          persistSessions()
+          notify()
         }
       } else {
         // Refresh active session messages.
@@ -825,7 +828,10 @@ function createStore() {
         await switchSession(state.sessions[0].id)
         return
       }
-      createLocalSession()
+      state.activeSessionId = null
+      safeRemove(activeKey())
+      persistSessions()
+      notify()
       return
     }
     notify()
@@ -876,7 +882,10 @@ function createStore() {
         if (state.sessions.length) {
           await switchSession(state.sessions[0].id)
         } else {
-          createLocalSession()
+          state.activeSessionId = null
+          safeRemove(activeKey())
+          persistSessions()
+          notify()
         }
       } else {
         notify()

@@ -113,6 +113,7 @@ const conversationSearchInput = $("#conversationSearchInput");
 const quickCommands = $("#quickCommands");
 const pluginInput = $("#pluginInput");
 const pluginPromptBtn = $("#pluginPromptBtn");
+const pluginInstallStatus = $("#pluginInstallStatus");
 const skillInput = $("#skillInput");
 const skillPromptBtn = $("#skillPromptBtn");
 const installedExtensionsBtn = $("#installedExtensionsBtn");
@@ -120,6 +121,15 @@ const extensionsPage = $("#extensionsPage");
 const extensionsPageCloseBtn = $("#extensionsPageCloseBtn");
 const installedSkillsList = $("#installedSkillsList");
 const installedPluginsList = $("#installedPluginsList");
+const pagePluginInput = $("#pagePluginInput");
+const pagePluginInstallBtn = $("#pagePluginInstallBtn");
+const pagePluginInstallStatus = $("#pagePluginInstallStatus");
+const skillInstallName = $("#skillInstallName");
+const skillInstallContent = $("#skillInstallContent");
+const skillInstallOverwrite = $("#skillInstallOverwrite");
+const skillInstallTemplateBtn = $("#skillInstallTemplateBtn");
+const skillInstallBtn = $("#skillInstallBtn");
+const skillInstallStatus = $("#skillInstallStatus");
 const pluginSummary = $("#pluginSummary");
 const skillsSummary = $("#skillsSummary");
 const promptForm = $("#promptForm");
@@ -144,6 +154,7 @@ const themePresetHint = $("#themePresetHint");
 const feishuTutorialBtn = $("#feishuTutorialBtn");
 const feishuTutorialStatus = $("#feishuTutorialStatus");
 const rightPanelToggleBtn = $("#rightPanelToggleBtn");
+const rightPanelCloseBtn = $("#rightPanelCloseBtn");
 const workspaceSearch = $("#workspaceSearch");
 const newConversationBtn = $("#newConversationBtn");
 const projectNameDialog = $("#projectNameDialog");
@@ -188,7 +199,7 @@ const cwdStorageKey = "cleanClaude.cwd.v2";
 const modelStorageKey = "cleanClaude.model";
 const conversationsStorageKey = "cleanClaude.conversations.v1";
 const maxConversationMessages = 80;
-const rightPanelCollapsedKey = "cleanClaude.rightPanelCollapsed.v1";
+const rightPanelCollapsedKey = "cleanClaude.rightPanelCollapsed.v2";
 const themeStorageKey = "cleanClaude.theme.v1";
 const colorThemeStorageKey = "cleanClaude.colorTheme.v1";
 const automationsStorageKey = "cleanClaude.automations.v1";
@@ -2733,6 +2744,22 @@ function showConversation(conversation) {
   renderConversations();
 }
 
+function restoreLastConversation() {
+  const latest = conversations
+    .filter((conversation) => !conversation.archived)
+    .slice()
+    .sort((a, b) => {
+      const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+      const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+      return bTime - aTime;
+    })[0];
+  if (latest) {
+    showConversation(latest);
+    return true;
+  }
+  return false;
+}
+
 function statusToRunState(status) {
   const normalized = normalizeConversationStatus(status);
   if (normalized === "正在思考") return "thinking";
@@ -3682,6 +3709,22 @@ function normalizePluginLine(line = "") {
   return text;
 }
 
+function installedPluginItemsFromSummary(summary = "") {
+  const lines = String(summary || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const pluginLines = lines
+    .filter((line) => /^>\s+/.test(line))
+    .map((line) => line.replace(/^>\s+/, "").trim())
+    .filter(Boolean);
+  if (pluginLines.length) return pluginLines;
+  return lines
+    .filter((line) => !/^(installed plugins:?|version:|scope:|status:)/i.test(line))
+    .filter((line) => !/no plugins installed|claude plugin install/i.test(line))
+    .filter((line) => !/^[-=]+$/.test(line));
+}
+
 const SKILL_TOGGLE_STORAGE_KEY = "cleanClaudePanel.skillToggleState";
 
 const SKILL_DESCRIPTION_PATTERNS = [
@@ -3838,10 +3881,137 @@ function renderInstalledExtensionList(container, items, type) {
   }
 }
 
+function skillInstallTemplate(name = "") {
+  const title = String(name || "").trim() || "my-skill";
+  return [
+    `# ${title}`,
+    "",
+    "## When to use",
+    "Use this skill when the user asks for a clearly related workflow.",
+    "",
+    "## Instructions",
+    "- Clarify the user's goal when required.",
+    "- Prefer project-local files and portable paths.",
+    "- Keep changes focused and verify the result.",
+    "",
+  ].join("\n");
+}
+
+function setSkillInstallStatus(message = "", ok = true) {
+  if (!skillInstallStatus) return;
+  skillInstallStatus.textContent = message;
+  skillInstallStatus.dataset.state = ok ? "ok" : "error";
+}
+
+function setPluginInstallStatus(message = "", ok = true) {
+  if (!pluginInstallStatus) return;
+  pluginInstallStatus.textContent = message;
+  pluginInstallStatus.dataset.state = ok ? "ok" : "error";
+}
+
+async function installPluginFromPanel() {
+  if (!pluginInput || !pluginPromptBtn) return;
+  const plugin = pluginInput.value.trim();
+  if (!plugin) {
+    setPluginInstallStatus("请先填写插件名称", false);
+    pluginInput.focus();
+    return;
+  }
+  pluginPromptBtn.disabled = true;
+  setPluginInstallStatus("正在通过便携式 Claude Code 安装插件...");
+  try {
+    const res = await fetch("/api/plugins/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plugin }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || "插件安装失败");
+    }
+    setPluginInstallStatus(`已安装插件：${data.plugin || plugin}`);
+    if (data.plugins?.summary) pluginSummary.textContent = data.plugins.summary;
+    await openInstalledExtensionsView();
+  } catch (error) {
+    setPluginInstallStatus(error.message || "插件安装失败", false);
+  } finally {
+    pluginPromptBtn.disabled = false;
+  }
+}
+
+function setPagePluginInstallStatus(message = "", ok = true) {
+  if (!pagePluginInstallStatus) return;
+  pagePluginInstallStatus.textContent = message;
+  pagePluginInstallStatus.dataset.state = ok ? "ok" : "error";
+}
+
+async function installPluginFromExtensionsPage() {
+  if (!pagePluginInput || !pagePluginInstallBtn) return;
+  const plugin = pagePluginInput.value.trim();
+  if (!plugin) {
+    setPagePluginInstallStatus("请先填写插件名称", false);
+    pagePluginInput.focus();
+    return;
+  }
+  pagePluginInstallBtn.disabled = true;
+  setPagePluginInstallStatus("正在通过便携式 Claude Code 安装插件...");
+  try {
+    const res = await fetch("/api/plugins/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ plugin }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      const methodHint = res.status === 405 ? "插件安装接口请求方法不匹配，请重启 Claude Code 面板服务后再试。" : "";
+      throw new Error(data.error || methodHint || "插件安装失败");
+    }
+    setPagePluginInstallStatus(`已安装插件：${data.plugin || plugin}`);
+    if (data.plugins?.summary) pluginSummary.textContent = data.plugins.summary;
+    await openInstalledExtensionsView();
+  } catch (error) {
+    setPagePluginInstallStatus(error.message || "插件安装失败", false);
+  } finally {
+    pagePluginInstallBtn.disabled = false;
+  }
+}
+
+async function installSkillFromPanel() {
+  if (!skillInstallName || !skillInstallBtn) return;
+  const name = skillInstallName.value.trim();
+  if (!name) {
+    setSkillInstallStatus("请先填写 Skill 名称", false);
+    skillInstallName.focus();
+    return;
+  }
+  skillInstallBtn.disabled = true;
+  setSkillInstallStatus("正在安装 Skill...");
+  try {
+    const res = await fetch("/api/skills/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        content: skillInstallContent?.value || "",
+        overwrite: Boolean(skillInstallOverwrite?.checked),
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || "Skill 安装失败");
+    }
+    setSkillInstallStatus(`已安装 Skill：${data.name || name}`);
+    if (skillInstallContent) skillInstallContent.value = "";
+    await openInstalledExtensionsView();
+  } catch (error) {
+    setSkillInstallStatus(error.message || "Skill 安装失败", false);
+  } finally {
+    skillInstallBtn.disabled = false;
+  }
+}
+
 function installedExtensionItems(status = latestStatus || {}) {
-  const pluginItems = splitPluginSummary(status.plugins?.summary)
-    .map(normalizePluginLine)
-    .filter(Boolean);
+  const pluginItems = installedPluginItemsFromSummary(status.plugins?.summary);
   const skills = Array.isArray(status.skills)
     ? status.skills.map((skill) => String(skill || "").trim()).filter(Boolean)
     : [];
@@ -3860,7 +4030,7 @@ function closeInstalledExtensionsPage() {
 }
 
 function installedExtensionsSections(status = latestStatus || {}) {
-  const pluginLines = splitPluginSummary(status.plugins?.summary);
+  const pluginLines = installedPluginItemsFromSummary(status.plugins?.summary);
   const pluginItems = pluginLines.length ? pluginLines : ["未检测到已安装插件，或 Claude Code 插件列表暂不可用。"];
   const skills = Array.isArray(status.skills) && status.skills.length
     ? status.skills
@@ -4609,16 +4779,24 @@ function toggleComposerPermissionMenu() {
 }
 
 function applyRightPanelState() {
-  const collapsed = window.localStorage.getItem(rightPanelCollapsedKey) === "true";
+  const stored = window.localStorage.getItem(rightPanelCollapsedKey);
+  const collapsed = stored === null ? true : stored === "true";
+  if (stored === null) window.localStorage.setItem(rightPanelCollapsedKey, "true");
   document.body.classList.toggle("right-panel-collapsed", collapsed);
   rightPanelToggleBtn.classList.toggle("is-active", collapsed);
-  rightPanelToggleBtn.title = collapsed ? "显示右侧设置" : "隐藏右侧设置";
+  rightPanelToggleBtn.title = collapsed ? "显示右侧边栏" : "隐藏右侧边栏";
   rightPanelToggleBtn.setAttribute("aria-label", rightPanelToggleBtn.title);
+  rightPanelToggleBtn.setAttribute("aria-pressed", String(!collapsed));
 }
 
 function toggleRightPanel() {
   const collapsed = !document.body.classList.contains("right-panel-collapsed");
   window.localStorage.setItem(rightPanelCollapsedKey, String(collapsed));
+  applyRightPanelState();
+}
+
+function closeRightPanel() {
+  window.localStorage.setItem(rightPanelCollapsedKey, "true");
   applyRightPanelState();
 }
 
@@ -4748,6 +4926,17 @@ async function startNativeClaudeTerminal({ overlay } = {}) {
   }
   addMessage("system", "Claude Code 原生终端", payload.message || "已打开 Claude Code 原生终端。");
   return payload;
+}
+
+async function openNativeClaudeTerminalFromShortcut() {
+  const overlay = showConsoleSwitchProgress("/h/claude-code");
+  try {
+    await startNativeClaudeTerminal({ overlay });
+    consoleSwitchProgressTimer = setTimeout(clearConsoleSwitchProgress, 520);
+  } catch (error) {
+    clearConsoleSwitchProgress();
+    addMessage("error", "Claude Code 原生终端", error.message || "Claude Code 原生终端启动失败");
+  }
 }
 
 async function stopNativeClaudeTerminal({ silent = false } = {}) {
@@ -5726,6 +5915,7 @@ conversationSearchToggleBtn.addEventListener("click", () => {
 automationForm.addEventListener("submit", saveAutomation);
 scheduleForm.addEventListener("submit", saveSchedule);
 rightPanelToggleBtn.addEventListener("click", toggleRightPanel);
+rightPanelCloseBtn?.addEventListener("click", closeRightPanel);
 runTabButtons.forEach((button) => {
   button.addEventListener("click", () => setRunSection(button.dataset.runTab || "install"));
 });
@@ -5811,6 +6001,14 @@ sidebarPetDock?.addEventListener("click", () => {
 });
 showArchivedToggle.addEventListener("change", renderConversations);
 quickCommands.addEventListener("click", (event) => {
+  const nativeButton = event.target.closest("[data-native-claude]");
+  if (nativeButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openNativeClaudeTerminalFromShortcut();
+    return;
+  }
+
   const button = event.target.closest("[data-prompt]");
   if (!button) return;
   event.preventDefault();
@@ -5820,17 +6018,32 @@ quickCommands.addEventListener("click", (event) => {
   });
 });
 pluginPromptBtn.addEventListener("click", () => {
-  const plugin = pluginInput.value.trim() || "插件名";
-  setMode("expert");
-  fillPrompt(`请安装 Claude Code 插件：${plugin}。先说明将执行的命令和风险，等待我确认后再安装。`);
+  installPluginFromPanel().catch((error) => {
+    setPluginInstallStatus(error.message || "插件安装失败", false);
+  });
 });
 skillPromptBtn.addEventListener("click", () => {
-  const skill = skillInput.value.trim() || "skill 名称或仓库地址";
-  setMode("expert");
-  fillPrompt(`请安装 Claude Code skill：${skill}。先说明来源、安装位置和风险，等待我确认后再安装。`);
+  if (skillInstallName && skillInput?.value.trim()) {
+    skillInstallName.value = skillInput.value.trim();
+  }
+  openInstalledExtensionsView();
 });
 installedExtensionsBtn?.addEventListener("click", openInstalledExtensionsView);
 extensionsPageCloseBtn?.addEventListener("click", closeInstalledExtensionsPage);
+pagePluginInstallBtn?.addEventListener("click", () => {
+  installPluginFromExtensionsPage().catch((error) => {
+    setPagePluginInstallStatus(error.message || "插件安装失败", false);
+  });
+});
+skillInstallTemplateBtn?.addEventListener("click", () => {
+  if (skillInstallContent) skillInstallContent.value = skillInstallTemplate(skillInstallName?.value || "");
+  setSkillInstallStatus("已填入基础模板，可按需修改后安装");
+});
+skillInstallBtn?.addEventListener("click", () => {
+  installSkillFromPanel().catch((error) => {
+    setSkillInstallStatus(error.message || "Skill 安装失败", false);
+  });
+});
 voiceModeBtn?.addEventListener("click", toggleVoiceMode);
 temporaryTaskCancelBtn?.addEventListener("click", cancelTemporaryTask);
 if (imageUploadInput) {
@@ -6051,7 +6264,7 @@ setRunSection("install");
 applyRightPanelState();
 scheduleNextDefaultTime();
 appendAdvancedAccessCommand();
-renderConversations();
+if (!restoreLastConversation()) renderConversations();
 removeRuntimeSummaryMessages();
 renderAutomations();
 renderSchedules();

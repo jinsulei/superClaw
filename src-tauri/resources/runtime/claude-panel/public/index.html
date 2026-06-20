@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Claude 控制台</title>
     <link rel="icon" type="image/jpeg" href="/console-icon.jpg" />
-    <link rel="stylesheet" href="/styles.css?v=20260604-chatjump1" />
+    <link rel="stylesheet" href="/styles.css?v=20260620-right-panel-reset5" />
   </head>
-  <body>
+  <body class="right-panel-collapsed">
     <section id="introOverlay" class="intro-overlay" aria-label="开场动画" hidden>
       <video id="introVideo" class="intro-video" src="/intro/opening-welcome-transparent.webm" muted playsinline preload="auto"></video>
       <div class="intro-panel">
@@ -201,7 +201,7 @@
               </svg>
             </span>
             <span class="account-menu-text">
-              <strong>设置</strong>
+              <strong>账号</strong>
               <small id="accountMenuHint">账号与退出</small>
             </span>
           </button>
@@ -315,6 +315,91 @@
 
         <section id="transcript" class="transcript" aria-live="polite"></section>
 
+        <section id="extensionsPage" class="extensions-page" hidden>
+          <div class="extensions-page-shell">
+            <div class="extensions-page-hero">
+              <div>
+                <p class="extensions-page-kicker">插件与 Skills</p>
+                <h2>已安装插件 / Skills</h2>
+                <p>这里展示 Claude Code 当前可见的本地插件和 Skills，并提供便携环境内的 Skill 安装入口。</p>
+              </div>
+              <button id="extensionsPageCloseBtn" class="secondary-button extensions-page-close" type="button">返回对话</button>
+            </div>
+
+            <section class="skill-install-panel plugin-install-panel">
+              <div class="skill-install-copy">
+                <strong>安装 Claude Code 插件</strong>
+                <span>通过便携包内置 Claude Code CLI 安装插件。</span>
+              </div>
+              <div class="skill-install-form">
+                <label class="field-label" for="pagePluginInput">插件名称</label>
+                <input id="pagePluginInput" class="control" autocomplete="off" placeholder="例如 abstract@claude-night-market" />
+                <div class="skill-install-actions">
+                  <button id="pagePluginInstallBtn" class="secondary-button primary" type="button">安装插件</button>
+                </div>
+                <div id="pagePluginInstallStatus" class="mode-note"></div>
+              </div>
+            </section>
+
+            <section class="skill-install-panel">
+              <div class="skill-install-copy">
+                <strong>安装 Claude Code Skill</strong>
+                <span>写入当前便携环境的 skills 目录；安装后会刷新下方列表。</span>
+              </div>
+              <div class="skill-install-form">
+                <label class="field-label" for="skillInstallName">Skill 名称</label>
+                <input id="skillInstallName" class="control" autocomplete="off" placeholder="例如 ui-review 或 local-doc-helper" />
+                <label class="field-label" for="skillInstallContent">SKILL.md 内容</label>
+                <textarea id="skillInstallContent" class="control skill-install-content" rows="7" placeholder="可粘贴完整 SKILL.md；留空会生成基础模板"></textarea>
+                <label class="skill-install-overwrite">
+                  <input id="skillInstallOverwrite" type="checkbox" />
+                  <span>同名 Skill 已存在时覆盖</span>
+                </label>
+                <div class="skill-install-actions">
+                  <button id="skillInstallTemplateBtn" class="secondary-button" type="button">填入模板</button>
+                  <button id="skillInstallBtn" class="secondary-button primary" type="button">安装 Skill</button>
+                </div>
+                <div id="skillInstallStatus" class="mode-note"></div>
+              </div>
+            </section>
+
+            <div class="extensions-page-grid">
+              <section class="extensions-column skills-column">
+                <div class="extensions-column-head">
+                  <span class="extensions-column-icon">S</span>
+                  <div>
+                    <h3>Skills</h3>
+                    <p>从便携数据目录和 Claude Code 本地目录检测到的 Skills。</p>
+                  </div>
+                </div>
+                <div id="installedSkillsList" class="installed-extension-list"></div>
+              </section>
+
+              <section class="extensions-column plugins-column">
+                <div class="extensions-column-head">
+                  <span class="extensions-column-icon">P</span>
+                  <div>
+                    <h3>插件</h3>
+                    <p>通过 Claude Code 插件列表命令检测到的插件。</p>
+                  </div>
+                </div>
+                <div id="installedPluginsList" class="installed-extension-list"></div>
+              </section>
+            </div>
+
+            <div class="extensions-page-tips">
+              <div>
+                <strong>安装位置</strong>
+                <span>便携包优先使用应用 data 目录，不依赖系统全局命令或用户全局目录。</span>
+              </div>
+              <div>
+                <strong>刷新方式</strong>
+                <span>如果刚安装完插件或 Skill，请返回后重新打开本页，或重启 Claude Code 控制面板。</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <form id="promptForm" class="composer">
           <input id="imageUploadInput" type="file" accept="image/*" multiple hidden />
           <button id="voiceModeBtn" class="attachment-entry voice-mode-button" type="button" title="语音对话" aria-label="语音对话" aria-pressed="false">
@@ -399,10 +484,11 @@
       </main>
 
       <aside class="run-panel" data-active-run-section="install">
-        <section class="panel-section quick-section">
+        <div class="run-panel-scroll">
+        <section class="panel-section quick-section claude-panel-card">
           <details class="right-compact-details quick-command-details">
             <summary>
-              <span>Claude Code 快捷指令</span>
+              <span>ClaudeCode快捷指令</span>
               <small>按需展开</small>
             </summary>
           <div id="quickCommands" class="quick-command-list">
@@ -465,7 +551,7 @@
               </svg>
               <span>提交说明</span>
             </button>
-            <a class="quick-command quick-native-link" data-superclaw-route="/h/claude-code" href="http://127.0.0.1:1420/#/h/claude-code">
+            <button class="quick-command quick-native-link" type="button" data-native-claude="terminal">
               <svg class="quick-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M4 5h16v12H4Z" />
                 <path d="M8 21h8" />
@@ -474,12 +560,12 @@
                 <path d="m15 9 3 3-3 3" />
               </svg>
               <span>Claude 原生</span>
-            </a>
+            </button>
           </div>
           </details>
         </section>
 
-        <section class="panel-section run-control-section">
+        <section class="panel-section run-control-section claude-panel-card">
           <div class="section-title">运行设置</div>
           <div class="run-tab-bar" role="tablist" aria-label="运行设置分组">
             <button class="run-tab-button" type="button" data-run-tab="permissions">1 权限</button>
@@ -490,7 +576,7 @@
           <p class="mode-note run-tab-hint">常用安装入口已提前放出；其它配置按需切换查看。</p>
         </section>
 
-        <section class="panel-section model-section">
+        <section class="panel-section model-section claude-panel-card">
           <div class="section-title">模型与配置</div>
           <label class="field-label" for="modelInput">模型</label>
           <input id="modelInput" class="control" autocomplete="off" />
@@ -498,7 +584,7 @@
           <div id="setupOpenHint" class="mode-note">接口、模型和项目配置已收起，需要时点击打开。</div>
         </section>
 
-        <section class="panel-section permission-section" data-run-section="permissions">
+        <section class="panel-section permission-section claude-panel-card" data-run-section="permissions">
           <div class="section-title">权限模式</div>
           <div id="permissionDropdown" class="permission-dropdown">
             <button id="permissionMenuButton" class="permission-button" type="button" aria-expanded="false" aria-haspopup="menu">
@@ -529,7 +615,7 @@
           <div class="quiet-note">高权限默认锁定；删除、覆盖、命令执行等操作必须再次确认。</div>
         </section>
 
-        <section class="panel-section health-section" data-run-section="environment">
+        <section class="panel-section health-section claude-panel-card" data-run-section="environment">
           <div class="section-title">环境</div>
           <dl class="health-list">
             <div>
@@ -543,7 +629,7 @@
           </dl>
         </section>
 
-        <section class="panel-section relay-section" data-run-section="environment">
+        <section class="panel-section relay-section claude-panel-card is-panel-hidden" data-run-section="environment" hidden aria-hidden="true" style="display: none !important;">
           <div class="section-title">API 中转站</div>
           <div id="relayBadge" class="relay-badge">接口预留</div>
           <dl class="health-list">
@@ -590,7 +676,7 @@
           </form>
         </section>
 
-        <section class="panel-section diagnostics-section" data-run-section="diagnostics">
+        <section class="panel-section diagnostics-section claude-panel-card" data-run-section="diagnostics">
           <div class="section-title">诊断</div>
           <div id="diagnosticsStatus" class="diagnostics-status" data-state="idle">
             <strong>自检状态</strong>
@@ -604,7 +690,7 @@
           <pre id="diagnosticsOutput" class="diagnostics-output" hidden></pre>
         </section>
 
-        <section class="panel-section help-section" data-run-section="diagnostics">
+        <section class="panel-section help-section claude-panel-card" data-run-section="diagnostics">
           <div class="section-title">帮助中心</div>
           <div class="help-actions">
             <button id="usageGuideBtn" class="secondary-button" type="button">使用说明</button>
@@ -620,7 +706,7 @@
           </details>
         </section>
 
-        <section class="panel-section extensions-section" data-run-section="install">
+        <section class="panel-section extensions-section claude-panel-card" data-run-section="install">
           <div class="section-title">插件与 Skills</div>
           <dl class="health-list">
             <div>
@@ -642,16 +728,18 @@
             </summary>
             <div class="extension-card compact">
               <label class="field-label" for="pluginInput">安装插件</label>
-              <input id="pluginInput" class="control" autocomplete="off" placeholder="plugin 或 plugin@marketplace" />
-              <button id="pluginPromptBtn" class="secondary-button" type="button">生成安装指令</button>
+              <input id="pluginInput" class="control" autocomplete="off" placeholder="例如 abstract@claude-night-market" />
+              <button id="pluginPromptBtn" class="secondary-button" type="button">安装插件</button>
+              <div id="pluginInstallStatus" class="mode-note"></div>
             </div>
             <div class="extension-card compact">
               <label class="field-label" for="skillInput">安装 Skill</label>
               <input id="skillInput" class="control" autocomplete="off" placeholder="skill 名称或仓库地址" />
-              <button id="skillPromptBtn" class="secondary-button" type="button">生成安装指令</button>
+              <button id="skillPromptBtn" class="secondary-button" type="button">打开 Skill 安装器</button>
             </div>
           </details>
         </section>
+        </div>
       </aside>
     </div>
 

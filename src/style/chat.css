@@ -2305,3 +2305,31 @@
     max-width: 82vw;
   }
 }
+
+/* Keep multi-turn chat rows separated without changing bubble widths. */
+.sc-chat-stage {
+  gap: 18px;
+}
+
+.chat-messages.sc-chat-stage {
+  gap: 22px;
+}
+
+.sc-chat-stage .sc-msg-row + .sc-msg-row {
+  margin-top: 10px;
+}
+
+.chat-messages.sc-chat-stage .sc-msg-row + .sc-msg-row {
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .sc-chat-stage {
+    gap: 14px;
+  }
+
+  .sc-chat-stage .sc-msg-row + .sc-msg-row,
+  .chat-messages.sc-chat-stage .sc-msg-row + .sc-msg-row {
+    margin-top: 8px;
+  }
+}

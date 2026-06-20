@@ -1614,6 +1614,39 @@ fn hermes_agent_site_packages() -> Option<PathBuf> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn patch_hermes_dashboard_windows_chat_notice() {
+    let Some(site) = hermes_agent_site_packages() else {
+        return;
+    };
+    let path = site.join("hermes_cli").join("web_server.py");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if raw.contains("SuperClaw note: use the built-in Hermes chat page") {
+        return;
+    }
+    let needle = "\"\\r\\n\\x1b[31mChat unavailable: the embedded terminal requires a \"";
+    if !raw.contains(needle) {
+        return;
+    }
+    let note = concat!(
+        "\"\\r\\n\\x1b[36mSuperClaw note: use the built-in Hermes chat page for chatting on native Windows. \"\n",
+        "            \"The native dashboard remains available for settings, sessions, logs, skills, and management pages.\\x1b[0m\\r\\n\"\n",
+        "            "
+    );
+    let updated = raw.replacen(needle, &format!("{note}{needle}"), 1);
+    if let Err(err) = std::fs::write(&path, updated) {
+        eprintln!(
+            "[hermes_dashboard] failed to patch Windows chat notice {}: {err}",
+            path.display()
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn patch_hermes_dashboard_windows_chat_notice() {}
+
 fn hermes_runtime_diagnostics() -> String {
     let app_root = app_root_dir();
     let resources = app_root.join("resources");
@@ -2053,6 +2086,7 @@ pub async fn hermes_dashboard_start() -> Result<Value, String> {
         .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
 
     let enhanced = hermes_enhanced_path();
+    patch_hermes_dashboard_windows_chat_notice();
     let mut cmd = hermes_command(&["dashboard"], &enhanced);
     cmd.stdin(std::process::Stdio::null())
         .stdout(log_file)

@@ -397,7 +397,10 @@ export function render() {
       </div>
 
       <!--<div class="hm-native-dashboard-hint">
-        <span>${t('engine.dashNativePanelDesc')}</span>
+        <span>
+          ${t('engine.dashNativePanelDesc')}
+          <small class="hm-native-dashboard-note">Windows 下原生网页 /chat 依赖 POSIX PTY，聊天请使用 SuperClaw 内置 Hermes 聊天页。</small>
+        </span>
         <button class="hm-native-dashboard-link hm-dash-open-native" data-href="${HERMES_DASHBOARD_URL}">
           ${t('engine.dashNativePanelOpen')}
         </button>

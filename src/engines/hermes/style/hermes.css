@@ -420,11 +420,27 @@
   font-family: var(--hm-font-mono);
   font-size: 11px;
 }
+[data-engine="hermes"] .hm-native-dashboard-hint > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  text-align: right;
+}
+[data-engine="hermes"] .hm-native-dashboard-note {
+  display: block;
+  color: var(--hm-text-faint);
+  font-family: var(--hm-font-sans);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
 [data-engine="hermes"] .hm-native-dashboard-link {
   border: 0;
   background: transparent;
   color: var(--hm-text-secondary);
   font: inherit;
+  flex: 0 0 auto;
   cursor: pointer;
   padding: 0;
   text-decoration: underline;
@@ -5340,7 +5356,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--assistant .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-expanded) {
-  width: min(860px, 72vw);
+  width: fit-content;
   max-width: min(980px, 72vw);
 }
 
@@ -8496,4 +8512,62 @@ body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
 [data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
 [data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg {
   color: var(--hm-accent, #EAB308) !important;
+}
+
+/* Restore Hermes pre-full-width chat bubbles. Global chat polish can briefly
+   expand assistant compact messages; Hermes should keep natural bubble width. */
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-body,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-content-wrap {
+  width: fit-content !important;
+  max-width: min(980px, 72vw) !important;
+  flex: 0 1 auto !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-body,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-content-wrap {
+  max-width: min(520px, 46vw) !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-expanded),
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-collapsed) {
+  width: fit-content !important;
+  max-width: min(980px, 72vw) !important;
+  flex: 0 1 auto !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--user .hm-chat-msg-bubble.sc-msg-bubble {
+  max-width: min(520px, 46vw) !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message.is-expanded,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message.is-collapsed,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message__content {
+  width: auto !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Keep Hermes multi-turn messages visually separated. */
+[data-engine="hermes"] .hm-chat-messages,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage {
+  gap: 18px !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages .hm-chat-msg + .hm-chat-msg,
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row + .hm-chat-msg.sc-msg-row {
+  margin-top: 10px !important;
+}
+
+@media (max-width: 760px) {
+  [data-engine="hermes"] .hm-chat-messages,
+  [data-engine="hermes"] .hm-chat-messages.sc-chat-stage {
+    gap: 14px !important;
+  }
+
+  [data-engine="hermes"] .hm-chat-messages .hm-chat-msg + .hm-chat-msg,
+  [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row + .hm-chat-msg.sc-msg-row {
+    margin-top: 8px !important;
+  }
 }

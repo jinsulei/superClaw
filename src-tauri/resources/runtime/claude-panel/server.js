@@ -14,6 +14,16 @@ const APP_CONFIG_DIR = process.env.CLEAN_PANEL_DATA_DIR
   ? path.resolve(process.env.CLEAN_PANEL_DATA_DIR)
   : path.join(HOME, ".clean-claude-panel");
 const RELAY_CONFIG_PATH = path.join(APP_CONFIG_DIR, "relay-config.json");
+const BUNDLED_RELAY_CONFIG_PATHS = [
+  path.resolve(__dirname, "..", "..", "data", "claude-panel", "relay-config.json"),
+  path.resolve(__dirname, "relay-config.json"),
+];
+const CLAUDE_RUNTIME_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
+  ? path.resolve(process.env.CLAUDE_CONFIG_DIR)
+  : path.join(APP_CONFIG_DIR, "claude-config");
+const CLAUDE_RUNTIME_PROJECTS_DIR = process.env.CLAUDE_CODE_PROJECTS_DIR
+  ? path.resolve(process.env.CLAUDE_CODE_PROJECTS_DIR)
+  : path.join(APP_CONFIG_DIR, "claude-projects");
 const CUSTOM_PROJECTS_PATH = path.join(APP_CONFIG_DIR, "projects.json");
 const PROJECT_FOLDERS_PATH = path.join(APP_CONFIG_DIR, "project-folders.json");
 const CONTACT_CARD_PATH =
@@ -148,6 +158,30 @@ function readJson(filePath) {
   }
 }
 
+function findFileRecursive(root, predicate, limit = 2000) {
+  const stack = [root];
+  let seen = 0;
+  while (stack.length && seen < limit) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        seen += 1;
+        if (predicate(fullPath, entry)) return fullPath;
+      }
+    }
+  }
+  return "";
+}
+
 function publicContactCard() {
   const configured = readJson(CONTACT_CARD_PATH) || {};
   return {
@@ -215,12 +249,45 @@ function ensureAppConfigDir() {
   fs.mkdirSync(APP_CONFIG_DIR, { recursive: true });
 }
 
+function ensureClaudeRuntimeSettings(runtimeEnv = {}) {
+  fs.mkdirSync(CLAUDE_RUNTIME_CONFIG_DIR, { recursive: true });
+  fs.mkdirSync(CLAUDE_RUNTIME_PROJECTS_DIR, { recursive: true });
+  const settingsPath = path.join(CLAUDE_RUNTIME_CONFIG_DIR, "settings.json");
+  const existing = readJson(settingsPath) || {};
+  const existingEnv = existing.env && typeof existing.env === "object" ? existing.env : {};
+  const managedEnv = {};
+  for (const key of [
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  ]) {
+    if (runtimeEnv[key]) managedEnv[key] = runtimeEnv[key];
+  }
+  const next = {
+    ...existing,
+    env: {
+      ...existingEnv,
+      ...managedEnv,
+    },
+  };
+  fs.writeFileSync(settingsPath, JSON.stringify(next, null, 2), "utf8");
+  return settingsPath;
+}
+
 function buildPortableEnv(extra = {}) {
   const env = {
     ...process.env,
     ...extra,
     CLEAN_PANEL_DATA_DIR: APP_CONFIG_DIR,
     CLEAN_PANEL_HOME_DIR: HOME,
+    CLAUDE_CONFIG_DIR: CLAUDE_RUNTIME_CONFIG_DIR,
+    CLAUDE_CODE_PROJECTS_DIR: CLAUDE_RUNTIME_PROJECTS_DIR,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: extra.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
   };
 
   if (process.env.CLEAN_PANEL_HOME_DIR) {
@@ -296,9 +363,32 @@ function validateAnnouncement(input) {
   return text;
 }
 
+function hasUsableRelayConfig(config) {
+  return Boolean(
+    config &&
+      typeof config === "object" &&
+      config.enabled &&
+      config.baseUrl &&
+      config.model &&
+      config.apiKey
+  );
+}
+
 function readRelayConfig() {
   const config = readJson(RELAY_CONFIG_PATH);
-  return config && typeof config === "object" ? config : {};
+  if (hasUsableRelayConfig(config)) {
+    return config;
+  }
+  if (config && typeof config === "object" && Object.keys(config).length) {
+    return config;
+  }
+  for (const configPath of BUNDLED_RELAY_CONFIG_PATHS) {
+    const bundledConfig = readJson(configPath);
+    if (hasUsableRelayConfig(bundledConfig)) {
+      return bundledConfig;
+    }
+  }
+  return {};
 }
 
 function isOpenAiCompatibleRelay(config = readRelayConfig()) {
@@ -476,7 +566,9 @@ function readClaudeSettings() {
           ANTHROPIC_AUTH_TOKEN: relayConfig.apiKey,
           ANTHROPIC_API_KEY: relayConfig.apiKey,
           ANTHROPIC_MODEL: relayConfig.model,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: relayConfig.model,
           ANTHROPIC_DEFAULT_SONNET_MODEL: relayConfig.model,
+          ANTHROPIC_DEFAULT_OPUS_MODEL: relayConfig.model,
         }
       : {};
   const effectiveEnv = {
@@ -690,6 +782,19 @@ function readModelBranches(settings) {
       seen.add(key);
       return true;
     });
+}
+
+function claudeSessionExists(sessionId) {
+  const id = String(sessionId || "").trim();
+  if (!id || !/^[A-Za-z0-9:_-]{8,200}$/.test(id)) return false;
+  const projectsRoot = path.join(CLAUDE_RUNTIME_CONFIG_DIR, "projects");
+  return Boolean(
+    findFileRecursive(
+      projectsRoot,
+      (filePath, entry) => entry.name === `${id}.jsonl` || entry.name.includes(id),
+      5000
+    )
+  );
 }
 
 function getClaudeVersion() {
@@ -1076,8 +1181,185 @@ function listLocalSkills() {
   }
 }
 
+function normalizeLocalSkillName(name) {
+  const raw = String(name || "").trim();
+  if (!raw) {
+    throw new Error("Skill 名称不能为空");
+  }
+  const normalized = raw.replace(/\s+/g, "-");
+  if (!/^[a-zA-Z0-9._-]{1,80}$/.test(normalized) || normalized.includes("..")) {
+    throw new Error("Skill 名称只能包含字母、数字、点、下划线和短横线");
+  }
+  return normalized;
+}
+
+function portableSkillPath(name) {
+  const root = path.resolve(CLAUDE_SKILLS_DIR);
+  const target = path.resolve(root, name);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error("Skill 路径不安全");
+  }
+  return target;
+}
+
+function defaultSkillContent(name) {
+  return [
+    `# ${name}`,
+    "",
+    "## When to use",
+    "Use this skill when the user asks for this specific workflow or domain.",
+    "",
+    "## Instructions",
+    "- Confirm the user's goal and relevant constraints.",
+    "- Use project-local files and portable paths when available.",
+    "- Report what was changed, tested, and any remaining risk.",
+    "",
+  ].join("\n");
+}
+
+async function handleSkillInstall(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readRequestBody(req, 256 * 1024);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  try {
+    const name = normalizeLocalSkillName(payload.name);
+    const dir = portableSkillPath(name);
+    const skillFile = path.join(dir, "SKILL.md");
+    const overwrite = Boolean(payload.overwrite);
+    const content = String(payload.content || "").trim() || defaultSkillContent(name);
+    if (Buffer.byteLength(content, "utf8") > 128 * 1024) {
+      throw new Error("Skill 内容过大，请控制在 128KB 以内");
+    }
+    if (fs.existsSync(skillFile) && !overwrite) {
+      sendJson(res, 409, {
+        error: "Skill 已存在，如需替换请勾选覆盖",
+        name,
+        skills: listLocalSkills(),
+      });
+      return;
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(skillFile, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    sendJson(res, 200, {
+      success: true,
+      name,
+      path: skillFile,
+      skills: listLocalSkills(),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "Skill 安装失败" });
+  }
+}
+
+function normalizePluginSpec(spec) {
+  const value = String(spec || "").trim();
+  if (!value) {
+    throw new Error("插件名称不能为空");
+  }
+  if (value.length > 140 || value.includes("..") || /[\s<>:"|?*\\]/.test(value)) {
+    throw new Error("插件名称格式不安全");
+  }
+  if (!/^[a-zA-Z0-9@._/-]+$/.test(value)) {
+    throw new Error("插件名称只能包含 npm 包名常用字符");
+  }
+  return value;
+}
+
+function resolvePortableClaudeCommand() {
+  const command = resolveClaudeCommand();
+  if (!command || command === "claude" || !fs.existsSync(command)) {
+    throw new Error("未找到便携式 Claude Code CLI，不能使用全局 claude 命令安装插件");
+  }
+  const resolved = path.resolve(command);
+  const portableRoot = path.resolve(__dirname, "..", "..");
+  const explicit = process.env.CLAUDE_CLI_PATH && path.resolve(process.env.CLAUDE_CLI_PATH) === resolved;
+  if (!explicit && !isSameOrInside(resolved, portableRoot)) {
+    throw new Error("当前 Claude CLI 不在便携包资源目录内，已拒绝使用全局命令安装插件");
+  }
+  return command;
+}
+
+async function handlePluginInstall(req, res) {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-headers": "content-type",
+      "access-control-max-age": "86400",
+    });
+    res.end();
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, {
+      error: "Method not allowed",
+      expected: "POST /api/plugins/install",
+      received: req.method,
+    });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readRequestBody(req, 128 * 1024);
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+    return;
+  }
+
+  try {
+    const plugin = normalizePluginSpec(payload.plugin);
+    const claudeCommand = resolvePortableClaudeCommand();
+    const result = spawnSync(claudeCommand, ["plugin", "install", plugin], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 120000,
+      env: buildPortableEnv(),
+    });
+    const output = redact(`${result.stdout || ""}\n${result.stderr || ""}`.trim());
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      sendJson(res, 500, {
+        error: output || `插件安装失败，退出码 ${result.status}`,
+        plugin,
+        plugins: getPluginSummary(),
+      });
+      return;
+    }
+    sendJson(res, 200, {
+      success: true,
+      plugin,
+      output,
+      plugins: getPluginSummary(),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "插件安装失败" });
+  }
+}
+
 function getPluginSummary() {
-  const result = spawnSync(resolveClaudeCommand(), ["plugin", "list"], {
+  let claudeCommand = "";
+  try {
+    claudeCommand = resolvePortableClaudeCommand();
+  } catch (error) {
+    return {
+      available: false,
+      summary: error.message || "未找到便携式 Claude Code CLI",
+    };
+  }
+  const result = spawnSync(claudeCommand, ["plugin", "list"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 8000,
@@ -2055,10 +2337,14 @@ async function handleRun(req, res) {
     args.push("--disable-slash-commands");
   }
 
-  const resumeSessionId = typeof payload.resumeSessionId === "string"
+  const requestedResumeSessionId = typeof payload.resumeSessionId === "string"
     && /^[A-Za-z0-9:_-]{8,200}$/.test(payload.resumeSessionId)
     ? payload.resumeSessionId
     : "";
+  const resumeSessionId = requestedResumeSessionId && claudeSessionExists(requestedResumeSessionId)
+    ? requestedResumeSessionId
+    : "";
+  const ignoredResumeSessionId = requestedResumeSessionId && !resumeSessionId ? requestedResumeSessionId : "";
   if (resumeSessionId) {
     args.push("--resume", resumeSessionId);
   } else if (payload.continueSession && payload.allowGlobalContinue === true) {
@@ -2125,14 +2411,17 @@ async function handleRun(req, res) {
     "x-accel-buffering": "no",
   });
 
+  const runtimeEnv = buildPortableEnv({
+    ...settings.env,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
+      settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
+  });
+  const runtimeSettingsPath = ensureClaudeRuntimeSettings(runtimeEnv);
+
   const child = spawn(resolveClaudeCommand(), args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
-    env: buildPortableEnv({
-      ...settings.env,
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
-        settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
-    }),
+    env: runtimeEnv,
     windowsHide: true,
   });
 
@@ -2151,6 +2440,9 @@ async function handleRun(req, res) {
     attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
     resumed: Boolean(resumeSessionId),
     continued: Boolean(payload.continueSession),
+    ignoredResumeSessionId,
+    claudeConfigDir: runtimeEnv.CLAUDE_CONFIG_DIR,
+    runtimeSettingsPath,
   });
 
   appendAuditLog({
@@ -2251,11 +2543,19 @@ async function handleRun(req, res) {
 
 function handleStatus(res) {
   const settings = readClaudeSettings();
+  const relay = publicRelayConfig();
+  const displayBaseUrl = relay.baseUrl || settings.baseUrl || "";
   let baseHost = "";
+  let runtimeBaseHost = "";
   try {
-    baseHost = settings.baseUrl ? new URL(settings.baseUrl).host : "";
+    baseHost = displayBaseUrl ? new URL(displayBaseUrl).host : "";
   } catch {
-    baseHost = settings.baseUrl;
+    baseHost = displayBaseUrl;
+  }
+  try {
+    runtimeBaseHost = settings.baseUrl ? new URL(settings.baseUrl).host : "";
+  } catch {
+    runtimeBaseHost = settings.baseUrl;
   }
 
   sendJson(res, 200, {
@@ -2263,10 +2563,12 @@ function handleStatus(res) {
     model: settings.model,
     modelBranches: readModelBranches(settings),
     baseHost,
+    runtimeBaseHost,
     authConfigured: settings.authConfigured,
     relayConfig: {
       writable: isRelayConfigWritable(),
-      configured: Boolean(publicRelayConfig().baseUrl),
+      configured: Boolean(relay.baseUrl),
+      baseHost,
     },
     securityPolicy: {
       defaultPermissionProfile: "safe",
@@ -3179,6 +3481,16 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/upload") {
     handleUpload(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/skills/install") {
+    handleSkillInstall(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/plugins/install") {
+    handlePluginInstall(req, res);
     return;
   }
 
