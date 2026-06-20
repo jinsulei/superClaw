@@ -1484,7 +1484,7 @@ function addProvider(page, state) {
     }
 
     const presetModels = MODEL_PRESETS[key] || MODEL_PRESETS[key.toLowerCase()] || []
-    const initialModels = key.toLowerCase() === 'minimax' && presetModels.length
+    const initialModels = key.toLowerCase().startsWith('minimax') && presetModels.length
       ? [{ ...presetModels[0], input: ['text', 'image'] }]
       : []
 

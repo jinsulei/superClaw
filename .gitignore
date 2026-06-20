@@ -83,6 +83,11 @@ docs/promo-video.mp4
 src-tauri/.cargo/
 .codex/
 
+# Local debug/build scratch output
+_cargo_build.txt
+test_minimax.ps1
+src-tauri/target_debug/
+
 # Tauri 生成的 schema 文件（Linux 平台特定）
 src-tauri/gen/schemas/linux-schema.json
 # AI 上下文记忆

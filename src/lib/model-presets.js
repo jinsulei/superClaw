@@ -23,7 +23,8 @@ export const PROVIDER_PRESETS = [
   { key: 'volcengine', label: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', api: 'openai-completions', site: 'https://volcengine.com/L/Ph1OP5I3_GY', desc: '字节跳动旗下云平台，支持豆包等模型' },
   { key: 'aliyun', label: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api: 'openai-completions', site: 'https://www.aliyun.com/benefit/ai/aistar?userCode=keahn2zr&clubBiz=subTask..12435175..10263..', desc: '阿里云 AI 大模型平台，支持通义千问全系列' },
   { key: 'zhipu', label: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', api: 'openai-completions', site: 'https://www.bigmodel.cn/glm-coding?ic=3F6F9XYKTS', desc: '国产大模型领军企业，支持 GLM-4 全系列' },
-  { key: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions', site: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', desc: '国产多模态大模型，默认 MiniMax-M3，可改为 MiniMax-M2.7 / M2.5 系列' },
+  { key: 'minimax', label: 'MiniMax 国内', baseUrl: 'https://api.minimaxi.com/v1', api: 'openai-completions', site: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', desc: 'MiniMax 国内站，适配 api.minimaxi.com 的 API Key' },
+  { key: 'minimax_intl', label: 'MiniMax 国际', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions', site: 'https://platform.minimax.io/user-center/basic-information/interface-key', desc: 'MiniMax 国际站，适配 api.minimax.io 的 API Key' },
   { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions', site: '', desc: '自定义 OpenAI-compatible 服务商，填写 Base URL、API Key 和模型 ID' },
   { key: 'moonshot', label: 'Moonshot / Kimi', baseUrl: 'https://api.moonshot.ai/v1', api: 'openai-completions', site: 'https://platform.moonshot.ai/console/api-keys', desc: 'Kimi 大模型平台，支持超长上下文' },
   { key: 'openai', label: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', api: 'openai-completions', site: 'https://platform.openai.com/api-keys' },
@@ -59,6 +60,14 @@ export const SHENGSUANYUN = {
   api: 'openai-completions',
 }
 
+export const MINIMAX_MODEL_PRESETS = [
+  { id: 'MiniMax-M3', name: 'MiniMax M3', contextWindow: 1000000 },
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', contextWindow: 1000000 },
+  { id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', contextWindow: 1000000 },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', contextWindow: 204000 },
+  { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax M2.5 Highspeed', contextWindow: 204000 },
+]
+
 // 常用模型预设（按服务商分组）
 export const MODEL_PRESETS = {
   openai: [
@@ -78,13 +87,8 @@ export const MODEL_PRESETS = {
     { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', contextWindow: 1000000, reasoning: true },
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1000000 },
   ],
-  minimax: [
-    { id: 'MiniMax-M3', name: 'MiniMax M3', contextWindow: 1000000 },
-    { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', contextWindow: 1000000 },
-    { id: 'MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', contextWindow: 1000000 },
-    { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', contextWindow: 204000 },
-    { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax M2.5 Highspeed', contextWindow: 204000 },
-  ],
+  minimax: MINIMAX_MODEL_PRESETS,
+  minimax_intl: MINIMAX_MODEL_PRESETS,
   moonshot: [
     { id: 'kimi-k2.5', name: 'Kimi K2.5', contextWindow: 131072 },
     { id: 'kimi-k2', name: 'Kimi K2', contextWindow: 131072 },
