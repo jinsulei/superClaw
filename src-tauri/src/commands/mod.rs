@@ -13,13 +13,6 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
     });
 
-fn configured_yyapi_base_url() -> Option<String> {
-    std::env::var("YYAPI_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-}
-
 fn configured_minimax_api_key() -> Option<String> {
     std::env::var("MINIMAX_API_KEY")
         .or_else(|_| std::env::var("MINIMAX_CN_API_KEY"))
@@ -47,6 +40,128 @@ fn configured_minimax_base_url() -> Option<String> {
                 .cloned()
         })
         .or_else(|| Some("https://api.minimax.io/v1".to_string()))
+}
+
+fn set_json_field(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: serde_json::Value,
+) -> bool {
+    if obj.get(key) == Some(&value) {
+        return false;
+    }
+    obj.insert(key.to_string(), value);
+    true
+}
+
+fn openclaw_minimax_models_json() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "id": "MiniMax-M2.7",
+            "name": "MiniMax M2.7",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 4096
+        },
+        {
+            "id": "MiniMax-M2.5",
+            "name": "MiniMax M2.5",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 128000,
+            "maxTokens": 4096
+        }
+    ])
+}
+
+fn sync_minimax_provider_from_hermes_env(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let Some(api_key) = configured_minimax_api_key() else {
+        return false;
+    };
+    let base_url =
+        configured_minimax_base_url().unwrap_or_else(|| "https://api.minimax.io/v1".to_string());
+    let mut changed = false;
+
+    let models = obj
+        .entry("models")
+        .or_insert_with(|| serde_json::json!({}));
+    if !models.is_object() {
+        *models = serde_json::json!({});
+        changed = true;
+    }
+    let models_obj = models.as_object_mut().unwrap();
+    let providers = models_obj
+        .entry("providers")
+        .or_insert_with(|| serde_json::json!({}));
+    if !providers.is_object() {
+        *providers = serde_json::json!({});
+        changed = true;
+    }
+    let providers_obj = providers.as_object_mut().unwrap();
+    let provider = providers_obj
+        .entry("minimax")
+        .or_insert_with(|| serde_json::json!({}));
+    if !provider.is_object() {
+        *provider = serde_json::json!({});
+        changed = true;
+    }
+    let provider_obj = provider.as_object_mut().unwrap();
+    changed |= set_json_field(provider_obj, "baseUrl", serde_json::json!(base_url));
+    changed |= set_json_field(provider_obj, "apiKey", serde_json::json!(api_key));
+    changed |= set_json_field(provider_obj, "api", serde_json::json!("openai-completions"));
+    changed |= set_json_field(provider_obj, "models", openclaw_minimax_models_json());
+
+    let primary = "minimax/MiniMax-M2.7";
+    let fallback = "minimax/MiniMax-M2.5";
+    if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
+        if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
+            let models_map = defaults
+                .entry("models")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(models_obj) = models_map.as_object_mut() {
+                models_obj
+                    .entry(primary)
+                    .or_insert_with(|| serde_json::json!({}));
+                models_obj
+                    .entry(fallback)
+                    .or_insert_with(|| serde_json::json!({}));
+            }
+            if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
+                let current_primary = model
+                    .get("primary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if current_primary.is_empty() || current_primary.starts_with("minimax/") {
+                    changed |= set_json_field(model, "primary", serde_json::json!(primary));
+                    changed |= set_json_field(model, "fallbacks", serde_json::json!([fallback]));
+                }
+            }
+        }
+        if let Some(list) = agents.get_mut("list").and_then(|v| v.as_array_mut()) {
+            for agent in list.iter_mut().filter_map(|v| v.as_object_mut()) {
+                if let Some(model) = agent.get_mut("model").and_then(|v| v.as_object_mut()) {
+                    let current_primary = model
+                        .get("primary")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if current_primary.is_empty() || current_primary.starts_with("minimax/") {
+                        changed |= set_json_field(model, "primary", serde_json::json!(primary));
+                        changed |=
+                            set_json_field(model, "fallbacks", serde_json::json!([fallback]));
+                    }
+                }
+            }
+        }
+    }
+
+    changed
 }
 
 pub mod agent;
@@ -243,6 +358,71 @@ fn copy_dir_missing_only(source: &Path, target: &Path) {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::copy(&src, &dst);
+        }
+    }
+}
+
+fn sync_openclaw_agent_models_from_config(openclaw_dir: &Path, config: &serde_json::Value) {
+    let Some(src_providers) = config
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.as_object())
+    else {
+        return;
+    };
+    let agents_dir = openclaw_dir.join("agents");
+    let Ok(entries) = std::fs::read_dir(&agents_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let models_path = entry.path().join("agent").join("models.json");
+        let Ok(content) = std::fs::read_to_string(&models_path) else {
+            continue;
+        };
+        let Ok(mut models_json) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        if !models_json
+            .get("providers")
+            .and_then(|v| v.as_object())
+            .is_some()
+        {
+            if let Some(root) = models_json.as_object_mut() {
+                root.insert("providers".into(), serde_json::json!({}));
+            }
+        }
+        let Some(dst_providers) = models_json
+            .get_mut("providers")
+            .and_then(|v| v.as_object_mut())
+        else {
+            continue;
+        };
+        let mut changed = false;
+        for (name, src_provider) in src_providers {
+            let dst_provider = dst_providers
+                .entry(name.clone())
+                .or_insert_with(|| serde_json::json!({}));
+            if !dst_provider.is_object() {
+                *dst_provider = serde_json::json!({});
+                changed = true;
+            }
+            if let Some(dst_obj) = dst_provider.as_object_mut() {
+                for field in ["baseUrl", "apiKey", "api"] {
+                    if let Some(src_val) = src_provider.get(field).and_then(|v| v.as_str()) {
+                        changed |= set_json_field(dst_obj, field, serde_json::json!(src_val));
+                    }
+                }
+                if name == "minimax" {
+                    if let Some(models) = src_provider.get("models") {
+                        changed |= set_json_field(dst_obj, "models", models.clone());
+                    }
+                }
+            }
+        }
+        if changed {
+            if let Ok(json) = serde_json::to_string_pretty(&models_json) {
+                let _ = std::fs::write(&models_path, format!("{json}\n"));
+            }
         }
     }
 }
@@ -458,14 +638,6 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     if !obj.get("models").is_some_and(|v| v.is_object()) {
         let providers = {
             let mut providers = serde_json::json!({});
-            if let Some(base_url) = configured_yyapi_base_url() {
-                providers["yyapi"] = serde_json::json!({
-                    "baseUrl": base_url,
-                    "apiKey": "superclaw-login-required",
-                    "api": "openai-completions",
-                    "models": []
-                });
-            }
             if let Some(api_key) = configured_minimax_api_key() {
                 let base_url = configured_minimax_base_url().unwrap_or_else(|| "https://api.minimax.io/v1".to_string());
                 providers["minimax"] = serde_json::json!({
@@ -473,8 +645,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "apiKey": api_key,
                     "api": "openai-completions",
                     "models": [
-                        { "id": "minimax-m2.7" },
-                        { "id": "minimax-m2.5" }
+                        { "id": "MiniMax-M2.7" },
+                        { "id": "MiniMax-M2.5" }
                     ]
                 });
             }
@@ -488,7 +660,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         );
         changed = true;
     }
-    // 妯″瀷娉ㄥ叆锛氫紭鍏?MiniMax锛堝寘鏈堟祴璇曪級锛屽叾娆?yyapi
+    changed |= sync_minimax_provider_from_hermes_env(obj);
+    // 模型注入：仅 MiniMax
     let minimax_model = obj
         .get("models")
         .and_then(|v| v.get("providers"))
@@ -499,28 +672,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         .and_then(|model| model.get("id"))
         .and_then(|v| v.as_str())
         .map(|id| format!("minimax/{id}"));
-    let primary_model = minimax_model.clone().or_else(|| {
-        obj.get("models")
-            .and_then(|v| v.get("providers"))
-            .and_then(|v| v.get("yyapi"))
-            .and_then(|v| v.get("models"))
-            .and_then(|v| v.as_array())
-            .and_then(|models| models.first())
-            .and_then(|model| model.get("id"))
-            .and_then(|v| v.as_str())
-            .map(|id| format!("yyapi/{id}"))
-    }).unwrap_or_default();
-    let fallback_model = minimax_model.clone().or_else(|| {
-        obj.get("models")
-            .and_then(|v| v.get("providers"))
-            .and_then(|v| v.get("yyapi"))
-            .and_then(|v| v.get("models"))
-            .and_then(|v| v.as_array())
-            .and_then(|models| models.get(1).or_else(|| models.first()))
-            .and_then(|model| model.get("id"))
-            .and_then(|v| v.as_str())
-            .map(|id| format!("yyapi/{id}"))
-    }).unwrap_or_else(|| primary_model.clone());
+    let primary_model = minimax_model.clone().unwrap_or_default();
+    let fallback_model = minimax_model.clone().unwrap_or_else(|| primary_model.clone());
     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
         if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
             if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
@@ -645,6 +798,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             let _ = std::fs::write(config_path, content);
         }
     }
+    sync_openclaw_agent_models_from_config(openclaw_dir, &config);
 }
 
 fn panel_path_key(path: &std::path::Path) -> String {

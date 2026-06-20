@@ -3057,6 +3057,7 @@ function stripUiFields(config) {
 
 function cleanLoadedConfig(config) {
   const before = JSON.stringify(config)
+  syncOpenClawMiniMaxProvider(config)
   const cleaned = stripUiFields(config)
   if (fs.existsSync(CONFIG_PATH) && JSON.stringify(cleaned) !== before) {
     writeOpenclawConfigFile(cleaned)
@@ -3195,6 +3196,146 @@ function readJsonFileRelaxed(filePath) {
     return JSON.parse(decodeJsonFileContent(filePath))
   } catch {
     return null
+  }
+}
+
+function readKeyValueEnvFile(filePath) {
+  const env = {}
+  if (!fs.existsSync(filePath)) return env
+  const raw = fs.readFileSync(filePath, 'utf8')
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t || t.startsWith('#')) continue
+    const eq = t.indexOf('=')
+    if (eq <= 0) continue
+    const key = t.slice(0, eq).trim()
+    const val = t.slice(eq + 1).trim().replace(/^["']|["']$/g, '')
+    if (key && val && !val.includes('${')) env[key] = val
+  }
+  return env
+}
+
+function configuredMiniMaxForOpenClaw() {
+  const hermesEnv = readKeyValueEnvFile(path.join(hermesHome(), '.env'))
+  const apiKey = (
+    hermesEnv.MINIMAX_API_KEY ||
+    hermesEnv.MINIMAX_CN_API_KEY ||
+    process.env.MINIMAX_API_KEY ||
+    process.env.MINIMAX_CN_API_KEY ||
+    ''
+  ).trim()
+  if (!apiKey) return null
+  const baseUrl = (
+    hermesEnv.MINIMAX_BASE_URL ||
+    hermesEnv.MINIMAX_CN_BASE_URL ||
+    process.env.MINIMAX_BASE_URL ||
+    process.env.MINIMAX_CN_BASE_URL ||
+    'https://api.minimax.io/v1'
+  ).trim().replace(/\/+$/, '')
+  return { apiKey, baseUrl: baseUrl || 'https://api.minimax.io/v1' }
+}
+
+const OPENCLAW_MINIMAX_MODELS = [
+  { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', api: 'openai-completions', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096 },
+  { id: 'MiniMax-M2.5', name: 'MiniMax M2.5', api: 'openai-completions', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 4096 },
+]
+
+function syncOpenClawMiniMaxProvider(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return false
+  const minimax = configuredMiniMaxForOpenClaw()
+  if (!minimax) return false
+  let changed = false
+  config.models = config.models && typeof config.models === 'object' && !Array.isArray(config.models) ? config.models : {}
+  config.models.providers = config.models.providers && typeof config.models.providers === 'object' && !Array.isArray(config.models.providers) ? config.models.providers : {}
+  const current = config.models.providers.minimax && typeof config.models.providers.minimax === 'object' && !Array.isArray(config.models.providers.minimax)
+    ? config.models.providers.minimax
+    : {}
+  const next = {
+    ...current,
+    baseUrl: minimax.baseUrl,
+    apiKey: minimax.apiKey,
+    api: 'openai-completions',
+    models: OPENCLAW_MINIMAX_MODELS,
+  }
+  if (JSON.stringify(current) !== JSON.stringify(next)) {
+    config.models.providers.minimax = next
+    changed = true
+  }
+
+  const primary = 'minimax/MiniMax-M2.7'
+  const fallback = 'minimax/MiniMax-M2.5'
+  config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
+  config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
+  config.agents.defaults.models = config.agents.defaults.models && typeof config.agents.defaults.models === 'object' && !Array.isArray(config.agents.defaults.models) ? config.agents.defaults.models : {}
+  config.agents.defaults.models[primary] = config.agents.defaults.models[primary] || {}
+  config.agents.defaults.models[fallback] = config.agents.defaults.models[fallback] || {}
+  config.agents.defaults.model = config.agents.defaults.model && typeof config.agents.defaults.model === 'object' && !Array.isArray(config.agents.defaults.model)
+    ? config.agents.defaults.model
+    : {}
+  const defaultModel = config.agents.defaults.model
+  if (!String(defaultModel.primary || '').trim() || String(defaultModel.primary || '').toLowerCase().startsWith('minimax/')) {
+    if (defaultModel.primary !== primary) {
+      defaultModel.primary = primary
+      changed = true
+    }
+    const fallbacks = Array.isArray(defaultModel.fallbacks) ? defaultModel.fallbacks : []
+    if (JSON.stringify(fallbacks) !== JSON.stringify([fallback])) {
+      defaultModel.fallbacks = [fallback]
+      changed = true
+    }
+  }
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent)) continue
+      agent.model = agent.model && typeof agent.model === 'object' && !Array.isArray(agent.model) ? agent.model : {}
+      if (!String(agent.model.primary || '').trim() || String(agent.model.primary || '').toLowerCase().startsWith('minimax/')) {
+        if (agent.model.primary !== primary) {
+          agent.model.primary = primary
+          changed = true
+        }
+        const fallbacks = Array.isArray(agent.model.fallbacks) ? agent.model.fallbacks : []
+        if (JSON.stringify(fallbacks) !== JSON.stringify([fallback])) {
+          agent.model.fallbacks = [fallback]
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
+function syncOpenClawProvidersToAgentModels(config) {
+  const srcProviders = config?.models?.providers && typeof config.models.providers === 'object' && !Array.isArray(config.models.providers)
+    ? config.models.providers
+    : null
+  if (!srcProviders) return
+  const agentsDir = path.join(OPENCLAW_DIR, 'agents')
+  if (!fs.existsSync(agentsDir)) return
+  for (const agentId of fs.readdirSync(agentsDir)) {
+    const modelsPath = path.join(agentsDir, agentId, 'agent', 'models.json')
+    const modelsJson = readJsonFileRelaxed(modelsPath)
+    if (!modelsJson || typeof modelsJson !== 'object' || Array.isArray(modelsJson)) continue
+    modelsJson.providers = modelsJson.providers && typeof modelsJson.providers === 'object' && !Array.isArray(modelsJson.providers) ? modelsJson.providers : {}
+    let changed = false
+    for (const [name, provider] of Object.entries(srcProviders)) {
+      const current = modelsJson.providers[name] && typeof modelsJson.providers[name] === 'object' && !Array.isArray(modelsJson.providers[name])
+        ? modelsJson.providers[name]
+        : {}
+      const next = { ...current }
+      for (const field of ['baseUrl', 'apiKey', 'api']) {
+        if (typeof provider?.[field] === 'string' && next[field] !== provider[field]) {
+          next[field] = provider[field]
+          changed = true
+        }
+      }
+      if (name === 'minimax' && Array.isArray(provider?.models)) {
+        next.models = provider.models
+        changed = true
+      }
+      modelsJson.providers[name] = next
+    }
+    if (changed) fs.writeFileSync(modelsPath, `${JSON.stringify(modelsJson, null, 2)}\n`, 'utf8')
   }
 }
 
@@ -3623,9 +3764,11 @@ function writeOpenclawConfigFile(config, options = {}) {
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(decodeJsonFileContent(CONFIG_PATH)), config)
     : config
+  syncOpenClawMiniMaxProvider(base)
   const cleaned = stripUiFields(base)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
+  syncOpenClawProvidersToAgentModels(cleaned)
 }
 
 function ensureOpenClawExecApprovalsFile() {
@@ -8298,8 +8441,8 @@ const handlers = {
       id: `connect-${idHex}-${rndHex}`,
       method: 'connect',
       params: {
-        minProtocol: 3, maxProtocol: 3,
-        client: { id: 'openclaw-control-ui', version: '1.0.0', platform, deviceFamily: 'desktop', mode: 'ui' },
+        minProtocol: 4, maxProtocol: 4,
+        client: { id: 'openclaw-control-ui', version: '1.0.1', platform, deviceFamily: 'desktop', mode: 'ui' },
         role: 'operator', scopes: SCOPES, caps: [],
         auth: { token: gatewayToken || '' },
         device: { id: deviceId, publicKey, signedAt, nonce: nonce || '', signature: sigB64 },
