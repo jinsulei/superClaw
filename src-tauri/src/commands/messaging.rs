@@ -1,4 +1,4 @@
-/// 消息渠道管理
+﻿/// 消息渠道管理
 /// 负责 Telegram / Discord / QQ Bot 等消息渠道的配置持久化与凭证校验
 /// 配置写入 openclaw.json 的 channels / plugins 节点
 use serde_json::{json, Map, Value};
@@ -2035,9 +2035,31 @@ pub async fn list_configured_platforms() -> Result<Value, String> {
                 }
             }
 
+
+            // 判断是否已配置凭证
+            // 1. 有 accounts 条目 → 已配置
+            // 2. 渠道配置中有凭证字段（token / botToken / appId / appSecret / clientId / clientSecret / webhookUrl / homeserver / account 等）→ 已配置
+            // 3. openclaw-weixin 只要 enabled 为 true 即视为已配置（凭证由插件内部管理）
+            let configured = if name == "openclaw-weixin" {
+                enabled
+            } else if !accounts.is_empty() {
+                true
+            } else if let Some(obj) = val.as_object() {
+                const CREDENTIAL_KEYS: &[&str] = &[
+                    "token", "botToken", "appId", "appSecret",
+                    "clientId", "clientSecret", "webhookUrl",
+                    "homeserver", "accessToken", "account",
+                    "userId", "password", "apiKey",
+                ];
+                obj.keys().any(|k| CREDENTIAL_KEYS.contains(&k.as_str()))
+            } else {
+                false
+            };
+
             result.push(json!({
                 "id": platform_list_id(name),
                 "enabled": enabled,
+                "configured": configured,
                 "accounts": accounts
             }));
         }
