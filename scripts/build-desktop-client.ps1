@@ -369,23 +369,18 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       apiKey = $minimaxApiKey
       api = "openai-completions"
       models = @(
-        [ordered]@{ id = "minimax-m2.7" },
-        [ordered]@{ id = "minimax-m2.5" }
-      )
-    }
-    $defaultModelRef = "minimax/minimax-m2.7"
-    $defaultModels[$defaultModelRef] = [ordered]@{}
-  }
-
-  if ($yyapiBaseUrl) {
-    $providers.yyapi = [ordered]@{
-      baseUrl = $yyapiBaseUrl
-      apiKey = "superclaw-login-required"
-      api = "openai-completions"
-      models = @(
         [ordered]@{
-          id = "superclaw-login-required"
-          name = "Login required"
+          id = "minimax-m2.7"
+          name = "MiniMax M2.7"
+          api = "openai-completions"
+          reasoning = $false
+          input = @("text")
+          contextWindow = 128000
+          maxTokens = 4096
+        },
+        [ordered]@{
+          id = "minimax-m2.5"
+          name = "MiniMax M2.5"
           api = "openai-completions"
           reasoning = $false
           input = @("text")
@@ -394,11 +389,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         }
       )
     }
-    if (-not $defaultModelRef) {
-      $defaultModelRef = "yyapi/superclaw-login-required"
-      $defaultModels[$defaultModelRef] = [ordered]@{}
-    }
+    $defaultModelRef = "minimax/minimax-m2.7"
+    $defaultModels[$defaultModelRef] = [ordered]@{}
   }
+
+  # yyapi后端地址保留用于接口调用，但不作为AI模型供应商
+  # 模型供应商仅使用MiniMax
 
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
@@ -528,9 +524,13 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
-  $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
-  $baseUrlEnvLine = if ($yyapiBaseUrl) { "OPENAI_BASE_URL=$yyapiBaseUrl`n" } else { "" }
+  $minimaxApiKey = if ($env:MINIMAX_API_KEY) { $env:MINIMAX_API_KEY } else { "" }
+  $minimaxBaseUrl = if ($env:MINIMAX_BASE_URL) { $env:MINIMAX_BASE_URL } else { "https://api.minimax.io/v1" }
+  # 使用MiniMax作为默认模型供应商，不再使用yyapi
+  $baseUrlYamlLine = if ($minimaxApiKey) { "  base_url: $minimaxBaseUrl`n" } else { "" }
+  $baseUrlEnvLine = if ($minimaxApiKey) { "OPENAI_BASE_URL=$minimaxBaseUrl`n" } else { "" }
+  $envApiKeyLine = if ($minimaxApiKey) { "MINIMAX_API_KEY=$minimaxApiKey`n" } else { "" }
+  $envBaseUrlLine = if ($minimaxApiKey) { "MINIMAX_BASE_URL=$minimaxBaseUrl`n" } else { "" }
 
   if ($SanitizedTestMode) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
@@ -609,7 +609,7 @@ skills:
 OPENAI_API_KEY=superclaw-login-required
 ${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
-${preservedBlock}
+${envApiKeyLine}${envBaseUrlLine}${preservedBlock}
 "@
 }
 
