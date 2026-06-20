@@ -1,4 +1,4 @@
-﻿use std::net::IpAddr;
+use std::net::IpAddr;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::RwLock;
 use std::time::Duration;
 
-/// 缓存 gateway 端口，避免频繁读文件（5秒有效期）
+/// 缂撳瓨 gateway 绔彛锛岄伩鍏嶉绻佽鏂囦欢锛?绉掓湁鏁堟湡锛?
 static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time::Instant)>> =
     std::sync::LazyLock::new(|| {
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
@@ -26,6 +26,12 @@ fn configured_minimax_api_key() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let env = read_hermes_env_file();
+            env.get("MINIMAX_API_KEY")
+                .or_else(|| env.get("MINIMAX_CN_API_KEY"))
+                .cloned()
+        })
 }
 
 fn configured_minimax_base_url() -> Option<String> {
@@ -34,6 +40,12 @@ fn configured_minimax_base_url() -> Option<String> {
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let env = read_hermes_env_file();
+            env.get("MINIMAX_BASE_URL")
+                .or_else(|| env.get("MINIMAX_CN_BASE_URL"))
+                .cloned()
+        })
         .or_else(|| Some("https://api.minimax.io/v1".to_string()))
 }
 
@@ -58,21 +70,21 @@ pub mod skillhub;
 pub mod skills;
 pub mod update;
 
-/// 默认 OpenClaw 配置目录
-/// Windows 上优先使用 USERPROFILE（与 Node.js os.homedir() 一致），
-/// 并自动检测已有 openclaw.json 的目录，避免创建第二个 .openclaw
+/// 榛樿 OpenClaw 閰嶇疆鐩綍
+/// Windows 涓婁紭鍏堜娇鐢?USERPROFILE锛堜笌 Node.js os.homedir() 涓€鑷达級锛?
+/// 骞惰嚜鍔ㄦ娴嬪凡鏈?openclaw.json 鐨勭洰褰曪紝閬垮厤鍒涘缓绗簩涓?.openclaw
 fn default_openclaw_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         let mut candidates: Vec<PathBuf> = Vec::new();
-        // 优先 USERPROFILE（与 Node.js os.homedir() 一致）
+        // 浼樺厛 USERPROFILE锛堜笌 Node.js os.homedir() 涓€鑷达級
         if let Ok(up) = std::env::var("USERPROFILE") {
             let p = PathBuf::from(up.trim());
             if !p.as_os_str().is_empty() {
                 candidates.push(p);
             }
         }
-        // dirs::home_dir() 作为补充（Windows API SHGetKnownFolderPath）
+        // dirs::home_dir() 浣滀负琛ュ厖锛圵indows API SHGetKnownFolderPath锛?
         if let Some(dh) = dirs::home_dir() {
             if !candidates
                 .iter()
@@ -81,7 +93,7 @@ fn default_openclaw_dir() -> PathBuf {
                 candidates.push(dh);
             }
         }
-        // HOMEDRIVE+HOMEPATH（域控/企业环境可能指向网络盘）
+        // HOMEDRIVE+HOMEPATH锛堝煙鎺?浼佷笟鐜鍙兘鎸囧悜缃戠粶鐩橈級
         if let (Ok(hd), Ok(hp)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
             let combined = format!("{}{}", hd.trim(), hp.trim());
             let p = PathBuf::from(&combined);
@@ -93,14 +105,14 @@ fn default_openclaw_dir() -> PathBuf {
                 candidates.push(p);
             }
         }
-        // 优先选已有 openclaw.json 的目录（自动对齐已安装的 OpenClaw）
+        // 浼樺厛閫夊凡鏈?openclaw.json 鐨勭洰褰曪紙鑷姩瀵归綈宸插畨瑁呯殑 OpenClaw锛?
         for home in &candidates {
             let dir = home.join(".openclaw");
             if dir.join("openclaw.json").exists() {
                 return dir;
             }
         }
-        // 都没有 → 用第一个候选（USERPROFILE）
+        // 閮芥病鏈?鈫?鐢ㄧ涓€涓€欓€夛紙USERPROFILE锛?
         candidates
             .first()
             .cloned()
@@ -114,12 +126,33 @@ fn default_openclaw_dir() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// 便携模式路径工具
+// 渚挎惡妯″紡璺緞宸ュ叿
 // ---------------------------------------------------------------------------
 
-/// 应用 resources 目录（便携模式定位用）
-/// 1. 相对于可执行文件（已安装/打包模式）
-/// 2. 相对于当前工作目录（开发模式）
+/// 搴旂敤 resources 鐩綍锛堜究鎼烘ā寮忓畾浣嶇敤锛?
+/// 1. 鐩稿浜庡彲鎵ц鏂囦欢锛堝凡瀹夎/鎵撳寘妯″紡锛?
+/// 2. 鐩稿浜庡綋鍓嶅伐浣滅洰褰曪紙寮€鍙戞ā寮忥級
+/// 从 Hermes .env 文件读取 KEY=VALUE 对（用于便携模式下获取 MiniMax 配置）
+fn read_hermes_env_file() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some(res) = app_resources_dir() else { return map; };
+    let env_path = res.join("data").join("hermes").join(".env");
+    let Ok(text) = std::fs::read_to_string(&env_path) else { return map; };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            let k = k.trim();
+            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !v.is_empty() && !v.contains("${") {
+                map.insert(k.to_string(), v);
+            }
+        }
+    }
+    map
+}
 fn app_resources_dir() -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     {
@@ -132,10 +165,10 @@ fn app_resources_dir() -> Option<PathBuf> {
         }
     }
 
-    // 已安装/打包模式：找 exe 同级或父级目录
+    // 宸插畨瑁?鎵撳寘妯″紡锛氭壘 exe 鍚岀骇鎴栫埗绾х洰褰?
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            // Windows/Linux: exe 所在目录/resources/
+            // Windows/Linux: exe 鎵€鍦ㄧ洰褰?resources/
             let candidate = exe_dir.join("resources");
             if candidate.is_dir() {
                 return Some(candidate);
@@ -151,13 +184,13 @@ fn app_resources_dir() -> Option<PathBuf> {
             }
         }
     }
-    // 开发模式：cwd/src-tauri/resources/
+    // 寮€鍙戞ā寮忥細cwd/src-tauri/resources/
     if let Ok(cwd) = std::env::current_dir() {
         let candidate = cwd.join("src-tauri").join("resources");
         if candidate.is_dir() {
             return Some(candidate);
         }
-        // 开发模式备选：cwd/resources/（Tauri dev 模式下 CWD 可能已经是 src-tauri/）
+        // 寮€鍙戞ā寮忓閫夛細cwd/resources/锛圱auri dev 妯″紡涓?CWD 鍙兘宸茬粡鏄?src-tauri/锛?
         let candidate2 = cwd.join("resources");
         if candidate2.is_dir() && candidate2.join("runtime").join("openclaw").is_dir() {
             return Some(candidate2);
@@ -166,8 +199,8 @@ fn app_resources_dir() -> Option<PathBuf> {
     None
 }
 
-/// 便携模式下 bundled OpenClaw 的运行时目录（含 Node.js）
-/// 例: resources/runtime/openclaw/
+/// 渚挎惡妯″紡涓?bundled OpenClaw 鐨勮繍琛屾椂鐩綍锛堝惈 Node.js锛?
+/// 渚? resources/runtime/openclaw/
 pub fn bundled_openclaw_bin_dir() -> Option<PathBuf> {
     let res = app_resources_dir()?;
     let dir = res.join("runtime").join("openclaw");
@@ -178,13 +211,13 @@ pub fn bundled_openclaw_bin_dir() -> Option<PathBuf> {
     }
 }
 
-/// 便携模式下的 OpenClaw 数据目录（存放运行配置、日志等）
-/// 例: resources/data/.openclaw/
-/// 当内置 OpenClaw 存在或该目录已有时返回 Some，否则返回 None
+/// 渚挎惡妯″紡涓嬬殑 OpenClaw 鏁版嵁鐩綍锛堝瓨鏀捐繍琛岄厤缃€佹棩蹇楃瓑锛?
+/// 渚? resources/data/.openclaw/
+/// 褰撳唴缃?OpenClaw 瀛樺湪鎴栬鐩綍宸叉湁鏃惰繑鍥?Some锛屽惁鍒欒繑鍥?None
 fn portable_openclaw_data_dir() -> Option<PathBuf> {
     let res = app_resources_dir()?;
     let dir = res.join("data").join(".openclaw");
-    // 目录已存在 或 内置 OpenClaw 存在（便携模式）=> 返回此路径
+    // 鐩綍宸插瓨鍦?鎴?鍐呯疆 OpenClaw 瀛樺湪锛堜究鎼烘ā寮忥級=> 杩斿洖姝よ矾寰?
     if dir.exists() || bundled_openclaw_bin_dir().is_some() {
         Some(dir)
     } else {
@@ -455,7 +488,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         );
         changed = true;
     }
-    // 模型注入：优先 MiniMax（包月测试），其次 yyapi
+    // 妯″瀷娉ㄥ叆锛氫紭鍏?MiniMax锛堝寘鏈堟祴璇曪級锛屽叾娆?yyapi
     let minimax_model = obj
         .get("models")
         .and_then(|v| v.get("providers"))
@@ -635,7 +668,7 @@ fn push_unique_panel_config_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
 
 fn panel_config_candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    // 便携数据目录优先（exe 同级 resources/data/.openclaw/clawpanel.json）
+    // 渚挎惡鏁版嵁鐩綍浼樺厛锛坋xe 鍚岀骇 resources/data/.openclaw/clawpanel.json锛?
     if let Some(portable) = portable_openclaw_data_dir() {
         push_unique_panel_config_path(&mut paths, portable.join("clawpanel.json"));
     }
@@ -731,13 +764,13 @@ pub fn openclaw_search_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// 获取 OpenClaw 配置目录
-/// 优先级：
-///   1. 便携数据目录（exe 同级 resources/data/.openclaw/）
-///   2. clawpanel.json 中配置的 openclawDir 自定义路径
-///   3. 默认 ~/.openclaw/
+/// 鑾峰彇 OpenClaw 閰嶇疆鐩綍
+/// 浼樺厛绾э細
+///   1. 渚挎惡鏁版嵁鐩綍锛坋xe 鍚岀骇 resources/data/.openclaw/锛?
+///   2. clawpanel.json 涓厤缃殑 openclawDir 鑷畾涔夎矾寰?
+///   3. 榛樿 ~/.openclaw/
 pub fn openclaw_dir() -> PathBuf {
-    // 1. 便携数据目录（最高优先级）
+    // 1. 渚挎惡鏁版嵁鐩綍锛堟渶楂樹紭鍏堢骇锛?
     if let Some(portable) = portable_openclaw_data_dir() {
         if !portable.exists() {
             let _ = std::fs::create_dir_all(&portable);
@@ -745,22 +778,22 @@ pub fn openclaw_dir() -> PathBuf {
         ensure_portable_openclaw_config(&portable);
         return portable;
     }
-    // 2. clawpanel.json 中配置的自定义路径
+    // 2. clawpanel.json 涓厤缃殑鑷畾涔夎矾寰?
     if let Some(custom) = read_panel_config_value()
         .and_then(|v| v.get("openclawDir")?.as_str().map(String::from))
         .and_then(|v| normalize_custom_openclaw_dir(&v))
     {
         return custom;
     }
-    // 3. 默认 ~/.openclaw/
+    // 3. 榛樿 ~/.openclaw/
     default_openclaw_dir()
 }
 
-/// Gateway 监听端口：读取 `openclaw.json` 的 `gateway.port`，缺省 **18789**。
-/// 与面板「Gateway 配置」、服务状态检测（netstat / TCP / launchctl 兜底）共用同一来源，
-/// 并尊重 `clawpanel.json` 中的 `openclawDir` 自定义配置目录。
+/// Gateway 鐩戝惉绔彛锛氳鍙?`openclaw.json` 鐨?`gateway.port`锛岀己鐪?**18789**銆?
+/// 涓庨潰鏉裤€孏ateway 閰嶇疆銆嶃€佹湇鍔＄姸鎬佹娴嬶紙netstat / TCP / launchctl 鍏滃簳锛夊叡鐢ㄥ悓涓€鏉ユ簮锛?
+/// 骞跺皧閲?`clawpanel.json` 涓殑 `openclawDir` 鑷畾涔夐厤缃洰褰曘€?
 pub fn gateway_listen_port() -> u16 {
-    // 5秒内返回缓存值，避免服务状态检测时频繁读文件
+    // 5绉掑唴杩斿洖缂撳瓨鍊硷紝閬垮厤鏈嶅姟鐘舵€佹娴嬫椂棰戠箒璇绘枃浠?
     if let Ok(cache) = GATEWAY_PORT_CACHE.lock() {
         if cache.1.elapsed() < Duration::from_secs(5) {
             return cache.0;
@@ -879,7 +912,7 @@ fn should_bypass_proxy_host(host: &str) -> bool {
     false
 }
 
-/// 构建 HTTP 客户端，use_proxy=true 时走用户配置的代理
+/// 鏋勫缓 HTTP 瀹㈡埛绔紝use_proxy=true 鏃惰蛋鐢ㄦ埛閰嶇疆鐨勪唬鐞?
 pub fn build_http_client(
     timeout: Duration,
     user_agent: Option<&str>,
@@ -887,8 +920,8 @@ pub fn build_http_client(
     build_http_client_opt(timeout, user_agent, true)
 }
 
-/// 构建模型请求用的 HTTP 客户端
-/// 默认不走代理；用户在面板设置中开启 proxyModelRequests 后才走代理
+/// 鏋勫缓妯″瀷璇锋眰鐢ㄧ殑 HTTP 瀹㈡埛绔?
+/// 榛樿涓嶈蛋浠ｇ悊锛涚敤鎴峰湪闈㈡澘璁剧疆涓紑鍚?proxyModelRequests 鍚庢墠璧颁唬鐞?
 pub fn build_http_client_no_proxy(
     timeout: Duration,
     user_agent: Option<&str>,
@@ -950,23 +983,23 @@ pub fn apply_proxy_env_tokio(cmd: &mut tokio::process::Command) {
     }
 }
 
-/// 缓存 enhanced_path 结果，避免每次调用都扫描文件系统
-/// 使用 RwLock 替代 OnceLock，支持运行时刷新缓存
+/// 缂撳瓨 enhanced_path 缁撴灉锛岄伩鍏嶆瘡娆¤皟鐢ㄩ兘鎵弿鏂囦欢绯荤粺
+/// 浣跨敤 RwLock 鏇夸唬 OnceLock锛屾敮鎸佽繍琛屾椂鍒锋柊缂撳瓨
 static ENHANCED_PATH_CACHE: RwLock<Option<String>> = RwLock::new(None);
 
-/// Tauri 应用启动时 PATH 可能不完整：
-/// - macOS 从 Finder 启动时 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
-/// - Windows 上安装 Node.js 到非默认路径、或安装后未重启进程
+/// Tauri 搴旂敤鍚姩鏃?PATH 鍙兘涓嶅畬鏁达細
+/// - macOS 浠?Finder 鍚姩鏃?PATH 鍙湁 /usr/bin:/bin:/usr/sbin:/sbin
+/// - Windows 涓婂畨瑁?Node.js 鍒伴潪榛樿璺緞銆佹垨瀹夎鍚庢湭閲嶅惎杩涚▼
 ///
-/// 补充 Node.js / npm 常见安装路径
+/// 琛ュ厖 Node.js / npm 甯歌瀹夎璺緞
 pub fn enhanced_path() -> String {
-    // 先尝试读缓存
+    // 鍏堝皾璇曡缂撳瓨
     if let Ok(guard) = ENHANCED_PATH_CACHE.read() {
         if let Some(ref cached) = *guard {
             return cached.clone();
         }
     }
-    // 缓存为空，重新构建
+    // 缂撳瓨涓虹┖锛岄噸鏂版瀯寤?
     let path = build_enhanced_path();
     if let Ok(mut guard) = ENHANCED_PATH_CACHE.write() {
         *guard = Some(path.clone());
@@ -974,7 +1007,7 @@ pub fn enhanced_path() -> String {
     path
 }
 
-/// 刷新 enhanced_path 缓存，使新设置的 Node.js 路径立即生效（无需重启应用）
+/// 鍒锋柊 enhanced_path 缂撳瓨锛屼娇鏂拌缃殑 Node.js 璺緞绔嬪嵆鐢熸晥锛堟棤闇€閲嶅惎搴旂敤锛?
 pub fn refresh_enhanced_path() {
     let new_path = build_enhanced_path();
     if let Ok(mut guard) = ENHANCED_PATH_CACHE.write() {
@@ -986,13 +1019,13 @@ fn build_enhanced_path() -> String {
     let current = std::env::var("PATH").unwrap_or_default();
     let home = dirs::home_dir().unwrap_or_default();
 
-    // 读取用户保存的自定义 Node.js 路径
+    // 璇诲彇鐢ㄦ埛淇濆瓨鐨勮嚜瀹氫箟 Node.js 璺緞
     let custom_path =
         read_panel_config_value().and_then(|v| v.get("nodePath")?.as_str().map(String::from));
 
     #[cfg(target_os = "macos")]
     {
-        // 版本管理器路径优先于系统路径，确保 nvm/volta/fnm 管理的 Node.js 版本被优先检测到
+        // 鐗堟湰绠＄悊鍣ㄨ矾寰勪紭鍏堜簬绯荤粺璺緞锛岀‘淇?nvm/volta/fnm 绠＄悊鐨?Node.js 鐗堟湰琚紭鍏堟娴嬪埌
         let mut extra: Vec<String> = vec![
             format!("{}/.nvm/current/bin", home.display()),
             format!("{}/.volta/bin", home.display()),
@@ -1002,7 +1035,7 @@ fn build_enhanced_path() -> String {
             "/usr/local/bin".into(),
             "/opt/homebrew/bin".into(),
         ];
-        // 便携模式：内置 OpenClaw 自带的 Node.js 路径（最高优先级）
+        // 渚挎惡妯″紡锛氬唴缃?OpenClaw 鑷甫鐨?Node.js 璺緞锛堟渶楂樹紭鍏堢骇锛?
         if let Some(bundled) = bundled_openclaw_bin_dir() {
             extra.insert(0, bundled.to_string_lossy().into_owned());
         }
@@ -1018,16 +1051,16 @@ fn build_enhanced_path() -> String {
                 }
             }
         }
-        // NPM_CONFIG_PREFIX: 用户通过 npm config set prefix 自定义的全局安装路径
+        // NPM_CONFIG_PREFIX: 鐢ㄦ埛閫氳繃 npm config set prefix 鑷畾涔夌殑鍏ㄥ眬瀹夎璺緞
         if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
             extra.push(format!("{}/bin", prefix));
         }
-        // standalone 安装目录（集中管理，避免多处硬编码）
+        // standalone 瀹夎鐩綍锛堥泦涓鐞嗭紝閬垮厤澶氬纭紪鐮侊級
         for sa_dir in config::all_standalone_dirs() {
             extra.push(sa_dir.to_string_lossy().into_owned());
         }
-        // 扫描 nvm 实际安装的版本目录（兼容无 current 符号链接的情况）
-        // 按版本号倒序排列，确保最新版优先（修复 #143：v20 排在 v24 前面）
+        // 鎵弿 nvm 瀹為檯瀹夎鐨勭増鏈洰褰曪紙鍏煎鏃?current 绗﹀彿閾炬帴鐨勬儏鍐碉級
+        // 鎸夌増鏈彿鍊掑簭鎺掑垪锛岀‘淇濇渶鏂扮増浼樺厛锛堜慨澶?#143锛歷20 鎺掑湪 v24 鍓嶉潰锛?
         let nvm_versions = home.join(".nvm/versions/node");
         if nvm_versions.is_dir() {
             if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
@@ -1041,7 +1074,7 @@ fn build_enhanced_path() -> String {
                 }
             }
         }
-        // fnm: 扫描 $FNM_DIR 或默认 ~/.local/share/fnm 下的版本目录
+        // fnm: 鎵弿 $FNM_DIR 鎴栭粯璁?~/.local/share/fnm 涓嬬殑鐗堟湰鐩綍
         let fnm_dir = std::env::var("FNM_DIR")
             .ok()
             .map(std::path::PathBuf::from)
@@ -1078,7 +1111,7 @@ fn build_enhanced_path() -> String {
 
     #[cfg(target_os = "linux")]
     {
-        // 版本管理器路径优先于系统路径，确保 nvm/volta/fnm 管理的 Node.js 版本被优先检测到
+        // 鐗堟湰绠＄悊鍣ㄨ矾寰勪紭鍏堜簬绯荤粺璺緞锛岀‘淇?nvm/volta/fnm 绠＄悊鐨?Node.js 鐗堟湰琚紭鍏堟娴嬪埌
         let mut extra: Vec<String> = vec![
             format!("{}/.nvm/current/bin", home.display()),
             format!("{}/.volta/bin", home.display()),
@@ -1090,7 +1123,7 @@ fn build_enhanced_path() -> String {
             "/usr/bin".into(),
             "/snap/bin".into(),
         ];
-        // 便携模式：内置 OpenClaw 自带的 Node.js 路径（最高优先级）
+        // 渚挎惡妯″紡锛氬唴缃?OpenClaw 鑷甫鐨?Node.js 璺緞锛堟渶楂樹紭鍏堢骇锛?
         if let Some(bundled) = bundled_openclaw_bin_dir() {
             extra.insert(0, bundled.to_string_lossy().into_owned());
         }
@@ -1106,16 +1139,16 @@ fn build_enhanced_path() -> String {
                 }
             }
         }
-        // NPM_CONFIG_PREFIX: 用户通过 npm config set prefix 自定义的全局安装路径
+        // NPM_CONFIG_PREFIX: 鐢ㄦ埛閫氳繃 npm config set prefix 鑷畾涔夌殑鍏ㄥ眬瀹夎璺緞
         if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
             extra.push(format!("{}/bin", prefix));
         }
-        // standalone 安装目录（集中管理，避免多处硬编码）
+        // standalone 瀹夎鐩綍锛堥泦涓鐞嗭紝閬垮厤澶氬纭紪鐮侊級
         for sa_dir in config::all_standalone_dirs() {
             extra.push(sa_dir.to_string_lossy().into_owned());
         }
-        // NVM_DIR 环境变量（用户可能自定义了 nvm 安装目录）
-        // 按版本号倒序排列，确保最新版优先（修复 #143：v20 排在 v24 前面）
+        // NVM_DIR 鐜鍙橀噺锛堢敤鎴峰彲鑳借嚜瀹氫箟浜?nvm 瀹夎鐩綍锛?
+        // 鎸夌増鏈彿鍊掑簭鎺掑垪锛岀‘淇濇渶鏂扮増浼樺厛锛堜慨澶?#143锛歷20 鎺掑湪 v24 鍓嶉潰锛?
         let nvm_dir = std::env::var("NVM_DIR")
             .ok()
             .map(std::path::PathBuf::from)
@@ -1133,7 +1166,7 @@ fn build_enhanced_path() -> String {
                 }
             }
         }
-        // fnm: 扫描 $FNM_DIR 或默认 ~/.local/share/fnm 下的版本目录
+        // fnm: 鎵弿 $FNM_DIR 鎴栭粯璁?~/.local/share/fnm 涓嬬殑鐗堟湰鐩綍
         let fnm_dir = std::env::var("FNM_DIR")
             .ok()
             .map(std::path::PathBuf::from)
@@ -1157,7 +1190,7 @@ fn build_enhanced_path() -> String {
                 }
             }
         }
-        // nodesource / 手动安装的 Node.js 可能在 /usr/local/lib/nodejs/ 下
+        // nodesource / 鎵嬪姩瀹夎鐨?Node.js 鍙兘鍦?/usr/local/lib/nodejs/ 涓?
         let nodejs_lib = std::path::Path::new("/usr/local/lib/nodejs");
         if nodejs_lib.is_dir() {
             if let Ok(entries) = std::fs::read_dir(nodejs_lib) {
@@ -1188,7 +1221,7 @@ fn build_enhanced_path() -> String {
         let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
         let appdata = std::env::var("APPDATA").unwrap_or_default();
 
-        // 版本管理器路径优先，确保 nvm/volta/fnm 管理的 Node.js 被优先检测到
+        // 鐗堟湰绠＄悊鍣ㄨ矾寰勪紭鍏堬紝纭繚 nvm/volta/fnm 绠＄悊鐨?Node.js 琚紭鍏堟娴嬪埌
         let mut extra: Vec<String> = vec![];
 
         for configured in openclaw_search_paths() {
@@ -1204,14 +1237,14 @@ fn build_enhanced_path() -> String {
             }
         }
 
-        // 1. NVM_SYMLINK（nvm-windows 活跃版本符号链接，如 D:\nodejs）—— 最高优先级
-        // 增强：尝试解析符号链接目标
+        // 1. NVM_SYMLINK锛坣vm-windows 娲昏穬鐗堟湰绗﹀彿閾炬帴锛屽 D:\nodejs锛夆€斺€?鏈€楂樹紭鍏堢骇
+        // 澧炲己锛氬皾璇曡В鏋愮鍙烽摼鎺ョ洰鏍?
         if let Ok(nvm_symlink) = std::env::var("NVM_SYMLINK") {
             let symlink_path = std::path::Path::new(&nvm_symlink);
             if symlink_path.is_dir() {
                 extra.push(nvm_symlink.clone());
             }
-            // 如果是符号链接，尝试读取其实际指向的目标
+            // 濡傛灉鏄鍙烽摼鎺ワ紝灏濊瘯璇诲彇鍏跺疄闄呮寚鍚戠殑鐩爣
             #[cfg(target_os = "windows")]
             if symlink_path.is_symlink() {
                 if let Ok(target) = std::fs::read_link(symlink_path) {
@@ -1222,11 +1255,11 @@ fn build_enhanced_path() -> String {
             }
         }
 
-        // 2. NVM_HOME（用户自定义 nvm 安装目录）
+        // 2. NVM_HOME锛堢敤鎴疯嚜瀹氫箟 nvm 瀹夎鐩綍锛?
         if let Ok(nvm_home) = std::env::var("NVM_HOME") {
             let nvm_path = std::path::Path::new(&nvm_home);
             if nvm_path.is_dir() {
-                // 扫描所有已安装的版本目录
+                // 鎵弿鎵€鏈夊凡瀹夎鐨勭増鏈洰褰?
                 if let Ok(entries) = std::fs::read_dir(nvm_path) {
                     for entry in entries.flatten() {
                         let p = entry.path();
@@ -1235,17 +1268,17 @@ fn build_enhanced_path() -> String {
                         }
                     }
                 }
-                // 尝试从 settings.json 读取当前激活版本
+                // 灏濊瘯浠?settings.json 璇诲彇褰撳墠婵€娲荤増鏈?
                 let settings_path = nvm_path.join("settings.json");
                 if settings_path.exists() {
                     if let Ok(content) = std::fs::read_to_string(&settings_path) {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                            // settings.json 中有 "path" 字段指向当前版本
+                            // settings.json 涓湁 "path" 瀛楁鎸囧悜褰撳墠鐗堟湰
                             if let Some(current_version) = json.get("path").and_then(|v| v.as_str())
                             {
                                 let version_path = nvm_path.join(current_version);
                                 if version_path.is_dir() {
-                                    // 将当前激活版本移到更高优先级
+                                    // 灏嗗綋鍓嶆縺娲荤増鏈Щ鍒版洿楂樹紭鍏堢骇
                                     let version_bin = version_path.to_string_lossy().to_string();
                                     if !extra.contains(&version_bin) {
                                         extra.insert(0, version_bin);
@@ -1258,11 +1291,11 @@ fn build_enhanced_path() -> String {
             }
         }
 
-        // 3. %APPDATA%\nvm（nvm-windows 默认安装目录）
+        // 3. %APPDATA%\nvm锛坣vm-windows 榛樿瀹夎鐩綍锛?
         if !appdata.is_empty() {
             let nvm_dir = std::path::Path::new(&appdata).join("nvm");
             if nvm_dir.is_dir() {
-                // 扫描所有已安装的版本
+                // 鎵弿鎵€鏈夊凡瀹夎鐨勭増鏈?
                 if let Ok(entries) = std::fs::read_dir(&nvm_dir) {
                     for entry in entries.flatten() {
                         let p = entry.path();
@@ -1271,7 +1304,7 @@ fn build_enhanced_path() -> String {
                         }
                     }
                 }
-                // 尝试从 settings.json 读取当前激活版本
+                // 灏濊瘯浠?settings.json 璇诲彇褰撳墠婵€娲荤増鏈?
                 let settings_path = nvm_dir.join("settings.json");
                 if settings_path.exists() {
                     if let Ok(content) = std::fs::read_to_string(&settings_path) {
@@ -1294,7 +1327,7 @@ fn build_enhanced_path() -> String {
 
         // 4. volta
         extra.push(format!(r"{}\.volta\bin", home.display()));
-        // volta 的活跃版本
+        // volta 鐨勬椿璺冪増鏈?
         let volta_bin = std::path::Path::new(&home).join(".volta/bin");
         if volta_bin.is_dir() && !extra.contains(&volta_bin.to_string_lossy().to_string()) {
             extra.insert(0, volta_bin.to_string_lossy().to_string());
@@ -1310,7 +1343,7 @@ fn build_enhanced_path() -> String {
             .unwrap_or_else(|| std::path::Path::new(&appdata).join("fnm"));
         let fnm_versions = fnm_base.join("node-versions");
         if fnm_versions.is_dir() {
-            // 尝试找到 fnm 的当前活跃版本
+            // 灏濊瘯鎵惧埌 fnm 鐨勫綋鍓嶆椿璺冪増鏈?
             let fnm_current = fnm_base.join("current");
             if fnm_current.is_dir() {
                 let current_inst = fnm_current.join("installation");
@@ -1321,7 +1354,7 @@ fn build_enhanced_path() -> String {
                     extra.insert(0, current_inst.to_string_lossy().to_string());
                 }
             }
-            // 扫描所有版本
+            // 鎵弿鎵€鏈夌増鏈?
             if let Ok(entries) = std::fs::read_dir(&fnm_versions) {
                 for entry in entries.flatten() {
                     let inst = entry.path().join("installation");
@@ -1335,7 +1368,7 @@ fn build_enhanced_path() -> String {
             }
         }
 
-        // 6. npm 全局（openclaw.cmd 通常在这里）
+        // 6. npm 鍏ㄥ眬锛坥penclaw.cmd 閫氬父鍦ㄨ繖閲岋級
         if !appdata.is_empty() {
             extra.push(format!(r"{}\npm", appdata));
         }
@@ -1349,32 +1382,32 @@ fn build_enhanced_path() -> String {
             }
         }
 
-        // 6.5 standalone 安装目录（集中管理，避免多处硬编码）
-        // standalone 安装后通过注册表写入用户 PATH，但当前进程的 PATH 环境变量不会
-        // 实时更新，需要显式添加到 enhanced_path 以确保 resolve_openclaw_cli_path()
-        // 能找到 standalone 安装的 openclaw.cmd
+        // 6.5 standalone 瀹夎鐩綍锛堥泦涓鐞嗭紝閬垮厤澶氬纭紪鐮侊級
+        // standalone 瀹夎鍚庨€氳繃娉ㄥ唽琛ㄥ啓鍏ョ敤鎴?PATH锛屼絾褰撳墠杩涚▼鐨?PATH 鐜鍙橀噺涓嶄細
+        // 瀹炴椂鏇存柊锛岄渶瑕佹樉寮忔坊鍔犲埌 enhanced_path 浠ョ‘淇?resolve_openclaw_cli_path()
+        // 鑳芥壘鍒?standalone 瀹夎鐨?openclaw.cmd
         for sa_dir in config::all_standalone_dirs() {
             extra.push(sa_dir.to_string_lossy().into_owned());
         }
 
-        // 便携模式：内置 OpenClaw 自带的 Node.js 路径（最高优先级）
+        // 渚挎惡妯″紡锛氬唴缃?OpenClaw 鑷甫鐨?Node.js 璺緞锛堟渶楂樹紭鍏堢骇锛?
         if let Some(bundled) = bundled_openclaw_bin_dir() {
             extra.insert(0, bundled.to_string_lossy().into_owned());
         }
 
-        // 7. 系统默认 Node.js 安装路径（优先级最低）
+        // 7. 绯荤粺榛樿 Node.js 瀹夎璺緞锛堜紭鍏堢骇鏈€浣庯級
         extra.push(format!(r"{}\nodejs", pf));
         extra.push(format!(r"{}\nodejs", pf86));
         if !localappdata.is_empty() {
             extra.push(format!(r"{}\Programs\nodejs", localappdata));
         }
 
-        // 8. 扫描常见盘符下的 Node 安装（用户可能装在 D:\、F:\ 等）
+        // 8. 鎵弿甯歌鐩樼涓嬬殑 Node 瀹夎锛堢敤鎴峰彲鑳借鍦?D:\銆丗:\ 绛夛級
         for drive in &["C", "D", "E", "F"] {
             extra.push(format!(r"{}:\nodejs", drive));
             extra.push(format!(r"{}:\Node", drive));
             extra.push(format!(r"{}:\Program Files\nodejs", drive));
-            // 常见 AI/Dev 工具目录
+            // 甯歌 AI/Dev 宸ュ叿鐩綍
             extra.push(format!(r"{}:\AI\Node", drive));
             extra.push(format!(r"{}:\AI\nodejs", drive));
             extra.push(format!(r"{}:\Dev\nodejs", drive));
@@ -1382,18 +1415,18 @@ fn build_enhanced_path() -> String {
         }
 
         let mut parts: Vec<&str> = vec![];
-        // 用户自定义路径优先级最高
+        // 鐢ㄦ埛鑷畾涔夎矾寰勪紭鍏堢骇鏈€楂?
         if let Some(ref cp) = custom_path {
             parts.push(cp.as_str());
         }
-        // 然后是默认扫描到的路径（去重）
+        // 鐒跺悗鏄粯璁ゆ壂鎻忓埌鐨勮矾寰勶紙鍘婚噸锛?
         let mut seen = std::collections::HashSet::new();
         for p in &extra {
             if std::path::Path::new(p).exists() && seen.insert(p.clone()) {
                 parts.push(p.as_str());
             }
         }
-        // 最后是系统 PATH
+        // 鏈€鍚庢槸绯荤粺 PATH
         if !current.is_empty() {
             parts.push(&current);
         }

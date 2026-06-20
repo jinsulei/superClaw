@@ -150,8 +150,8 @@ function Scrub-SanitizedTextExamples([string]$Root) {
       $clean = $text
       $clean = $clean -replace 'Bearer\s+sk-[A-Za-z0-9_-]{8,}', 'Bearer YOUR_API_TOKEN'
       $clean = $clean -replace 'sk-[A-Za-z0-9_-]{20,}', 'sk-REDACTED'
-      $clean = $clean -replace '(?im)^(\s*export\s+(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY))=.*$', '$1  # set your own key'
-      $clean = $clean -replace '(?im)^(\s*(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY)\s*=\s*).+$', '$1YOUR_API_KEY'
+      $clean = $clean -replace '(?im)^(\s*export\s+(OPENAI_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY))=.*$', '$1  # set your own key'
+      $clean = $clean -replace '(?im)^(\s*(OPENAI_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY)\s*=\s*).+$', '$1YOUR_API_KEY'
 
       if ($clean -ne $text) {
         Write-Utf8NoBom $path $clean
@@ -359,6 +359,24 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   $providers = [ordered]@{}
   $defaultModelRef = ""
   $defaultModels = [ordered]@{}
+
+  # MiniMax provider (API key from environment variable, base URL from env or default)
+  $minimaxApiKey = $env:MINIMAX_API_KEY
+  $minimaxBaseUrl = if ($env:MINIMAX_BASE_URL) { $env:MINIMAX_BASE_URL } else { "https://api.minimax.io/v1" }
+  if ($minimaxApiKey -and $minimaxApiKey -notmatch '\$\{') {
+    $providers.minimax = [ordered]@{
+      baseUrl = $minimaxBaseUrl
+      apiKey = $minimaxApiKey
+      api = "openai-completions"
+      models = @(
+        [ordered]@{ id = "minimax-m2.7" },
+        [ordered]@{ id = "minimax-m2.5" }
+      )
+    }
+    $defaultModelRef = "minimax/minimax-m2.7"
+    $defaultModels[$defaultModelRef] = [ordered]@{}
+  }
+
   if ($yyapiBaseUrl) {
     $providers.yyapi = [ordered]@{
       baseUrl = $yyapiBaseUrl
@@ -376,8 +394,10 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         }
       )
     }
-    $defaultModelRef = "yyapi/superclaw-login-required"
-    $defaultModels[$defaultModelRef] = [ordered]@{}
+    if (-not $defaultModelRef) {
+      $defaultModelRef = "yyapi/superclaw-login-required"
+      $defaultModels[$defaultModelRef] = [ordered]@{}
+    }
   }
 
   $config = [ordered]@{
@@ -574,10 +594,22 @@ skills:
     Set-Content -Path $configPath -Encoding UTF8 -Value $text
   }
 
+  # Preserve existing MiniMax (and other custom) env vars when repairing .env
+  $preservedLines = @()
+  if (Test-Path $envPath) {
+    $existingLines = Get-Content $envPath
+    foreach ($line in $existingLines) {
+      if ($line -match '^(MINIMAX_|DEEPSEEK_|ANTHROPIC_|CUSTOM_)') {
+        $preservedLines += $line
+      }
+    }
+  }
+  $preservedBlock = if ($preservedLines.Count -gt 0) { ($preservedLines -join "`n") + "`n" } else { "" }
   Set-Content -Path $envPath -Encoding UTF8 -Value @"
 OPENAI_API_KEY=superclaw-login-required
 ${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
+${preservedBlock}
 "@
 }
 
