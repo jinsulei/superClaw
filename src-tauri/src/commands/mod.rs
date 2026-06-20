@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+﻿use std::net::IpAddr;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,23 @@ fn configured_yyapi_base_url() -> Option<String> {
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn configured_minimax_api_key() -> Option<String> {
+    std::env::var("MINIMAX_API_KEY")
+        .or_else(|_| std::env::var("MINIMAX_CN_API_KEY"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn configured_minimax_base_url() -> Option<String> {
+    std::env::var("MINIMAX_BASE_URL")
+        .or_else(|_| std::env::var("MINIMAX_CN_BASE_URL"))
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some("https://api.minimax.io/v1".to_string()))
 }
 
 pub mod agent;
@@ -406,17 +423,29 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     }
 
     if !obj.get("models").is_some_and(|v| v.is_object()) {
-        let providers = if let Some(base_url) = configured_yyapi_base_url() {
-            serde_json::json!({
-                "yyapi": {
+        let providers = {
+            let mut providers = serde_json::json!({});
+            if let Some(base_url) = configured_yyapi_base_url() {
+                providers["yyapi"] = serde_json::json!({
                     "baseUrl": base_url,
                     "apiKey": "superclaw-login-required",
                     "api": "openai-completions",
                     "models": []
-                }
-            })
-        } else {
-            serde_json::json!({})
+                });
+            }
+            if let Some(api_key) = configured_minimax_api_key() {
+                let base_url = configured_minimax_base_url().unwrap_or_else(|| "https://api.minimax.io/v1".to_string());
+                providers["minimax"] = serde_json::json!({
+                    "baseUrl": base_url,
+                    "apiKey": api_key,
+                    "api": "openai-completions",
+                    "models": [
+                        { "id": "minimax-m2.7" },
+                        { "id": "minimax-m2.5" }
+                    ]
+                });
+            }
+            providers
         };
         obj.insert(
             "models".into(),
@@ -426,37 +455,48 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         );
         changed = true;
     }
-    let yyapi_primary = obj
+    // 模型注入：优先 MiniMax（包月测试），其次 yyapi
+    let minimax_model = obj
         .get("models")
         .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("yyapi"))
+        .and_then(|v| v.get("minimax"))
         .and_then(|v| v.get("models"))
         .and_then(|v| v.as_array())
         .and_then(|models| models.first())
         .and_then(|model| model.get("id"))
         .and_then(|v| v.as_str())
-        .map(|id| format!("yyapi/{id}"))
-        .unwrap_or_default();
-    let yyapi_fallback = obj
-        .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("yyapi"))
-        .and_then(|v| v.get("models"))
-        .and_then(|v| v.as_array())
-        .and_then(|models| models.get(1).or_else(|| models.first()))
-        .and_then(|model| model.get("id"))
-        .and_then(|v| v.as_str())
-        .map(|id| format!("yyapi/{id}"))
-        .unwrap_or_else(|| yyapi_primary.clone());
+        .map(|id| format!("minimax/{id}"));
+    let primary_model = minimax_model.clone().or_else(|| {
+        obj.get("models")
+            .and_then(|v| v.get("providers"))
+            .and_then(|v| v.get("yyapi"))
+            .and_then(|v| v.get("models"))
+            .and_then(|v| v.as_array())
+            .and_then(|models| models.first())
+            .and_then(|model| model.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|id| format!("yyapi/{id}"))
+    }).unwrap_or_default();
+    let fallback_model = minimax_model.clone().or_else(|| {
+        obj.get("models")
+            .and_then(|v| v.get("providers"))
+            .and_then(|v| v.get("yyapi"))
+            .and_then(|v| v.get("models"))
+            .and_then(|v| v.as_array())
+            .and_then(|models| models.get(1).or_else(|| models.first()))
+            .and_then(|model| model.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|id| format!("yyapi/{id}"))
+    }).unwrap_or_else(|| primary_model.clone());
     if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
         if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
             if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
                 if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
                     if fallbacks.is_empty()
-                        && !yyapi_fallback.is_empty()
-                        && !yyapi_primary.is_empty()
+                        && !fallback_model.is_empty()
+                        && !primary_model.is_empty()
                     {
-                        fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
+                        fallbacks.push(serde_json::json!(fallback_model.clone()));
                         changed = true;
                     }
                 }
@@ -469,21 +509,16 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                         model.get_mut("fallbacks").and_then(|v| v.as_array_mut())
                     {
                         if fallbacks.is_empty()
-                            && !yyapi_fallback.is_empty()
-                            && !yyapi_primary.is_empty()
+                            && !fallback_model.is_empty()
+                            && !primary_model.is_empty()
                         {
-                            fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
+                            fallbacks.push(serde_json::json!(fallback_model.clone()));
                             changed = true;
                         }
                     }
                 }
             }
         }
-    }
-
-    if !obj.get("plugins").is_some_and(|v| v.is_object()) {
-        obj.insert("plugins".into(), serde_json::json!({}));
-        changed = true;
     }
     if let Some(plugins) = obj.get_mut("plugins").and_then(|v| v.as_object_mut()) {
         let allow = plugins
