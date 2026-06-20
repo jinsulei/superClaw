@@ -31,6 +31,7 @@ import {
   listAgentTaskMessages,
   normalizeClaudeCodeMode,
   openCollaborationPanel,
+  routeEcommerceCollaborationTargets,
   setPendingDispatch,
   shortGoal,
   targetLabel,
@@ -52,6 +53,29 @@ import { isStage1DesktopAssistEnabled } from '../../../shared/ecommerce-stage1/f
 import { detectStage1Intent } from '../../../shared/ecommerce-stage1/planner.js'
 import { runStage1DesktopAssist } from '../../../shared/ecommerce-stage1/runner.js'
 import { Stage1MessageType } from '../../../shared/ecommerce-stage1/types.js'
+import { isStage2LowRiskEnabled } from '../../../shared/ecommerce-stage2/feature-flag.js'
+import { detectStage2Intent } from '../../../shared/ecommerce-stage2/planner.js'
+import { runStage2LowRiskOps } from '../../../shared/ecommerce-stage2/runner.js'
+import { Stage2MessageType } from '../../../shared/ecommerce-stage2/types.js'
+import { renderStage2CardMessageHtml } from '../../../shared/ecommerce-stage2/chat-cards.js'
+import { isStage3PublishPrepEnabled } from '../../../shared/ecommerce-stage3/feature-flag.js'
+import { detectStage3Intent } from '../../../shared/ecommerce-stage3/input-parser.js'
+import { runStage3PublishPrep } from '../../../shared/ecommerce-stage3/runner.js'
+import { Stage3MessageType } from '../../../shared/ecommerce-stage3/types.js'
+import { renderStage3CardMessageHtml } from '../../../shared/ecommerce-stage3/chat-cards.js'
+import { isStage4DoudianListingEnabled } from '../../../shared/ecommerce-stage4/feature-flag.js'
+import { detectStage4Intent } from '../../../shared/ecommerce-stage4/input-parser.js'
+import { runStage4DoudianListing } from '../../../shared/ecommerce-stage4/runner.js'
+import { Stage4MessageType } from '../../../shared/ecommerce-stage4/types.js'
+import { renderStage4CardMessageHtml } from '../../../shared/ecommerce-stage4/chat-cards.js'
+import {
+  isStage5LiveAssistEnabled,
+  isStage6VideoPatrolEnabled,
+} from '../../../shared/ecommerce-stage56/feature-flag.js'
+import { detectStage56Intent } from '../../../shared/ecommerce-stage56/video-patrol.js'
+import { runStage56Ops } from '../../../shared/ecommerce-stage56/runner.js'
+import { Stage56MessageType } from '../../../shared/ecommerce-stage56/types.js'
+import { renderStage56CardMessageHtml } from '../../../shared/ecommerce-stage56/chat-cards.js'
 
 // ----------------------------------------------------------- helpers
 
@@ -1588,10 +1612,47 @@ export function render() {
       m.type === 'screenshot_card' && m.card ? renderScreenshotCardHtml(m.card) : '',
       m.type === 'user_confirmation' && m.confirmation ? renderUserConfirmationCardHtml(m.confirmation) : '',
     ].filter(Boolean).join('')
+    const stage2Html = [
+      ...(Array.isArray(m.stage2Cards) ? m.stage2Cards.map(renderStage2CardMessageHtml) : []),
+      [
+        Stage2MessageType.TREND_INSIGHT_CARD,
+        Stage2MessageType.CONTENT_DRAFT_CARD,
+        Stage2MessageType.VIDEO_LINK_CARD,
+      ].includes(m.type) ? renderStage2CardMessageHtml(m) : '',
+    ].filter(Boolean).join('')
+    const stage3Html = [
+      ...(Array.isArray(m.stage3Cards) ? m.stage3Cards.map(renderStage3CardMessageHtml) : []),
+      [
+        Stage3MessageType.PLATFORM_PREP_CARD,
+        Stage3MessageType.PLATFORM_CONFIRMATION_CARD,
+      ].includes(m.type) ? renderStage3CardMessageHtml(m) : '',
+    ].filter(Boolean).join('')
+    const stage4Html = [
+      ...(Array.isArray(m.stage4Cards) ? m.stage4Cards.map(renderStage4CardMessageHtml) : []),
+      [
+        Stage4MessageType.DOUDIAN_LISTING_PREP_CARD,
+        Stage4MessageType.PRICE_INVENTORY_CONFIRMATION_CARD,
+        Stage4MessageType.SUBMIT_REVIEW_CONFIRMATION_CARD,
+      ].includes(m.type) ? renderStage4CardMessageHtml(m) : '',
+    ].filter(Boolean).join('')
+    const stage56Html = [
+      ...(Array.isArray(m.stage56Cards) ? m.stage56Cards.map(renderStage56CardMessageHtml) : []),
+      [
+        Stage56MessageType.LIVE_REPLY_CARD,
+        Stage56MessageType.LIVE_REPLY_CONFIRMATION_CARD,
+        Stage56MessageType.VIDEO_CANDIDATE_CARD,
+        Stage56MessageType.VIDEO_DECOMPOSE_CARD,
+        Stage56MessageType.MATERIAL_RECORD_CARD,
+      ].includes(m.type) ? renderStage56CardMessageHtml(m) : '',
+    ].filter(Boolean).join('')
     const messageContentHtml = [
       renderMessageAttachments(m.attachments || []),
       (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content)) : '',
       lifeAssistantHtml,
+      stage2Html,
+      stage3Html,
+      stage4Html,
+      stage56Html,
       m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
     ].filter(Boolean).join('')
     return `
@@ -2759,6 +2820,178 @@ export function render() {
     }
   }
 
+  function createStage2BrowserContext() {
+    const notConnected = '当前 Hermes 页面暂未接入真实 OpenClaw 浏览器控制能力。'
+    return {
+      open: async (url) => ({
+        ok: false,
+        url,
+        error: notConnected,
+      }),
+      findInputByHints: async (hints = []) => ({
+        ok: false,
+        hints,
+        error: notConnected,
+      }),
+      type: async (text) => ({
+        ok: false,
+        text,
+        error: notConnected,
+      }),
+      press: async (key) => ({
+        ok: false,
+        key,
+        error: notConnected,
+      }),
+      waitForLoad: async () => ({
+        ok: false,
+        error: notConnected,
+      }),
+      readVisibleText: async () => ({
+        text: '',
+        title: '',
+        url: '',
+        error: notConnected,
+      }),
+      captureScreenshot: async () => null,
+    }
+  }
+
+  function createStage3BrowserContext() {
+    const notConnected = '当前 Hermes 页面暂未接入真实 OpenClaw 发布准备浏览器控制能力。'
+    return {
+      open: async (url) => ({
+        ok: false,
+        url,
+        error: notConnected,
+      }),
+      waitForLoad: async () => ({
+        ok: false,
+        error: notConnected,
+      }),
+      readVisibleText: async () => ({
+        text: '',
+        title: '',
+        url: '',
+        error: notConnected,
+      }),
+      uploadMediaByHints: async ({ files = [], hints = [], platform = '' } = {}) => ({
+        ok: false,
+        files,
+        hints,
+        platform,
+        error: notConnected,
+      }),
+      typeIntoByHints: async ({ hints = [], value = '', platform = '', field = '' } = {}) => ({
+        ok: false,
+        hints,
+        value,
+        platform,
+        field,
+        error: notConnected,
+      }),
+      findByTextHints: async ({ hints = [], platform = '' } = {}) => ({
+        found: false,
+        hints,
+        platform,
+        error: notConnected,
+      }),
+      captureScreenshot: async () => null,
+    }
+  }
+
+  function createStage4BrowserContext() {
+    const notConnected = '当前 Hermes 页面暂未接入真实 OpenClaw 抖店上架准备浏览器控制能力。'
+    return {
+      open: async (url) => ({
+        ok: false,
+        url,
+        error: notConnected,
+      }),
+      waitForLoad: async () => ({
+        ok: false,
+        error: notConnected,
+      }),
+      readVisibleText: async () => ({
+        text: '',
+        title: '',
+        url: '',
+        error: notConnected,
+      }),
+      clickByTextHints: async ({ hints = [], note = '' } = {}) => ({
+        ok: false,
+        hints,
+        note,
+        error: notConnected,
+      }),
+      uploadMediaByHints: async ({ files = [], hints = [], platform = '' } = {}) => ({
+        ok: false,
+        files,
+        hints,
+        platform,
+        error: notConnected,
+      }),
+      typeIntoByHints: async ({ hints = [], value = '', platform = '', field = '' } = {}) => ({
+        ok: false,
+        hints,
+        value,
+        platform,
+        field,
+        error: notConnected,
+      }),
+      findByTextHints: async ({ hints = [], platform = '' } = {}) => ({
+        found: false,
+        hints,
+        platform,
+        error: notConnected,
+      }),
+      captureScreenshot: async () => null,
+    }
+  }
+
+  function createStage56BrowserContext() {
+    const notConnected = '当前 Hermes 页面暂未接入真实 OpenClaw 直播/视频巡检浏览器控制能力。'
+    return {
+      open: async (url) => ({
+        ok: false,
+        url,
+        error: notConnected,
+      }),
+      waitForLoad: async () => ({
+        ok: false,
+        error: notConnected,
+      }),
+      readVisibleText: async () => ({
+        text: '',
+        title: '',
+        url: '',
+        error: notConnected,
+      }),
+      captureScreenshot: async () => null,
+      typeIntoByHints: async ({ hints = [], value = '', platform = '', field = '' } = {}) => ({
+        ok: false,
+        hints,
+        value,
+        platform,
+        field,
+        error: notConnected,
+      }),
+      press: async (key) => ({
+        ok: false,
+        key,
+        error: notConnected,
+      }),
+      findInteractiveTargets: async ({ hints = [], platform = '' } = {}) => ({
+        buttons: [],
+        inputs: [],
+        links: [],
+        hints,
+        platform,
+        error: notConnected,
+      }),
+    }
+  }
+
   function appendStage1Event(event) {
     if (!event) return
     if (event.type === Stage1MessageType.SCREENSHOT_CARD) {
@@ -2810,6 +3043,233 @@ export function render() {
     return true
   }
 
+  function appendStage2Event(event) {
+    if (!event) return
+    if (
+      event.type === Stage2MessageType.TREND_INSIGHT_CARD ||
+      event.type === Stage2MessageType.CONTENT_DRAFT_CARD ||
+      event.type === Stage2MessageType.VIDEO_LINK_CARD
+    ) {
+      store.pushLocalAssistantMessage?.({
+        type: event.type,
+        card: event.card,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function maybeRunStage2LowRiskOps(userText) {
+    if (!isStage2LowRiskEnabled()) return false
+
+    const detected = detectStage2Intent(userText)
+    if (!detected.matched) return false
+
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+
+    await runStage2LowRiskOps(
+      {
+        intent: detected.intent,
+        query: userText,
+      },
+      {
+        emit: appendStage2Event,
+        browser: createStage2BrowserContext(),
+        hermes: {},
+      },
+    )
+
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
+  function appendStage3Event(event) {
+    if (!event) return
+    if (
+      event.type === Stage3MessageType.PLATFORM_PREP_CARD ||
+      event.type === Stage3MessageType.PLATFORM_CONFIRMATION_CARD
+    ) {
+      store.pushLocalAssistantMessage?.({
+        type: event.type,
+        card: event.card,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (event.type === Stage1MessageType.USER_CONFIRMATION || event.type === 'user_confirmation') {
+      store.pushLocalAssistantMessage?.({
+        type: Stage1MessageType.USER_CONFIRMATION,
+        confirmation: event.confirmation,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function maybeRunStage3PublishPrep(userText) {
+    if (!isStage3PublishPrepEnabled()) return false
+
+    const detected = detectStage3Intent(userText)
+    if (!detected.matched) return false
+
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+
+    await runStage3PublishPrep(
+      {
+        intent: detected.intent,
+        query: userText,
+        mediaFiles: detected.mediaFiles,
+        platforms: detected.platforms,
+      },
+      {
+        emit: appendStage3Event,
+        browser: createStage3BrowserContext(),
+      },
+    )
+
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
+  function appendStage4Event(event) {
+    if (!event) return
+    if (
+      event.type === Stage4MessageType.DOUDIAN_LISTING_PREP_CARD ||
+      event.type === Stage4MessageType.PRICE_INVENTORY_CONFIRMATION_CARD ||
+      event.type === Stage4MessageType.SUBMIT_REVIEW_CONFIRMATION_CARD
+    ) {
+      store.pushLocalAssistantMessage?.({
+        type: event.type,
+        card: event.card,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (event.type === Stage1MessageType.USER_CONFIRMATION || event.type === 'user_confirmation') {
+      store.pushLocalAssistantMessage?.({
+        type: Stage1MessageType.USER_CONFIRMATION,
+        confirmation: event.confirmation,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function maybeRunStage4DoudianListing(userText) {
+    if (!isStage4DoudianListingEnabled()) return false
+
+    const detected = detectStage4Intent(userText)
+    if (!detected.matched) return false
+
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+
+    await runStage4DoudianListing(
+      {
+        intent: detected.intent,
+        query: userText,
+        images: detected.images,
+        detailImages: detected.detailImages,
+        productTitle: detected.productTitle,
+        category: detected.category,
+        price: detected.price,
+        inventory: detected.inventory,
+      },
+      {
+        emit: appendStage4Event,
+        browser: createStage4BrowserContext(),
+      },
+    )
+
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
+  function appendStage56Event(event) {
+    if (!event) return
+    if (
+      event.type === Stage56MessageType.LIVE_REPLY_CARD ||
+      event.type === Stage56MessageType.LIVE_REPLY_CONFIRMATION_CARD ||
+      event.type === Stage56MessageType.VIDEO_CANDIDATE_CARD ||
+      event.type === Stage56MessageType.VIDEO_DECOMPOSE_CARD ||
+      event.type === Stage56MessageType.MATERIAL_RECORD_CARD
+    ) {
+      store.pushLocalAssistantMessage?.({
+        type: event.type,
+        card: event.card,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (event.type === Stage1MessageType.USER_CONFIRMATION || event.type === 'user_confirmation') {
+      store.pushLocalAssistantMessage?.({
+        type: Stage1MessageType.USER_CONFIRMATION,
+        confirmation: event.confirmation,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function maybeRunStage56Ops(userText) {
+    const detected = detectStage56Intent(userText)
+    if (!detected.matched) return false
+
+    if (detected.intent === 'live_comment_assist' && !isStage5LiveAssistEnabled()) return false
+    if (detected.intent === 'video_inspiration_patrol' && !isStage6VideoPatrolEnabled()) return false
+    if (detected.unsafe && !isStage5LiveAssistEnabled() && !isStage6VideoPatrolEnabled()) return false
+
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+
+    await runStage56Ops(
+      {
+        intent: detected.intent,
+        query: userText,
+        platforms: detected.platforms,
+      },
+      {
+        emit: appendStage56Event,
+        browser: createStage56BrowserContext(),
+        hermes: {},
+        ocr: null,
+        materialRecords: [],
+      },
+    )
+
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
   function dispatchCollaborationTask({
     goal,
     executor = COLLAB_TARGETS.openclaw,
@@ -2824,6 +3284,16 @@ export function render() {
       return false
     }
     const claudeMode = normalizeClaudeCodeMode(claudeCodeMode)
+    const routed = routeEcommerceCollaborationTargets({
+      goal: cleanGoal,
+      executor,
+      reviewer,
+    })
+    const effectiveExecutor = routed.executor
+    const effectiveReviewer = routed.reviewer
+    if (routed.changed) {
+      toast('电商运行时动作不交给 ClaudeCode，已改为 OpenClaw 执行、Hermes 监管。', 'warning')
+    }
     const activeSession = store.activeSession?.()
     const sessionId = activeSession?.id
     const recentMessages = (activeSession?.messages || []).slice(-50).map(item => ({
@@ -2836,9 +3306,10 @@ export function render() {
       summary: cleanGoal,
       recent_messages: recentMessages,
       important_facts: [
-        `executor=${executor}`,
-        `reviewer=${reviewer}`,
+        `executor=${effectiveExecutor}`,
+        `reviewer=${effectiveReviewer}`,
         `claude_code_mode=${claudeMode.mode}`,
+        `claude_code_ecommerce_policy=${routed.policy.reason}`,
       ],
       artifacts: pendingAttachments.map(item => ({
         type: item?.type || item?.category || 'file',
@@ -2852,8 +3323,8 @@ export function render() {
       sessionId,
       context: sharedContext,
       artifacts: sharedContext.artifacts,
-      executor,
-      reviewer,
+      executor: effectiveExecutor,
+      reviewer: effectiveReviewer,
       source: COLLAB_TARGETS.hermes,
       claudeCodeMode: claudeMode.mode,
     })
@@ -2861,20 +3332,20 @@ export function render() {
       taskId: task.id,
       sessionId,
       fromAgent: COLLAB_TARGETS.hermes,
-      toAgent: executor,
+      toAgent: effectiveExecutor,
       title: shortGoal(cleanGoal),
       content: cleanGoal,
       context: sharedContext,
       artifacts: sharedContext.artifacts,
-      mode: executor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
-      permission_level: executor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
-      requires_confirmation: executor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
+      mode: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+      permission_level: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+      requires_confirmation: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
     })
     const brief = buildExecutionBrief(task)
     const reviewBrief = buildReviewBrief(task, '执行方完成后，请读取执行会话交接内容，再按验收要求复核。')
     updateCollaborationTask(task.id, {
       status: 'dispatched',
-      lastDispatchedTo: executor,
+      lastDispatchedTo: effectiveExecutor,
       dispatchedAt: Date.now(),
       reviewPanelRequested: openReviewPanel,
       claudeCodeMode: claudeMode.mode,
@@ -2884,31 +3355,31 @@ export function render() {
       artifacts: sharedContext.artifacts,
     })
     setPendingDispatch({
-      target: executor,
+      target: effectiveExecutor,
       taskId: task.id,
       sessionId,
       stage: 'execute',
-      title: `[执行] ${targetLabel(executor)} · ${shortGoal(cleanGoal)}`,
+      title: `[执行] ${targetLabel(effectiveExecutor)} · ${shortGoal(cleanGoal)}`,
       message: brief,
       context: sharedContext,
       artifacts: sharedContext.artifacts,
-      mode: executor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
-      permission_level: executor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
-      requires_confirmation: executor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
+      mode: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+      permission_level: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+      requires_confirmation: effectiveExecutor === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
     })
-    if (openReviewPanel && reviewer !== executor) {
+    if (openReviewPanel && effectiveReviewer !== effectiveExecutor) {
       setPendingDispatch({
-        target: reviewer,
+        target: effectiveReviewer,
         taskId: task.id,
         sessionId,
         stage: 'review',
-        title: `[验收] ${targetLabel(reviewer)} · ${shortGoal(cleanGoal)}`,
+        title: `[验收] ${targetLabel(effectiveReviewer)} · ${shortGoal(cleanGoal)}`,
         message: reviewBrief,
         context: sharedContext,
         artifacts: sharedContext.artifacts,
-        mode: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
-        permission_level: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
-        requires_confirmation: reviewer === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
+        mode: effectiveReviewer === COLLAB_TARGETS.claudeCode ? claudeMode.mode : undefined,
+        permission_level: effectiveReviewer === COLLAB_TARGETS.claudeCode ? claudeMode.permission_level : undefined,
+        requires_confirmation: effectiveReviewer === COLLAB_TARGETS.claudeCode ? claudeMode.requires_confirmation : undefined,
       })
     }
 
@@ -2917,35 +3388,36 @@ export function render() {
     store.pushLocalAssistant([
       `已创建协作任务：${task.id}`,
       `Hermes 已拆分：${Array.isArray(task.plan) ? task.plan.length : 0} 个子任务`,
-      `执行方：${targetLabel(executor)}`,
-      `验收方：${targetLabel(reviewer)}`,
-      `验收面板：${openReviewPanel && reviewer !== executor ? '已打开待命' : '暂不打开'}`,
+      `执行方：${targetLabel(effectiveExecutor)}`,
+      `验收方：${targetLabel(effectiveReviewer)}`,
+      `验收面板：${openReviewPanel && effectiveReviewer !== effectiveExecutor ? '已打开待命' : '暂不打开'}`,
+      routed.changed ? 'ClaudeCode 仅保留开发/调试/测试/打包辅助；电商运行时动作已按 Hermes -> OpenClaw -> 用户确认链路处理。' : '',
       '',
       '我会先把拆分后的任务单发给执行方；执行完成后，再由验收方复核，最后回到 Hermes 做最终审核。',
-    ].join('\n'))
+    ].filter(Boolean).join('\n'))
 
     closeOverlay?.()
     resetInput()
     forceScrollBottom = true
     draw()
-    openCollaborationPanel(executor, task.id, {
-      title: `${targetLabel(executor)} 执行面板 - ${shortGoal(cleanGoal)}`,
+    openCollaborationPanel(effectiveExecutor, task.id, {
+      title: `${targetLabel(effectiveExecutor)} 执行面板 - ${shortGoal(cleanGoal)}`,
     }).then(() => {
-      if (openReviewPanel && reviewer !== executor) {
+      if (openReviewPanel && effectiveReviewer !== effectiveExecutor) {
         setTimeout(() => {
-          openCollaborationPanel(reviewer, `${task.id}-review`, {
-            title: `${targetLabel(reviewer)} 验收面板 - ${shortGoal(cleanGoal)}`,
+          openCollaborationPanel(effectiveReviewer, `${task.id}-review`, {
+            title: `${targetLabel(effectiveReviewer)} 验收面板 - ${shortGoal(cleanGoal)}`,
           }).catch(err => {
             toast(`打开验收面板失败：${err?.message || err}`, 'error')
           })
         }, 350)
       }
-      if (executor === COLLAB_TARGETS.claudeCode) {
+      if (effectiveExecutor === COLLAB_TARGETS.claudeCode) {
         return copyText(brief).then(ok => {
           if (ok) toast('Claude Code 执行面板已打开，协作任务单已复制。', 'success')
         }).catch(() => {})
       }
-      toast(`${targetLabel(executor)} 执行面板已打开。`, 'success')
+      toast(`${targetLabel(effectiveExecutor)} 执行面板已打开。`, 'success')
     }).catch(err => {
       toast(`打开执行面板失败：${err?.message || err}`, 'error')
     })
@@ -2972,14 +3444,15 @@ export function render() {
         <div class="form-group">
           <label class="form-label">执行方</label>
           <select class="form-input" id="hm-collab-executor">
-            <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：改文件、跑命令、执行任务</option>
-            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：原生代码面板/终端能力</option>
+            <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：电商运行时与桌面/浏览器执行</option>
+            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：源码、调试、测试、打包辅助</option>
           </select>
         </div>
         <div class="form-group">
           <label class="form-label">验收方</label>
           <select class="form-input" id="hm-collab-reviewer">
-            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：代码验收</option>
+            <option value="${COLLAB_TARGETS.claudeCode}">Claude Code：代码/构建/测试验收</option>
+            <option value="${COLLAB_TARGETS.hermes}">Hermes：电商运行时监管</option>
             <option value="${COLLAB_TARGETS.openclaw}">OpenClaw：执行结果复核</option>
           </select>
         </div>
@@ -2990,7 +3463,7 @@ export function render() {
             <option value="browser_automation">浏览器自动化：仅浏览器，单页面</option>
             <option value="takeover">接管模式：完全控制，需要确认</option>
           </select>
-          <div class="form-hint">默认使用安全模式；接管模式必须显式确认，不能静默运行。</div>
+          <div class="form-hint">Claude Code 只用于开发辅助；抖店、发布、上传、付款、评论、公屏回复等业务动作会改走 Hermes -> OpenClaw -> 用户确认。</div>
         </div>
         <label class="form-check" style="align-items:flex-start;gap:10px;margin-top:4px">
           <input type="checkbox" id="hm-collab-open-review" checked style="margin-top:3px">
@@ -3083,7 +3556,23 @@ export function render() {
       resetInput(); draw(); return
     }
 
+    if (await maybeRunStage2LowRiskOps(text)) {
+      return
+    }
+
+    if (await maybeRunStage4DoudianListing(text)) {
+      return
+    }
+
+    if (await maybeRunStage3PublishPrep(text)) {
+      return
+    }
+
     if (await maybeRunStage1DesktopAssist(text)) {
+      return
+    }
+
+    if (await maybeRunStage56Ops(text)) {
       return
     }
 

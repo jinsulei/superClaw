@@ -3,7 +3,7 @@ import { toast } from '../../../components/toast.js'
 import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, normalizeClaudeCodeMode, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
 
-const PRODUCT_VERSION = 'YY1.0.1'
+const PRODUCT_VERSION = 'YY1.0.2'
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))

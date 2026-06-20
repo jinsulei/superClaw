@@ -43,6 +43,7 @@ const {
   createTaskResult,
   listAgentTaskMessages,
   listSharedMemory,
+  routeEcommerceCollaborationTargets,
   setPendingDispatch,
   consumePendingDispatch,
   updateCollaborationTask,
@@ -185,6 +186,43 @@ function runAgentLifecycle(task, agent) {
     requires_confirmation: modeInfo?.requires_confirmation,
   })
 }
+
+const ecommerceRoute = routeEcommerceCollaborationTargets({
+  goal: '帮我用 ClaudeCode 去抖店上架商品并发布',
+  executor: COLLAB_TARGETS.claudeCode,
+  reviewer: COLLAB_TARGETS.claudeCode,
+})
+record('ecommerce runtime does not route executor to Claude Code', ecommerceRoute.executor === COLLAB_TARGETS.openclaw && ecommerceRoute.changed, ecommerceRoute)
+record('ecommerce runtime reviewer falls back to Hermes', ecommerceRoute.reviewer === COLLAB_TARGETS.hermes, ecommerceRoute)
+
+const devAssistRoute = routeEcommerceCollaborationTargets({
+  goal: '检查抖店上架确认前代码 bug，并跑 smoke test',
+  executor: COLLAB_TARGETS.claudeCode,
+  reviewer: COLLAB_TARGETS.claudeCode,
+})
+record('Claude Code remains available for ecommerce source/debug/test work', devAssistRoute.executor === COLLAB_TARGETS.claudeCode && !devAssistRoute.changed, devAssistRoute)
+
+createTaskRequest({
+  taskId: 'policy-block-direct-claude',
+  sessionId: 'session-collab-test',
+  fromAgent: COLLAB_TARGETS.hermes,
+  toAgent: COLLAB_TARGETS.claudeCode,
+  title: 'blocked runtime task',
+  content: '帮我在抖店发布商品并付款',
+})
+const blockedDirect = listAgentTaskMessages({ taskId: 'policy-block-direct-claude' })[0]
+record('direct Hermes -> Claude Code ecommerce runtime request is policy-blocked', blockedDirect?.status === 'blocked' && blockedDirect?.to_agent === COLLAB_TARGETS.hermes && blockedDirect?.requested_to_agent === COLLAB_TARGETS.claudeCode, blockedDirect)
+
+setPendingDispatch({
+  target: COLLAB_TARGETS.claudeCode,
+  taskId: 'policy-block-pending-claude',
+  sessionId: 'session-collab-test',
+  stage: 'execute',
+  title: 'blocked pending runtime task',
+  message: '帮我评论直播公屏并发送回复',
+})
+const blockedPending = consumePendingDispatch(COLLAB_TARGETS.hermes)
+record('pending ecommerce runtime dispatch to Claude Code is rerouted to Hermes', blockedPending?.policy_blocked && blockedPending?.target === COLLAB_TARGETS.hermes && blockedPending?.requestedTarget === COLLAB_TARGETS.claudeCode, blockedPending)
 
 const openclawTask = createHermesDispatch(COLLAB_TARGETS.openclaw, 'mock task: Hermes dispatch to OpenClaw')
 record('Hermes -> OpenClaw task_request stored', hasMessage(openclawTask.id, 'task_request', 'pending', COLLAB_TARGETS.hermes, COLLAB_TARGETS.openclaw), { taskId: openclawTask.id })

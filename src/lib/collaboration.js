@@ -40,6 +40,85 @@ const CLAUDE_CODE_MODE_ALIASES = {
   full_control: CLAUDE_CODE_MODES.takeover,
 }
 
+export const CLAUDE_CODE_ECOMMERCE_ASSIST_SCOPE = Object.freeze({
+  runtime_chain: 'user -> Hermes -> OpenClaw -> browser/desktop -> screenshot/result -> Hermes -> user confirmation',
+  claude_code_role: 'dev_debug_test_package_assistant',
+  allowed: [
+    'source_inspection',
+    'bug_fixing',
+    'smoke_tests',
+    'build_verification',
+    'exe_packaging',
+    'skills_plugins_config',
+    'openclaw_hermes_failure_diagnosis',
+  ],
+  forbidden_runtime_actions: [
+    'doudian_listing',
+    'publish',
+    'upload',
+    'payment',
+    'comment',
+    'live_reply_send',
+    'like',
+    'follow',
+    'private_message',
+    'restricted_download',
+  ],
+})
+
+const CLAUDE_CODE_DEV_ASSIST_RE = /源码|代码|修\s*bug|bug|smoke|测试|test|build|构建|打包|EXE|exe|skills?|插件|配置|诊断|调试|debug|日志|报错|失败|检查|验证|package|release/i
+const ECOMMERCE_DOMAIN_RE = /电商|抖店|抖音|douyin|快手|kuaishou|小红书|xiaohongshu|视频号|微信视频号|直播|公屏|弹幕|商品|店铺|橱窗|小黄车|热词|种草|素材库|巡检|爆款/i
+const ECOMMERCE_RUNTIME_ACTION_RE = /打开|搜索|查询|查|读取|截图|输入|填写|上传|发布|提交|上架|付款|评论|回复|公屏回复|私信|点赞|关注|下载|刷视频|巡检|拆解|保存素材|生成话术|生成标题|执行|操作/i
+
+export function classifyClaudeCodeEcommercePolicy(input = {}) {
+  const text = collectPolicyText(input)
+  const hasEcommerceDomain = ECOMMERCE_DOMAIN_RE.test(text)
+  const hasRuntimeAction = ECOMMERCE_RUNTIME_ACTION_RE.test(text)
+  const isDevAssist = CLAUDE_CODE_DEV_ASSIST_RE.test(text)
+  const blocked = hasEcommerceDomain && hasRuntimeAction && !isDevAssist
+
+  return {
+    blocked,
+    reason: blocked ? 'CLAUDE_CODE_ECOMMERCE_RUNTIME_BLOCKED' : 'CLAUDE_CODE_SCOPE_OK',
+    runtime_chain: CLAUDE_CODE_ECOMMERCE_ASSIST_SCOPE.runtime_chain,
+    claude_code_role: CLAUDE_CODE_ECOMMERCE_ASSIST_SCOPE.claude_code_role,
+    message: blocked
+      ? 'Claude Code is limited to dev/debug/test/package assistance for ecommerce. Runtime ecommerce actions must go through Hermes -> OpenClaw -> browser/desktop -> Hermes -> user confirmation.'
+      : '',
+  }
+}
+
+export function isClaudeCodeEcommerceRuntimeBlocked(input = {}) {
+  return classifyClaudeCodeEcommercePolicy(input).blocked
+}
+
+export function routeEcommerceCollaborationTargets(input = {}) {
+  const executor = normalizeAgentId(input.executor || COLLAB_TARGETS.openclaw)
+  const reviewer = normalizeAgentId(input.reviewer || COLLAB_TARGETS.claudeCode)
+  const policy = classifyClaudeCodeEcommercePolicy(input)
+  let nextExecutor = executor
+  let nextReviewer = reviewer
+  const notices = []
+
+  if (policy.blocked && executor === COLLAB_TARGETS.claudeCode) {
+    nextExecutor = COLLAB_TARGETS.openclaw
+    notices.push('executor_routed_from_claude_code_to_openclaw')
+  }
+
+  if (policy.blocked && reviewer === COLLAB_TARGETS.claudeCode) {
+    nextReviewer = COLLAB_TARGETS.hermes
+    notices.push('reviewer_routed_from_claude_code_to_hermes')
+  }
+
+  return {
+    executor: nextExecutor,
+    reviewer: nextReviewer,
+    policy,
+    changed: nextExecutor !== executor || nextReviewer !== reviewer,
+    notices,
+  }
+}
+
 export function normalizeClaudeCodeMode(input = {}) {
   const raw = typeof input === 'string' ? input : (input.mode || input.claudeCodeMode || input.permission_mode || input.permissionMode || '')
   const key = String(raw || CLAUDE_CODE_MODES.safe).trim().replace(/[-\s]+/g, '_').toLowerCase()
@@ -133,26 +212,38 @@ export function saveAgentTaskMessage(message = {}) {
   const taskId = message.task_id || message.taskId || `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const sessionId = message.session_id || message.sessionId || getDefaultSessionId()
   const fromAgent = normalizeAgentId(message.from_agent || message.fromAgent || COLLAB_TARGETS.hermes)
-  const toAgent = normalizeAgentId(message.to_agent || message.toAgent || COLLAB_TARGETS.hermes)
+  const requestedToAgent = normalizeAgentId(message.to_agent || message.toAgent || COLLAB_TARGETS.hermes)
+  const messageType = message.message_type || message.messageType || (message.memory_update ? 'memory_update' : 'task_result')
+  const policy = requestedToAgent === COLLAB_TARGETS.claudeCode && messageType === 'task_request'
+    ? classifyClaudeCodeEcommercePolicy(message)
+    : null
+  const toAgent = policy?.blocked ? COLLAB_TARGETS.hermes : requestedToAgent
   const isClaudeMessage = fromAgent === COLLAB_TARGETS.claudeCode || toAgent === COLLAB_TARGETS.claudeCode || !!message.mode || !!message.claudeCodeMode
   const modeInfo = isClaudeMessage ? normalizeClaudeCodeMode(message) : null
   const artifacts = normalizeArtifacts(message.artifacts)
   const context = buildTaskContext({ ...message, task_id: taskId, session_id: sessionId, artifacts })
+  const content = policy?.blocked
+    ? `${String(message.content || '')}\n\n[policy] ${policy.message}`
+    : String(message.content || '')
   const row = {
     session_id: sessionId,
     task_id: taskId,
     parent_task_id: message.parent_task_id || message.parentTaskId || null,
     from_agent: fromAgent,
     to_agent: toAgent,
-    message_type: message.message_type || message.messageType || (message.memory_update ? 'memory_update' : 'task_result'),
+    requested_to_agent: policy?.blocked ? requestedToAgent : null,
+    message_type: messageType,
     mode: modeInfo?.mode || message.mode || null,
     permission_level: modeInfo?.permission_level || message.permission_level || message.permissionLevel || null,
     requires_confirmation: modeInfo ? !!modeInfo.requires_confirmation : !!(message.requires_confirmation || message.requiresConfirmation),
     mode_warning: modeInfo?.warning || message.mode_warning || message.modeWarning || null,
+    policy_blocked: !!policy?.blocked,
+    policy_reason: policy?.blocked ? policy.reason : null,
+    runtime_chain: policy?.blocked ? policy.runtime_chain : null,
     tool: message.tool || null,
-    status: message.status || 'completed',
+    status: policy?.blocked ? 'blocked' : (message.status || 'completed'),
     title: message.title || shortGoal(message.content || taskId),
-    content: String(message.content || ''),
+    content,
     context,
     artifacts,
     created_at: message.created_at || now,
@@ -264,6 +355,7 @@ export function createCollaborationTask(input = {}) {
   const goal = String(input.goal || '').trim()
   const createdAt = Date.now()
   const claudeMode = normalizeClaudeCodeMode(input.claudeCodeMode || input.mode || CLAUDE_CODE_MODES.safe)
+  const routed = routeEcommerceCollaborationTargets(input)
   const sessionId = input.session_id || input.sessionId || getDefaultSessionId()
   const context = buildTaskContext({ ...input, session_id: sessionId, content: goal })
   const task = {
@@ -272,8 +364,12 @@ export function createCollaborationTask(input = {}) {
     goal,
     title: input.title || shortGoal(goal),
     source: input.source || COLLAB_TARGETS.hermes,
-    executor: input.executor || COLLAB_TARGETS.openclaw,
-    reviewer: input.reviewer || COLLAB_TARGETS.claudeCode,
+    executor: routed.executor,
+    reviewer: routed.reviewer,
+    requestedExecutor: input.executor || COLLAB_TARGETS.openclaw,
+    requestedReviewer: input.reviewer || COLLAB_TARGETS.claudeCode,
+    policyReason: routed.policy.reason,
+    policyNotices: routed.notices,
     claudeCodeMode: claudeMode.mode,
     claudeCodePermissionLevel: claudeMode.permission_level,
     claudeCodeRequiresConfirmation: claudeMode.requires_confirmation,
@@ -307,6 +403,23 @@ function normalizeAgentId(agent) {
   if (value === COLLAB_TARGETS.openclaw) return COLLAB_TARGETS.openclaw
   if (value === COLLAB_TARGETS.hermes) return COLLAB_TARGETS.hermes
   return value || COLLAB_TARGETS.hermes
+}
+
+function collectPolicyText(input = {}) {
+  if (typeof input === 'string') return input
+  const value = input && typeof input === 'object' ? input : {}
+  const context = value.context && typeof value.context === 'object' ? value.context : {}
+  const parts = [
+    value.goal,
+    value.title,
+    value.content,
+    value.message,
+    value.summary,
+    context.summary,
+    ...(Array.isArray(context.important_facts) ? context.important_facts : []),
+    ...(Array.isArray(value.important_facts) ? value.important_facts : []),
+  ]
+  return parts.filter(Boolean).join('\n')
 }
 
 export function shortGoal(text, maxLen = 24) {
@@ -380,6 +493,15 @@ export function buildExecutionBrief(task) {
   const desktopGoal = hasDesktopGoal(task.goal)
   const recurringGoal = hasRecurringGoal(task.goal)
   const executionKickoff = []
+  if (task.executor === COLLAB_TARGETS.claudeCode) {
+    executionKickoff.push(
+      '## Claude Code scope',
+      '- Claude Code is only for source inspection, bug fixes, smoke tests, build verification, EXE packaging, Skills/plugin config, and OpenClaw/Hermes failure diagnosis.',
+      '- Do not use Claude Code to execute ecommerce runtime actions such as Doudian listing, publishing, uploading, payment, commenting, live public-screen replies, likes, follows, private messages, or restricted downloads.',
+      `- Ecommerce runtime chain: ${CLAUDE_CODE_ECOMMERCE_ASSIST_SCOPE.runtime_chain}.`,
+      '',
+    )
+  }
   if (task.executor === COLLAB_TARGETS.openclaw) {
     executionKickoff.push(
       '## 执行启动要求',
@@ -459,18 +581,29 @@ export function buildReviewBrief(task, executionSummary = '') {
 }
 
 export function setPendingDispatch(dispatch) {
-  const modeInfo = dispatch?.target === COLLAB_TARGETS.claudeCode ? normalizeClaudeCodeMode(dispatch) : null
+  const requestedTarget = normalizeAgentId(dispatch?.target || COLLAB_TARGETS.hermes)
+  const policy = requestedTarget === COLLAB_TARGETS.claudeCode ? classifyClaudeCodeEcommercePolicy(dispatch) : null
+  const target = policy?.blocked ? COLLAB_TARGETS.hermes : requestedTarget
+  const modeInfo = target === COLLAB_TARGETS.claudeCode ? normalizeClaudeCodeMode(dispatch) : null
   const sessionId = dispatch?.session_id || dispatch?.sessionId || getDefaultSessionId()
   const context = buildTaskContext({ ...dispatch, session_id: sessionId, task_id: dispatch?.taskId || dispatch?.task_id, content: dispatch?.message || dispatch?.content })
   const payload = {
     ...dispatch,
+    target,
+    requestedTarget: policy?.blocked ? requestedTarget : null,
     session_id: sessionId,
     context,
     artifacts: normalizeArtifacts(dispatch?.artifacts),
+    message: policy?.blocked
+      ? `${policy.message}\n\n${dispatch?.message || dispatch?.content || ''}`
+      : dispatch?.message,
     mode: modeInfo?.mode || dispatch?.mode,
     permission_level: modeInfo?.permission_level || dispatch?.permission_level,
     requires_confirmation: modeInfo ? !!modeInfo.requires_confirmation : !!dispatch?.requires_confirmation,
     mode_warning: modeInfo?.warning || dispatch?.mode_warning || null,
+    policy_blocked: !!policy?.blocked,
+    policy_reason: policy?.blocked ? policy.reason : null,
+    runtime_chain: policy?.blocked ? policy.runtime_chain : null,
     createdAt: Date.now(),
   }
   const queue = readPendingQueue()

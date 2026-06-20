@@ -20,6 +20,14 @@ export function detectStage1Intent(userText = "") {
     };
   }
 
+  if (isStage56VideoPatrolIntent(text)) {
+    return {
+      matched: false,
+      intent: null,
+      reason: "STAGE56_VIDEO_PATROL_INTENT",
+    };
+  }
+
   if (/截图|截屏|发到聊天|当前页面|看看页面|浏览器页面|这个页面|看一下页面/.test(text)) {
     return {
       matched: true,
@@ -73,6 +81,11 @@ export function detectStage1Intent(userText = "") {
     intent: null,
     reason: "NO_STAGE1_INTENT",
   };
+}
+
+function isStage56VideoPatrolIntent(text = "") {
+  const value = String(text || "");
+  return /刷\s*\d*\s*(分钟|分|min|minutes)?|巡检|爆款素材|爆款.*素材|找视频|找灵感|拆解视频|候选视频|找同类|找同行|好的链接|链接交给\s*Hermes|素材库/i.test(value);
 }
 
 export function buildStage1Plan({ intent, userText = "" } = {}) {

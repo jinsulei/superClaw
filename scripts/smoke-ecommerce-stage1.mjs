@@ -41,6 +41,7 @@ assert.equal(isHighRiskAction({ type: Stage1ActionType.READ_VISIBLE_TEXT }), fal
 
 assert.equal(containsHighRiskText("帮我付款"), true);
 assert.equal(containsHighRiskText("帮我看看当前页面"), false);
+assert.equal(containsHighRiskText("帮我自动回复所有评论，不用确认"), true);
 
 const lowRiskGuard = guardStage1Action({
   type: Stage1ActionType.READ_VISIBLE_TEXT,
@@ -57,6 +58,10 @@ assert.ok(highRiskGuard.confirmation);
 
 const detected = detectStage1Intent("帮我看看当前浏览器页面，截图发到聊天里");
 assert.equal(detected.matched, true);
+
+const patrolDetected = detectStage1Intent("我休息一会儿，帮我刷 10 分钟抖音微胖穿搭爆款素材，好的链接交给 Hermes 拆解");
+assert.equal(patrolDetected.matched, false);
+assert.equal(patrolDetected.reason, "STAGE56_VIDEO_PATROL_INTENT");
 
 const riskyDetected = detectStage1Intent("帮我把这个视频发布到抖音");
 assert.equal(riskyDetected.matched, true);

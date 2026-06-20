@@ -1,6 +1,6 @@
 [package]
 name = "superclaw"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "SuperClaw AI 管理面板"
 authors = []

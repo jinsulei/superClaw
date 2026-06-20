@@ -509,12 +509,14 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   if ($SanitizedTestMode) {
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (sanitized SuperClaw test package)
-# No real API key is bundled. Login/model sync must provide usable credentials.
+# No real API key is bundled. Set MINIMAX_API_KEY in the launch environment for
+# local model smoke testing, or configure a model inside the app.
 model:
-  default: superclaw-login-required
-  provider: openai-api
-  api_mode: chat_completions
-${baseUrlYamlLine}platform_toolsets:
+  default: MiniMax-M2.7
+  provider: minimax
+  api_mode: anthropic_messages
+  base_url: https://api.minimax.io/anthropic
+platform_toolsets:
   api_server:
     - hermes-api-server
 terminal:
@@ -528,11 +530,7 @@ api_server:
 skills:
   disabled: []
 "@
-    Set-Content -Path $envPath -Encoding UTF8 -Value @"
-OPENAI_API_KEY=superclaw-login-required
-${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
-API_SERVER_KEY=clawpanel-local
-"@
+    Remove-IfExists $envPath
     return
   }
 
@@ -644,6 +642,19 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
   )) {
     Remove-IfExists (Join-Path $DataRoot $rel)
   }
+}
+
+function Remove-PackagedForbiddenFiles([string]$PackageRoot) {
+  if (-not (Test-Path $PackageRoot -PathType Container)) {
+    return
+  }
+
+  Get-ChildItem -Path $PackageRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Name -in @(".env", ".env.local") -or
+      $_.Name -like "backup-*.patch"
+    } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
@@ -893,6 +904,7 @@ Step "Final packaged runtime cleanup"
 Stop-PackagedProcesses $OutDir
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 Clear-PackagedMachineSpecificPaths $PackagedResources
+Remove-PackagedForbiddenFiles $OutDir
 Ok "Removed logs, locks, and pid files created during package verification"
 
 Step "Verifying package"
