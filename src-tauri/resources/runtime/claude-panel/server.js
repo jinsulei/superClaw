@@ -28,6 +28,7 @@ const CUSTOM_PROJECTS_PATH = path.join(APP_CONFIG_DIR, "projects.json");
 const PROJECT_FOLDERS_PATH = path.join(APP_CONFIG_DIR, "project-folders.json");
 const CONTACT_CARD_PATH =
   process.env.CLEAN_PANEL_CONTACT_CARD_FILE || path.join(APP_CONFIG_DIR, "contact-card.json");
+const DEFAULT_CONTACT_CARD_PATH = path.join(PUBLIC_DIR, "contact-card.json");
 const ANNOUNCEMENT_PATH =
   process.env.CLEAN_PANEL_ANNOUNCEMENT_FILE || path.join(PUBLIC_DIR, "announcement.txt");
 const REMOTE_ADMIN_BASE_URL = String(process.env.CLEAN_PANEL_REMOTE_ADMIN_BASE_URL || process.env.SUPERCLAW_ADMIN_BASE_URL || "")
@@ -183,7 +184,7 @@ function findFileRecursive(root, predicate, limit = 2000) {
 }
 
 function publicContactCard() {
-  const configured = readJson(CONTACT_CARD_PATH) || {};
+  const configured = readJson(CONTACT_CARD_PATH) || readJson(DEFAULT_CONTACT_CARD_PATH) || {};
   return {
     name: String(process.env.CLEAN_PANEL_CONTACT_NAME || configured.name || "").trim(),
     wechat: String(process.env.CLEAN_PANEL_CONTACT_WECHAT || configured.wechat || "").trim(),
@@ -222,14 +223,16 @@ async function handleContactCard(req, res) {
 
   const remote = await fetchRemoteAdminJson("/api/public/contact-card");
   if (remote && remote.contact) {
+    const defaults = publicContactCard();
+    const remoteContact = remote.contact || {};
     sendJson(res, 200, {
       ok: true,
       contact: {
-        name: String(remote.contact.name || "").trim(),
-        wechat: String(remote.contact.wechat || "").trim(),
-        email: String(remote.contact.email || "").trim(),
-        qrCode: String(remote.contact.qrCode || remote.contact.qrCodeUrl || "").trim(),
-        note: String(remote.contact.note || remote.note || "").trim(),
+        name: String(remoteContact.name || defaults.name || "").trim(),
+        wechat: String(remoteContact.wechat || defaults.wechat || "").trim(),
+        email: String(remoteContact.email || defaults.email || "").trim(),
+        qrCode: String(remoteContact.qrCode || remoteContact.qrCodeUrl || defaults.qrCode || "").trim(),
+        note: String(remoteContact.note || remote.note || defaults.note || "").trim(),
       },
       remote: true,
       note: remote.note || "联系方式来自远程管理端。",
@@ -242,6 +245,23 @@ async function handleContactCard(req, res) {
     contact: publicContactCard(),
     remote: false,
     note: "联系方式接口已预留，可通过 contact-card.json、环境变量或远程管理端配置二维码、微信号和邮箱。",
+  });
+}
+
+async function handleFeishuTutorial(req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  const remote = await fetchRemoteAdminJson("/api/public/feishu-tutorial");
+  const tutorialUrl = String(remote?.tutorialUrl || remote?.url || process.env.CLEAN_PANEL_FEISHU_TUTORIAL_URL || "").trim();
+  sendJson(res, 200, {
+    ok: true,
+    configured: Boolean(tutorialUrl),
+    tutorialUrl,
+    message: tutorialUrl ? "已配置飞书链接，点击可打开。" : "飞书链接暂未配置。",
+    remote: Boolean(remote && tutorialUrl),
   });
 }
 
@@ -1906,6 +1926,9 @@ function sendJson(res, status, data) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type",
   });
   res.end(JSON.stringify(data));
 }
@@ -3456,6 +3479,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/contact-card") {
     handleContactCard(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/feishu-tutorial") {
+    handleFeishuTutorial(req, res);
     return;
   }
 

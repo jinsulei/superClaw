@@ -92,7 +92,7 @@ export default {
       }, {
         section: '',
         items: [
-          { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
+          // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
           { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
           { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -113,7 +113,7 @@ export default {
       items: [
         { route: '/models', label: t('sidebar.models'), icon: 'models' },
         { route: '/agents', label: t('sidebar.agents'), icon: 'agents' },
-        { route: '/gateway', label: t('sidebar.gateway'), icon: 'gateway' },
+        // HIDDEN: { route: '/gateway', label: t('sidebar.gateway'), icon: 'gateway' },
         { route: '/channels', label: t('sidebar.channels'), icon: 'channels' },
         // HIDDEN: { route: '/communication', label: t('sidebar.communication'), icon: 'settings' },
         // HIDDEN: { route: '/security', label: t('sidebar.security'), icon: 'security' },
@@ -122,7 +122,7 @@ export default {
       section: t('sidebar.sectionData'),
       items: [
         { route: '/memory', label: t('sidebar.memory'), icon: 'memory', gate: 'memory' },
-        { route: '/dreaming', label: t('sidebar.dreaming'), icon: 'dreaming', gate: 'dreaming' },
+        // HIDDEN: { route: '/dreaming', label: t('sidebar.dreaming'), icon: 'dreaming', gate: 'dreaming' },
         // HIDDEN: { route: '/cron', label: t('sidebar.cron'), icon: 'clock', gate: 'cron' },
         // HIDDEN: { route: '/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
       ]
@@ -137,7 +137,7 @@ export default {
       items: [
         { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
         { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
-        { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
+        // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]

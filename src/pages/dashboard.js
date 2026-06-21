@@ -261,7 +261,6 @@ function renderStatCards(page, services, version, agents, config, panelConfig) {
         ? `<div class="stat-card-meta" style="margin-top:8px;color:var(--warning);line-height:1.6">${t('dashboard.foreignGatewayHint')}</div>
            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
              <button class="btn btn-secondary btn-xs" data-action="resolve-foreign-gateway">${t('dashboard.viewGuidance')}</button>
-             <button class="btn btn-primary btn-xs" data-action="open-settings">${t('dashboard.goSettings')}</button>
            </div>`
         : ''}
     </div>
@@ -277,7 +276,6 @@ function renderStatCards(page, services, version, agents, config, panelConfig) {
            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
              <button class="btn btn-primary btn-xs" data-action="open-cleanup">${t('services.cleanupTitle')}</button>
              <button class="btn btn-secondary btn-xs" data-action="resolve-multi-install">${t('dashboard.viewGuidance')}</button>
-             <button class="btn btn-secondary btn-xs" data-action="open-settings">${t('dashboard.goSettings')}</button>
            </div>`
         : multiInstall && cliBound
           ? `<div class="stat-card-meta" style="margin-top:4px;color:var(--text-tertiary);font-size:11px">✓ ${t('dashboard.multiInstallBoundOk', { count: installCount })}</div>
@@ -357,7 +355,7 @@ function renderOverview(page, services, mcpConfig, backups, config, agents, stat
           </div>
           <div class="overview-card-actions">
             ${foreignGateway
-              ? '<button class="btn btn-secondary btn-xs" data-action="resolve-foreign-gateway">' + t('dashboard.viewGuidance') + '</button><button class="btn btn-primary btn-xs" data-action="open-settings">' + t('dashboard.goSettings') + '</button>'
+              ? '<button class="btn btn-secondary btn-xs" data-action="resolve-foreign-gateway">' + t('dashboard.viewGuidance') + '</button>'
               : gw?.running
               ? '<button class="btn btn-danger btn-xs" data-action="stop-gw">' + t('dashboard.stopBtn') + '</button><button class="btn btn-secondary btn-xs" data-action="restart-gw">' + t('dashboard.restartBtn') + '</button>'
               : '<button class="btn btn-primary btn-xs" data-action="start-gw">' + t('dashboard.startBtn') + '</button>'

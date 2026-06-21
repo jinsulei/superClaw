@@ -112,7 +112,7 @@ export default {
         section: '',
         items: [
           { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-          // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
+          { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
     }
@@ -140,7 +140,7 @@ export default {
         { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
         { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-        // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
+        { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]
     }]
   },

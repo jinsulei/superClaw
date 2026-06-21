@@ -1432,6 +1432,16 @@
 .msg-copy-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .msg-copy-btn.copied { opacity: 1; color: var(--success); }
 
+.sc-chat-stage .sc-msg-group.user .sc-msg-meta {
+  align-self: flex-end;
+  justify-content: flex-end;
+  width: auto;
+}
+
+.sc-chat-stage .sc-msg-group.user .msg-copy-btn {
+  margin-left: 0;
+}
+
 .msg-voice-btn {
   display: inline-flex;
   align-items: center;

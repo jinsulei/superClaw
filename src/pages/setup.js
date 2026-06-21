@@ -433,7 +433,7 @@ function renderSteps(page, { node, git, cliOk, config, version }) {
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
           <button class="btn btn-secondary btn-sm" id="btn-goto-models">${t('setup.configModels')}</button>
-          <button class="btn btn-secondary btn-sm" id="btn-goto-gateway">${t('setup.gatewaySetup')}</button>
+          <!-- HIDDEN: Gateway setup entry is intentionally not exposed in the customer panel. -->
           <button class="btn btn-secondary btn-sm" id="btn-goto-channels">${t('setup.messageChannels')}</button>
         </div>
       </div>

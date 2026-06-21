@@ -6252,7 +6252,7 @@ document.addEventListener("click", (event) => {
   }
 });
 
-hideIntroOverlay();
+initIntroVideo();
 setEmptyState();
 setRunState("idle", "准备就绪");
 applyTheme();

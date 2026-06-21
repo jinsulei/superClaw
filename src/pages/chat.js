@@ -313,7 +313,7 @@ export async function render() {
           <div class="chat-connect-desc" id="chat-connect-desc">${t('chat.connectingGateway')}</div>
           <div class="chat-connect-actions">
             <button class="btn btn-primary btn-sm" id="btn-fix-connect">${t('chat.fixAndReconnect')}</button>
-            <button class="btn btn-secondary btn-sm" id="btn-goto-gateway">${t('chat.gatewaySettings')}</button>
+            <!-- HIDDEN: Gateway settings entry is intentionally not exposed in the customer panel. -->
           </div>
           <div class="chat-connect-hint">${t('chat.firstUseHint')}</div>
         </div>
@@ -3644,6 +3644,8 @@ function appendUserMessage(text, attachments = [], msgTime) {
   if (!_messagesEl || !_typingEl) return
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-user sc-msg-row user'
+  const group = document.createElement('div')
+  group.className = 'sc-msg-group user'
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble user'
 
@@ -3694,12 +3696,11 @@ function appendUserMessage(text, attachments = [], msgTime) {
 
   const meta = document.createElement('div')
   meta.className = 'msg-meta sc-msg-meta'
-  const hasAudioAttachment = Array.isArray(attachments) && attachments.some(att => (att.category || att.type) === 'audio')
-  const canSpeak = !!(text || '').trim() && !hasAudioAttachment
-  meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
+  meta.innerHTML = `<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button><span class="msg-time">${formatTime(msgTime || new Date())}</span>`
 
-  wrap.appendChild(bubble)
-  wrap.appendChild(meta)
+  group.appendChild(bubble)
+  group.appendChild(meta)
+  wrap.appendChild(group)
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()
 }
@@ -3727,7 +3728,8 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
 
   const meta = document.createElement('div')
   meta.className = 'msg-meta sc-msg-meta'
-  meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span><button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
+  const canSpeak = !!(text || '').trim()
+  meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
 
   group.appendChild(bubble)
   group.appendChild(meta)

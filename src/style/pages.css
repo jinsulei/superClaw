@@ -3727,6 +3727,114 @@
   border-color: rgba(239, 68, 68, 0.4);
 }
 
+/* About support */
+.about-support-wrap {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-lg);
+  width: 100%;
+  margin: 18px 0 0;
+}
+
+.about-support-card {
+  margin: 0;
+}
+
+.about-support-body {
+  padding: 16px;
+}
+
+.about-support-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.about-support-section {
+  padding: 14px;
+  border: 1px solid var(--border-secondary, rgba(255,255,255,0.06));
+  border-radius: var(--radius-lg, 12px);
+  background: color-mix(in srgb, var(--bg-secondary, #12121a) 82%, var(--accent, #FFCC66) 5%);
+}
+
+.about-support-kicker {
+  margin-bottom: 4px;
+  color: var(--accent, #FFCC66);
+  font-size: var(--font-size-xs, 11px);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.about-support-title {
+  margin-bottom: 8px;
+  color: var(--text-primary, #e4e4e7);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.about-support-text {
+  margin: 0;
+  color: var(--text-secondary, #a1a1aa);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.about-support-action {
+  width: 100%;
+  justify-content: center;
+  margin-top: 12px;
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.about-contact-layout {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 112px;
+}
+
+.about-contact-qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  overflow: hidden;
+  border: 1px dashed var(--border-primary, rgba(255,255,255,0.1));
+  border-radius: var(--radius-md, 8px);
+  color: var(--text-tertiary, #71717a);
+  background: var(--bg-primary, #0b0b12);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.about-contact-qr img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.about-contact-lines {
+  min-width: 0;
+}
+
+.about-contact-name {
+  margin-bottom: 10px;
+  color: var(--text-primary, #e4e4e7);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.about-contact-line {
+  color: var(--text-secondary, #a1a1aa);
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
 /* OpenClaw 日志中心 */
 .openclaw-logs-page {
   max-width: 1480px;

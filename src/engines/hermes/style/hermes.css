@@ -5583,7 +5583,10 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   padding: 0 4px;
 }
 [data-engine="hermes"] .hm-chat-msg--user .hm-chat-msg-footer {
-  justify-content: flex-end;
+  align-self: stretch;
+  justify-content: space-between;
+  width: 100%;
+  box-sizing: border-box;
 }
 [data-engine="hermes"] .hm-chat-msg-time {
   font-family: var(--hm-font-mono);
@@ -5617,6 +5620,26 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   color: var(--hm-accent);
   background: var(--hm-accent-soft);
   border-color: color-mix(in srgb, var(--hm-accent) 24%, transparent);
+}
+
+[data-engine="hermes"] .hm-chat-voice-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(1px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+[data-engine="hermes"] .hm-chat-voice-tools .hm-chat-msg-copy {
+  opacity: 1;
+  transform: none;
+}
+
+[data-engine="hermes"] .hm-chat-msg:hover .hm-chat-voice-tools,
+[data-engine="hermes"] .hm-chat-voice-tools:focus-within {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 [data-engine="hermes"] .hm-chat-material {
@@ -5870,15 +5893,28 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-read-rate {
-  min-width: 68px;
-  height: 26px;
-  border: 1px solid var(--hm-border-soft);
+  height: 20px;
+  width: 50px;
+  min-width: 40px;
+  border: 1px solid var(--hm-border-subtle);
   border-radius: 999px;
-  background: var(--hm-surface);
-  color: var(--hm-text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 0 8px;
+  background: transparent;
+  color: var(--hm-text-tertiary);
+  font-family: var(--hm-font-sans);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.2;
+  padding: 0 12px 0 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+[data-engine="hermes"] .hm-chat-read-rate:hover,
+[data-engine="hermes"] .hm-chat-read-rate:focus-visible {
+  color: var(--hm-accent);
+  background: var(--hm-accent-soft);
+  border-color: color-mix(in srgb, var(--hm-accent) 24%, transparent);
+  outline: none;
 }
 
 /* Streaming dots pulse (shown while first delta hasn't arrived) */
@@ -8484,34 +8520,148 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 /* Keep the global Hermes sidebar selection visible after dashboard theme overrides. */
 body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
 [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active {
-  background: var(--hm-accent-soft, rgba(202, 138, 4, 0.10)) !important;
-  color: var(--hm-accent, #CA8A04) !important;
+  background: var(--accent-muted) !important;
+  color: var(--accent-hover) !important;
   font-weight: 650;
 }
 body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
 [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before {
-  background: var(--hm-accent, #CA8A04) !important;
+  background: var(--accent) !important;
 }
 body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
 [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg {
-  color: var(--hm-accent, #CA8A04) !important;
+  color: var(--accent-hover) !important;
   opacity: 1;
 }
 [data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
 [data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active,
 [data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active {
-  background: var(--hm-accent-soft, rgba(234, 179, 8, 0.14)) !important;
-  color: var(--hm-accent, #EAB308) !important;
+  background: var(--accent-muted) !important;
+  color: var(--accent-hover) !important;
 }
 [data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
 [data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before,
 [data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active::before {
-  background: var(--hm-accent, #EAB308) !important;
+  background: var(--accent) !important;
 }
 [data-theme="dark"] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
 [data-theme="dark"][data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg,
 [data-theme="dark"] [data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar .nav-item[data-route].active svg {
-  color: var(--hm-accent, #EAB308) !important;
+  color: var(--accent-hover) !important;
+}
+
+/* Align Hermes global sidebar with the shared OpenClaw/Claude theme system.
+   Hermes used to repaint the shell with fixed warm/gold colors; keep its page
+   design, but let the shared sidebar follow the active app theme variables. */
+body[data-active-engine="hermes"] #sidebar,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #sidebar {
+  background: var(--bg-secondary) !important;
+  border-right-color: var(--border-primary) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-header,
+body[data-active-engine="hermes"] .engine-switcher,
+body[data-active-engine="hermes"] .sidebar-footer,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-header,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-switcher,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer {
+  border-color: var(--border-secondary) !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-title,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-title {
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-lg) !important;
+  font-style: normal !important;
+  font-weight: 600 !important;
+  letter-spacing: 0 !important;
+}
+
+body[data-active-engine="hermes"] .engine-switcher-label,
+body[data-active-engine="hermes"] .nav-section-title,
+body[data-active-engine="hermes"] .sidebar-meta,
+body[data-active-engine="hermes"] .sidebar-link,
+body[data-active-engine="hermes"] .sidebar-version,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-switcher-label,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .nav-section-title,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-meta,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-link,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-version {
+  color: var(--text-tertiary) !important;
+  font-family: var(--font-sans) !important;
+  font-style: normal !important;
+  text-transform: uppercase;
+}
+
+body[data-active-engine="hermes"] .nav-item,
+body[data-active-engine="hermes"] #btn-theme-toggle,
+body[data-active-engine="hermes"] .lang-trigger,
+body[data-active-engine="hermes"] .engine-option,
+body[data-active-engine="hermes"] .lang-option,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .nav-item,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #btn-theme-toggle,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-trigger,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-option,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-option {
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+}
+
+body[data-active-engine="hermes"] .nav-item:hover,
+body[data-active-engine="hermes"] #btn-theme-toggle:hover,
+body[data-active-engine="hermes"] .lang-trigger:hover,
+body[data-active-engine="hermes"] .engine-option:hover,
+body[data-active-engine="hermes"] .lang-option:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .nav-item:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] #btn-theme-toggle:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-trigger:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-option:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-option:hover {
+  background: var(--bg-glass-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+body[data-active-engine="hermes"] .engine-current,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-current {
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border-secondary)) !important;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-tertiary)) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+}
+
+body[data-active-engine="hermes"] .engine-current:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-current:hover {
+  border-color: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-tertiary)) !important;
+}
+
+body[data-active-engine="hermes"] .engine-icon,
+body[data-active-engine="hermes"] .engine-option.active,
+body[data-active-engine="hermes"] .engine-active-check,
+body[data-active-engine="hermes"] .lang-option.active,
+body[data-active-engine="hermes"] .lang-option-check,
+body[data-active-engine="hermes"] .sidebar-link:hover,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-icon,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-option.active,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-active-check,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-option.active,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-option-check,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-link:hover {
+  color: var(--accent-hover) !important;
+}
+
+body[data-active-engine="hermes"] .engine-dropdown,
+body[data-active-engine="hermes"] .lang-dropdown,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-dropdown,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .lang-dropdown {
+  background: var(--bg-secondary) !important;
+  border-color: var(--border-primary) !important;
+  box-shadow: var(--shadow-lg) !important;
+  opacity: 1 !important;
+  backdrop-filter: none !important;
 }
 
 /* Restore Hermes pre-full-width chat bubbles. Global chat polish can briefly

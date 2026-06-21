@@ -285,6 +285,17 @@ const PLATFORM_REGISTRY = {
   },
 }
 
+const AVAILABLE_PLATFORM_PRIORITY = ['weixin', 'feishu', 'dingtalk', 'qqbot']
+
+function getAvailablePlatformEntries() {
+  const entries = Object.entries(PLATFORM_REGISTRY)
+  const byId = new Map(entries)
+  return [
+    ...AVAILABLE_PLATFORM_PRIORITY.filter(pid => byId.has(pid)).map(pid => [pid, byId.get(pid)]),
+    ...entries.filter(([pid]) => !AVAILABLE_PLATFORM_PRIORITY.includes(pid)),
+  ]
+}
+
 function parseChannelsRouteIntent() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '')
   return {
@@ -792,7 +803,7 @@ function renderAvailable(page, state) {
   const el = page.querySelector('#platforms-available')
   const configuredIds = new Set(state.configured.map(p => p.id))
 
-  el.innerHTML = Object.entries(PLATFORM_REGISTRY).map(([pid, reg]) => {
+  el.innerHTML = getAvailablePlatformEntries().map(([pid, reg]) => {
     const done = configuredIds.has(pid)
     const disabled = !!reg.disabledReason
     return `

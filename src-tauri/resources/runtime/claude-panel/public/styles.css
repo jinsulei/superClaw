@@ -1598,10 +1598,6 @@ h2 {
   display: none;
 }
 
-.conversation-mode .announcement-shell {
-  display: none;
-}
-
 .announcement-meta {
   display: inline-flex;
   align-items: center;

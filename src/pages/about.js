@@ -10,6 +10,14 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { t, getLang } from '../lib/i18n.js'
 import { getActiveEngineId } from '../lib/engine-manager.js'
 
+const CLAUDE_PANEL_BASE = 'http://127.0.0.1:3020'
+const SUPPORT_FETCH_TIMEOUT_MS = 1800
+const DEFAULT_CONTACT_CARD = {
+  name: '售后支持',
+  email: '573653911@qq.com',
+  qrCode: '/images/contact-qr.jpg',
+}
+
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page'
@@ -79,33 +87,31 @@ async function loadXintianData(page) {
 async function loadHermesData(page) {
   const cards = page.querySelector('#version-cards')
   try {
-    const [hermesInfo, pythonInfo] = await Promise.all([
+    const [hermesInfo, openclawVersion, claudeInfo] = await Promise.all([
       api.checkHermes().catch(() => null),
-      api.checkPython().catch(() => null),
+      api.getVersionInfo().catch(() => null),
+      api.claudeCodeStatus().catch(() => null),
     ])
 
     const panelVersion = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.1.0'
-
-    let panelUpdateHtml = `<span style="color:var(--text-tertiary)">${t('about.checkingUpdate')}</span>`
-    checkNewVersion(cards, panelVersion)
 
     const installed = !!hermesInfo?.installed
     const gwRunning = !!hermesInfo?.gatewayRunning
     const version = hermesInfo?.hermesVersion || hermesInfo?.version || ''
     const model = hermesInfo?.model || ''
     const port = hermesInfo?.gatewayPort || 8642
-    const pyVer = pythonInfo?.version || ''
-    const pyPath = pythonInfo?.path || ''
+    const openclawCurrent = openclawVersion?.current || panelVersion
+    const openclawSource = openclawVersion?.source || openclawVersion?.cli_source || ''
+    const claudeVersion = claudeInfo?.version || ''
+    const claudePath = claudeInfo?.paths?.claude || ''
 
     const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-    const btnSm = 'padding:2px 8px;font-size:var(--font-size-xs)'
-
     cards.innerHTML = `
       <div class="stat-card">
-        <div class="stat-card-header"><span class="stat-card-label">SuperClaw</span></div>
-        <div class="stat-card-value">${panelVersion}</div>
-        <div class="stat-card-meta" id="panel-update-meta" style="display:flex;align-items:center;gap:8px">${panelUpdateHtml}</div>
+        <div class="stat-card-header"><span class="stat-card-label">OpenClaw</span></div>
+        <div class="stat-card-value">${openclawCurrent}</div>
+        <div class="stat-card-meta" style="display:flex;align-items:center;gap:8px">${openclawSource ? esc(openclawSource) : t('about.installed')}</div>
       </div>
       <div class="stat-card">
         <div class="stat-card-header"><span class="stat-card-label">Hermes Agent</span></div>
@@ -115,19 +121,18 @@ async function loadHermesData(page) {
             ? `<span style="color:var(--success)">● Gateway ${t('engine.dashRunning')} · :${port}</span>`
             : `<span style="color:var(--text-tertiary)">○ Gateway ${t('engine.dashStopped')}</span>`}
           ${model ? `<span style="color:var(--text-secondary)">${t('engine.dashModel')}: ${esc(model)}</span>` : ''}
-          ${!installed ? `<a class="btn btn-primary btn-sm" href="#/h/setup" style="${btnSm}">${t('about.hermesSetup')}</a>` : ''}
-          ${installed ? `
-            <button class="btn btn-secondary btn-sm" id="btn-hermes-config" style="${btnSm}">${t('about.hermesConfig')}</button>
-            <button class="btn btn-primary btn-sm" id="btn-hermes-services" style="${btnSm}">${t('engine.hermesServicesTitle')}</button>
-          ` : ''}
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-card-header"><span class="stat-card-label">Python</span></div>
-        <div class="stat-card-value" style="font-size:var(--font-size-sm)">${pyVer || t('about.notInstalled')}</div>
-        <div class="stat-card-meta" style="word-break:break-all">${esc(pyPath)}</div>
+        <div class="stat-card-header"><span class="stat-card-label">Claude Code</span></div>
+        <div class="stat-card-value" style="font-size:var(--font-size-sm)">${claudeVersion || t('about.notInstalled')}</div>
+        <div class="stat-card-meta" style="word-break:break-all">${esc(claudePath)}</div>
       </div>
     `
+
+    page.querySelector('.about-support-wrap')?.remove()
+    cards.insertAdjacentHTML('afterend', renderHermesSupportSection())
+    hydrateHermesSupport(page)
 
     // Hermes 管理按钮事件
     if (installed) {
@@ -235,6 +240,134 @@ async function loadHermesData(page) {
   } catch {
     cards.innerHTML = `<div class="stat-card"><div class="stat-card-label">${t('common.loadFailed')}</div></div>`
   }
+}
+
+function renderHermesSupportSection() {
+  return `
+    <div class="about-support-wrap">
+      <div class="card about-support-card">
+        <div class="card-header">
+          <span class="card-header-title">联系我们</span>
+        </div>
+        <div class="card-body about-support-body">
+          <section class="about-support-section">
+            <div class="about-contact-layout">
+              <div class="about-contact-qr" id="about-contact-qr">
+                <img src="/images/contact-qr.jpg" alt="联系二维码">
+              </div>
+              <div class="about-contact-lines">
+                <div class="about-contact-name" id="about-contact-name">售后支持</div>
+                <div class="about-contact-line" id="about-contact-email">邮箱：573653911@qq.com</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="card about-support-card">
+        <div class="card-header">
+          <span class="card-header-title">使用教程</span>
+        </div>
+        <div class="card-body about-support-body">
+          <section class="about-support-section">
+            <div class="about-support-kicker">飞书</div>
+            <div class="about-support-title">飞书教程与协作入口</div>
+            <p class="about-support-text" id="about-feishu-text">正在读取飞书链接...</p>
+            <button class="btn btn-secondary about-support-action" id="btn-about-feishu" type="button" disabled>
+              打开飞书链接
+            </button>
+          </section>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+async function hydrateHermesSupport(page) {
+  const [contactResult, feishuResult] = await Promise.allSettled([
+    fetchPanelJson('/api/contact-card'),
+    fetchPanelJson('/api/feishu-tutorial'),
+  ])
+
+  const contactData = contactResult.status === 'fulfilled' ? contactResult.value : null
+  const contact = mergeContactDefaults(contactData?.contact)
+  setText(page, '#about-contact-name', contact.name)
+  setText(page, '#about-contact-email', `邮箱：${contact.email}`)
+
+  const qrEl = page.querySelector('#about-contact-qr')
+  const qrCode = String(contact.qrCode || '').trim()
+  if (qrEl && qrCode) {
+    qrEl.innerHTML = `<img src="${escapeHtml(resolveContactQrUrl(qrCode, contactData))}" alt="联系二维码">`
+  }
+
+  const feishuData = feishuResult.status === 'fulfilled' ? feishuResult.value : null
+  const url = String(feishuData?.tutorialUrl || feishuData?.url || feishuData?.link || '').trim()
+  const message = String(feishuData?.message || '').trim()
+  const feishuText = page.querySelector('#about-feishu-text')
+  const feishuBtn = page.querySelector('#btn-about-feishu')
+  if (feishuText && feishuBtn) {
+    if (url) {
+      feishuText.textContent = message || '已配置飞书教程链接，可点击打开。'
+      feishuBtn.disabled = false
+      feishuBtn.addEventListener('click', () => openExternalUrl(url))
+    } else {
+      feishuText.textContent = message || '飞书教程链接暂未配置。'
+      feishuBtn.disabled = true
+    }
+  }
+}
+
+async function fetchPanelJson(path) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), SUPPORT_FETCH_TIMEOUT_MS)
+  try {
+    const resp = await fetch(`${CLAUDE_PANEL_BASE}${path}?t=${Date.now()}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    return await resp.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function setText(root, selector, text) {
+  const el = root.querySelector(selector)
+  if (el) el.textContent = text
+}
+
+function openExternalUrl(url) {
+  try {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  } catch (err) {
+    console.warn('[about] open support url failed:', err)
+  }
+}
+
+function mergeContactDefaults(remoteContact) {
+  const remote = remoteContact || {}
+  return {
+    name: String(remote.name || DEFAULT_CONTACT_CARD.name).trim(),
+    email: String(remote.email || DEFAULT_CONTACT_CARD.email).trim(),
+    qrCode: String(remote.qrCode || remote.qrCodeUrl || DEFAULT_CONTACT_CARD.qrCode).trim(),
+  }
+}
+
+function resolveContactQrUrl(url, contactData) {
+  if (url === DEFAULT_CONTACT_CARD.qrCode && !contactData?.remote) return url
+  return resolvePanelAssetUrl(url)
+}
+
+function resolvePanelAssetUrl(url) {
+  if (!url) return ''
+  if (/^(https?:|data:|blob:)/i.test(url)) return url
+  if (url.startsWith('/')) return `${CLAUDE_PANEL_BASE}${url}`
+  return `${CLAUDE_PANEL_BASE}/${url.replace(/^\.?\//, '')}`
+}
+
+function escapeHtml(str) {
+  return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
 async function loadData(page) {
