@@ -631,7 +631,7 @@ function convertAnthropicToOpenAi(body, relayConfig) {
     });
   }
   return {
-    model: body.model || relayConfig.model,
+    model: relayConfig.model || body.model,
     messages,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,

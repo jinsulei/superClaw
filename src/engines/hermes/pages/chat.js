@@ -1601,12 +1601,14 @@ export function render() {
             <div class="hm-chat-msg-footer sc-msg-meta">
               <span class="hm-chat-msg-time">${escHtml(formatTime(m.timestamp))}</span>
               ${canSpeak ? `
+                <span class="hm-chat-voice-tools">
                 <button class="hm-chat-msg-copy hm-chat-msg-voice ${voicePlaybackKey === m.id ? 'is-speaking' : ''}" data-voice-mid="${escAttr(m.id)}" title="${escHtml(voicePlaybackKey === m.id ? t('engine.chatVoiceStopSpeak') : t('engine.chatVoiceSpeak'))}">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg><span>${escHtml(t('engine.chatVoiceSpeak'))}</span>
                 </button>
                 <select class="hm-chat-read-rate" data-voice-rate-mid="${escAttr(m.id)}" aria-label="朗读速度">
                   ${[0.75, 1, 1.25, 1.5, 2].map(rate => `<option value="${rate}" ${Math.abs(voiceRate - rate) < 0.001 ? 'selected' : ''}>${rate}x</option>`).join('')}
                 </select>
+                </span>
               ` : ''}
               ${canCopy ? `
                 <button class="hm-chat-msg-copy" data-copy-mid="${escAttr(m.id)}" title="${escHtml(t('engine.chatCopyMessage'))}">

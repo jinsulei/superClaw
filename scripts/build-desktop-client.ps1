@@ -84,6 +84,120 @@ function Get-ConfiguredYyapiBaseUrl {
   return ""
 }
 
+function Read-EnvFileValue([string]$Path, [string]$Name) {
+  if (-not (Test-Path $Path -PathType Leaf)) {
+    return ""
+  }
+  $prefix = "$Name="
+  foreach ($line in (Get-Content -Path $Path -ErrorAction SilentlyContinue)) {
+    if ($line -and $line.StartsWith($prefix)) {
+      return $line.Substring($prefix.Length).Trim().Trim('"').Trim("'")
+    }
+  }
+  return ""
+}
+
+function Set-EnvTextValue([string]$Text, [string]$Name, [string]$Value) {
+  $pattern = "^\s*" + [regex]::Escape($Name) + "\s*="
+  $lines = @()
+  $seen = $false
+  foreach ($line in ($Text -split "\r?\n")) {
+    if ($line -match $pattern) {
+      if (-not $seen) {
+        $lines += "$Name=$Value"
+        $seen = $true
+      }
+      continue
+    }
+    if ($line -ne "") {
+      $lines += $line
+    }
+  }
+  if (-not $seen) {
+    $lines += "$Name=$Value"
+  }
+  return (($lines -join "`n").TrimEnd() + "`n")
+}
+
+function Get-HermesEnvPath {
+  if ($script:ResourcesDir) {
+    return Join-Path $script:ResourcesDir "data\hermes\.env"
+  }
+  return ""
+}
+
+function Get-PackagedHermesEnvPath {
+  if ($script:OutDir) {
+    return Join-Path $script:OutDir "resources\data\hermes\.env"
+  }
+  return ""
+}
+
+function Is-UsableSecret([string]$Value) {
+  return $Value -and $Value.Trim() -and $Value -notmatch '\$\{' -and $Value -ne "superclaw-login-required"
+}
+
+function Is-MiniMaxBaseUrl([string]$Value) {
+  return $Value -and ($Value -match 'minimax|minimaxi')
+}
+
+function Get-ConfiguredMiniMaxApiKey {
+  if ($script:ConfiguredMiniMaxApiKey -and (Is-UsableSecret $script:ConfiguredMiniMaxApiKey)) {
+    return $script:ConfiguredMiniMaxApiKey
+  }
+
+  foreach ($name in @("MINIMAX_API_KEY", "MINIMAX_CN_API_KEY")) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if (Is-UsableSecret $value) {
+      return $value.Trim()
+    }
+  }
+
+  foreach ($envPath in @((Get-HermesEnvPath), (Get-PackagedHermesEnvPath))) {
+    foreach ($name in @("MINIMAX_API_KEY", "MINIMAX_CN_API_KEY")) {
+      $value = Read-EnvFileValue $envPath $name
+      if (Is-UsableSecret $value) {
+        return $value.Trim()
+      }
+    }
+
+    $openAiBase = Read-EnvFileValue $envPath "OPENAI_BASE_URL"
+    $openAiKey = Read-EnvFileValue $envPath "OPENAI_API_KEY"
+    if ((Is-MiniMaxBaseUrl $openAiBase) -and (Is-UsableSecret $openAiKey)) {
+      return $openAiKey.Trim()
+    }
+  }
+  return ""
+}
+
+function Get-ConfiguredMiniMaxBaseUrl {
+  if ($script:ConfiguredMiniMaxBaseUrl -and $script:ConfiguredMiniMaxBaseUrl.Trim()) {
+    return $script:ConfiguredMiniMaxBaseUrl.Trim().TrimEnd("/")
+  }
+
+  foreach ($name in @("MINIMAX_BASE_URL", "MINIMAX_CN_BASE_URL")) {
+    $value = [Environment]::GetEnvironmentVariable($name)
+    if ($value -and $value.Trim()) {
+      return $value.Trim().TrimEnd("/")
+    }
+  }
+
+  foreach ($envPath in @((Get-HermesEnvPath), (Get-PackagedHermesEnvPath))) {
+    foreach ($name in @("MINIMAX_BASE_URL", "MINIMAX_CN_BASE_URL")) {
+      $value = Read-EnvFileValue $envPath $name
+      if ($value -and $value.Trim()) {
+        return $value.Trim().TrimEnd("/")
+      }
+    }
+
+    $openAiBase = Read-EnvFileValue $envPath "OPENAI_BASE_URL"
+    if (Is-MiniMaxBaseUrl $openAiBase) {
+      return $openAiBase.Trim().TrimEnd("/")
+    }
+  }
+  return "https://api.minimaxi.com/v1"
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$Title) {
   Step $Title
   Write-Host ("  > " + $File + " " + ($Arguments -join " ")) -ForegroundColor DarkGray
@@ -334,7 +448,7 @@ function Sync-SuperClawOpenClawPlugins {
   Ok "SuperClaw OpenClaw plugins are installed into the runtime package path"
 }
 
-function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
+function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
   # Keep the packaged template path-relative. Absolute paths under Chinese
   # directories have been observed to get mojibake-corrupted and break JSON
@@ -349,6 +463,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     "weather"
   )
   New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "workspace") -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $OpenClawDataDir "agents\main\agent") -Force | Out-Null
   $RuntimeSkills = Join-Path $ResourcesDir "runtime\openclaw\skills"
   $PortableSkills = Join-Path $OpenClawDataDir "skills"
   if (Test-Path $RuntimeSkills -PathType Container) {
@@ -358,11 +473,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
   $providers = [ordered]@{}
   $defaultModelRef = ""
+  $fallbackModelRefs = @()
   $defaultModels = [ordered]@{}
 
   # MiniMax provider (API key from environment variable, base URL from env or default)
-  $minimaxApiKey = $env:MINIMAX_API_KEY
-  $minimaxBaseUrl = if ($env:MINIMAX_BASE_URL) { $env:MINIMAX_BASE_URL } else { "https://api.minimax.io/v1" }
+  $minimaxApiKey = if ($SanitizedTestMode) { "" } else { Get-ConfiguredMiniMaxApiKey }
+  $minimaxBaseUrl = Get-ConfiguredMiniMaxBaseUrl
   if ($minimaxApiKey -and $minimaxApiKey -notmatch '\$\{') {
     $providers.minimax = [ordered]@{
       baseUrl = $minimaxBaseUrl
@@ -370,7 +486,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
       api = "openai-completions"
       models = @(
         [ordered]@{
-          id = "minimax-m2.7"
+          id = "MiniMax-M2.7"
           name = "MiniMax M2.7"
           api = "openai-completions"
           reasoning = $false
@@ -379,7 +495,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
           maxTokens = 4096
         },
         [ordered]@{
-          id = "minimax-m2.5"
+          id = "MiniMax-M2.5"
           name = "MiniMax M2.5"
           api = "openai-completions"
           reasoning = $false
@@ -389,8 +505,10 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         }
       )
     }
-    $defaultModelRef = "minimax/minimax-m2.7"
+    $defaultModelRef = "minimax/MiniMax-M2.7"
+    $fallbackModelRefs = @("minimax/MiniMax-M2.5")
     $defaultModels[$defaultModelRef] = [ordered]@{}
+    $defaultModels["minimax/MiniMax-M2.5"] = [ordered]@{}
   }
 
   # yyapi后端地址保留用于接口调用，但不作为AI模型供应商
@@ -410,7 +528,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         workspace = $workspace
         model = [ordered]@{
           primary = $defaultModelRef
-          fallbacks = @()
+          fallbacks = @($fallbackModelRefs)
         }
         models = $defaultModels
         contextInjection = "never"
@@ -425,8 +543,9 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
         workspace = $workspace
         model = [ordered]@{
           primary = $defaultModelRef
-          fallbacks = @()
+          fallbacks = @($fallbackModelRefs)
         }
+        models = $defaultModels
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
         tools = [ordered]@{
           profile = "minimal"
@@ -503,6 +622,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
   }
 
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "openclaw.json") ($config | ConvertTo-Json -Depth 20)
+  Write-Utf8NoBom (Join-Path $OpenClawDataDir "agents\main\agent\models.json") (([ordered]@{ providers = $providers }) | ConvertTo-Json -Depth 20)
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
 }
 
@@ -520,12 +640,47 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
 
+function Write-PortableClaudeRelayConfig([string]$ClaudePanelDataDir, [bool]$SanitizedTestMode = $false) {
+  New-Item -ItemType Directory -Path $ClaudePanelDataDir -Force | Out-Null
+  if ($SanitizedTestMode) {
+    return
+  }
+
+  $minimaxApiKey = Get-ConfiguredMiniMaxApiKey
+  if (-not (Is-UsableSecret $minimaxApiKey)) {
+    Warn "MiniMax API key was not found; Claude Code relay-config.json will not be bundled"
+    return
+  }
+
+  $minimaxBaseUrl = Get-ConfiguredMiniMaxBaseUrl
+  $config = [ordered]@{
+    enabled = $true
+    interfaceType = "relay"
+    name = "MiniMax"
+    provider = "openai-compatible"
+    baseUrl = $minimaxBaseUrl
+    model = "MiniMax-M2.7"
+    branchModels = @("MiniMax-M2.7", "MiniMax-M2.5")
+    apiKey = $minimaxApiKey
+    managedBy = "superclaw-minimax"
+    updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+  }
+  Write-Utf8NoBom (Join-Path $ClaudePanelDataDir "relay-config.json") ($config | ConvertTo-Json -Depth 10)
+}
+
 function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
-  $minimaxApiKey = if ($env:MINIMAX_API_KEY) { $env:MINIMAX_API_KEY } else { "" }
-  $minimaxBaseUrl = if ($env:MINIMAX_BASE_URL) { $env:MINIMAX_BASE_URL } else { "https://api.minimax.io/v1" }
+  $minimaxApiKey = Get-ConfiguredMiniMaxApiKey
+  $minimaxBaseUrl = Get-ConfiguredMiniMaxBaseUrl
+  $defaultModel = if ($minimaxApiKey) { "MiniMax-M2.7" } else { "superclaw-login-required" }
+  $openAiApiKey = if ($minimaxApiKey) { $minimaxApiKey } else { "superclaw-login-required" }
+  if ($SanitizedTestMode) {
+    $minimaxApiKey = ""
+    $defaultModel = "superclaw-login-required"
+    $openAiApiKey = "superclaw-login-required"
+  }
   # 使用MiniMax作为默认模型供应商，不再使用yyapi
   $baseUrlYamlLine = if ($minimaxApiKey) { "  base_url: $minimaxBaseUrl`n" } else { "" }
   $baseUrlEnvLine = if ($minimaxApiKey) { "OPENAI_BASE_URL=$minimaxBaseUrl`n" } else { "" }
@@ -537,7 +692,7 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
 # Hermes Agent configuration (sanitized SuperClaw test package)
 # No real API key is bundled. Login/model sync must provide usable credentials.
 model:
-  default: superclaw-login-required
+  default: $defaultModel
   provider: openai-api
   api_mode: chat_completions
 ${baseUrlYamlLine}platform_toolsets:
@@ -555,7 +710,7 @@ skills:
   disabled: []
 "@
     Set-Content -Path $envPath -Encoding UTF8 -Value @"
-OPENAI_API_KEY=superclaw-login-required
+OPENAI_API_KEY=$openAiApiKey
 ${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
 "@
@@ -566,7 +721,7 @@ API_SERVER_KEY=clawpanel-local
     Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (managed by SuperClaw)
 model:
-  default: superclaw-login-required
+  default: $defaultModel
   provider: openai-api
 ${baseUrlYamlLine}platform_toolsets:
   api_server:
@@ -584,33 +739,39 @@ skills:
 "@
   } else {
     $text = Get-Content -Raw -Path $configPath
-    if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+provider:\s*\S+') {
+    if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+default:\s*\S+') {
+      $text = $text -replace '(?m)^(model:\s*\r?\n)', "`$1  default: $defaultModel`n"
+    }
+    if ($text -match '(?m)^\s+default:\s*\S+') {
+      $text = $text -replace '(?m)^(\s+default:\s*).+$', "`${1}$defaultModel"
+    }
+    if ($text -match '(?m)^\s+provider:\s*\S+') {
+      $text = $text -replace '(?m)^(\s+provider:\s*).+$', '${1}openai-api'
+    } else {
       $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
     }
-    $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
-    if ($yyapiBaseUrl -and $text -notmatch '(?m)^\s+base_url:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: $yyapiBaseUrl`n"
+    if ($minimaxApiKey) {
+      if ($text -match '(?m)^\s+base_url:\s*\S+') {
+        $text = $text -replace '(?m)^(\s+base_url:\s*).+$', "`${1}$minimaxBaseUrl"
+      } else {
+        $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: $minimaxBaseUrl`n"
+      }
+    } else {
+      $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
     }
     Set-Content -Path $configPath -Encoding UTF8 -Value $text
   }
 
-  # Preserve existing MiniMax (and other custom) env vars when repairing .env
-  $preservedLines = @()
-  if (Test-Path $envPath) {
-    $existingLines = Get-Content $envPath
-    foreach ($line in $existingLines) {
-      if ($line -match '^(MINIMAX_|DEEPSEEK_|ANTHROPIC_|CUSTOM_)') {
-        $preservedLines += $line
-      }
-    }
+  $envText = if (Test-Path $envPath) { Get-Content -Raw -Path $envPath } else { "" }
+  $envText = Set-EnvTextValue $envText "OPENAI_API_KEY" $openAiApiKey
+  if ($minimaxApiKey) {
+    $envText = Set-EnvTextValue $envText "OPENAI_BASE_URL" $minimaxBaseUrl
+    $envText = Set-EnvTextValue $envText "MINIMAX_API_KEY" $minimaxApiKey
+    $envText = Set-EnvTextValue $envText "MINIMAX_BASE_URL" $minimaxBaseUrl
   }
-  $preservedBlock = if ($preservedLines.Count -gt 0) { ($preservedLines -join "`n") + "`n" } else { "" }
-  Set-Content -Path $envPath -Encoding UTF8 -Value @"
-OPENAI_API_KEY=superclaw-login-required
-${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
-API_SERVER_KEY=clawpanel-local
-${envApiKeyLine}${envBaseUrlLine}${preservedBlock}
-"@
+  $envText = Set-EnvTextValue $envText "GATEWAY_ALLOW_ALL_USERS" "true"
+  $envText = Set-EnvTextValue $envText "API_SERVER_KEY" "clawpanel-local"
+  Set-Content -Path $envPath -Encoding UTF8 -Value $envText
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -659,8 +820,9 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
     Remove-IfExists (Join-Path $ClaudeConfig $name)
   }
 
-  Write-PortableOpenClawConfig $DotOpenClaw
+  Write-PortableOpenClawConfig $DotOpenClaw $SanitizedTestMode
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
+  Write-PortableClaudeRelayConfig $ClaudePanelData $SanitizedTestMode
   Repair-HermesConfig $HermesData $SanitizedTestMode
 }
 
@@ -744,6 +906,10 @@ $ExeSource = Join-Path $TauriDir "target\$ModeDir\superclaw.exe"
 $ExeDest = Join-Path $OutDir "superclaw.exe"
 
 Set-Location $Root
+$script:ConfiguredMiniMaxApiKey = ""
+$script:ConfiguredMiniMaxBaseUrl = ""
+$script:ConfiguredMiniMaxApiKey = Get-ConfiguredMiniMaxApiKey
+$script:ConfiguredMiniMaxBaseUrl = Get-ConfiguredMiniMaxBaseUrl
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  SuperClaw Desktop Client Builder" -ForegroundColor Cyan
