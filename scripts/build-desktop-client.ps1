@@ -55,6 +55,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$DefaultYyapiBaseUrl = "http://124.222.21.44:3002/v1"
 
 function Step([string]$Message) {
   Write-Host ""
@@ -74,12 +75,15 @@ function Fail([string]$Message) {
   exit 1
 }
 
-function Get-ConfiguredYyapiBaseUrl {
+function Get-ConfiguredYyapiBaseUrl([bool]$AllowDefault = $true) {
   foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
     $value = [Environment]::GetEnvironmentVariable($name)
     if ($value -and $value.Trim()) {
       return $value.Trim().TrimEnd("/")
     }
+  }
+  if ($AllowDefault) {
+    return $DefaultYyapiBaseUrl.TrimEnd("/")
   }
   return ""
 }
@@ -334,7 +338,7 @@ function Sync-SuperClawOpenClawPlugins {
   Ok "SuperClaw OpenClaw plugins are installed into the runtime package path"
 }
 
-function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
+function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $OpenClawDataDir -Force | Out-Null
   # Keep the packaged template path-relative. Absolute paths under Chinese
   # directories have been observed to get mojibake-corrupted and break JSON
@@ -355,7 +359,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir) {
     Copy-Directory $RuntimeSkills $PortableSkills
   }
 
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl (-not $SanitizedTestMode)
   $providers = [ordered]@{}
   $defaultModelRef = ""
   $defaultModels = [ordered]@{}
@@ -508,7 +512,7 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl (-not $SanitizedTestMode)
   $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
   $baseUrlEnvLine = if ($yyapiBaseUrl) { "OPENAI_BASE_URL=$yyapiBaseUrl`n" } else { "" }
 
@@ -542,12 +546,13 @@ API_SERVER_KEY=clawpanel-local
     return
   }
 
-  if (-not (Test-Path $configPath)) {
-    Set-Content -Path $configPath -Encoding UTF8 -Value @"
+  Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (managed by SuperClaw)
+# Rewritten during portable packaging to avoid leaking local provider state.
 model:
   default: superclaw-login-required
   provider: openai-api
+  api_mode: chat_completions
 ${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
@@ -562,17 +567,6 @@ api_server:
 skills:
   disabled: []
 "@
-  } else {
-    $text = Get-Content -Raw -Path $configPath
-    if ($text -match '(?m)^model:\s*$' -and $text -notmatch '(?m)^\s+provider:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+default:.*\r?\n)', "`$1  provider: openai-api`n"
-    }
-    $text = $text -replace '(?m)^(\s+provider:\s*)(custom|openai)\s*$', '${1}openai-api'
-    if ($yyapiBaseUrl -and $text -notmatch '(?m)^\s+base_url:\s*\S+') {
-      $text = $text -replace '(?m)^(\s+provider:.*\r?\n)', "`$1  base_url: $yyapiBaseUrl`n"
-    }
-    Set-Content -Path $configPath -Encoding UTF8 -Value $text
-  }
 
   Set-Content -Path $envPath -Encoding UTF8 -Value @"
 OPENAI_API_KEY=superclaw-login-required
@@ -627,7 +621,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
     Remove-IfExists (Join-Path $ClaudeConfig $name)
   }
 
-  Write-PortableOpenClawConfig $DotOpenClaw
+  Write-PortableOpenClawConfig $DotOpenClaw $SanitizedTestMode
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
   Repair-HermesConfig $HermesData $SanitizedTestMode
 }
