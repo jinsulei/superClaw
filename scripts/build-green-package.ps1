@@ -3,12 +3,23 @@ param(
   [string]$ZipPath = "",
   [string]$TestExtract = "",
   [switch]$SkipBuild,
-  [switch]$SkipZip
+  [switch]$SkipZip,
+  [switch]$SanitizedTest,
+  [switch]$TestBuild,
+  [switch]$DisableYyapi,
+  [switch]$SkipActivation,
+  [switch]$PortableMode,
+  [switch]$FailIfPortOccupied
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DateStamp = Get-Date -Format "yyyyMMdd"
+$script:EffectiveSanitizedTest = $SanitizedTest.IsPresent -or $TestBuild.IsPresent
+$script:EffectiveDisableYyapi = $DisableYyapi.IsPresent -or $script:EffectiveSanitizedTest
+$script:EffectiveSkipActivation = $SkipActivation.IsPresent -or $script:EffectiveSanitizedTest
+$script:EffectivePortableMode = $PortableMode.IsPresent -or $script:EffectiveSanitizedTest
+$script:EffectiveFailIfPortOccupied = $true
 
 function Step([string]$Message) {
   Write-Host ""
@@ -60,6 +71,36 @@ function Assert-FileMinSize([string]$Path, [int64]$MinBytes, [string]$Label) {
   }
 }
 
+function Get-GreenRuntimeRequirements {
+  @(
+    [pscustomobject]@{ Label = "OpenClaw launcher"; Path = (Join-Path $Root "src-tauri\resources\runtime\openclaw\openclaw.cmd"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "Bundled OpenClaw Node"; Path = (Join-Path $Root "src-tauri\resources\runtime\openclaw\node.exe"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "OpenClaw runtime dir"; Path = (Join-Path $Root "src-tauri\resources\runtime\openclaw"); Type = "Container" },
+    [pscustomobject]@{ Label = "Hermes agent offline package"; Path = (Join-Path $Root "src-tauri\resources\hermes-agent-main.zip"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "uv tools"; Path = (Join-Path $Root "src-tauri\resources\uv-tools"); Type = "Container" },
+    [pscustomobject]@{ Label = "uv python"; Path = (Join-Path $Root "src-tauri\resources\uv-python"); Type = "Container" },
+    [pscustomobject]@{ Label = "OCR runtime"; Path = (Join-Path $Root "src-tauri\resources\runtime\ocr"); Type = "Container" },
+    [pscustomobject]@{ Label = "OCR data"; Path = (Join-Path $Root "src-tauri\resources\data\ocr"); Type = "Container" }
+  )
+}
+
+function Assert-GreenRuntimeRequirements {
+  $missing = @()
+  foreach ($item in Get-GreenRuntimeRequirements) {
+    if (-not (Test-Path -LiteralPath $item.Path -PathType $item.Type)) {
+      $missing += $item
+    }
+  }
+  if ($missing.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Missing required green package runtime resources:" -ForegroundColor Red
+    foreach ($item in $missing) {
+      Write-Host (" - {0}: {1}" -f $item.Label, $item.Path) -ForegroundColor Red
+    }
+    Fail "Green package runtime prerequisites are incomplete. Do not copy old packages, download runtime, or create placeholder files in this step."
+  }
+}
+
 function Test-GreenOcrRuntime([string]$OpenCloudDir, [string]$NodeExe) {
   $ocrRuntime = Join-Path $OpenCloudDir "resources\runtime\ocr"
   $ocrData = Join-Path $OpenCloudDir "resources\data\ocr"
@@ -99,6 +140,9 @@ function Write-Utf8File([string]$Path, [string]$Content) {
 }
 
 function Get-ConfiguredYyapiBaseUrl {
+  if ($script:EffectiveDisableYyapi) {
+    return ""
+  }
   foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
     $value = [Environment]::GetEnvironmentVariable($name)
     if ($value -and $value.Trim()) {
@@ -114,7 +158,14 @@ function Write-OpenClawConfig([string]$Dir) {
   New-Item -ItemType Directory -Path (Join-Path $Dir "agents\main\agent") -Force | Out-Null
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
-    meta = [ordered]@{ lastTouchedVersion = "YY1.0.1"; package = "OpenCloud-Hermes-Green" }
+    meta = [ordered]@{
+      lastTouchedVersion = "YY1.0.1"
+      package = "OpenCloud-Hermes-Green"
+      sanitizedTest = $script:EffectiveSanitizedTest
+      disableYyapi = $script:EffectiveDisableYyapi
+      skipActivation = $script:EffectiveSkipActivation
+      portableMode = $script:EffectivePortableMode
+    }
     models = [ordered]@{
       providers = [ordered]@{
         minimax = [ordered]@{
@@ -124,6 +175,22 @@ function Write-OpenClawConfig([string]$Dir) {
           models = @(
             [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
             [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+          )
+        }
+        "openai-compatible" = [ordered]@{
+          baseUrl = '${OPENAI_COMPATIBLE_BASE_URL}'
+          apiKey = '${OPENAI_API_KEY}'
+          api = "openai-chat-completions"
+          models = @(
+            [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+          )
+        }
+        custom = [ordered]@{
+          baseUrl = '${CUSTOM_OPENAI_BASE_URL}'
+          apiKey = '${CUSTOM_API_KEY}'
+          api = "openai-chat-completions"
+          models = @(
+            [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
           )
         }
       }
@@ -185,6 +252,22 @@ function Write-OpenClawConfig([string]$Dir) {
         models = @(
           [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
           [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+        )
+      }
+      "openai-compatible" = [ordered]@{
+        baseUrl = '${OPENAI_COMPATIBLE_BASE_URL}'
+        apiKey = '${OPENAI_API_KEY}'
+        api = "openai-chat-completions"
+        models = @(
+          [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+        )
+      }
+      custom = [ordered]@{
+        baseUrl = '${CUSTOM_OPENAI_BASE_URL}'
+        apiKey = '${CUSTOM_API_KEY}'
+        api = "openai-chat-completions"
+        models = @(
+          [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
         )
       }
     }
@@ -266,6 +349,39 @@ function tcpOpen(port) {
   });
 }
 
+function getPortOwnerReport(port) {
+  if (process.platform !== 'win32') return 'Port owner lookup is only implemented on Windows.';
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+$conns = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ${port} -State Listen)
+$rows = foreach ($c in $conns) {
+  $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)"
+  [pscustomobject]@{
+    PID = $c.OwningProcess
+    ProcessName = $p.Name
+    CommandLine = $p.CommandLine
+  }
+}
+$rows | ConvertTo-Json -Depth 3
+`;
+  try {
+    const raw = cp.execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+    if (!raw) return 'No owning process details found.';
+    const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed) ? parsed : [parsed];
+    return rows.map(row => {
+      const commandLine = String(row.CommandLine || '').replace(/\s+/g, ' ').trim();
+      return `PID: ${row.PID || 'unknown'}\nProcessName: ${row.ProcessName || 'unknown'}\nCommandLine: ${commandLine || '(empty)'}`;
+    }).join('\n---\n');
+  } catch (err) {
+    return `Unable to query owner details: ${err.message || err}`;
+  }
+}
+
 async function waitTcp(port, label, timeoutMs = 45000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -292,15 +408,14 @@ async function postJson(url, body = {}) {
 async function startPanel() {
   const serve = path.join(app, 'scripts', 'serve.js');
   if (!exists(serve)) fail('Missing OpenCloud\\scripts\\serve.js. Please extract the full package again.');
-  if (!(await tcpOpen(1420))) {
-    log('Starting control panel: http://127.0.0.1:1420');
-    spawnManaged(nodeExe, [serve, '--host', '127.0.0.1', '--port', '1420'], {
-      cwd: app,
-      env: { ...process.env, PORT: '1420', HOST: '127.0.0.1' },
-    });
-  } else {
-    log('Port 1420 is already running. Reusing existing panel service.');
+  if (await tcpOpen(1420)) {
+    fail(`Port 1420 is already occupied.\n${getPortOwnerReport(1420)}\nGreen package tests never reuse an unknown 1420 service. Close the occupying process and retry.`);
   }
+  log('Starting control panel: http://127.0.0.1:1420');
+  spawnManaged(nodeExe, [serve, '--host', '127.0.0.1', '--port', '1420'], {
+    cwd: app,
+    env: { ...process.env, PORT: '1420', HOST: '127.0.0.1' },
+  });
   if (!(await waitTcp(1420, 'Panel progress', 30000))) fail('Panel startup timed out. Check whether port 1420 is occupied.');
   process.stdout.write('\rPanel progress: 100%\n');
 }
@@ -406,6 +521,7 @@ Step "Checking source layout"
 foreach ($must in @("package.json", "scripts\serve.js", "scripts\dev-api.js", "dist", "src", "src-tauri\resources\runtime\openclaw")) {
   if (-not (Test-Path -LiteralPath (Join-Path $Root $must))) { Fail "Source is missing: $must" }
 }
+Assert-GreenRuntimeRequirements
 
 if (-not $SkipBuild) {
   Step "Building frontend"
