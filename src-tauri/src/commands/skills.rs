@@ -1,4 +1,4 @@
-﻿use serde_json::Value;
+use serde_json::Value;
 
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
@@ -146,7 +146,10 @@ pub async fn skillhub_install(slug: String, agent_id: Option<String>) -> Result<
 
 /// 安装内置 Skill 到便携数据目录。
 #[tauri::command]
-pub async fn skills_install_builtin(name: String, agent_id: Option<String>) -> Result<Value, String> {
+pub async fn skills_install_builtin(
+    name: String,
+    agent_id: Option<String>,
+) -> Result<Value, String> {
     validate_skill_name(&name)?;
     let runtime_dir = super::bundled_openclaw_bin_dir()
         .ok_or_else(|| "未找到内置 OpenClaw runtime".to_string())?;
@@ -198,12 +201,15 @@ fn copy_skill_dir_missing_only(
     for entry in entries.flatten() {
         let src = entry.path();
         let dst = target.join(entry.file_name());
-        let file_type = entry.file_type().map_err(|e| format!("读取 Skill 文件类型失败: {e}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("读取 Skill 文件类型失败: {e}"))?;
         if file_type.is_dir() {
             copy_skill_dir_missing_only(&src, &dst)?;
         } else if file_type.is_file() && !dst.exists() {
             if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| format!("创建 Skill 子目录失败: {e}"))?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建 Skill 子目录失败: {e}"))?;
             }
             std::fs::copy(&src, &dst).map_err(|e| format!("复制 Skill 文件失败: {e}"))?;
         }

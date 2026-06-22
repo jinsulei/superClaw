@@ -375,6 +375,37 @@ function mergeLocalSessionIntoBackend(local, backend) {
   backend.lastActiveAt = Math.max(backend.lastActiveAt || 0, local.lastActiveAt || 0, Date.now())
 }
 
+function messageMergeKey(message) {
+  if (!message) return ''
+  if (message.id && !String(message.id).startsWith('local_')) return `id:${message.id}`
+  const role = message.role || ''
+  const content = String(message.content || message.toolResult || message.toolPreview || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240)
+  return `${role}:${content}`
+}
+
+function mergeHermesMessages(localMessages = [], serverMessages = []) {
+  const merged = Array.isArray(localMessages) ? localMessages.slice() : []
+  const seen = new Set(merged.map(messageMergeKey).filter(Boolean))
+  const seenText = new Set(
+    merged
+      .map(m => `${m?.role || ''}:${String(m?.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)}`)
+      .filter(key => key !== ':'),
+  )
+
+  for (const msg of Array.isArray(serverMessages) ? serverMessages : []) {
+    const key = messageMergeKey(msg)
+    const textKey = `${msg?.role || ''}:${String(msg?.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)}`
+    if ((key && seen.has(key)) || (textKey !== ':' && seenText.has(textKey))) continue
+    merged.push(msg)
+    if (key) seen.add(key)
+    if (textKey !== ':') seenText.add(textKey)
+  }
+  return collapseConsecutiveAssistantMessages(merged)
+}
+
 // ---------- Tauri event bridge ----------
 //
 // Streaming relies on Tauri's `hermes-run-*` events. In Web mode (远程浏览器
@@ -704,7 +735,11 @@ function createStore() {
       const serverIsAhead = serverUsers > localUsers
         || (serverUsers === localUsers && (!localTail.trim() || serverTail.length >= localTail.length))
       if (force || serverIsAhead) {
-        target.messages = mapped
+        // Hermes session export can lag behind the live SSE stream for a few
+        // seconds. Never replace the local transcript with a shorter server
+        // snapshot; merge server-only records into what the user has already
+        // seen so history cannot disappear after a post-run refresh.
+        target.messages = mergeHermesMessages(local, mapped)
         if (target.source === '__local__') target.source = detail.source || 'api_server'
         if (detail.title && !target.workFileName) target.title = detail.title
         persistActiveMessages()

@@ -40,6 +40,10 @@ try {
 
 console.log(`[vite] Gateway WebSocket 代理目标: ws://127.0.0.1:${gatewayPort}`)
 
+function isGatewayStartupRefusal(err) {
+  return err && (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET')
+}
+
 export default defineConfig({
   plugins: [devApiPlugin()],
   define: {
@@ -73,6 +77,10 @@ export default defineConfig({
         changeOrigin: true,
         timeout: 30000,
         configure: (proxy, options) => {
+          // Vite's default proxy error logger treats the normal Gateway startup
+          // window as a compiler error. Replace it so ECONNREFUSED/ECONNRESET
+          // stay quiet while real proxy errors remain visible.
+          proxy.removeAllListeners('error')
           proxy.on('proxyReqWs', (proxyReq, req, socket) => {
             socket.setTimeout(30000)
             socket.on('timeout', () => {
@@ -81,7 +89,11 @@ export default defineConfig({
             })
           })
           proxy.on('error', (err, req, socket) => {
-            console.warn(`[vite/ws] 代理错误: ${err.code} ${err.message}`)
+            if (isGatewayStartupRefusal(err)) {
+              console.debug(`[vite/ws] Gateway 暂未就绪，等待重连: ${err.code}`)
+            } else {
+              console.warn(`[vite/ws] 代理错误: ${err.code} ${err.message}`)
+            }
             // WebSocket 升级后 socket 是 net.Socket，无 headersSent
             if (socket && !socket.destroyed) {
               socket.destroy()

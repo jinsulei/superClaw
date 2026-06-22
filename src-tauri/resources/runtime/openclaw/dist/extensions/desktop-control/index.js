@@ -18,7 +18,17 @@ const APP_QUERY_ALIASES = [
 function resolveAgentPath() {
   const fromEnv = process.env.SUPERCLAW_DESKTOP_CONTROL_AGENT;
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-  return path.resolve(__dirname, "../../../../../bin/desktop-control-agent.exe");
+
+  let current = __dirname;
+  for (let i = 0; i < 10; i += 1) {
+    const candidate = path.join(current, "bin", "desktop-control-agent.exe");
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return path.resolve(__dirname, "../../../bin/desktop-control-agent.exe");
 }
 
 function runAgent(payload) {

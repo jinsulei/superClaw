@@ -366,7 +366,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
   if ($yyapiBaseUrl) {
     $providers.yyapi = [ordered]@{
       baseUrl = $yyapiBaseUrl
-      apiKey = "superclaw-login-required"
+      apiKey = "LOGIN_REQUIRED"
       api = "openai-completions"
       models = @(
         [ordered]@{
@@ -508,6 +508,31 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
 
+function Write-PortableClaudePanelRelayConfig([string]$ClaudePanelDataDir, [bool]$SanitizedTestMode = $false) {
+  New-Item -ItemType Directory -Path $ClaudePanelDataDir -Force | Out-Null
+  $configPath = Join-Path $ClaudePanelDataDir "relay-config.json"
+  if ($SanitizedTestMode) {
+    Remove-IfExists $configPath
+    return
+  }
+
+  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl $true
+  $models = @("gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-image-2")
+  $config = [ordered]@{
+    enabled = $true
+    interfaceType = "relay"
+    name = "YYApi"
+    provider = "openai-compatible"
+    baseUrl = $yyapiBaseUrl
+    model = $models[0]
+    branchModels = $models
+    apiKey = "LOGIN_REQUIRED"
+    managedBy = "superclaw-yyapi"
+    updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+  }
+  Write-Utf8NoBom $configPath ($config | ConvertTo-Json -Depth 10)
+}
+
 function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
@@ -578,6 +603,25 @@ API_SERVER_KEY=clawpanel-local
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
 
+  $MemoryData = Join-Path $DataRoot "memory"
+  Remove-IfExists $MemoryData
+  New-Item -ItemType Directory -Path $MemoryData -Force | Out-Null
+  Write-Utf8NoBom (Join-Path $MemoryData "memory-config.json") (@"
+{
+  "memory": {
+    "enabled": true,
+    "store": "local",
+    "portable": true,
+    "path": "data/memory",
+    "maxRecentMessages": 50,
+    "maxSummaryLength": 8000,
+    "persistTaskContext": true,
+    "persistAgentMessages": true,
+    "sharedForAgents": ["hermes", "openclaw", "claude_code"]
+  }
+}
+"@)
+
   $HermesData = Join-Path $DataRoot "hermes"
   New-Item -ItemType Directory -Path $HermesData -Force | Out-Null
   foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks")) {
@@ -591,7 +635,12 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   }
   Remove-IfExists (Join-Path $HermesData "skills\index-cache")
   Remove-IfExists (Join-Path $HermesData "skills\.hub\index-cache")
+  Remove-IfExists (Join-Path $HermesData "skills\.hub\lock.json")
+  Remove-IfExists (Join-Path $HermesData "skills\.hub\audit.log")
+  Remove-IfExists (Join-Path $HermesData "skills\.curator_state")
   Remove-IfExists (Join-Path $HermesData "skills\.curator_backups")
+  Remove-IfExists (Join-Path $HermesData "skills\.usage.json")
+  Remove-IfExists (Join-Path $HermesData "skills\.usage.json.lock")
   Get-ChildItem -Path $HermesData -File -Filter "*.bak*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   Get-ChildItem -Path $HermesData -File -Filter "*.last-good*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   Get-ChildItem -Path $HermesData -File -Filter "*.db" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
@@ -605,14 +654,52 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   $ClawPanelData = Join-Path $DataRoot "clawpanel"
   Remove-IfExists (Join-Path $ClawPanelData "sessions")
   Remove-IfExists (Join-Path $ClawPanelData "logs")
+  foreach ($name in @("auth.json", "user.json", "profile.json", "payment.json", "quota.json", "usage.json", "license.json", "recent.json", "memory", "cache", "tmp")) {
+    Remove-IfExists (Join-Path $ClawPanelData $name)
+  }
 
   $ClaudePanelData = Join-Path $DataRoot "claude-panel"
-  foreach ($name in @("relay-config.json", "sessions", "logs", "tmp", "cache", "project-folders.json", "projects.json", "recent-projects.json", "conversations.json")) {
+  foreach ($name in @(
+    ".claude",
+    ".claude.json",
+    "AppData",
+    "audit.log",
+    "conversations.json",
+    "Documents",
+    "panel.err.log",
+    "panel.log",
+    "project-folders.json",
+    "projects.json",
+    "recent-projects.json",
+    "relay-config.json",
+    "sessions",
+    "logs",
+    "tmp",
+    "cache"
+  )) {
     Remove-IfExists (Join-Path $ClaudePanelData $name)
   }
 
+  $ClaudeCodeData = Join-Path $DataRoot "claude-code"
+  foreach ($name in @("projects", "sessions", "logs", "cache", "tmp")) {
+    Remove-IfExists (Join-Path $ClaudeCodeData $name)
+  }
+
   $ClaudeCodeHome = Join-Path $DataRoot "claude-code\home"
-  foreach ($name in @(".claude.json", ".claude\projects", "Documents\OpenClawProjects")) {
+  foreach ($name in @(
+    ".claude",
+    ".claude.json",
+    ".config",
+    ".cache",
+    "AppData",
+    "Documents",
+    "claude-config\.claude.json",
+    "claude-config\.last-cleanup",
+    "claude-config\backups",
+    "claude-config\plans",
+    "claude-config\projects",
+    "claude-config\sessions"
+  )) {
     Remove-IfExists (Join-Path $ClaudeCodeHome $name)
   }
 
@@ -623,6 +710,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
 
   Write-PortableOpenClawConfig $DotOpenClaw $SanitizedTestMode
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
+  Write-PortableClaudePanelRelayConfig $ClaudePanelData $SanitizedTestMode
   Repair-HermesConfig $HermesData $SanitizedTestMode
 }
 
@@ -631,18 +719,63 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     return
   }
 
-  foreach ($pattern in @("*.log", "*.pid", "*.lock")) {
+  foreach ($pattern in @("*.log", "*.pid", "*.lock", "*.tmp", "*.bak", "*.last-good", "*.db", "*.db-shm", "*.db-wal", "*.sqlite", "*.sqlite-shm", "*.sqlite-wal")) {
     Get-ChildItem -Path $DataRoot -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
       Remove-Item -Force -ErrorAction SilentlyContinue
   }
 
   foreach ($rel in @(
+    "claude-code\home\.claude",
+    "claude-code\home\AppData",
+    "claude-code\home\Documents",
+    "claude-code\projects",
+    "claude-code\sessions",
+    "claude-panel\.claude",
+    "claude-panel\AppData",
+    "claude-panel\Documents",
     "hermes\logs",
+    "hermes\skills\.curator_backups",
+    "hermes\skills\.curator_state",
+    "hermes\skills\.hub\audit.log",
+    "hermes\skills\.hub\index-cache",
+    "hermes\skills\.hub\lock.json",
+    "hermes\skills\.usage.json",
+    "hermes\skills\.usage.json.lock",
+    "hermes\skills\index-cache",
     ".openclaw\logs",
+    ".openclaw\agents",
+    ".openclaw\state",
+    ".openclaw\workspace-attestations",
     "clawpanel\logs",
+    "clawpanel\sessions",
+    "clawpanel\cache",
     "claude-panel\logs"
   )) {
     Remove-IfExists (Join-Path $DataRoot $rel)
+  }
+
+  foreach ($name in @(
+    "claude-panel\.claude.json",
+    "claude-panel\audit.log",
+    "claude-panel\conversations.json",
+    "claude-panel\panel.err.log",
+    "claude-panel\panel.log",
+    "claude-panel\project-folders.json",
+    "claude-panel\projects.json",
+    "claude-panel\recent-projects.json",
+    "clawpanel\auth.json",
+    "clawpanel\license.json",
+    "clawpanel\payment.json",
+    "clawpanel\profile.json",
+    "clawpanel\quota.json",
+    "clawpanel\recent.json",
+    "clawpanel\usage.json",
+    "clawpanel\user.json",
+    "hermes\auth.json",
+    "hermes\channel_directory.json",
+    "hermes\gateway_state.json"
+  )) {
+    Remove-IfExists (Join-Path $DataRoot $name)
   }
 }
 
@@ -688,6 +821,81 @@ function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
   $ClaudePanelData = Join-Path $PackagedResources "data\claude-panel"
   foreach ($name in @("project-folders.json", "projects.json", "recent-projects.json")) {
     Remove-IfExists (Join-Path $ClaudePanelData $name)
+  }
+}
+
+function Assert-NoPackagedUserState([string]$DataRoot) {
+  $forbidden = @(
+    ".openclaw\agents",
+    ".openclaw\devices\pending.json",
+    ".openclaw\gateway-owner.json",
+    ".openclaw\identity",
+    ".openclaw\logs",
+    ".openclaw\state",
+    ".openclaw\update-check.json",
+    ".openclaw\workspace-attestations",
+    "claude-code\home\.claude",
+    "claude-code\home\.claude.json",
+    "claude-code\home\AppData",
+    "claude-code\home\Documents",
+    "claude-code\home\claude-config\.claude.json",
+    "claude-code\projects",
+    "claude-code\sessions",
+    "claude-panel\.claude",
+    "claude-panel\.claude.json",
+    "claude-panel\AppData",
+    "claude-panel\audit.log",
+    "claude-panel\conversations.json",
+    "claude-panel\Documents",
+    "claude-panel\panel.err.log",
+    "claude-panel\panel.log",
+    "claude-panel\project-folders.json",
+    "claude-panel\projects.json",
+    "claude-panel\recent-projects.json",
+    "clawpanel\auth.json",
+    "clawpanel\license.json",
+    "clawpanel\payment.json",
+    "clawpanel\profile.json",
+    "clawpanel\quota.json",
+    "clawpanel\sessions",
+    "clawpanel\usage.json",
+    "clawpanel\user.json",
+    "hermes\auth.json",
+    "hermes\cache",
+    "hermes\channel_directory.json",
+    "hermes\cron",
+    "hermes\gateway_state.json",
+    "hermes\logs",
+    "hermes\memories",
+    "hermes\sessions",
+    "hermes\skills\.curator_backups",
+    "hermes\skills\.curator_state",
+    "hermes\skills\.hub\audit.log",
+    "hermes\skills\.hub\index-cache",
+    "hermes\skills\.hub\lock.json",
+    "hermes\skills\.usage.json",
+    "hermes\skills\.usage.json.lock",
+    "hermes\skills\index-cache"
+  )
+
+  $found = @()
+  foreach ($rel in $forbidden) {
+    $candidate = Join-Path $DataRoot $rel
+    if (Test-Path $candidate) {
+      $found += $rel
+    }
+  }
+
+  foreach ($pattern in @("*.log", "*.pid", "*.lock", "*.db", "*.db-shm", "*.db-wal", "*.sqlite", "*.sqlite-shm", "*.sqlite-wal")) {
+    $matches = Get-ChildItem -Path $DataRoot -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue |
+      Select-Object -First 20
+    foreach ($match in $matches) {
+      $found += $match.FullName.Substring($DataRoot.Length).TrimStart('\', '/')
+    }
+  }
+
+  if ($found.Count -gt 0) {
+    Fail ("Packaged user/runtime state was not cleaned: " + (($found | Select-Object -Unique) -join ", "))
   }
 }
 
@@ -909,6 +1117,8 @@ Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
 Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
+Assert-NoPackagedUserState (Join-Path $PackagedResources "data")
+Ok "No user sessions, usage records, logs, locks, or local project state in package data"
 
 $HardcodedFound = $false
 foreach ($scan in @(

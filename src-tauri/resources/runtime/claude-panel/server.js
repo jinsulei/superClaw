@@ -394,12 +394,15 @@ function hasUsableRelayConfig(config) {
   );
 }
 
+function hasRelayConfigValue(config) {
+  if (!config || typeof config !== "object") return false;
+  return ["baseUrl", "model", "apiKey", "provider", "name"]
+    .some((key) => typeof config[key] === "string" && config[key].trim());
+}
+
 function readRelayConfig() {
   const config = readJson(RELAY_CONFIG_PATH);
   if (hasUsableRelayConfig(config)) {
-    return config;
-  }
-  if (config && typeof config === "object" && Object.keys(config).length) {
     return config;
   }
   for (const configPath of BUNDLED_RELAY_CONFIG_PATHS) {
@@ -407,6 +410,9 @@ function readRelayConfig() {
     if (hasUsableRelayConfig(bundledConfig)) {
       return bundledConfig;
     }
+  }
+  if (hasRelayConfigValue(config)) {
+    return config;
   }
   return {};
 }

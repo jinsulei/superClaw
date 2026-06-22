@@ -209,7 +209,10 @@ fn gateway_pid_belongs_to_current_project(_pid: Option<u32>) -> bool {
     false
 }
 
-fn should_auto_claim_gateway_with_pid(owner: &Option<GatewayOwnerRecord>, pid: Option<u32>) -> bool {
+fn should_auto_claim_gateway_with_pid(
+    owner: &Option<GatewayOwnerRecord>,
+    pid: Option<u32>,
+) -> bool {
     let (port, openclaw_dir, _cli_path) = current_gateway_owner_signature();
     match owner {
         None => true,
@@ -2231,7 +2234,8 @@ pub async fn get_services_status() -> Result<Vec<ServiceStatus>, String> {
             }
         }
         // 自动认领：Gateway 在运行但无有效 owner，且端口 + 数据目录匹配 → 自动写入 owner
-        if running && !owned_by_current_instance && should_auto_claim_gateway_with_pid(&owner, pid) {
+        if running && !owned_by_current_instance && should_auto_claim_gateway_with_pid(&owner, pid)
+        {
             let _ = write_gateway_owner(pid);
             owned_by_current_instance = true;
         }

@@ -8570,6 +8570,21 @@ body[data-active-engine="hermes"] .sidebar-footer,
   border-color: var(--border-secondary) !important;
 }
 
+body[data-active-engine="hermes"] .sidebar-header,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-header {
+  height: var(--header-height) !important;
+  min-height: var(--header-height) !important;
+  padding: var(--space-lg) var(--space-lg) !important;
+  gap: var(--space-md) !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-logo,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-logo {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
 body[data-active-engine="hermes"] .sidebar-title,
 [data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-title {
   color: var(--text-primary) !important;
@@ -8630,6 +8645,9 @@ body[data-active-engine="hermes"] .engine-current,
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-tertiary)) !important;
   color: var(--text-primary) !important;
   font-family: var(--font-sans) !important;
+  min-height: 0 !important;
+  padding: 7px 10px !important;
+  border-radius: var(--radius-sm) !important;
 }
 
 body[data-active-engine="hermes"] .engine-current:hover,
@@ -8662,6 +8680,81 @@ body[data-active-engine="hermes"] .lang-dropdown,
   box-shadow: var(--shadow-lg) !important;
   opacity: 1 !important;
   backdrop-filter: none !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer .lang-dropdown:not(.open),
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-dropdown:not(.open) {
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+body[data-active-engine="hermes"] .engine-switcher,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-switcher {
+  padding: var(--space-xs) var(--space-sm) var(--space-sm) !important;
+}
+
+body[data-active-engine="hermes"] .engine-switcher-label,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .engine-switcher-label {
+  padding: 2px 4px 4px !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer .theme-switcher,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .theme-switcher,
+body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-switcher {
+  border: 0 !important;
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row {
+  border: 0 !important;
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+  box-shadow: none !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row::before,
+body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row::after,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row::before,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .theme-switch-row::after {
+  display: none !important;
+  content: none !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle,
+body[data-active-engine="hermes"] .sidebar-footer .lang-trigger,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-trigger {
+  border: 0 !important;
+  border-top: 0 !important;
+  border-right: 0 !important;
+  border-bottom: 0 !important;
+  border-left: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding: 8px 12px !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle::before,
+body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle::after,
+body[data-active-engine="hermes"] .sidebar-footer .lang-trigger::before,
+body[data-active-engine="hermes"] .sidebar-footer .lang-trigger::after,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle::before,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer #btn-theme-toggle::after,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-trigger::before,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-trigger::after {
+  display: none !important;
+  content: none !important;
+}
+
+body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
+[data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-switcher {
+  margin-top: 2px !important;
 }
 
 /* Restore Hermes pre-full-width chat bubbles. Global chat polish can briefly

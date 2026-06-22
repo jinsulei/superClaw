@@ -177,7 +177,7 @@ fn check_workspace_status(path: &std::path::Path) -> WorkspaceCheckResult {
                     Ok(_) => {
                         status.readable = true;
                         status.writable = workspace_is_writable(path);
-                    },
+                    }
                     Err(e) => {
                         status.readable = false;
                         warning = Some(format!("权限不足: {}", e));

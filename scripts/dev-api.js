@@ -1414,6 +1414,11 @@ const PANEL_VERSION = (() => {
   }
 })()
 const VERSION_POLICY_PATH = path.join(__dev_dirname, '..', 'openclaw-version-policy.json')
+function openclawGatewayPlatform() {
+  if (process.platform === 'win32') return 'windows'
+  if (process.platform === 'darwin') return 'macos'
+  return process.platform
+}
 function normalizeCustomOpenclawDir(raw) {
   if (typeof raw !== 'string') return null
   const trimmed = raw.trim()
@@ -6643,7 +6648,7 @@ const handlers = {
     // 2. 注入设备配对信息（绕过 Gateway 手动配对要求）
     try {
       const { deviceId, publicKey } = getOrCreateDeviceKey()
-      const platform = process.platform === 'darwin' ? 'macos' : process.platform
+      const platform = openclawGatewayPlatform()
       const nowMs = Date.now()
       const pairedData = {}
       pairedData[deviceId] = {
@@ -7276,7 +7281,7 @@ const handlers = {
           signal: controller.signal
         })
       } else {
-        const headers = { 'Content-Type': 'application/json' }
+        const headers = { 'Content-Type': 'application/json', 'Accept-Encoding': 'identity', 'Accept': 'text/event-stream' }
         if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
         resp = await fetch(`${base}/chat/completions`, {
           method: 'POST',
@@ -7285,7 +7290,7 @@ const handlers = {
             model: modelId,
             messages: [{ role: 'user', content: 'Hi' }],
             max_tokens: 16,
-            stream: false
+            stream: true
           }),
           signal: controller.signal
         })
@@ -7301,7 +7306,16 @@ const handlers = {
         if (resp.status === 401 || resp.status === 403) throw new Error(msg)
         return `⚠ 连接正常（API 返回 ${resp.status}，部分模型对简单测试不兼容，不影响实际使用）`
       }
-      const data = await resp.json()
+      const text = await resp.text()
+      const sseReply = _extractSseReply(text)
+      if (sseReply) return sseReply
+
+      let data = null
+      try {
+        data = JSON.parse(text)
+      } catch (e) {
+        throw new Error(`响应不是有效 JSON/SSE: ${e.message}`)
+      }
       const anthropicText = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('')
       const geminiText = data.candidates?.[0]?.content?.parts?.map?.(p => p.text).filter(Boolean).join('') || ''
       const content = data.choices?.[0]?.message?.content
@@ -8253,7 +8267,7 @@ const handlers = {
     if (!fs.existsSync(DEVICES_DIR)) fs.mkdirSync(DEVICES_DIR, { recursive: true })
     let paired = {}
     if (fs.existsSync(PAIRED_PATH)) paired = JSON.parse(fs.readFileSync(PAIRED_PATH, 'utf8'))
-    const platform = process.platform === 'darwin' ? 'macos' : process.platform
+    const platform = openclawGatewayPlatform()
     if (paired[deviceId]) {
       if (paired[deviceId].platform !== platform) {
         paired[deviceId].platform = platform
@@ -8286,7 +8300,9 @@ const handlers = {
   create_connect_frame({ nonce, gatewayToken }) {
     const { deviceId, publicKey, privateKey } = getOrCreateDeviceKey()
     const signedAt = Date.now()
-    const platform = process.platform === 'darwin' ? 'macos' : process.platform
+    const platform = openclawGatewayPlatform()
+    const minProtocolVersion = 3
+    const maxProtocolVersion = 4
     const scopesStr = SCOPES.join(',')
     const payloadStr = `v3|${deviceId}|openclaw-control-ui|ui|operator|${scopesStr}|${signedAt}|${gatewayToken || ''}|${nonce || ''}|${platform}|desktop`
     const signature = crypto.sign(null, Buffer.from(payloadStr), privateKey)
@@ -8298,12 +8314,12 @@ const handlers = {
       id: `connect-${idHex}-${rndHex}`,
       method: 'connect',
       params: {
-        minProtocol: 3, maxProtocol: 3,
-        client: { id: 'openclaw-control-ui', version: '1.0.0', platform, deviceFamily: 'desktop', mode: 'ui' },
-        role: 'operator', scopes: SCOPES, caps: [],
+        minProtocol: minProtocolVersion, maxProtocol: maxProtocolVersion,
+        client: { id: 'openclaw-control-ui', version: PANEL_VERSION, platform, deviceFamily: 'desktop', mode: 'ui' },
+        role: 'operator', scopes: SCOPES, caps: ['tool-events'],
         auth: { token: gatewayToken || '' },
         device: { id: deviceId, publicKey, signedAt, nonce: nonce || '', signature: sigB64 },
-        locale: 'zh-CN', userAgent: 'ClawPanel/1.0.0 (web)',
+        locale: 'zh-CN', userAgent: `ClawPanel/${PANEL_VERSION} (web)`,
       },
     }
   },

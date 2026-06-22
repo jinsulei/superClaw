@@ -197,6 +197,28 @@ fn copy_dir_missing_only(source: &Path, target: &Path) {
     }
 }
 
+fn copy_dir_overwrite(source: &Path, target: &Path) {
+    let Ok(entries) = std::fs::read_dir(source) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(target);
+    for entry in entries.flatten() {
+        let src = entry.path();
+        let dst = target.join(entry.file_name());
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            copy_dir_overwrite(&src, &dst);
+        } else if file_type.is_file() {
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+}
+
 fn ensure_portable_openclaw_skills(openclaw_dir: &Path) {
     let Some(runtime_dir) = bundled_openclaw_bin_dir() else {
         return;
@@ -222,7 +244,7 @@ fn ensure_superclaw_openclaw_plugins() {
         let source = source_extensions.join(plugin);
         let target = runtime_extensions.join(plugin);
         if source.join("openclaw.plugin.json").is_file() {
-            copy_dir_missing_only(&source, &target);
+            copy_dir_overwrite(&source, &target);
         }
     }
     let source_agent = app_resources_dir()

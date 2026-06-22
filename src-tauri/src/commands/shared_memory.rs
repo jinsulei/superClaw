@@ -22,7 +22,8 @@ fn is_unsafe_relative_path(path: &str) -> bool {
 
 fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create memory directory: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create memory directory: {e}"))?;
     }
     Ok(())
 }
@@ -59,8 +60,11 @@ pub fn shared_memory_write(content: String) -> Result<serde_json::Value, String>
     ensure_parent(&file)?;
     let parsed: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Shared memory content must be valid JSON: {e}"))?;
-    fs::write(&file, serde_json::to_string_pretty(&parsed).unwrap_or(content))
-        .map_err(|e| format!("Failed to write shared memory: {e}"))?;
+    fs::write(
+        &file,
+        serde_json::to_string_pretty(&parsed).unwrap_or(content),
+    )
+    .map_err(|e| format!("Failed to write shared memory: {e}"))?;
     Ok(json!({
         "ok": true,
         "path": "data/memory/shared-agent-memory.json",
@@ -69,7 +73,10 @@ pub fn shared_memory_write(content: String) -> Result<serde_json::Value, String>
 }
 
 #[tauri::command]
-pub fn shared_memory_write_file(path: String, content: String) -> Result<serde_json::Value, String> {
+pub fn shared_memory_write_file(
+    path: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
     if is_unsafe_relative_path(&path) {
         return Err("Illegal shared memory path".to_string());
     }

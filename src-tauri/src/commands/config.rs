@@ -4968,6 +4968,7 @@ async fn reload_gateway_via_http() -> Result<String, String> {
 
     // 尝试两个可能的 control UI 端口
     let control_ports = [gw_port + 2, 18792];
+    let mut saw_non_connect_error = false;
 
     for ctrl_port in control_ports {
         let url = format!("http://127.0.0.1:{}/__api/reload", ctrl_port);
@@ -4992,13 +4993,23 @@ async fn reload_gateway_via_http() -> Result<String, String> {
                 );
             }
             Err(e) => {
-                eprintln!("[reload_gateway] 端口 {ctrl_port} 请求失败: {e}");
+                if e.is_connect() {
+                    // Control hot-reload is optional in dev/portable mode.
+                    // A closed port simply means we should fall back to a process restart.
+                } else {
+                    saw_non_connect_error = true;
+                    eprintln!("[reload_gateway] 端口 {ctrl_port} 请求失败: {e}");
+                }
             }
         }
     }
 
     // 所有 HTTP 重载方式都失败，回退到进程重启
-    eprintln!("[reload_gateway] HTTP 热重载不可用，将触发进程重启");
+    if saw_non_connect_error {
+        eprintln!("[reload_gateway] HTTP 热重载异常，将触发进程重启");
+    } else {
+        eprintln!("[reload_gateway] HTTP 热重载服务未监听，将触发进程重启");
+    }
     Err("Gateway HTTP 重载不可用".to_string())
 }
 
@@ -5393,64 +5404,21 @@ pub async fn test_model(
         ));
     }
 
-    // 提取回复内容（兼容多种响应格式）
-    let reply = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| {
-            if let Some(arr) = v.get("content").and_then(|c| c.as_array()) {
-                let text = arr
-                    .iter()
-                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
-                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                    .collect::<Vec<_>>()
-                    .join("");
-                if !text.is_empty() {
-                    return Some(text);
-                }
+    // 提取回复内容：部分 OpenAI 兼容中转站会返回 SSE(data: {...})，即使测试请求没有开启 stream。
+    // 先按 SSE 累积，再回退到普通 JSON，避免把 "data:" 响应当成非法 JSON。
+    let reply = {
+        let sse_reply = extract_sse_reply(&text);
+        if !sse_reply.is_empty() {
+            sse_reply
+        } else {
+            let json_reply = extract_single_json_reply(&text);
+            if json_reply.is_empty() {
+                "（模型已响应）".into()
+            } else {
+                json_reply
             }
-            if let Some(t) = v
-                .get("candidates")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("content"))
-                .and_then(|c| c.get("parts"))
-                .and_then(|p| p.get(0))
-                .and_then(|p| p.get("text"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                return Some(t.to_string());
-            }
-            // 标准 OpenAI 格式: choices[0].message.content
-            if let Some(msg) = v
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("message"))
-            {
-                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !content.is_empty() {
-                    return Some(content.to_string());
-                }
-                // reasoning 模型
-                if let Some(rc) = msg
-                    .get("reasoning_content")
-                    .and_then(|c| c.as_str())
-                    .filter(|s| !s.is_empty())
-                {
-                    return Some(format!("[reasoning] {rc}"));
-                }
-            }
-            // DashScope 格式: output.text
-            if let Some(t) = v
-                .get("output")
-                .and_then(|o| o.get("text"))
-                .and_then(|t| t.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                return Some(t.to_string());
-            }
-            None
-        })
-        .unwrap_or_else(|| "（模型已响应）".into());
+        }
+    };
 
     Ok(reply)
 }
@@ -6150,9 +6118,7 @@ fn configured_env_url(name: &str) -> Option<String> {
 fn strip_api_version(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     if let Some((prefix, last)) = trimmed.rsplit_once('/') {
-        if last.len() > 1
-            && last.starts_with('v')
-            && last[1..].chars().all(|c| c.is_ascii_digit())
+        if last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit())
         {
             return prefix.to_string();
         }

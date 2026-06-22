@@ -109,10 +109,10 @@ pub fn create_connect_frame(
     let platform = std::env::consts::OS; // "windows" | "macos" | "linux"
     let device_family = "desktop";
 
-    // Bundled OpenClaw speaks Gateway protocol v4. Keep the
-    // negotiated protocol aligned with the runtime; otherwise the Gateway
-    // rejects the control UI with "protocol mismatch" before chat can attach.
-    let protocol_version = 4;
+    // OpenClaw negotiates the Gateway protocol as a range. The current bundled
+    // runtime speaks v4, while older May builds used v3, so advertise both.
+    let min_protocol_version = 3;
+    let max_protocol_version = 4;
     let signature_payload_version = 3;
     let auth_secret = if !gateway_token.is_empty() {
         &gateway_token
@@ -146,8 +146,8 @@ pub fn create_connect_frame(
         "id": format!("connect-{:08x}-{:04x}", signed_at as u32, rand::random::<u16>()),
         "method": "connect",
         "params": {
-            "minProtocol": protocol_version,
-            "maxProtocol": protocol_version,
+            "minProtocol": min_protocol_version,
+            "maxProtocol": max_protocol_version,
             "client": {
                 "id": "openclaw-control-ui",
                 "version": env!("CARGO_PKG_VERSION"),

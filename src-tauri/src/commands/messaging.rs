@@ -1,4 +1,4 @@
-﻿/// 消息渠道管理
+/// 消息渠道管理
 /// 负责 Telegram / Discord / QQ Bot 等消息渠道的配置持久化与凭证校验
 /// 配置写入 openclaw.json 的 channels / plugins 节点
 use serde_json::{json, Map, Value};
@@ -1424,7 +1424,9 @@ pub async fn run_channel_action(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| format!("启动内置 OpenClaw 失败: {}", e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("启动内置 OpenClaw 失败: {}", e))?;
 
         let stderr = child.stderr.take();
         let app2 = app.clone();
@@ -2035,7 +2037,6 @@ pub async fn list_configured_platforms() -> Result<Value, String> {
                 }
             }
 
-
             // 判断是否已配置凭证
             // 1. 有 accounts 条目 → 已配置
             // 2. 渠道配置中有凭证字段（token / botToken / appId / appSecret / clientId / clientSecret / webhookUrl / homeserver / account 等）→ 已配置
@@ -2046,10 +2047,19 @@ pub async fn list_configured_platforms() -> Result<Value, String> {
                 true
             } else if let Some(obj) = val.as_object() {
                 const CREDENTIAL_KEYS: &[&str] = &[
-                    "token", "botToken", "appId", "appSecret",
-                    "clientId", "clientSecret", "webhookUrl",
-                    "homeserver", "accessToken", "account",
-                    "userId", "password", "apiKey",
+                    "token",
+                    "botToken",
+                    "appId",
+                    "appSecret",
+                    "clientId",
+                    "clientSecret",
+                    "webhookUrl",
+                    "homeserver",
+                    "accessToken",
+                    "account",
+                    "userId",
+                    "password",
+                    "apiKey",
                 ];
                 obj.keys().any(|k| CREDENTIAL_KEYS.contains(&k.as_str()))
             } else {

@@ -219,6 +219,8 @@ const petLastRestStorageKey = "cleanClaude.petLastRestAt.v1";
 const browserAccessAlwaysKey = "cleanClaude.browserAccessAlways.session";
 const petRestIntervalMs = 45 * 60 * 1000;
 const announcementVisibleMs = 60 * 1000;
+const fallbackAnnouncementText =
+  "遥遥领先科技有限公司郑重承诺，平台用户不断增多，欢迎大家集思广益。现已公开 TOKEN 定价，当前所有 TOKEN 均有专属折扣，欢迎大家使用！";
 const slashCommands = [
   { command: "/help", description: "显示可用命令", action: "help" },
   { command: "/status", description: "查看 Gateway 与模型状态", action: "status" },
@@ -776,12 +778,22 @@ function hideIntroOverlay() {
 }
 
 function initIntroVideo() {
-  if (!introOverlay || !introVideo) return;
+  if (!introOverlay || !introVideo) return Promise.resolve();
   let completed = false;
+  let resolved = false;
+  let resolveStarted = () => {};
+  const started = new Promise((resolve) => {
+    resolveStarted = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    };
+  });
   const finish = () => {
     if (completed) return;
     completed = true;
     hideIntroOverlay();
+    resolveStarted();
   };
 
   introSkipBtn?.addEventListener("click", finish);
@@ -791,6 +803,7 @@ function initIntroVideo() {
     if (completed) return;
     introOverlay.hidden = false;
     if (introStatus) introStatus.textContent = "开场动画播放中";
+    resolveStarted();
     try {
       introVideo.currentTime = 0;
       await introVideo.play();
@@ -806,7 +819,9 @@ function initIntroVideo() {
   } else {
     window.setTimeout(playIntro, 350);
   }
+  window.setTimeout(resolveStarted, 800);
   setTimeout(finish, 18000);
+  return started;
 }
 
 function chineseProjectName(projectPath, fallback = "") {
@@ -899,7 +914,7 @@ function renderAnnouncement(text) {
 async function loadAnnouncement() {
   const res = await fetch(`/api/announcement?t=${Date.now()}`, { cache: "no-store" });
   const data = await res.json();
-  renderAnnouncement(data.text || "");
+  renderAnnouncement(data.text || fallbackAnnouncementText);
 }
 
 function accountDisplayName() {
@@ -1718,14 +1733,47 @@ function compactClaudePanelMessage(rawText, options = {}) {
   };
 }
 
-function renderCompactClaudePanelMessage(rawText, body) {
+function splitClaudeThinkingBlocks(rawText) {
+  const source = String(rawText || "");
+  const thoughts = [];
+  const visible = source.replace(/<think\b[^>]*>([\s\S]*?)(?:<\/think>|$)/gi, (_, thought) => {
+    const text = String(thought || "").trim();
+    if (text) thoughts.push(text);
+    return "";
+  });
+  return {
+    visibleText: visible.replace(/\n{3,}/g, "\n\n").trim(),
+    thoughts,
+  };
+}
+
+function renderThinkingBlocks(thoughts, wrapper, options = {}) {
+  if (!Array.isArray(thoughts) || thoughts.length === 0 || !wrapper) return;
+  const details = document.createElement("details");
+  details.className = `assistant-thinking-block${options.streaming ? " is-thinking" : ""}`;
+  const summary = document.createElement("summary");
+  summary.innerHTML = options.streaming
+    ? '<span>正在思考</span><i class="thinking-dots" aria-hidden="true"><b></b><b></b><b></b></i><em>生成中</em>'
+    : "<span>思考过程</span><em>已折叠</em>";
+  const content = document.createElement("div");
+  content.className = "assistant-thinking-block__content";
+  content.textContent = thoughts.join("\n\n");
+  details.append(summary, content);
+  wrapper.appendChild(details);
+}
+
+function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   if (!body) return;
-  const compact = compactClaudePanelMessage(rawText);
+  const parsed = splitClaudeThinkingBlocks(rawText);
+  const compact = compactClaudePanelMessage(parsed.visibleText);
   body.innerHTML = "";
+  body.dataset.visibleText = parsed.visibleText || "";
 
   const wrapper = document.createElement("div");
   wrapper.className = "assistant-compact-message";
   if (compact.collapsed) wrapper.classList.add("is-collapsed");
+
+  renderThinkingBlocks(parsed.thoughts, wrapper, options);
 
   const content = document.createElement("div");
   content.className = "assistant-compact-message__content";
@@ -1771,7 +1819,7 @@ function flushAssistantTextBuffer() {
   const chunk = assistantTextBuffer;
   assistantTextBuffer = "";
   activeAssistantMessage.rawText = `${activeAssistantMessage.rawText || ""}${chunk}`;
-  renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText), activeAssistantMessage.body);
+  renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText), activeAssistantMessage.body, { streaming: true });
   renderAuthorizationCard(activeAssistantMessage.message, activeAssistantMessage.rawText);
   scheduleTranscriptScroll();
 }
@@ -5309,14 +5357,22 @@ function handlePacket(packet) {
     }
   } else if (event === "error") {
     flushAssistantTextBuffer();
+    if (activeAssistantMessage?.body) {
+      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, { streaming: false });
+    }
     setRunState("error", "运行异常");
     addMessage("error", "运行异常", payload.text || "执行失败");
     appendActiveRunConversationMessage("error", "运行异常", payload.text || "执行失败");
     updateActiveRunConversation({ status: "运行异常", result: payload.text || "执行失败" });
   } else if (event === "done") {
     flushAssistantTextBuffer();
+    if (activeAssistantMessage?.body) {
+      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, { streaming: false });
+    }
     removeRuntimeSummaryMessages();
-    const replyText = activeAssistantMessage?.body?.textContent || "";
+    const replyText = activeAssistantMessage?.body?.dataset?.visibleText
+      || activeAssistantMessage?.body?.querySelector(".assistant-compact-message__content")?.textContent
+      || "";
     setRunState("done", "已完成");
     appendActiveRunConversationMessage("assistant", "Claude", replyText || "已完成。");
     updateActiveRunConversation({
@@ -6252,7 +6308,7 @@ document.addEventListener("click", (event) => {
   }
 });
 
-initIntroVideo();
+const introStarted = initIntroVideo();
 setEmptyState();
 setRunState("idle", "准备就绪");
 applyTheme();
@@ -6264,7 +6320,6 @@ setRunSection("install");
 applyRightPanelState();
 scheduleNextDefaultTime();
 appendAdvancedAccessCommand();
-if (!restoreLastConversation()) renderConversations();
 removeRuntimeSummaryMessages();
 renderAutomations();
 renderSchedules();
@@ -6279,5 +6334,8 @@ loadVoiceCapabilities().catch(() => updateVoiceButtonHint());
 setInterval(checkSchedules, 30000);
 setInterval(renderTemporaryTask, 30000);
 setInterval(checkWorkRestReminder, 60000);
-loadAnnouncement().catch(() => renderAnnouncement(""));
+introStarted.finally(() => {
+  if (!restoreLastConversation()) renderConversations();
+});
+loadAnnouncement().catch(() => renderAnnouncement(fallbackAnnouncementText));
 loadStatus().catch((error) => addMessage("error", "错误", error.message));
