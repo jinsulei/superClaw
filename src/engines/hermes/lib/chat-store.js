@@ -1490,6 +1490,23 @@ function createStore() {
     notify()
   }
 
+  function pushLocalAssistantMessage(message = {}) {
+    const s = activeSession()
+    if (!s) return
+    s.messages.push({
+      id: message.id || uid(),
+      role: 'assistant',
+      content: typeof message.content === 'string' ? message.content : '',
+      timestamp: message.timestamp || message.createdAt || Date.now(),
+      ...message,
+    })
+    updateSessionTitleFromFirstUser(s)
+    s.updatedAt = Date.now()
+    persistActiveMessages()
+    persistSessions()
+    notify()
+  }
+
   function pushLocalUser(content) {
     const s = activeSession()
     if (!s) return
@@ -1556,6 +1573,7 @@ function createStore() {
     sendMessage,
     stopStreaming,
     pushLocalAssistant,
+    pushLocalAssistantMessage,
     pushLocalUser,
     clearActive,
     searchSessions,
