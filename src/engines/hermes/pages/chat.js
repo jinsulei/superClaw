@@ -48,8 +48,64 @@ import {
   transcribeWithModelVoice,
 } from '../../../lib/model-voice.js'
 import { renderScreenshotCardHtml, renderUserConfirmationCardHtml } from '../../../shared/life-assistant-ui.js'
+import { isStage1DesktopAssistEnabled } from '../../../shared/ecommerce-stage1/feature-flag.js'
+import { detectStage1Intent } from '../../../shared/ecommerce-stage1/planner.js'
+import { runStage1DesktopAssist } from '../../../shared/ecommerce-stage1/runner.js'
+import { Stage1MessageType } from '../../../shared/ecommerce-stage1/types.js'
+import { isStage2LowRiskEnabled } from '../../../shared/ecommerce-stage2/feature-flag.js'
+import { detectStage2Intent } from '../../../shared/ecommerce-stage2/planner.js'
+import { runStage2LowRiskOps } from '../../../shared/ecommerce-stage2/runner.js'
+import { Stage2MessageType } from '../../../shared/ecommerce-stage2/types.js'
+import { renderStage2CardMessageHtml } from '../../../shared/ecommerce-stage2/chat-cards.js'
+import { isStage3PublishPrepEnabled } from '../../../shared/ecommerce-stage3/feature-flag.js'
+import { detectStage3Intent } from '../../../shared/ecommerce-stage3/input-parser.js'
+import { runStage3PublishPrep } from '../../../shared/ecommerce-stage3/runner.js'
+import { Stage3MessageType } from '../../../shared/ecommerce-stage3/types.js'
+import { renderStage3CardMessageHtml } from '../../../shared/ecommerce-stage3/chat-cards.js'
+import { isStage4DoudianListingEnabled } from '../../../shared/ecommerce-stage4/feature-flag.js'
+import { detectStage4Intent } from '../../../shared/ecommerce-stage4/input-parser.js'
+import { runStage4DoudianListing } from '../../../shared/ecommerce-stage4/runner.js'
+import { Stage4MessageType } from '../../../shared/ecommerce-stage4/types.js'
+import { renderStage4CardMessageHtml } from '../../../shared/ecommerce-stage4/chat-cards.js'
+import {
+  isStage5LiveAssistEnabled,
+  isStage6VideoPatrolEnabled,
+} from '../../../shared/ecommerce-stage56/feature-flag.js'
+import { detectStage56Intent } from '../../../shared/ecommerce-stage56/video-patrol.js'
+import { runStage56Ops } from '../../../shared/ecommerce-stage56/runner.js'
+import { Stage56MessageType } from '../../../shared/ecommerce-stage56/types.js'
+import { renderStage56CardMessageHtml } from '../../../shared/ecommerce-stage56/chat-cards.js'
 
 // ----------------------------------------------------------- helpers
+
+function renderEcommerceStageCardHtml(message = {}) {
+  if ([
+    Stage2MessageType.TREND_INSIGHT_CARD,
+    Stage2MessageType.CONTENT_DRAFT_CARD,
+    Stage2MessageType.VIDEO_LINK_CARD,
+  ].includes(message.type)) return renderStage2CardMessageHtml(message)
+
+  if ([
+    Stage3MessageType.PLATFORM_PREP_CARD,
+    Stage3MessageType.PLATFORM_CONFIRMATION_CARD,
+  ].includes(message.type)) return renderStage3CardMessageHtml(message)
+
+  if ([
+    Stage4MessageType.DOUDIAN_LISTING_PREP_CARD,
+    Stage4MessageType.PRICE_INVENTORY_CONFIRMATION_CARD,
+    Stage4MessageType.SUBMIT_REVIEW_CONFIRMATION_CARD,
+  ].includes(message.type)) return renderStage4CardMessageHtml(message)
+
+  if ([
+    Stage56MessageType.LIVE_REPLY_CARD,
+    Stage56MessageType.LIVE_REPLY_CONFIRMATION_CARD,
+    Stage56MessageType.VIDEO_CANDIDATE_CARD,
+    Stage56MessageType.VIDEO_DECOMPOSE_CARD,
+    Stage56MessageType.MATERIAL_RECORD_CARD,
+  ].includes(message.type)) return renderStage56CardMessageHtml(message)
+
+  return ''
+}
 
 let _tauriListenFn = null
 async function tauriListen(event, cb) {
@@ -1584,10 +1640,12 @@ export function render() {
       m.type === 'screenshot_card' && m.card ? renderScreenshotCardHtml(m.card) : '',
       m.type === 'user_confirmation' && m.confirmation ? renderUserConfirmationCardHtml(m.confirmation) : '',
     ].filter(Boolean).join('')
+    const ecommerceCardHtml = renderEcommerceStageCardHtml(m)
     const messageContentHtml = [
       renderMessageAttachments(m.attachments || []),
       (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content)) : '',
       lifeAssistantHtml,
+      ecommerceCardHtml,
       m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
     ].filter(Boolean).join('')
     return `
@@ -2744,6 +2802,169 @@ export function render() {
     return result
   }
 
+  function createEcommerceBrowserContext(stageLabel = 'OpenClaw') {
+    const notConnected = `${stageLabel} browser adapter is not connected in this Hermes page.`
+    const fail = (extra = {}) => ({ ok: false, error: notConnected, ...extra })
+    return {
+      open: async (url) => fail({ url }),
+      waitForLoad: async () => fail(),
+      readVisibleText: async () => ({ text: '', title: '', url: '', error: notConnected }),
+      captureScreenshot: async () => null,
+      findInteractiveTargets: async (input = {}) => ({
+        buttons: [],
+        inputs: [],
+        links: [],
+        error: notConnected,
+        ...input,
+      }),
+      findInputByHints: async (hints = []) => fail({ hints }),
+      type: async (text) => fail({ text }),
+      press: async (key) => fail({ key }),
+      uploadMediaByHints: async (input = {}) => fail(input),
+      typeIntoByHints: async (input = {}) => fail(input),
+      findByTextHints: async (input = {}) => ({ found: false, error: notConnected, ...input }),
+      clickByTextHints: async (input = {}) => fail(input),
+    }
+  }
+
+  function pushEcommerceAssistantMessage(message = {}) {
+    if (typeof store.pushLocalAssistantMessage === 'function') {
+      store.pushLocalAssistantMessage(message)
+      return
+    }
+    const content = String(message.content || message.card?.note || message.confirmation?.description || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  function appendEcommerceEvent(event) {
+    if (!event) return
+    const type = event.type
+    if (type === Stage1MessageType.SCREENSHOT_CARD) {
+      pushEcommerceAssistantMessage({
+        type,
+        card: event.card || event,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (type === Stage1MessageType.USER_CONFIRMATION || type === 'user_confirmation') {
+      pushEcommerceAssistantMessage({
+        type: Stage1MessageType.USER_CONFIRMATION,
+        confirmation: event.confirmation || event.card || event,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    if (renderEcommerceStageCardHtml(event)) {
+      pushEcommerceAssistantMessage({
+        type,
+        card: event.card || event,
+        content: '',
+        createdAt: event.createdAt || Date.now(),
+      })
+      return
+    }
+    const content = String(event.content || event.message || '').trim()
+    if (content) store.pushLocalAssistant(content)
+  }
+
+  async function executeEcommerceRunner(stageLabel, userText, runner, input = {}, context = {}) {
+    store.pushLocalUser(userText)
+    resetInput()
+    forceScrollBottom = true
+    draw()
+    try {
+      await runner(
+        { query: userText, userText, ...input },
+        {
+          emit: appendEcommerceEvent,
+          browser: createEcommerceBrowserContext(stageLabel),
+          ...context,
+        },
+      )
+    } catch (err) {
+      pushEcommerceAssistantMessage({
+        type: 'error',
+        content: `${stageLabel} failed: ${err?.message || err}`,
+        createdAt: Date.now(),
+      })
+    } finally {
+      forceScrollBottom = true
+      draw()
+    }
+    return true
+  }
+
+  async function maybeRunEcommerceStage(userText) {
+    if (isStage2LowRiskEnabled()) {
+      const detected = detectStage2Intent(userText)
+      if (detected.matched) {
+        return executeEcommerceRunner(
+          'Ecommerce Stage2',
+          userText,
+          runStage2LowRiskOps,
+          { intent: detected.intent },
+          { hermes: {} },
+        )
+      }
+    }
+
+    if (isStage4DoudianListingEnabled()) {
+      const detected = detectStage4Intent(userText)
+      if (detected.matched) {
+        return executeEcommerceRunner('Ecommerce Stage4', userText, runStage4DoudianListing, {
+          intent: detected.intent,
+          images: detected.images,
+          detailImages: detected.detailImages,
+          productTitle: detected.productTitle,
+          category: detected.category,
+          price: detected.price,
+          inventory: detected.inventory,
+        })
+      }
+    }
+
+    if (isStage3PublishPrepEnabled()) {
+      const detected = detectStage3Intent(userText)
+      if (detected.matched) {
+        return executeEcommerceRunner('Ecommerce Stage3', userText, runStage3PublishPrep, {
+          intent: detected.intent,
+          mediaFiles: detected.mediaFiles,
+          platforms: detected.platforms,
+        })
+      }
+    }
+
+    if (isStage1DesktopAssistEnabled()) {
+      const detected = detectStage1Intent(userText)
+      if (detected.matched) {
+        return executeEcommerceRunner('Ecommerce Stage1', userText, runStage1DesktopAssist, {
+          intent: detected.intent,
+        })
+      }
+    }
+
+    const stage56 = detectStage56Intent(userText)
+    if (stage56.matched) {
+      const canRunLive = stage56.intent === 'live_comment_assist' && isStage5LiveAssistEnabled()
+      const canRunPatrol = stage56.intent === 'video_inspiration_patrol' && isStage6VideoPatrolEnabled()
+      const canRunUnsafeGuard = stage56.unsafe && (isStage5LiveAssistEnabled() || isStage6VideoPatrolEnabled())
+      if (canRunLive || canRunPatrol || canRunUnsafeGuard) {
+        return executeEcommerceRunner(
+          'Ecommerce Stage56',
+          userText,
+          runStage56Ops,
+          { intent: stage56.intent, platforms: stage56.platforms },
+          { hermes: {}, ocr: null, materialRecords: [] },
+        )
+      }
+    }
+
+    return false
+  }
+
   function dispatchCollaborationTask({
     goal,
     executor = COLLAB_TARGETS.openclaw,
@@ -3019,6 +3240,10 @@ export function render() {
 
     if (isCollaborationTaskRequest(text)) {
       dispatchCollaborationTask({ goal: text })
+      return
+    }
+
+    if (await maybeRunEcommerceStage(text)) {
       return
     }
 
