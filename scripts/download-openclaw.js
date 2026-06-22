@@ -17,6 +17,7 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 const zlib = require('zlib')
+const os = require('os')
 const { spawnSync } = require('child_process')
 
 const PLATFORM_MAP = {
@@ -58,6 +59,91 @@ function parseVersion(v) {
 
 function destDir() {
   return path.resolve(__dirname, '..', 'src-tauri', 'resources', 'runtime', 'openclaw')
+}
+
+function makeStagingDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'superclaw-openclaw-download-'))
+}
+
+function makeBackupDir(targetDir) {
+  const parent = path.dirname(targetDir)
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '')
+  let candidate = path.join(parent, `openclaw.__backup_${stamp}`)
+  let index = 0
+  while (fs.existsSync(candidate)) {
+    index += 1
+    candidate = path.join(parent, `openclaw.__backup_${stamp}_${index}`)
+  }
+  return candidate
+}
+
+function requiredRuntimeFiles(runtimeDir) {
+  const binFile = process.platform === 'win32' ? 'openclaw.cmd' : 'openclaw'
+  const nodeFile = process.platform === 'win32' ? 'node.exe' : 'node'
+  return {
+    binFile,
+    nodeFile,
+    binPath: path.join(runtimeDir, binFile),
+    nodePath: path.join(runtimeDir, nodeFile),
+  }
+}
+
+function validateRuntimeDir(runtimeDir) {
+  const required = requiredRuntimeFiles(runtimeDir)
+  const missing = []
+  if (!fs.existsSync(required.binPath)) missing.push(required.binFile)
+  if (!fs.existsSync(required.nodePath)) missing.push(required.nodeFile)
+  if (missing.length) {
+    throw new Error(`Staging runtime validation failed. Missing: ${missing.join(', ')} in ${runtimeDir}`)
+  }
+}
+
+function moveDirectory(sourceDir, targetDir) {
+  try {
+    fs.renameSync(sourceDir, targetDir)
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      fs.cpSync(sourceDir, targetDir, { recursive: true })
+      fs.rmSync(sourceDir, { recursive: true, force: true })
+      return
+    }
+    throw err
+  }
+}
+
+function replaceTargetRuntime(stagingRuntimeDir, targetDir) {
+  const backupDir = makeBackupDir(targetDir)
+  let oldTargetMoved = false
+
+  try {
+    fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+    if (fs.existsSync(targetDir)) {
+      fs.renameSync(targetDir, backupDir)
+      oldTargetMoved = true
+    }
+    moveDirectory(stagingRuntimeDir, targetDir)
+    if (oldTargetMoved && fs.existsSync(backupDir)) {
+      fs.rmSync(backupDir, { recursive: true, force: true })
+    }
+    return { backupDir, restored: false }
+  } catch (err) {
+    let restored = !oldTargetMoved
+    try {
+      if (fs.existsSync(targetDir)) {
+        fs.rmSync(targetDir, { recursive: true, force: true })
+      }
+      if (oldTargetMoved && fs.existsSync(backupDir)) {
+        fs.renameSync(backupDir, targetDir)
+        restored = true
+      }
+    } catch (restoreErr) {
+      err.message = `${err.message}; restore failed: ${restoreErr.message}`
+      restored = false
+    }
+    err.backupDir = backupDir
+    err.existingRuntimePreserved = restored
+    throw err
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,122 +246,134 @@ function extractTarGz(tgzPath, targetDir) {
 
 async function main() {
   const skipIfExists = process.argv.includes('--skip-if-exists')
-
-  const versionPolicy = loadVersionPolicy()
-  const standaloneCfg = versionPolicy?.standalone
-  if (!standaloneCfg?.enabled || !standaloneCfg?.baseUrl) {
-    console.error('✗ openclaw-version-policy.json 中 standalone 配置不可用或未启用')
-    process.exit(1)
-  }
-
-  const platform = detectPlatform()
-  const pkg = loadPackageJson()
-  const panelVersion = pkg.version
-
-  // 从版本策略中查找当前面板版本对应的推荐版本
-  let recommendedVersion = versionPolicy?.default?.chinese?.recommended
-  const panelEntry = versionPolicy?.panels?.[panelVersion]
-  if (panelEntry?.chinese?.recommended) {
-    recommendedVersion = panelEntry.chinese.recommended
-  }
-
-  const version = process.argv[2] || recommendedVersion
-  if (!version) {
-    console.error('✗ 无法确定 OpenClaw 版本，请在 openclaw-version-policy.json 中配置或通过命令行参数指定')
-    process.exit(1)
-  }
-
   const installDir = destDir()
-
-  // 如果已存在，可以选择跳过
-  const binFile = process.platform === 'win32' ? 'openclaw.cmd' : 'openclaw'
-  if (skipIfExists && fs.existsSync(path.join(installDir, binFile))) {
-    console.log(`✓ OpenClaw ${version} 已存在于 ${installDir}，跳过下载`)
-    return
-  }
-
-  // 清理并创建目录
-  if (fs.existsSync(installDir)) {
-    fs.rmSync(installDir, { recursive: true, force: true })
-  }
-  fs.mkdirSync(installDir, { recursive: true })
-
-  // 第一步: 下载 latest.json 获取最新版本信息
-  const manifestUrl = `${standaloneCfg.baseUrl}/latest.json`
-  console.log(`📦 获取版本清单: ${manifestUrl}`)
-
-  const manifestResp = await fetch(manifestUrl)
-  if (!manifestResp.ok) {
-    throw new Error(`版本清单不可用 (HTTP ${manifestResp.status})`)
-  }
-  const manifest = await manifestResp.json()
-
-  const editionObj = manifest?.editions?.zh
-  const remoteVersion = editionObj?.version || manifest.version
-  if (!remoteVersion) {
-    throw new Error('版本清单缺少 version 字段')
-  }
-
-  // 版本匹配检查（如果指定了非 latest 版本）
-  if (version !== 'latest') {
-    const remoteParts = parseVersion(remoteVersion)
-    const reqParts = parseVersion(version)
-    const match = remoteParts[0] === reqParts[0] &&
-      remoteParts[1] === reqParts[1] &&
-      remoteParts[2] === reqParts[2]
-    if (!match) {
-      console.warn(`  警告: 远程版本 ${remoteVersion} 与请求版本 ${version} 不一致，使用远程版本`)
-    }
-  }
-
-  const actualVersion = version === 'latest' ? remoteVersion : version
-  const archivePrefix = editionObj ? 'openclaw-zh' : 'openclaw'
-  const manifestBaseUrl = editionObj?.base_url || manifest.base_url
-  const policyBaseUrl = String(standaloneCfg.baseUrl || '').replace(/\/+$/, '')
-  const remoteBase = manifestBaseUrl || (
-    /\/download$/i.test(policyBaseUrl) ? policyBaseUrl : `${policyBaseUrl}/${actualVersion}`
-  )
-  const ext = process.platform === 'win32' ? 'zip' : 'tar.gz'
-  const filename = `${archivePrefix}-${actualVersion}-${platform}.${ext}`
-  const downloadUrl = `${remoteBase}/${filename}`
-
-  console.log(`📦 下载 OpenClaw ${actualVersion} (${platform})`)
-  console.log(`   到: ${installDir}`)
-
-  // 下载到临时文件
-  const tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'openclaw-'))
-  const tmpPath = path.join(tmpDir, filename)
+  let stage = 'initializing'
+  let stagingRoot = ''
+  let stagingRuntimeDir = ''
+  let metadataUrl = ''
+  let packageUrl = ''
+  let backupDir = ''
 
   try {
-    await download(downloadUrl, tmpPath)
+    const versionPolicy = loadVersionPolicy()
+    const standaloneCfg = versionPolicy?.standalone
+    if (!standaloneCfg?.enabled || !standaloneCfg?.baseUrl) {
+      throw new Error('openclaw-version-policy.json standalone config is unavailable or disabled')
+    }
 
-    // 解压
+    const platform = detectPlatform()
+    const pkg = loadPackageJson()
+    const panelVersion = pkg.version
+
+    let recommendedVersion = versionPolicy?.default?.chinese?.recommended
+    const panelEntry = versionPolicy?.panels?.[panelVersion]
+    if (panelEntry?.chinese?.recommended) {
+      recommendedVersion = panelEntry.chinese.recommended
+    }
+
+    const version = process.argv[2] || recommendedVersion
+    if (!version) {
+      throw new Error('Unable to determine OpenClaw version from policy or command line')
+    }
+
+    const currentRequired = requiredRuntimeFiles(installDir)
+    if (skipIfExists && fs.existsSync(currentRequired.binPath) && fs.existsSync(currentRequired.nodePath)) {
+      console.log('OpenClaw ' + version + ' already exists at ' + installDir + '; skipped.')
+      return
+    }
+
+    stage = 'staging'
+    stagingRoot = makeStagingDir()
+    stagingRuntimeDir = path.join(stagingRoot, 'runtime')
+    if (fs.existsSync(stagingRuntimeDir)) {
+      throw new Error('Staging directory already exists: ' + stagingRuntimeDir)
+    }
+    fs.mkdirSync(stagingRuntimeDir, { recursive: true })
+
+    stage = 'metadata'
+    metadataUrl = standaloneCfg.baseUrl + '/latest.json'
+    console.log('Downloading OpenClaw metadata...')
+    console.log('  URL: ' + metadataUrl)
+
+    const manifestResp = await fetch(metadataUrl)
+    if (!manifestResp.ok) {
+      throw new Error('OpenClaw metadata is unavailable (HTTP ' + manifestResp.status + ')')
+    }
+    const manifest = await manifestResp.json()
+
+    const editionObj = manifest?.editions?.zh
+    const remoteVersion = editionObj?.version || manifest.version
+    if (!remoteVersion) {
+      throw new Error('OpenClaw metadata is missing version')
+    }
+
+    if (version !== 'latest') {
+      const remoteParts = parseVersion(remoteVersion)
+      const reqParts = parseVersion(version)
+      const match = remoteParts[0] === reqParts[0] &&
+        remoteParts[1] === reqParts[1] &&
+        remoteParts[2] === reqParts[2]
+      if (!match) {
+        console.warn('  Warning: remote version ' + remoteVersion + ' differs from requested version ' + version + '; using requested archive name')
+      }
+    }
+
+    const actualVersion = version === 'latest' ? remoteVersion : version
+    const archivePrefix = editionObj ? 'openclaw-zh' : 'openclaw'
+    const manifestBaseUrl = editionObj?.base_url || manifest.base_url
+    const policyBaseUrl = String(standaloneCfg.baseUrl || '').replace(/\/+$/, '')
+    const remoteBase = manifestBaseUrl || (
+      /\/download$/i.test(policyBaseUrl) ? policyBaseUrl : policyBaseUrl + '/' + actualVersion
+    )
+    const ext = process.platform === 'win32' ? 'zip' : 'tar.gz'
+    const filename = archivePrefix + '-' + actualVersion + '-' + platform + '.' + ext
+    packageUrl = remoteBase + '/' + filename
+    const archivePath = path.join(stagingRoot, filename)
+
+    stage = 'package-download'
+    console.log('Downloading OpenClaw package...')
+    console.log('  URL: ' + packageUrl)
+    console.log('  Staging: ' + stagingRoot)
+    await download(packageUrl, archivePath)
+
+    stage = 'extract'
+    console.log('Extracting to staging...')
     if (process.platform === 'win32') {
-      extractZip(tmpPath, installDir)
+      extractZip(archivePath, stagingRuntimeDir)
     } else {
-      extractTarGz(tmpPath, installDir)
+      extractTarGz(archivePath, stagingRuntimeDir)
     }
 
-    // 验证
-    if (!fs.existsSync(path.join(installDir, binFile))) {
-      throw new Error('解压后未找到 openclaw 可执行文件')
-    }
+    stage = 'staging-validation'
+    console.log('Validating staging runtime...')
+    validateRuntimeDir(stagingRuntimeDir)
 
-    // 验证 Node.js 存在
-    const nodeFile = process.platform === 'win32' ? 'node.exe' : 'node'
-    if (!fs.existsSync(path.join(installDir, nodeFile))) {
-      console.warn('  注意: 未找到内置 Node.js 运行时，可能不是 standalone 版本')
-    }
+    stage = 'target-replace'
+    console.log('Replacing target runtime atomically...')
+    const replaceResult = replaceTargetRuntime(stagingRuntimeDir, installDir)
+    backupDir = replaceResult.backupDir
 
+    stage = 'ready'
     const sizeMb = (getDirSize(installDir) / 1048576).toFixed(1)
-    console.log(`✓ OpenClaw ${actualVersion} 安装完成 (${sizeMb}MB)`)
-    console.log(`  安装目录: ${installDir}`)
+    console.log('OpenClaw runtime ready (' + sizeMb + 'MB)')
+    console.log('  Target: ' + installDir)
+  } catch (err) {
+    if (typeof err.existingRuntimePreserved === 'undefined') {
+      err.existingRuntimePreserved = true
+    }
+    err.stage = stage
+    err.metadataUrl = metadataUrl
+    err.packageUrl = packageUrl
+    err.stagingRoot = stagingRoot
+    err.targetDir = installDir
+    err.backupDir = err.backupDir || backupDir
+    throw err
   } finally {
-    // 清理临时文件
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    if (stagingRoot && fs.existsSync(stagingRoot)) {
+      try { fs.rmSync(stagingRoot, { recursive: true, force: true }) } catch {}
+    }
   }
 }
-
 function getDirSize(dir) {
   let total = 0
   try {
@@ -299,12 +397,31 @@ async function fetch(url) {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return fetch(res.headers.location).then(resolve).catch(reject)
       }
-      resolve(res)
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
+        resolve({
+          status: res.statusCode,
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          text: async () => body,
+          json: async () => JSON.parse(body),
+        })
+      })
+      res.on('error', reject)
     }).on('error', reject)
   })
 }
 
 main().catch(err => {
-  console.error(`✗ ${err.message}`)
+  console.error('OpenClaw runtime download failed')
+  console.error('Stage: ' + (err.stage || 'unknown'))
+  if (err.metadataUrl) console.error('Metadata URL: ' + err.metadataUrl)
+  if (err.packageUrl) console.error('Package URL: ' + err.packageUrl)
+  if (err.stagingRoot) console.error('Staging path: ' + err.stagingRoot)
+  if (err.targetDir) console.error('Target path: ' + err.targetDir)
+  if (err.backupDir) console.error('Backup path: ' + err.backupDir)
+  console.error('Existing runtime preserved: ' + (err.existingRuntimePreserved !== false))
+  console.error('Error: ' + err.message)
   process.exit(1)
 })
