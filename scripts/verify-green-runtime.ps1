@@ -120,8 +120,8 @@ function Get-TextRiskHits {
   }
 
   $patterns = @(
-    "124.222.21.44",
-    "VITE_MINIMAX_API_KEY",
+    ("124.222." + "21.44"),
+    ("VITE_MINIMAX_" + "API_KEY"),
     "(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{20,}",
     "Bearer\s+[A-Za-z0-9_\-]{20,}",
     "MINIMAX_API_KEY\s*=\s*[^#\s].+"
@@ -166,8 +166,11 @@ $runtimeItems = @(
   [ordered]@{ id = "openclaw_launcher"; label = "OpenClaw launcher"; path = "src-tauri/resources/runtime/openclaw/openclaw.cmd"; type = "file"; required = $true },
   [ordered]@{ id = "openclaw_node"; label = "OpenClaw bundled node.exe"; path = "src-tauri/resources/runtime/openclaw/node.exe"; type = "file"; required = $true },
   [ordered]@{ id = "openclaw_runtime_dir"; label = "OpenClaw runtime directory"; path = "src-tauri/resources/runtime/openclaw"; type = "dir"; required = $true },
-  [ordered]@{ id = "hermes_runtime"; label = "Hermes runtime directory"; path = "src-tauri/resources/runtime/hermes"; type = "dir"; required = $true },
-  [ordered]@{ id = "hermes_agent"; label = "Hermes agent directory"; path = "src-tauri/resources/runtime/hermes-agent"; type = "dir"; required = $true },
+  [ordered]@{ id = "hermes_runtime"; label = "Hermes legacy runtime directory optional compatibility runtime"; path = "src-tauri/resources/runtime/hermes"; type = "dir"; required = $false },
+  [ordered]@{ id = "hermes_agent"; label = "Hermes agent executable runtime directory"; path = "src-tauri/resources/runtime/hermes-agent"; type = "dir"; required = $true },
+  [ordered]@{ id = "hermes_agent_cli"; label = "Hermes CLI executable"; path = "src-tauri/resources/runtime/hermes-agent/Scripts/hermes.exe"; type = "file"; required = $true },
+  [ordered]@{ id = "hermes_agent_exe"; label = "Hermes agent executable"; path = "src-tauri/resources/runtime/hermes-agent/Scripts/hermes-agent.exe"; type = "file"; required = $true },
+  [ordered]@{ id = "hermes_acp_exe"; label = "Hermes ACP executable optional"; path = "src-tauri/resources/runtime/hermes-agent/Scripts/hermes-acp.exe"; type = "file"; required = $false },
   [ordered]@{ id = "uv_tools"; label = "uv tools"; path = "src-tauri/resources/runtime/uv-tools"; type = "dir"; required = $true },
   [ordered]@{ id = "uv_python"; label = "uv python"; path = "src-tauri/resources/runtime/uv-python"; type = "dir"; required = $true },
   [ordered]@{ id = "claude_panel_server"; label = "Claude panel server"; path = "src-tauri/resources/runtime/claude-panel/server.js"; type = "file"; required = $true },

@@ -77,10 +77,22 @@ function Get-GreenRuntimeRequirements {
     [pscustomobject]@{ Label = "Bundled OpenClaw Node"; Path = (Join-Path $Root "src-tauri\resources\runtime\openclaw\node.exe"); Type = "Leaf" },
     [pscustomobject]@{ Label = "OpenClaw runtime dir"; Path = (Join-Path $Root "src-tauri\resources\runtime\openclaw"); Type = "Container" },
     [pscustomobject]@{ Label = "Hermes agent offline package"; Path = (Join-Path $Root "src-tauri\resources\hermes-agent-main.zip"); Type = "Leaf" },
-    [pscustomobject]@{ Label = "uv tools"; Path = (Join-Path $Root "src-tauri\resources\uv-tools"); Type = "Container" },
-    [pscustomobject]@{ Label = "uv python"; Path = (Join-Path $Root "src-tauri\resources\uv-python"); Type = "Container" },
+    [pscustomobject]@{ Label = "uv tools runtime"; Path = (Join-Path $Root "src-tauri\resources\runtime\uv-tools"); Type = "Container" },
+    [pscustomobject]@{ Label = "uv python runtime"; Path = (Join-Path $Root "src-tauri\resources\runtime\uv-python"); Type = "Container" },
+    [pscustomobject]@{ Label = "Hermes agent runtime"; Path = (Join-Path $Root "src-tauri\resources\runtime\hermes-agent"); Type = "Container" },
+    [pscustomobject]@{ Label = "Hermes CLI executable"; Path = (Join-Path $Root "src-tauri\resources\runtime\hermes-agent\Scripts\hermes.exe"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "Hermes agent executable"; Path = (Join-Path $Root "src-tauri\resources\runtime\hermes-agent\Scripts\hermes-agent.exe"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "Claude panel server"; Path = (Join-Path $Root "src-tauri\resources\runtime\claude-panel\server.js"); Type = "Leaf" },
+    [pscustomobject]@{ Label = "Claude panel app"; Path = (Join-Path $Root "src-tauri\resources\runtime\claude-panel\public\app.js"); Type = "Leaf" },
     [pscustomobject]@{ Label = "OCR runtime"; Path = (Join-Path $Root "src-tauri\resources\runtime\ocr"); Type = "Container" },
     [pscustomobject]@{ Label = "OCR data"; Path = (Join-Path $Root "src-tauri\resources\data\ocr"); Type = "Container" }
+  )
+}
+
+function Get-GreenOptionalRuntimeResources {
+  @(
+    [pscustomobject]@{ Label = "Hermes legacy runtime optional"; Path = (Join-Path $Root "src-tauri\resources\runtime\hermes"); Type = "Container" },
+    [pscustomobject]@{ Label = "Hermes ACP executable optional"; Path = (Join-Path $Root "src-tauri\resources\runtime\hermes-agent\Scripts\hermes-acp.exe"); Type = "Leaf" }
   )
 }
 
@@ -99,6 +111,16 @@ function Assert-GreenRuntimeRequirements {
     }
     Fail "Green package runtime prerequisites are incomplete. Do not copy old packages, download runtime, or create placeholder files in this step."
   }
+  Write-Host "Hermes agent runtime: required" -ForegroundColor Green
+  Write-Host "Using runtime/hermes-agent as Hermes executable runtime" -ForegroundColor Green
+  foreach ($item in Get-GreenOptionalRuntimeResources) {
+    if (Test-Path -LiteralPath $item.Path -PathType $item.Type) {
+      Write-Host ("Optional runtime present - {0}: {1}" -f $item.Label, $item.Path) -ForegroundColor DarkGreen
+    } else {
+      Write-Host ("Optional runtime missing - {0}: {1}" -f $item.Label, $item.Path) -ForegroundColor Yellow
+    }
+  }
+  Write-Host "Hermes legacy runtime: optional" -ForegroundColor Yellow
 }
 
 function Test-GreenOcrRuntime([string]$OpenCloudDir, [string]$NodeExe) {
@@ -551,6 +573,13 @@ Copy-Dir (Join-Path $Root "src") (Join-Path $OpenCloud "src")
 Copy-Dir (Join-Path $Root "public") (Join-Path $OpenCloud "public")
 Copy-Dir (Join-Path $Root "scripts") (Join-Path $OpenCloud "scripts") -XD @("__pycache__", ".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\openclaw") (Join-Path $OpenCloud "resources\runtime\openclaw") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\hermes-agent") (Join-Path $OpenCloud "resources\runtime\hermes-agent") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+$legacyHermesRuntime = Join-Path $Root "src-tauri\resources\runtime\hermes"
+if (Test-Path -LiteralPath $legacyHermesRuntime -PathType Container) {
+  Copy-Dir $legacyHermesRuntime (Join-Path $OpenCloud "resources\runtime\hermes") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+} else {
+  Write-Host "[WARN] Hermes legacy runtime: optional and not present. Using runtime/hermes-agent as Hermes executable runtime." -ForegroundColor Yellow
+}
 Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\ocr") (Join-Path $OpenCloud "resources\runtime\ocr") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 
 foreach ($runtimeName in @("claude-code", "claude-panel")) {
@@ -561,8 +590,8 @@ foreach ($runtimeName in @("claude-code", "claude-panel")) {
 }
 
 Copy-Dir (Join-Path $Root "src-tauri\resources\bin") (Join-Path $OpenCloud "resources\bin")
-Copy-Dir (Join-Path $Root "src-tauri\resources\uv-tools") (Join-Path $OpenCloud "resources\uv-tools")
-Copy-Dir (Join-Path $Root "src-tauri\resources\uv-python") (Join-Path $OpenCloud "resources\uv-python")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-tools") (Join-Path $OpenCloud "resources\uv-tools")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-python") (Join-Path $OpenCloud "resources\uv-python")
 foreach ($file in @("src-tauri\resources\cpython-3.11.13-windows-x86_64-none.tar.gz", "src-tauri\resources\hermes-agent-main.zip", "src-tauri\resources\uv-x86_64-pc-windows-msvc.zip")) {
   Copy-FileIfExists (Join-Path $Root $file) (Join-Path $OpenCloud "resources")
 }
@@ -674,6 +703,8 @@ $BundledNode = Join-Path $Runtime "node-win\node.exe"
 if ($LASTEXITCODE -ne 0) { Fail "Bundled Node is not usable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "scripts\serve.js"))) { Fail "Missing serve.js" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\openclaw.cmd"))) { Fail "Missing openclaw.cmd" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes.exe"))) { Fail "Missing Hermes CLI executable" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes-agent.exe"))) { Fail "Missing Hermes agent executable" }
 Test-GreenOcrRuntime $OpenCloud $BundledNode
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\hermes-agent-main.zip"))) { Fail "Missing Hermes offline package" }
 
@@ -684,7 +715,7 @@ if (-not $SkipZip) {
   Step "Extracting zip for structure verification"
   Expand-Archive -LiteralPath $ZipPath -DestinationPath $TestExtract -Force
   $ExtractedRoot = Join-Path $TestExtract (Split-Path $OutRoot -Leaf)
-  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
+  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $ExtractedRoot $must))) {
       Fail "Extract test missing: $must"
     }
@@ -699,7 +730,7 @@ Zip: $ZipPath
 Size MB: $sizeMb
 Bundled Node: runtime\node-win\node.exe
 OpenCloud: dist, src, scripts, OpenClaw runtime, clean config
-Hermes: clean config, offline package, uv tools, skills
+Hermes: clean config, offline package, uv tools, runtime\hermes-agent, skills; legacy runtime\hermes optional
 Shared OCR: runner, package metadata, tesseract.js dependencies, tessdata, data config
 Security scan: no complete sk-/ark-/Bearer/private-key material; no .env/pem/key/p12/pfx files
 Excluded: node_modules, src-tauri\target, old zips/builds, logs, cache/tmp/temp, sessions, real configs
