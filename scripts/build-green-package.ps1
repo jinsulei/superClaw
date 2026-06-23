@@ -20,11 +20,16 @@ $script:EffectiveDisableYyapi = $DisableYyapi.IsPresent -or $script:EffectiveSan
 $script:EffectiveSkipActivation = $SkipActivation.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectivePortableMode = $PortableMode.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectiveFailIfPortOccupied = $true
+$StrictPort = 1420
+$StrictPortRequired = $true
+$StrictPortSummary = "strictPort: port 1420, fail if port occupied, no reuse existing service"
 
 function Step([string]$Message) {
   Write-Host ""
   Write-Host "[GREEN] $Message" -ForegroundColor Cyan
 }
+
+Write-Host $StrictPortSummary -ForegroundColor DarkCyan
 
 function Fail([string]$Message) {
   Write-Host "[ERROR] $Message" -ForegroundColor Red
@@ -339,6 +344,8 @@ const app = path.join(root, 'OpenCloud');
 const nodeExe = process.execPath;
 const children = [];
 const mode = (process.argv[2] || 'all').toLowerCase();
+const strictPort = 1420;
+const strictPortRequired = true;
 
 function log(msg) { console.log(`[Launcher] ${msg}`); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -430,15 +437,16 @@ async function postJson(url, body = {}) {
 async function startPanel() {
   const serve = path.join(app, 'scripts', 'serve.js');
   if (!exists(serve)) fail('Missing OpenCloud\\scripts\\serve.js. Please extract the full package again.');
-  if (await tcpOpen(1420)) {
-    fail(`Port 1420 is already occupied.\n${getPortOwnerReport(1420)}\nGreen package tests never reuse an unknown 1420 service. Close the occupying process and retry.`);
+  log(`Strict port mode: port ${strictPort}, fail if port occupied, no reuse existing service.`);
+  if (strictPortRequired && await tcpOpen(strictPort)) {
+    fail(`Port ${strictPort} is already occupied.\n${getPortOwnerReport(strictPort)}\nGreen package tests never reuse an unknown ${strictPort} service. Close the occupying process and retry.`);
   }
-  log('Starting control panel: http://127.0.0.1:1420');
-  spawnManaged(nodeExe, [serve, '--host', '127.0.0.1', '--port', '1420'], {
+  log(`Starting control panel: http://127.0.0.1:${strictPort}`);
+  spawnManaged(nodeExe, [serve, '--host', '127.0.0.1', '--port', String(strictPort)], {
     cwd: app,
-    env: { ...process.env, PORT: '1420', HOST: '127.0.0.1' },
+    env: { ...process.env, PORT: String(strictPort), HOST: '127.0.0.1' },
   });
-  if (!(await waitTcp(1420, 'Panel progress', 30000))) fail('Panel startup timed out. Check whether port 1420 is occupied.');
+  if (!(await waitTcp(strictPort, 'Panel progress', 30000))) fail(`Panel startup timed out. Check whether port ${strictPort} is occupied.`);
   process.stdout.write('\rPanel progress: 100%\n');
 }
 

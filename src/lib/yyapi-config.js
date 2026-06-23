@@ -1,9 +1,9 @@
 export const YYAPI_PROVIDER_KEY = 'yyapi'
 
 const USER_API_OVERRIDE_KEY = 'superclaw_api_base_url'
-const DEFAULT_USER_API_ORIGIN = 'http://124.222.21.44:3001'
-const DEFAULT_YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
-const DEFAULT_YYAPI_AUTH_BASE_URL = 'http://124.222.21.44:3002'
+const DEFAULT_USER_API_ORIGIN = ''
+const DEFAULT_YYAPI_BASE_URL = ''
+const DEFAULT_YYAPI_AUTH_BASE_URL = ''
 
 function cleanUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '')

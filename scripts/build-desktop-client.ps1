@@ -55,7 +55,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$DefaultYyapiBaseUrl = "http://124.222.21.44:3002/v1"
+$DefaultYyapiBaseUrl = ""
 
 function Step([string]$Message) {
   Write-Host ""
@@ -82,7 +82,7 @@ function Get-ConfiguredYyapiBaseUrl([bool]$AllowDefault = $true) {
       return $value.Trim().TrimEnd("/")
     }
   }
-  if ($AllowDefault) {
+  if ($AllowDefault -and $DefaultYyapiBaseUrl.Trim()) {
     return $DefaultYyapiBaseUrl.TrimEnd("/")
   }
   return ""
