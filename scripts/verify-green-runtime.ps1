@@ -122,7 +122,7 @@ function Get-TextRiskHits {
   $patterns = @(
     "124.222.21.44",
     "VITE_MINIMAX_API_KEY",
-    "sk-[A-Za-z0-9_\-]{20,}",
+    "(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{20,}",
     "Bearer\s+[A-Za-z0-9_\-]{20,}",
     "MINIMAX_API_KEY\s*=\s*[^#\s].+"
   )
