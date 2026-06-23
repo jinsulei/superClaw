@@ -31,18 +31,9 @@
     "active": false,
     "targets": "all",
     "resources": [
-      "resources/uv-*.zip",
-      "resources/hermes-agent-*.zip",
-      "resources/cpython-*.tar.gz",
-      "resources/runtime/openclaw/**/*",
-      "resources/runtime/ocr/**/*",
-      "resources/runtime/claude-code/**/*",
-      "resources/runtime/claude-panel/**/*",
+      "resources/runtime/**/*",
       "resources/bin/**/*",
-      "resources/uv-tools/**/*",
-      "resources/uv-python/**/*",
-      "resources/data/**/*",
-      "resources/portable/**/*"
+      "resources/data/**/*"
     ],
     "icon": [
       "icons/32x32.png",

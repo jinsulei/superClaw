@@ -86,7 +86,12 @@ function Test-WorkspaceStatus {
     "src/lib/test-build-mode.js",
     "src/main.js",
     "src/lib/user-api.js",
-    "src/lib/model-presets.js"
+    "src/lib/model-presets.js",
+    "src/lib/minimax-test-config.js",
+    "src/pages/models.js",
+    "scripts/dev-api.js",
+    "src-tauri/src/commands/claude_code.rs",
+    "src-tauri/tauri.conf.json"
   )
 
   $unexpected = @()
@@ -211,6 +216,84 @@ function Test-MiniMaxOnlyTestBuildLogic {
   Write-Host "Test build auth bypass: PASS" -ForegroundColor Green
   Write-Host "MiniMax only mode: PASS" -ForegroundColor Green
   Write-Host "YYAPI disabled: PASS" -ForegroundColor Green
+}
+
+function Test-MiniMaxApiKeyEntry {
+  $configPath = "src/lib/minimax-test-config.js"
+  $modelsPath = "src/pages/models.js"
+  $devApiPath = "scripts/dev-api.js"
+  $relayPath = "src-tauri/src/commands/claude_code.rs"
+  $viteMinimaxApiKeyPattern = ("VITE_MINIMAX_" + "API_KEY")
+
+  foreach ($path in @($configPath, $modelsPath, $devApiPath, $relayPath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "MiniMax API key entry check missing file: $path"
+    }
+  }
+
+  $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
+  $modelsText = Get-Content -LiteralPath $modelsPath -Raw -Encoding UTF8
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  $relayText = Get-Content -LiteralPath $relayPath -Raw -Encoding UTF8
+
+  $requiredConfigTerms = @(
+    "getMiniMaxTestDefaults",
+    "normalizeMiniMaxTestConfig",
+    "maskApiKey",
+    "readMiniMaxTestConfig",
+    "saveMiniMaxTestConfig",
+    "applyMiniMaxTestConfig",
+    "getMiniMaxConfigStatus",
+    "https://api.minimax.io/v1",
+    "https://api.minimaxi.com/v1",
+    "MiniMax-M3"
+  )
+  foreach ($term in $requiredConfigTerms) {
+    if ($configText -notmatch [regex]::Escape($term)) {
+      throw "$configPath is missing MiniMax test config term: $term"
+    }
+  }
+
+  $requiredModelTerms = @(
+    "minimax-test-panel",
+    "readMiniMaxTestConfig",
+    "saveMiniMaxTestConfig",
+    "isMiniMaxOnlyMode",
+    "isTestBuildMode"
+  )
+  foreach ($term in $requiredModelTerms) {
+    if ($modelsText -notmatch [regex]::Escape($term)) {
+      throw "$modelsPath is missing MiniMax API key entry term: $term"
+    }
+  }
+
+  $requiredSyncTerms = @(
+    "read_minimax_test_config",
+    "save_minimax_test_config",
+    "configure_claude_code_relay",
+    "resources",
+    ".openclaw",
+    "hermes",
+    "relay-config.json"
+  )
+  foreach ($term in $requiredSyncTerms) {
+    if (($devApiText + "`n" + $relayText) -notmatch [regex]::Escape($term)) {
+      throw "Local config sync is missing term: $term"
+    }
+  }
+
+  foreach ($source in @($configText, $modelsText, $devApiText, $relayText)) {
+    if ($source -match [regex]::Escape($viteMinimaxApiKeyPattern)) {
+      throw "MiniMax API key entry must not read or write $viteMinimaxApiKeyPattern."
+    }
+    if ($source -match "(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}") {
+      throw "MiniMax API key entry source contains a real-looking sk- key."
+    }
+  }
+
+  Write-Host "MiniMax API key entry: PASS" -ForegroundColor Green
+  Write-Host "Local config sync: PASS" -ForegroundColor Green
+  Write-Host "Secret source scan: PASS" -ForegroundColor Green
 }
 
 function Test-ExecutableRuntimeCopyLine {
@@ -418,6 +501,9 @@ Test-BuildScriptLogic
 
 Write-Section "MiniMax-only Test Build Logic"
 Test-MiniMaxOnlyTestBuildLogic
+
+Write-Section "MiniMax API Key Entry"
+Test-MiniMaxApiKeyEntry
 
 Write-Section "Runtime Manifest"
 Invoke-RuntimeVerify -ProjectRoot $root -ManifestPath $manifestPath

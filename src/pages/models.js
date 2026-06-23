@@ -10,6 +10,12 @@ import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl, getYyapiConsoleUrl } from '../lib/yyapi-config.js'
+import { isMiniMaxOnlyMode, isTestBuildMode, isYyapiDisabled } from '../lib/test-build-mode.js'
+import {
+  getMiniMaxTestDefaults,
+  readMiniMaxTestConfig,
+  saveMiniMaxTestConfig,
+} from '../lib/minimax-test-config.js'
 
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
@@ -154,6 +160,7 @@ function escapeHtml(str) {
 export async function render() {
   const page = document.createElement('div')
   page.className = 'page'
+  const yyapiDisabled = isYyapiDisabled()
 
   page.innerHTML = `
     <div class="page-header">
@@ -164,13 +171,14 @@ export async function render() {
       <button class="btn btn-primary btn-sm" id="btn-add-provider">${t('models.addProvider')}</button>
       <button class="btn btn-secondary btn-sm" id="btn-undo" disabled>${t('models.undo')}</button>
       <span style="flex:1"></span>
-      <button class="btn btn-secondary btn-sm" id="btn-refresh-yyapi" title="${t('models.refreshYYApi')}">${icon('refresh-cw', 13)} ${t('models.refreshYYApi')}</button>
-      <button class="btn btn-secondary btn-sm" id="btn-open-yyapi-console">${icon('external-link', 13)} ${t('models.openYYApiConsole')}</button>
+      <button class="btn btn-secondary btn-sm" id="btn-refresh-yyapi" title="${t('models.refreshYYApi')}" style="${yyapiDisabled ? 'display:none' : ''}">${icon('refresh-cw', 13)} ${t('models.refreshYYApi')}</button>
+      <button class="btn btn-secondary btn-sm" id="btn-open-yyapi-console" style="${yyapiDisabled ? 'display:none' : ''}">${icon('external-link', 13)} ${t('models.openYYApiConsole')}</button>
     </div>
     <div class="form-hint" style="margin-bottom:var(--space-md)">
       ${t('models.providerHint')}
     </div>
     <div id="yyapi-token-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
+    <div id="minimax-test-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
     <div id="default-model-bar"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
@@ -217,12 +225,17 @@ async function loadConfig(page, state) {
 
     renderDefaultBar(page, state)
     renderProviders(page, state)
-    renderYyapiTokenPanel(page).catch(err => console.warn('[models] yyapi token panel failed:', err))
+    if (!isYyapiDisabled()) {
+      renderYyapiTokenPanel(page).catch(err => console.warn('[models] yyapi token panel failed:', err))
+    }
+    renderMiniMaxTestPanel(page).catch(err => console.warn('[models] MiniMax test panel failed:', err?.message || err))
 
     // 自动初始化：如果 YYAPI 服务商不存在且有用户令牌，自动创建
-    autoInitYYApi(page, state).catch(err => {
-      console.error('[models] autoInitYYApi 失败:', err)
-    })
+    if (!isYyapiDisabled()) {
+      autoInitYYApi(page, state).catch(err => {
+        console.error('[models] autoInitYYApi 失败:', err)
+      })
+    }
   } catch (e) {
     console.error('[models] loadConfig failed:', e)
     const detail = escapeHtml(e?.stack || e?.message || String(e))
@@ -348,6 +361,104 @@ async function renderYyapiTokenPanel(page) {
       <div style="color:var(--text-tertiary);font-size:13px">令牌读取失败：${escapeHtml(err.message || err)}</div>
     `
   }
+}
+
+function shouldShowMiniMaxTestPanel() {
+  return isMiniMaxOnlyMode() || isTestBuildMode()
+}
+
+function miniMaxSyncBadge(label, ok) {
+  const color = ok ? 'var(--success)' : 'var(--text-tertiary)'
+  const bg = ok ? 'var(--success-muted)' : 'var(--bg-tertiary)'
+  return `<span style="display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:2px 8px;background:${bg};color:${color};font-size:12px">${escapeHtml(label)} ${ok ? 'OK' : '待同步'}</span>`
+}
+
+async function renderMiniMaxTestPanel(page) {
+  const panel = page.querySelector('#minimax-test-panel')
+  if (!panel) return
+  if (!shouldShowMiniMaxTestPanel()) {
+    panel.style.display = 'none'
+    panel.innerHTML = ''
+    return
+  }
+
+  const defaults = getMiniMaxTestDefaults()
+  const status = await readMiniMaxTestConfig()
+  const baseUrl = status.baseUrl || defaults.baseUrl
+  const masked = status.maskedKey || ''
+  const configuredText = status.hasApiKey
+    ? `已配置 API Key：${escapeHtml(masked)}`
+    : '未配置 API Key'
+  const sync = status.synced || {}
+  panel.style.display = ''
+  panel.innerHTML = `
+    <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span>测试版 MiniMax 配置</span>
+      <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">免登录测试模式</span>
+    </div>
+    <div class="form-hint" style="margin-bottom:var(--space-sm)">
+      所有 Agent 默认使用 MiniMax，本页只写入本地运行配置，不写源码、不联网上报、不走 YYAPI。
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(180px,1fr) minmax(140px,.7fr);gap:10px;align-items:end">
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">API Key</label>
+        <input class="form-input" id="minimax-test-api-key" type="password" autocomplete="off" placeholder="${status.hasApiKey ? `已保存：${escapeHtml(masked)}，留空则保留` : '粘贴 MiniMax API Key'}">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Base URL</label>
+        <select class="form-input" id="minimax-test-base-url">
+          <option value="${escapeHtml(defaults.baseUrl)}" ${baseUrl === defaults.baseUrl ? 'selected' : ''}>国际 ${escapeHtml(defaults.baseUrl)}</option>
+          <option value="${escapeHtml(defaults.cnBaseUrl)}" ${baseUrl === defaults.cnBaseUrl ? 'selected' : ''}>国内 ${escapeHtml(defaults.cnBaseUrl)}</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Model</label>
+        <input class="form-input" id="minimax-test-model" value="${escapeHtml(defaults.model)}" readonly>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-primary btn-sm" id="btn-save-minimax-test">保存 MiniMax 配置</button>
+      <button class="btn btn-secondary btn-sm" id="btn-reload-minimax-test">重新读取配置</button>
+      <span style="font-size:12px;color:var(--text-secondary)">${configuredText}</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      ${miniMaxSyncBadge('OpenClaw', sync.openclaw)}
+      ${miniMaxSyncBadge('OpenClaw Agent', sync.openclawAgent)}
+      ${miniMaxSyncBadge('Hermes', sync.hermes)}
+      ${miniMaxSyncBadge('Claude Panel', sync.claudePanel)}
+    </div>
+  `
+
+  panel.querySelector('#btn-reload-minimax-test')?.addEventListener('click', () => {
+    renderMiniMaxTestPanel(page).catch(err => toast(`MiniMax 配置读取失败: ${err?.message || err}`, 'error'))
+  })
+  panel.querySelector('#btn-save-minimax-test')?.addEventListener('click', async () => {
+    const btn = panel.querySelector('#btn-save-minimax-test')
+    const input = panel.querySelector('#minimax-test-api-key')
+    const select = panel.querySelector('#minimax-test-base-url')
+    const oldText = btn?.textContent || '保存 MiniMax 配置'
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = '保存中...'
+    }
+    try {
+      await saveMiniMaxTestConfig({
+        apiKey: input?.value || '',
+        baseUrl: select?.value || defaults.baseUrl,
+        model: defaults.model,
+      })
+      if (input) input.value = ''
+      await renderMiniMaxTestPanel(page)
+      toast('MiniMax 本地配置已保存并同步', 'success')
+    } catch (err) {
+      toast(`MiniMax 配置保存失败: ${err?.message || err}`, 'error')
+    } finally {
+      if (btn) {
+        btn.disabled = false
+        btn.textContent = oldText
+      }
+    }
+  })
 }
 
 // 渲染当前主模型状态栏
@@ -1339,7 +1450,7 @@ function bindTopActions(page, state) {
 function addProvider(page, state) {
   const yyapiBaseUrl = getYyapiBaseUrl()
   const presetMap = new Map()
-  if (yyapiBaseUrl) {
+  if (!isYyapiDisabled() && yyapiBaseUrl) {
     presetMap.set(YYAPI_PROVIDER_KEY, { key: YYAPI_PROVIDER_KEY, label: 'YYAPI', baseUrl: yyapiBaseUrl, api: 'openai-completions' })
   }
   for (const preset of PROVIDER_PRESETS) presetMap.set(preset.key, preset)

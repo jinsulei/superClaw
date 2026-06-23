@@ -633,7 +633,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
     let managed = existing
         .get("managedBy")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "superclaw-yyapi");
+        .is_some_and(|v| v == "superclaw-yyapi" || v == "superclaw-minimax-test");
     let has_existing_user_config = existing
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -681,8 +681,34 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         }));
     }
 
-    let branch_models = config
-        .get("models")
+    let relay_name = config
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("YYApi");
+    let relay_provider = config
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("openai-compatible");
+    let default_provider = config
+        .get("defaultProvider")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("yyapi");
+    let managed_by = config
+        .get("managedBy")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("superclaw-yyapi");
+
+    let mut branch_models = config
+        .get("branchModels")
+        .or_else(|| config.get("models"))
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default()
@@ -690,17 +716,26 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
+    if branch_models.is_empty() {
+        branch_models.push(model.to_string());
+    }
 
     let next = json!({
         "enabled": true,
-        "interfaceType": "relay",
-        "name": "YYApi",
-        "provider": "openai-compatible",
+        "interfaceType": config
+            .get("interfaceType")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("relay"),
+        "name": relay_name,
+        "provider": relay_provider,
+        "defaultProvider": default_provider,
         "baseUrl": base_url,
         "model": model,
         "branchModels": branch_models,
         "apiKey": api_key,
-        "managedBy": "superclaw-yyapi",
+        "managedBy": managed_by,
         "updatedAt": format!("{:?}", std::time::SystemTime::now())
     });
     let content = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
@@ -709,7 +744,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
     Ok(json!({
         "configured": true,
         "skipped": false,
-        "provider": "openai-compatible",
+        "provider": relay_provider,
         "model": model,
         "path": config_path
     }))
