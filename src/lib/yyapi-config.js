@@ -1,3 +1,5 @@
+import { isYyapiDisabled } from './test-build-mode.js'
+
 export const YYAPI_PROVIDER_KEY = 'yyapi'
 
 const USER_API_OVERRIDE_KEY = 'superclaw_api_base_url'
@@ -44,6 +46,7 @@ function stripApiVersion(url) {
 }
 
 export function getUserApiOrigin() {
+  if (isYyapiDisabled()) return ''
   const configured = safeLocalStorageGet(USER_API_OVERRIDE_KEY) || viteEnv('VITE_USER_API_BASE_URL')
   if (configured && (!isLoopbackUrl(configured) || localUserApiAllowed())) return configured
   return DEFAULT_USER_API_ORIGIN
@@ -60,10 +63,12 @@ export function getUserApiBaseUrlV2() {
 }
 
 export function getYyapiBaseUrl() {
+  if (isYyapiDisabled()) return ''
   return viteEnv('VITE_YYAPI_BASE_URL') || DEFAULT_YYAPI_BASE_URL
 }
 
 export function getYyapiAuthBaseUrl() {
+  if (isYyapiDisabled()) return ''
   return viteEnv('VITE_YYAPI_AUTH_BASE_URL') || stripApiVersion(getYyapiBaseUrl()) || DEFAULT_YYAPI_AUTH_BASE_URL
 }
 

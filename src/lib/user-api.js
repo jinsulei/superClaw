@@ -9,6 +9,7 @@ import {
   getYyapiBaseUrl,
   isYyapiBaseUrl,
 } from './yyapi-config.js'
+import { getTestUser, isAuthBypassEnabled } from './test-build-mode.js'
 
 const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
 
@@ -30,6 +31,7 @@ export function navigateToAuth(path) {
 }
 
 export function getToken() {
+  if (isAuthBypassEnabled()) return 'test-build-token'
   return localStorage.getItem('superclaw_token')
 }
 
@@ -42,6 +44,7 @@ export function setToken(token) {
 }
 
 export function getStoredUser() {
+  if (isAuthBypassEnabled()) return getTestUser()
   const raw = localStorage.getItem('superclaw_user')
   if (!raw) return null
   try {
@@ -60,15 +63,50 @@ export function setStoredUser(user) {
 }
 
 export function isLoggedIn() {
+  if (isAuthBypassEnabled()) return true
   return !!getToken()
 }
 
 export function clearAuth() {
+  if (isAuthBypassEnabled()) return
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
   clearConfiguredModelsForLogout().catch(err => {
     console.warn('[auth] clear configured models failed:', err?.message || err)
   })
+}
+
+function testUserApiResponse(path, options = {}) {
+  const method = String(options.method || 'POST').toUpperCase()
+  const user = getTestUser()
+  if (/\/tokens(?:\/|$)/.test(path)) {
+    if (/\/key$/.test(path)) return { key: '', apiKey: '' }
+    return []
+  }
+  if (/\/user\/quota|\/payment\/topup-info/.test(path)) {
+    return {
+      quota: 999999999,
+      used_quota: 0,
+      remaining_tokens: 999999999,
+      tokenInfo: { remaining_tokens: 999999999 },
+      testBuild: true,
+    }
+  }
+  if (/\/user\/info|\/profile/.test(path)) return user
+  if (/\/license\/activate|\/redemption\/activate|\/auth\/bind-activation/.test(path)) {
+    return { ok: true, success: true, amount: 0, testBuild: true }
+  }
+  if (/\/auth\/login|\/auth\/register/.test(path)) {
+    return {
+      token: 'test-build-token',
+      user,
+      tokenInfo: { remaining_tokens: 999999999 },
+      testBuild: true,
+    }
+  }
+  if (/\/auth\/logout/.test(path)) return { ok: true, testBuild: true }
+  if (method === 'GET') return {}
+  return { ok: true, testBuild: true }
 }
 
 export async function clearConfiguredModelsForLogout() {
@@ -166,6 +204,7 @@ function isAuthInvalidError(status, message = '') {
 }
 
 async function request(path, options = {}) {
+  if (isAuthBypassEnabled()) return testUserApiResponse(path, options)
   const { method = 'POST', body, auth = false, suppressAuthRedirect = false, timeoutMs = 15000 } = options
   const baseUrl = getBaseUrl()
   if (!baseUrl) throw new Error('USER_API_BASE_URL 未配置')
@@ -250,6 +289,7 @@ export async function redeemCode(code) {
 }
 
 async function requestV2(path, options = {}) {
+  if (isAuthBypassEnabled()) return testUserApiResponse(path, options)
   const {
     method = 'POST',
     body,

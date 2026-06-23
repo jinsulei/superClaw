@@ -20,6 +20,8 @@ $script:EffectiveDisableYyapi = $DisableYyapi.IsPresent -or $script:EffectiveSan
 $script:EffectiveSkipActivation = $SkipActivation.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectivePortableMode = $PortableMode.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectiveFailIfPortOccupied = $true
+$script:MiniMaxTestBaseUrl = "https://api.minimax.io/v1"
+$script:MiniMaxTestModel = "MiniMax-M3"
 $StrictPort = 1420
 $StrictPortRequired = $true
 $StrictPortSummary = "strictPort: port 1420, fail if port occupied, no reuse existing service"
@@ -179,6 +181,39 @@ function Get-ConfiguredYyapiBaseUrl {
   return ""
 }
 
+function Set-TestBuildViteEnv {
+  if (-not $script:EffectiveSanitizedTest) { return @{} }
+  $keys = @(
+    "VITE_SUPERCLAW_TEST_BUILD",
+    "VITE_SUPERCLAW_SKIP_AUTH",
+    "VITE_SUPERCLAW_SKIP_ACTIVATION",
+    "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_FORCE_PROVIDER",
+    "VITE_SUPERCLAW_MINIMAX_BASE_URL",
+    "VITE_SUPERCLAW_MINIMAX_MODEL"
+  )
+  $previous = @{}
+  foreach ($key in $keys) {
+    $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+  }
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_AUTH", "1", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_ACTIVATION", "1", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "1", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $script:MiniMaxTestBaseUrl, "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $script:MiniMaxTestModel, "Process")
+  Write-Host "Test build Vite env: auth bypass, activation bypass, yyapi disabled, provider=minimax, model=$script:MiniMaxTestModel" -ForegroundColor Green
+  return $previous
+}
+
+function Restore-TestBuildViteEnv([hashtable]$Previous) {
+  if (-not $Previous) { return }
+  foreach ($key in $Previous.Keys) {
+    [Environment]::SetEnvironmentVariable($key, $Previous[$key], "Process")
+  }
+}
+
 function Write-OpenClawConfig([string]$Dir) {
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $Dir "workspace") -Force | Out-Null
@@ -196,12 +231,11 @@ function Write-OpenClawConfig([string]$Dir) {
     models = [ordered]@{
       providers = [ordered]@{
         minimax = [ordered]@{
-          baseUrl = "https://api.minimaxi.com/anthropic/v1"
+          baseUrl = $script:MiniMaxTestBaseUrl
           apiKey = '${MINIMAX_API_KEY}'
-          api = "anthropic-messages"
+          api = "openai-completions"
           models = @(
-            [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
-            [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+            [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $false; input = @("text", "image"); contextWindow = 1000000; maxTokens = 8192 }
           )
         }
         "openai-compatible" = [ordered]@{
@@ -225,8 +259,8 @@ function Write-OpenClawConfig([string]$Dir) {
     agents = [ordered]@{
       defaults = [ordered]@{
         workspace = 'workspace'
-        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
-        models = [ordered]@{ "minimax/MiniMax-M2.7-highspeed" = [ordered]@{}; "minimax/MiniMax-M2.7" = [ordered]@{} }
+        model = [ordered]@{ primary = "minimax/$script:MiniMaxTestModel"; fallbacks = @() }
+        models = [ordered]@{ "minimax/$script:MiniMaxTestModel" = [ordered]@{} }
         skills = @()
         contextInjection = "never"
         bootstrapMaxChars = 300
@@ -238,7 +272,7 @@ function Write-OpenClawConfig([string]$Dir) {
         id = "main"
         name = "OpenCloud"
         workspace = "workspace"
-        model = [ordered]@{ primary = "minimax/MiniMax-M2.7-highspeed"; fallbacks = @("minimax/MiniMax-M2.7") }
+        model = [ordered]@{ primary = "minimax/$script:MiniMaxTestModel"; fallbacks = @() }
         skills = @()
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
@@ -273,12 +307,11 @@ function Write-OpenClawConfig([string]$Dir) {
   $models = [ordered]@{
     providers = [ordered]@{
       minimax = [ordered]@{
-        baseUrl = "https://api.minimaxi.com/anthropic/v1"
+        baseUrl = $script:MiniMaxTestBaseUrl
         apiKey = '${MINIMAX_API_KEY}'
-        api = "anthropic-messages"
+        api = "openai-completions"
         models = @(
-          [ordered]@{ id = "MiniMax-M2.7-highspeed"; name = "MiniMax M2.7 Highspeed"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 },
-          [ordered]@{ id = "MiniMax-M2.7"; name = "MiniMax M2.7"; api = "anthropic-messages"; reasoning = $false; input = @("text"); contextWindow = 204800; maxTokens = 8192 }
+          [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $false; input = @("text", "image"); contextWindow = 1000000; maxTokens = 8192 }
         )
       }
       "openai-compatible" = [ordered]@{
@@ -305,15 +338,17 @@ function Write-OpenClawConfig([string]$Dir) {
 function Write-HermesConfig([string]$Dir) {
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
   $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
-  $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
+  $baseUrlYamlLine = if ($script:EffectiveSanitizedTest) { "  base_url: $script:MiniMaxTestBaseUrl`n" } elseif ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
+  $modelYaml = if ($script:EffectiveSanitizedTest) { $script:MiniMaxTestModel } else { "" }
+  $providerYaml = if ($script:EffectiveSanitizedTest) { "minimax" } else { "custom" }
   foreach ($name in @("cron", "sessions", "logs", "memories", "skills", "pairing", "hooks", "image_cache", "audio_cache", "plugins")) {
     New-Item -ItemType Directory -Path (Join-Path $Dir $name) -Force | Out-Null
   }
   Write-Utf8File (Join-Path $Dir "config.yaml") @"
 # Hermes Agent portable configuration.
 model:
-  default: ""
-  provider: custom
+  default: $modelYaml
+  provider: $providerYaml
 ${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
@@ -556,9 +591,14 @@ Assert-GreenRuntimeRequirements
 if (-not $SkipBuild) {
   Step "Building frontend"
   Push-Location $Root
-  npm run build
-  if ($LASTEXITCODE -ne 0) { Fail "npm run build failed" }
-  Pop-Location
+  $previousViteEnv = Set-TestBuildViteEnv
+  try {
+    npm run build
+    if ($LASTEXITCODE -ne 0) { Fail "npm run build failed" }
+  } finally {
+    Restore-TestBuildViteEnv $previousViteEnv
+    Pop-Location
+  }
 }
 
 Step "Creating package directory"
@@ -632,7 +672,8 @@ Write-Utf8File (Join-Path $ConfigTemplate "OpenCloud-openclaw.json.template") (G
 Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
-OPENAI_API_KEY=superclaw-login-required
+MINIMAX_API_KEY=YOUR_API_KEY
+MINIMAX_BASE_URL=$script:MiniMaxTestBaseUrl
 ${templateBaseUrlLine}API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@

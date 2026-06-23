@@ -1,5 +1,5 @@
 param(
-  [string]$ExpectedBranch = "ecommerce-1.0.2-green-usb-from-1.0.1-4"
+  [string]$ExpectedBranch = "test-minimax-only-no-user-from-green"
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,7 +82,11 @@ function Test-WorkspaceStatus {
     "scripts/build-green-package.ps1",
     "scripts/preflight-green-package.ps1",
     "src/lib/yyapi-config.js",
-    "scripts/build-desktop-client.ps1"
+    "scripts/build-desktop-client.ps1",
+    "src/lib/test-build-mode.js",
+    "src/main.js",
+    "src/lib/user-api.js",
+    "src/lib/model-presets.js"
   )
 
   $unexpected = @()
@@ -162,6 +166,51 @@ function Test-BuildScriptLogic {
   }
 
   Write-Host "build-green-package.ps1 strictPort/fail-if-occupied logic is present."
+}
+
+function Test-MiniMaxOnlyTestBuildLogic {
+  $buildPath = "scripts/build-green-package.ps1"
+  $modePath = "src/lib/test-build-mode.js"
+  $buildText = Get-Content -LiteralPath $buildPath -Raw -Encoding UTF8
+  $modeText = Get-Content -LiteralPath $modePath -Raw -Encoding UTF8
+  $viteMinimaxApiKeyPattern = ("VITE_MINIMAX_" + "API_KEY")
+  $requiredBuildTerms = @(
+    "VITE_SUPERCLAW_TEST_BUILD",
+    "VITE_SUPERCLAW_SKIP_AUTH",
+    "VITE_SUPERCLAW_SKIP_ACTIVATION",
+    "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_FORCE_PROVIDER",
+    "VITE_SUPERCLAW_MINIMAX_BASE_URL",
+    "VITE_SUPERCLAW_MINIMAX_MODEL",
+    "https://api.minimax.io/v1",
+    "MiniMax-M3"
+  )
+  foreach ($term in $requiredBuildTerms) {
+    if ($buildText -notmatch [regex]::Escape($term)) {
+      throw "$buildPath is missing MiniMax-only test build term: $term"
+    }
+  }
+  $requiredModeTerms = @(
+    "isTestBuildMode",
+    "isAuthBypassEnabled",
+    "isActivationBypassEnabled",
+    "isYyapiDisabled",
+    "getForcedProvider",
+    "isMiniMaxOnlyMode",
+    "getMiniMaxDefaultConfig",
+    "getTestUser"
+  )
+  foreach ($term in $requiredModeTerms) {
+    if ($modeText -notmatch [regex]::Escape($term)) {
+      throw "$modePath is missing test build helper: $term"
+    }
+  }
+  if ($buildText -match [regex]::Escape($viteMinimaxApiKeyPattern) -or $modeText -match [regex]::Escape($viteMinimaxApiKeyPattern)) {
+    throw "MiniMax-only test mode must not use $viteMinimaxApiKeyPattern."
+  }
+  Write-Host "Test build auth bypass: PASS" -ForegroundColor Green
+  Write-Host "MiniMax only mode: PASS" -ForegroundColor Green
+  Write-Host "YYAPI disabled: PASS" -ForegroundColor Green
 }
 
 function Test-TrackedSourceRisks {
@@ -305,6 +354,12 @@ New-Item -ItemType Directory -Force C:\tmp | Out-Null
 Write-Section "Workspace"
 Test-WorkspaceStatus $root
 
+Write-Section "Build Script Logic"
+Test-BuildScriptLogic
+
+Write-Section "MiniMax-only Test Build Logic"
+Test-MiniMaxOnlyTestBuildLogic
+
 Write-Section "Runtime Manifest"
 Invoke-RuntimeVerify -ProjectRoot $root -ManifestPath $manifestPath
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -318,9 +373,6 @@ Write-Host "riskHits=0"
 
 Write-Section "Port 1420"
 Test-Port1420
-
-Write-Section "Build Script Logic"
-Test-BuildScriptLogic
 
 Write-Section "Tracked Source Risk Scan"
 $issues = Test-TrackedSourceRisks

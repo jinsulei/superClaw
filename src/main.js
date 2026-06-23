@@ -24,6 +24,7 @@ import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
+import { getMiniMaxDefaultConfig, getTestUser, isAuthBypassEnabled, isMiniMaxOnlyMode, isYyapiDisabled } from './lib/test-build-mode.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -74,8 +75,9 @@ function isLocalDevAuthBypass() {
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
-  if (isLocalDevAuthBypass()) {
+  if (isAuthBypassEnabled() || isLocalDevAuthBypass()) {
     sessionStorage.setItem('superclaw_authed', '1')
+    try { localStorage.setItem('superclaw_user', JSON.stringify(getTestUser())) } catch {}
     return { ok: true }
   }
 
@@ -186,6 +188,11 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
+  if (isAuthBypassEnabled()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    navigate('/dashboard')
+    return
+  }
   if (isLoggedIn()) {
     try {
       if (isTauri) {
@@ -212,6 +219,11 @@ const content = document.getElementById('content')
  * @param {HTMLElement} app
  */
 async function renderAuthPage(app) {
+  if (isAuthBypassEnabled()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    navigate('/dashboard')
+    return
+  }
   const authRoute = (window.location.hash.slice(1) || '').split('?')[0]
   let pageMod
   try {
@@ -440,6 +452,7 @@ function ensureYyapiManagedModelSelection(config, yyapiModelIds = [], defaultMod
 }
 
 async function getDefaultYyapiProfile() {
+  if (isYyapiDisabled() || isMiniMaxOnlyMode()) return null
   if (!isLoggedIn()) return null
   const yyapiBaseUrl = getYyapiBaseUrl()
   if (!yyapiBaseUrl) return null
@@ -670,8 +683,76 @@ async function syncHermesModel() {
   }
 }
 
+async function syncMiniMaxTestModelSettings() {
+  const minimax = getMiniMaxDefaultConfig()
+  const primaryRef = `${minimax.provider}/${minimax.model}`
+
+  try {
+    const config = await api.readOpenclawConfig()
+    if (!config.models) config.models = {}
+    if (!config.models.providers) config.models.providers = {}
+
+    const previous = config.models.providers[minimax.provider] || {}
+    config.models.providers[minimax.provider] = {
+      ...previous,
+      baseUrl: minimax.baseUrl,
+      apiKey: previous.apiKey || '',
+      api: previous.api || 'openai-completions',
+      models: [
+        { id: minimax.model, name: minimax.model, input: ['text', 'image'] },
+      ],
+      managed: false,
+    }
+
+    if (!config.agents) config.agents = {}
+    if (!config.agents.defaults) config.agents.defaults = {}
+    if (!config.agents.defaults.model) config.agents.defaults.model = {}
+    config.agents.defaults.model.primary = primaryRef
+    config.agents.defaults.model.fallbacks = []
+    if (!config.agents.defaults.models || typeof config.agents.defaults.models !== 'object') {
+      config.agents.defaults.models = {}
+    }
+    config.agents.defaults.models[primaryRef] = config.agents.defaults.models[primaryRef] || {}
+
+    for (const agent of (config.agents.list || [])) {
+      if (!agent.model || typeof agent.model !== 'object') agent.model = {}
+      agent.model.primary = primaryRef
+      agent.model.fallbacks = []
+    }
+
+    ensurePortableOpenClawSkills(config)
+    await api.writeOpenclawConfig(config)
+    try { localStorage.setItem('superclaw-primary-model', primaryRef) } catch {}
+  } catch (err) {
+    console.warn('[test-build] MiniMax OpenClaw sync failed:', err.message)
+  }
+
+  try {
+    const hermesConfig = await api.hermesReadConfig().catch(() => null)
+    const existingKey = hermesConfig?.api_key || ''
+    await api.configureHermes('minimax', existingKey, minimax.model, minimax.baseUrl)
+    saveHermesPrimary(minimax.model)
+    if (existingKey && typeof api.configureClaudeCodeRelay === 'function') {
+      await api.configureClaudeCodeRelay({
+        baseUrl: minimax.baseUrl,
+        apiKey: existingKey,
+        model: minimax.model,
+        models: [minimax.model],
+        force: false,
+      }).catch(err => console.warn('[test-build] Claude Code relay MiniMax sync failed:', err.message))
+    }
+  } catch (err) {
+    console.warn('[test-build] MiniMax Hermes sync failed:', err.message)
+  }
+}
+
 async function syncDefaultModelSettings() {
   try {
+    if (isYyapiDisabled() || isMiniMaxOnlyMode()) {
+      await syncMiniMaxTestModelSettings()
+      return
+    }
+
     const profile = await getDefaultYyapiProfile()
     if (!profile) {
       await syncHermesModel()
