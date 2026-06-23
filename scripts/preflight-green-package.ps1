@@ -213,6 +213,57 @@ function Test-MiniMaxOnlyTestBuildLogic {
   Write-Host "YYAPI disabled: PASS" -ForegroundColor Green
 }
 
+function Test-ExecutableRuntimeCopyLine {
+  param([string]$LineText)
+
+  $trimmed = $LineText.Trim()
+  if (-not $trimmed -or $trimmed.StartsWith("#")) {
+    return $false
+  }
+
+  $commandPattern = "(?i)^(?:&\s*)?(?:Copy-Item|Copy-Dir|robocopy|xcopy|Move-Item|Start-BitsTransfer|Invoke-WebRequest|curl|wget)\b|^cmd(?:\.exe)?\s*/c\s+(?:copy|xcopy|robocopy)\b|^powershell(?:\.exe)?\b.*\b(?:Copy-Item|Copy-Dir|robocopy|xcopy|Move-Item|Start-BitsTransfer|Invoke-WebRequest|curl|wget)\b"
+  if ($trimmed -notmatch $commandPattern) {
+    return $false
+  }
+
+  $localCachePattern = '(?i)(C:\\tmp|C:/tmp|\\Desktop\\|/Desktop/|\\Downloads\\|/Downloads/|\\AppData\\|/AppData/|\$env:(?:APPDATA|LOCALAPPDATA|USERPROFILE)|%(?:APPDATA|LOCALAPPDATA|USERPROFILE)%)'
+  $runtimeContextPattern = "(?i)(runtime|openclaw|uv-tools|uv-python|hermes-agent|claude-panel|old package|old-package|package)"
+  return ($trimmed -match $localCachePattern -and $trimmed -match $runtimeContextPattern)
+}
+
+function Test-SelfScannerRuleLine {
+  param(
+    [string]$Path,
+    [string]$LineText
+  )
+
+  if ($Path -ne "scripts/preflight-green-package.ps1") {
+    return $false
+  }
+
+  if (Test-ExecutableRuntimeCopyLine $LineText) {
+    return $false
+  }
+
+  $trimmed = $LineText.Trim()
+  if (-not $trimmed) {
+    return $false
+  }
+
+  $scannerTermsPattern = "(?i)(Copy-Item|Copy-Dir|robocopy|xcopy|Move-Item|Start-BitsTransfer|Invoke-WebRequest|curl|wget|C:\\tmp|Desktop|Downloads|AppData|runtime|old package|old-package|package)"
+  if ($trimmed -notmatch $scannerTermsPattern) {
+    return $false
+  }
+
+  return (
+    $trimmed.StartsWith("#") -or
+    $trimmed -match '\$line\s+-match' -or
+    $trimmed -match "Add-Issue|Write-Host|throw" -or
+    $trimmed -match "^\s*\$[A-Za-z0-9_]+\s*=" -or
+    $trimmed -match "^\s*(if|foreach|return)\b"
+  )
+}
+
 function Test-TrackedSourceRisks {
   $issues = [System.Collections.Generic.List[object]]::new()
   $trackedFiles = git -c core.quotepath=false ls-files
@@ -301,7 +352,15 @@ function Test-TrackedSourceRisks {
         }
       }
 
-      if ($normalized -match "^scripts/" -and -not $hasAllowedDesktopTerm -and $line -match "(Copy-Item|Copy-Dir|robocopy)" -and $line -match "(C:\\tmp|Downloads|Desktop|AppData)" -and $line -match "(runtime|old package|old-package|package)") {
+      $isExecutableRuntimeCopy = Test-ExecutableRuntimeCopyLine $line
+      $isLegacyLocalRuntimeCopyPattern = (
+        $line -match "(Copy-Item|Copy-Dir|robocopy)" -and
+        $line -match "(C:\\tmp|Downloads|Desktop|AppData)" -and
+        $line -match "(runtime|old package|old-package|package)"
+      )
+      $isSelfScannerRule = Test-SelfScannerRuleLine $normalized $line
+
+      if ($normalized -match "^scripts/" -and -not $hasAllowedDesktopTerm -and ($isExecutableRuntimeCopy -or $isLegacyLocalRuntimeCopyPattern) -and -not $isSelfScannerRule) {
         Add-Issue $issues "fatal" $normalized $lineNo "Build script appears to copy runtime/package content from local cache or user folders." $line.Trim()
       }
     }
