@@ -671,6 +671,14 @@ function normalizeRelayApiModel(model, fallback) {
   return raw;
 }
 
+function minimaxThinkingOverride(relayConfig, model) {
+  const baseUrl = String(relayConfig?.baseUrl || "").toLowerCase();
+  const modelName = String(model || relayConfig?.model || "").toLowerCase();
+  const isMiniMaxRelay = baseUrl.includes("api.minimaxi.com") || baseUrl.includes("api.minimax.io");
+  if (!isMiniMaxRelay || !modelName.includes("minimax-m3")) return null;
+  return { type: "disabled" };
+}
+
 function extractRelayText(payload) {
   if (typeof payload === "string") return payload;
   return (
@@ -694,13 +702,16 @@ function convertAnthropicToOpenAi(body, relayConfig) {
       content: anthropicContentToText(message.content),
     });
   }
-  return {
+  const payload = {
     model: normalizeRelayApiModel(body.model, relayConfig.model),
     messages,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
     stream: Boolean(body.stream),
   };
+  const thinking = minimaxThinkingOverride(relayConfig, payload.model);
+  if (thinking) payload.thinking = thinking;
+  return payload;
 }
 
 function sendAnthropicSse(res, event, data) {
@@ -849,6 +860,8 @@ async function handleOpenAiRelayRun(req, res, context) {
     max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 2048,
     stream: payload.stream === true,
   };
+  const thinking = minimaxThinkingOverride(relayConfig, apiModel);
+  if (thinking) requestBody.thinking = thinking;
 
   const upstreamResp = await fetch(openAiChatUrl(relayConfig.baseUrl), {
     method: "POST",
