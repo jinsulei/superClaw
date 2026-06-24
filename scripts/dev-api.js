@@ -80,6 +80,10 @@ function uvBinDir() {
 
 /** uv tool 安装目录 新结构: <app_root>/resources/uv-tools/  旧结构: <app_root>/uv-tools/ */
 function uvToolDir() {
+  const runtimePath = path.join(appRootDir(), 'resources', 'runtime', 'uv-tools')
+  if (fs.existsSync(runtimePath)) return runtimePath
+  const devRuntimePath = path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'uv-tools')
+  if (fs.existsSync(devRuntimePath)) return devRuntimePath
   const newPath = path.join(appRootDir(), 'resources', 'uv-tools')
   if (fs.existsSync(newPath)) return newPath
   return path.join(appRootDir(), 'uv-tools')
@@ -92,6 +96,10 @@ function uvToolBinDir() {
 
 /** uv Python 安装缓存目录 新结构: <app_root>/resources/uv-python/  旧结构: <app_root>/uv-python/ */
 function uvPythonDir() {
+  const runtimePath = path.join(appRootDir(), 'resources', 'runtime', 'uv-python')
+  if (fs.existsSync(runtimePath)) return runtimePath
+  const devRuntimePath = path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'uv-python')
+  if (fs.existsSync(devRuntimePath)) return devRuntimePath
   const newPath = path.join(appRootDir(), 'resources', 'uv-python')
   if (fs.existsSync(newPath)) return newPath
   return path.join(appRootDir(), 'uv-python')
@@ -99,11 +107,11 @@ function uvPythonDir() {
 
 function existingPortableDirs(kind) {
   return [...new Set([
-    path.join(appRootDir(), 'resources', kind),
     path.join(appRootDir(), 'resources', 'runtime', kind),
-    path.join(appRootDir(), kind),
-    path.join(appRootDir(), 'src-tauri', 'resources', kind),
     path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', kind),
+    path.join(appRootDir(), 'resources', kind),
+    path.join(appRootDir(), 'src-tauri', 'resources', kind),
+    path.join(appRootDir(), kind),
   ].map(p => path.resolve(p)))].filter(p => fs.existsSync(p))
 }
 
@@ -5403,10 +5411,29 @@ function miniMaxModelRef() {
   return `${MINIMAX_TEST_DEFAULTS.providerId}/${MINIMAX_TEST_DEFAULTS.model}`
 }
 
+function isInvalidOpenClawModelId(modelId) {
+  const raw = String(modelId || '').trim()
+  const lower = raw.toLowerCase()
+  return !raw
+    || raw === '默认模型'
+    || raw === '默认'
+    || lower === 'default model'
+    || lower === 'undefined'
+    || lower === 'null'
+}
+
+function normalizeOpenClawModelId(modelId, fallback = MINIMAX_TEST_DEFAULTS.model) {
+  return isInvalidOpenClawModelId(modelId) ? fallback : String(modelId).trim()
+}
+
+function normalizeOpenClawModelRef(modelRef, fallback = miniMaxModelRef()) {
+  return isInvalidOpenClawModelId(modelRef) ? fallback : String(modelRef).trim()
+}
+
 function miniMaxOpenClawModelDefinition() {
   return {
-    id: MINIMAX_TEST_DEFAULTS.model,
-    name: MINIMAX_TEST_DEFAULTS.model,
+    id: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
+    name: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
     api: 'openai-completions',
     reasoning: true,
     input: ['text'],
@@ -5439,7 +5466,7 @@ function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   if (!cfg.agents.defaults.model || typeof cfg.agents.defaults.model !== 'object' || Array.isArray(cfg.agents.defaults.model)) {
     cfg.agents.defaults.model = {}
   }
-  cfg.agents.defaults.model.primary = miniMaxModelRef()
+  cfg.agents.defaults.model.primary = normalizeOpenClawModelRef(miniMaxModelRef())
   if (!Array.isArray(cfg.agents.defaults.model.fallbacks)) cfg.agents.defaults.model.fallbacks = []
   cfg.agents.defaults.model.fallbacks = cfg.agents.defaults.model.fallbacks.filter(item => item !== miniMaxModelRef())
   if (!cfg.agents.defaults.models || typeof cfg.agents.defaults.models !== 'object' || Array.isArray(cfg.agents.defaults.models)) {

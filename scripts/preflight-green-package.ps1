@@ -86,6 +86,7 @@ function Test-WorkspaceStatus {
     "scripts/register-openclaw-tools.ps1",
     "scripts/regression-usb-exe.ps1",
     "scripts/verify-green-runtime.ps1",
+    "src-tauri/resources/runtime/claude-panel/server.js",
     "src-tauri/src/commands/claude_code.rs",
     "src-tauri/src/commands/config.rs",
     "src-tauri/src/commands/hermes.rs",
@@ -177,6 +178,10 @@ function Test-BuildScriptLogic {
     "FailIfPortOccupied",
     "runtime/hermes-agent",
     "runtime/hermes",
+    "runtime\uv-tools",
+    "runtime\uv-python",
+    "resources\runtime\uv-tools",
+    "resources\runtime\uv-python",
     "hermes.exe",
     "hermes-agent.exe"
   )
@@ -266,6 +271,9 @@ function Test-MiniMaxCNGatewayDefaults {
   if ($devApiText -notmatch "/api/status") {
     throw "scripts/dev-api.js must probe Claude Panel through /api/status."
   }
+  if ($devApiText -notmatch "panelRelayConnected" -or $devApiText -notmatch "OPENAI_RELAY") {
+    throw "scripts/dev-api.js must treat Claude Panel OPENAI_RELAY as the Claude Code connected mode."
+  }
 
   $openclawPath = "src-tauri/resources/data/.openclaw/openclaw.json"
   $openclawAgentPath = "src-tauri/resources/data/.openclaw/agents/main/agent/models.json"
@@ -293,6 +301,21 @@ function Test-MiniMaxCNGatewayDefaults {
   if ($agentModels.providers.minimax.baseUrl -ne $cnBaseUrl) {
     throw "OpenClaw agent minimax baseUrl must be $cnBaseUrl"
   }
+  $invalidModelIds = @("", "默认模型", "default model", "默认", "undefined", "null")
+  $openclawModelIds = @(
+    $openclaw.agents.defaults.model.primary,
+    $openclaw.agents.list[0].model.primary,
+    $agentModels.defaults.model,
+    $agentModels.defaults.modelRef
+  ) | ForEach-Object { [string]$_ }
+  foreach ($modelId in $openclawModelIds) {
+    if ($invalidModelIds -contains $modelId.Trim().ToLowerInvariant()) {
+      throw "OpenClaw model id must not be a UI label or placeholder: $modelId"
+    }
+  }
+  if ($openclaw.agents.defaults.model.primary -ne "minimax/MiniMax-M3" -or $agentModels.defaults.model -ne "MiniMax-M3") {
+    throw "OpenClaw default model must be MiniMax-M3."
+  }
   if ($hermesConfig -notmatch "provider:\s*minimax" -or $hermesConfig -notmatch "base_url:\s*$([regex]::Escape($cnBaseUrl))" -or $hermesConfig -notmatch "default:\s*MiniMax-M3") {
     throw "Hermes config.yaml must use minimax MiniMax-M3 on $cnBaseUrl"
   }
@@ -310,6 +333,45 @@ function Test-MiniMaxCNGatewayDefaults {
   Write-Host "Claude Panel MiniMax CN config: PASS" -ForegroundColor Green
   Write-Host "Hermes bundled runtime only: PASS" -ForegroundColor Green
   Write-Host "Claude Panel status route: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw model id is not UI label: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw default model MiniMax-M3: PASS" -ForegroundColor Green
+  Write-Host "Claude Code relay status route: PASS" -ForegroundColor Green
+  Write-Host "Native Claude CLI not required for relay mode: PASS" -ForegroundColor Green
+}
+
+function Test-HermesPackagedRuntimeLayout {
+  $requiredPaths = @(
+    "src-tauri/resources/runtime/hermes-agent/Scripts/hermes.exe",
+    "src-tauri/resources/runtime/uv-tools/uv.exe"
+  )
+  foreach ($path in $requiredPaths) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "Missing required Hermes packaged runtime path: $path"
+    }
+  }
+  $pythonExe = Get-ChildItem -LiteralPath "src-tauri/resources/runtime/uv-python" -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $pythonExe) {
+    throw "Missing required UV Python executable under src-tauri/resources/runtime/uv-python"
+  }
+
+  $hermesRs = Get-Content -LiteralPath "src-tauri/src/commands/hermes.rs" -Raw -Encoding UTF8
+  $devApiText = Get-Content -LiteralPath "scripts/dev-api.js" -Raw -Encoding UTF8
+  if ($hermesRs -notmatch "runtime.*uv-tools" -or $hermesRs -notmatch "runtime.*uv-python" -or $hermesRs -notmatch "runtime.*hermes-agent") {
+    throw "Hermes desktop command must resolve resources/runtime hermes-agent and uv paths before legacy roots."
+  }
+  if ($hermesRs -notmatch "hermes_agent_runtime_candidates" -or $hermesRs -notmatch "expected_hermes_agent_runtime_dir") {
+    throw "Hermes desktop command must use packaged hermes-agent runtime helpers."
+  }
+  if ($devApiText -notmatch "resources'.*'runtime'.*'uv-tools" -or $devApiText -notmatch "resources'.*'runtime'.*'uv-python" -or $devApiText -notmatch "resources'.*'runtime'.*'hermes-agent") {
+    throw "scripts/dev-api.js must resolve resources/runtime hermes-agent and uv paths before legacy roots."
+  }
+
+  Write-Host "Hermes packaged runtime layout: PASS" -ForegroundColor Green
+  Write-Host "Hermes bundled executable: PASS" -ForegroundColor Green
+  Write-Host "UV tools packaged path: PASS" -ForegroundColor Green
+  Write-Host "UV Python packaged path: PASS" -ForegroundColor Green
+  Write-Host "No global Hermes fallback: PASS" -ForegroundColor Green
 }
 
 function Test-EcommerceAssistantBuildFlag {
@@ -832,6 +894,9 @@ Test-MiniMaxOnlyTestBuildLogic
 
 Write-Section "MiniMax CN Gateway Defaults"
 Test-MiniMaxCNGatewayDefaults
+
+Write-Section "Hermes Packaged Runtime Layout"
+Test-HermesPackagedRuntimeLayout
 
 Write-Section "OpenClaw Desktop Control Registration"
 Test-OpenClawDesktopControlRegistration

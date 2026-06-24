@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -135,6 +136,10 @@ fn panel_url() -> String {
     format!("http://127.0.0.1:{}/", CLAUDE_PANEL_PORT)
 }
 
+fn panel_status_url() -> String {
+    format!("http://127.0.0.1:{}/api/status", CLAUDE_PANEL_PORT)
+}
+
 fn ensure_portable_dirs(home: &Path, projects: &Path) -> Result<(), String> {
     fs::create_dir_all(home).map_err(|e| e.to_string())?;
     fs::create_dir_all(projects).map_err(|e| e.to_string())?;
@@ -166,14 +171,29 @@ fn hide_console_window(cmd: &mut Command) {
 #[cfg(not(target_os = "windows"))]
 fn hide_console_window(_cmd: &mut Command) {}
 
-fn is_port_open(port: u16) -> bool {
+fn panel_status_ready(port: u16) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    let request = format!(
+        "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = String::new();
+    if stream.read_to_string(&mut buf).is_err() {
+        return false;
+    }
+    buf.starts_with("HTTP/1.1 200") || buf.starts_with("HTTP/1.0 200")
 }
 
 fn wait_for_panel(port: u16) -> bool {
     for _ in 0..40 {
-        if is_port_open(port) {
+        if panel_status_ready(port) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(250));
@@ -232,10 +252,13 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
 
 fn panel_running_info(resources: &Path) -> Value {
     let server = claude_panel_server(resources);
+    let status_ready = panel_status_ready(CLAUDE_PANEL_PORT);
     json!({
         "installed": server.is_file(),
-        "running": is_port_open(CLAUDE_PANEL_PORT),
+        "running": status_ready,
+        "statusOk": status_ready,
         "url": panel_url(),
+        "statusUrl": panel_status_url(),
         "server": server,
         "dataDir": claude_panel_data_dir(resources)
     })

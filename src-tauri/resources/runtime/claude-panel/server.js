@@ -390,8 +390,17 @@ function hasUsableRelayConfig(config) {
       config.enabled &&
       config.baseUrl &&
       config.model &&
-      config.apiKey
+      isUsableRelayApiKey(config.apiKey)
   );
+}
+
+function isUsableRelayApiKey(apiKey) {
+  const value = String(apiKey || "").trim();
+  if (!value) return false;
+  if (/^(YOUR_API_KEY|your-api-key|superclaw-login-required|placeholder|test-placeholder|maskedKey)$/i.test(value)) {
+    return false;
+  }
+  return !/^\*+$/.test(value);
 }
 
 function hasRelayConfigValue(config) {
@@ -460,7 +469,7 @@ function publicRelayConfig(config = readRelayConfig()) {
     baseUrl: typeof config.baseUrl === "string" ? config.baseUrl : "",
     model: typeof config.model === "string" ? config.model : "",
     branchModels: normalizeBranchModels(config.branchModels),
-    apiKeyConfigured: Boolean(config.apiKey),
+    apiKeyConfigured: isUsableRelayApiKey(config.apiKey),
     apiKeyMasked: maskSecret(config.apiKey),
     updatedAt: typeof config.updatedAt === "string" ? config.updatedAt : null,
   };
@@ -584,7 +593,7 @@ function readClaudeSettings() {
   const env = settings.env && typeof settings.env === "object" ? settings.env : {};
   const relayConfig = readRelayConfig();
   const relayEnv =
-    relayConfig.enabled && relayConfig.baseUrl && relayConfig.model && relayConfig.apiKey
+    relayConfig.enabled && relayConfig.baseUrl && relayConfig.model && isUsableRelayApiKey(relayConfig.apiKey)
       ? {
           ANTHROPIC_BASE_URL: isOpenAiCompatibleRelay(relayConfig)
             ? localOpenAiCompatBaseUrl()
@@ -607,17 +616,20 @@ function readClaudeSettings() {
     effectiveEnv.ANTHROPIC_DEFAULT_SONNET_MODEL ||
     process.env.ANTHROPIC_MODEL ||
     "";
+  const relayConfigured = Boolean(relayConfig.enabled && relayConfig.baseUrl && relayConfig.model);
+  const relayAuthConfigured = isUsableRelayApiKey(relayConfig.apiKey);
+  const envAuthConfigured = isUsableRelayApiKey(
+    effectiveEnv.ANTHROPIC_AUTH_TOKEN ||
+      effectiveEnv.ANTHROPIC_API_KEY ||
+      process.env.ANTHROPIC_AUTH_TOKEN ||
+      process.env.ANTHROPIC_API_KEY
+  );
 
   return {
     env: effectiveEnv,
     baseUrl,
     model,
-    authConfigured: Boolean(
-      effectiveEnv.ANTHROPIC_AUTH_TOKEN ||
-        effectiveEnv.ANTHROPIC_API_KEY ||
-        process.env.ANTHROPIC_AUTH_TOKEN ||
-        process.env.ANTHROPIC_API_KEY
-    ),
+    authConfigured: relayConfigured ? relayAuthConfigured : envAuthConfigured,
     settingsPath,
   };
 }
@@ -644,6 +656,32 @@ function openAiChatUrl(baseUrl) {
   return `${root}/v1/chat/completions`;
 }
 
+function normalizeRelayApiModel(model, fallback) {
+  const raw = String(model || "").trim();
+  const defaultModel = String(fallback || "").trim() || "MiniMax-M3";
+  if (!raw) return defaultModel;
+  const lower = raw.toLowerCase();
+  if (raw === "默认模型" || raw === "默认" || lower === "default model" || lower === "undefined" || lower === "null") {
+    return defaultModel;
+  }
+  if (raw.includes("/")) {
+    const last = raw.split("/").filter(Boolean).pop();
+    return last || defaultModel;
+  }
+  return raw;
+}
+
+function extractRelayText(payload) {
+  if (typeof payload === "string") return payload;
+  return (
+    payload?.choices?.[0]?.message?.content ??
+    payload?.choices?.[0]?.delta?.content ??
+    payload?.content?.[0]?.text ??
+    payload?.text ??
+    ""
+  );
+}
+
 function convertAnthropicToOpenAi(body, relayConfig) {
   const messages = [];
   const systemText = Array.isArray(body.system)
@@ -657,7 +695,7 @@ function convertAnthropicToOpenAi(body, relayConfig) {
     });
   }
   return {
-    model: body.model || relayConfig.model,
+    model: normalizeRelayApiModel(body.model, relayConfig.model),
     messages,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
@@ -707,7 +745,7 @@ async function handleOpenAiCompatibleMessages(req, res) {
 
   if (!openAiBody.stream) {
     const data = await upstreamResp.json();
-    const text = data?.choices?.[0]?.message?.content || "";
+    const text = extractRelayText(data);
     sendJson(res, 200, {
       id: data.id || `msg_${Date.now()}`,
       type: "message",
@@ -765,7 +803,7 @@ async function handleOpenAiCompatibleMessages(req, res) {
         if (!payload || payload === "[DONE]") continue;
         try {
           const chunk = JSON.parse(payload);
-          const text = chunk?.choices?.[0]?.delta?.content || "";
+          const text = extractRelayText(chunk);
           if (text) {
             sendAnthropicSse(res, "content_block_delta", {
               type: "content_block_delta",
@@ -786,6 +824,113 @@ async function handleOpenAiCompatibleMessages(req, res) {
   });
   sendAnthropicSse(res, "message_stop", { type: "message_stop" });
   res.end();
+}
+
+async function handleOpenAiRelayRun(req, res, context) {
+  const relayConfig = readRelayConfig();
+  if (!isOpenAiCompatibleRelay(relayConfig)) {
+    return false;
+  }
+  if (!hasUsableRelayConfig(relayConfig)) {
+    sendJson(res, 400, {
+      error: "Claude Relay is not configured with a usable API key.",
+      code: "MISSING_API_KEY",
+      runtimeMode: "OPENAI_RELAY",
+    });
+    return true;
+  }
+
+  const payload = context.payload || {};
+  const apiModel = normalizeRelayApiModel(context.model, relayConfig.model);
+  const maxTokens = Number(payload.max_tokens || payload.maxTokens || 2048);
+  const requestBody = {
+    model: apiModel,
+    messages: [{ role: "user", content: context.prompt }],
+    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 2048,
+    stream: payload.stream === true,
+  };
+
+  const upstreamResp = await fetch(openAiChatUrl(relayConfig.baseUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${relayConfig.apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  }).catch((error) => ({ ok: false, status: 502, text: async () => error.message }));
+
+  if (!upstreamResp.ok) {
+    const text = await upstreamResp.text().catch(() => "");
+    sendJson(res, upstreamResp.status || 502, {
+      error: redact(text || "OpenAI-compatible relay request failed."),
+      runtimeMode: "OPENAI_RELAY",
+      model: apiModel,
+    });
+    return true;
+  }
+
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  writeEvent(res, "meta", {
+    runtimeMode: "OPENAI_RELAY",
+    model: apiModel,
+    cwd: context.cwd,
+    permissionProfile: context.permissionProfile,
+    toolProfile: context.toolProfile,
+    browserAccess: context.browserAccess,
+    attachments: context.attachments,
+  });
+
+  let textSeen = false;
+  if (!requestBody.stream) {
+    const data = await upstreamResp.json().catch(() => ({}));
+    const text = extractRelayText(data);
+    if (text) {
+      textSeen = true;
+      writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+    }
+  } else {
+    const reader = upstreamResp.body?.getReader?.();
+    if (reader) {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const raw = trimmed.slice(5).trim();
+          if (!raw || raw === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(raw);
+            const text = extractRelayText(chunk);
+            if (text) {
+              textSeen = true;
+              writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  if (!textSeen) {
+    writeEvent(res, "error", {
+      text: "Claude Relay returned 200 but no assistant text was found in the response.",
+      code: "CLAUDE_RELAY_RESPONSE_MAPPING_ERROR",
+    });
+  }
+  writeEvent(res, "done", { runtimeMode: "OPENAI_RELAY", model: apiModel });
+  res.end();
+  return true;
 }
 
 function readModelBranches(settings) {
@@ -2349,6 +2494,29 @@ async function handleRun(req, res) {
     return;
   }
 
+  if (await handleOpenAiRelayRun(req, res, {
+    payload,
+    prompt,
+    cwd,
+    model,
+    mode,
+    permissionProfile: payload.permissionProfile || mode,
+    toolProfile,
+    browserAccess,
+    attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
+  })) {
+    appendAuditLog({
+      feature: "/api/run",
+      action: "relay-run",
+      permissionMode: payload.permissionProfile || mode,
+      toolProfile,
+      projectPath: cwd,
+      result: "started",
+      source: req.socket.remoteAddress,
+    });
+    return;
+  }
+
   const args = [
     "-p",
     prompt,
@@ -2573,6 +2741,7 @@ async function handleRun(req, res) {
 function handleStatus(res) {
   const settings = readClaudeSettings();
   const relay = publicRelayConfig();
+  const relayReady = Boolean(relay.baseUrl && relay.model && relay.apiKeyConfigured);
   const displayBaseUrl = relay.baseUrl || settings.baseUrl || "";
   let baseHost = "";
   let runtimeBaseHost = "";
@@ -2593,10 +2762,10 @@ function handleStatus(res) {
     modelBranches: readModelBranches(settings),
     baseHost,
     runtimeBaseHost,
-    authConfigured: settings.authConfigured,
+    authConfigured: Boolean(settings.authConfigured || relay.apiKeyConfigured),
     relayConfig: {
       writable: isRelayConfigWritable(),
-      configured: Boolean(relay.baseUrl),
+      configured: relayReady,
       baseHost,
     },
     securityPolicy: {

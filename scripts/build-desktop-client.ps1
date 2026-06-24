@@ -207,15 +207,15 @@ function Find-PackagedPythonExe([string]$PythonRoot) {
 
 function Get-PackagedPythonRoots([string]$PackagedResources) {
   @(
-    (Join-Path $PackagedResources "uv-python"),
-    (Join-Path $PackagedResources "runtime\uv-python")
+    (Join-Path $PackagedResources "runtime\uv-python"),
+    (Join-Path $PackagedResources "uv-python")
   )
 }
 
 function Get-PackagedHermesToolRoots([string]$PackagedResources) {
   @(
-    (Join-Path $PackagedResources "uv-tools\hermes-agent"),
-    (Join-Path $PackagedResources "runtime\hermes-agent")
+    (Join-Path $PackagedResources "runtime\hermes-agent"),
+    (Join-Path $PackagedResources "uv-tools\hermes-agent")
   )
 }
 
@@ -225,7 +225,7 @@ function Find-PackagedPythonRoot([string]$PackagedResources) {
       return $root
     }
   }
-  return (Join-Path $PackagedResources "uv-python")
+  return (Join-Path $PackagedResources "runtime\uv-python")
 }
 
 function Find-PackagedHermesToolRoot([string]$PackagedResources) {
@@ -234,7 +234,7 @@ function Find-PackagedHermesToolRoot([string]$PackagedResources) {
       return $root
     }
   }
-  return (Join-Path $PackagedResources "uv-tools\hermes-agent")
+  return (Join-Path $PackagedResources "runtime\hermes-agent")
 }
 
 function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
@@ -301,7 +301,7 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
   Assert-File $HermesZip "Packaged Hermes source archive"
 
   Step "Installing portable Hermes runtime"
-  $ToolHome = Join-Path $PackagedResources "uv-tools\hermes-agent"
+  $ToolHome = Join-Path $PackagedResources "runtime\hermes-agent"
   if (Test-Path $ToolHome) {
     Remove-Item -LiteralPath $ToolHome -Recurse -Force
   }
@@ -312,9 +312,9 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
   $OldNoModifyPath = $env:UV_NO_MODIFY_PATH
   $OldLinkMode = $env:UV_LINK_MODE
   try {
-    $env:UV_TOOL_DIR = Join-Path $PackagedResources "uv-tools"
-    $env:UV_TOOL_BIN_DIR = Join-Path $PackagedResources "uv-tools\bin"
-    $env:UV_PYTHON_INSTALL_DIR = Join-Path $PackagedResources "uv-python"
+    $env:UV_TOOL_DIR = Join-Path $PackagedResources "runtime\uv-tools"
+    $env:UV_TOOL_BIN_DIR = Join-Path $PackagedResources "runtime\uv-tools\bin"
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $PackagedResources "runtime\uv-python"
     $env:UV_NO_MODIFY_PATH = "1"
     $env:UV_LINK_MODE = "copy"
     & $UvExe tool install --force --python $PythonExe $HermesZip
@@ -729,7 +729,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   }
 
   $ClaudeConfig = Join-Path $DataRoot "claude-code\home\claude-config"
-  foreach ($name in @("backups", "plans", "projects", "sessions")) {
+  foreach ($name in @(".claude.json", "settings.json", ".last-cleanup", "backups", "plans", "projects", "sessions")) {
     Remove-IfExists (Join-Path $ClaudeConfig $name)
   }
 
@@ -753,6 +753,10 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-code\home\.claude",
     "claude-code\home\AppData",
     "claude-code\home\Documents",
+    "claude-code\home\claude-config\backups",
+    "claude-code\home\claude-config\plans",
+    "claude-code\home\claude-config\projects",
+    "claude-code\home\claude-config\sessions",
     "claude-code\projects",
     "claude-code\sessions",
     "claude-panel\.claude",
@@ -790,6 +794,8 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-panel\project-folders.json",
     "claude-panel\projects.json",
     "claude-panel\recent-projects.json",
+    "claude-code\home\claude-config\.claude.json",
+    "claude-code\home\claude-config\settings.json",
     "clawpanel\auth.json",
     "clawpanel\license.json",
     "clawpanel\payment.json",
@@ -904,6 +910,11 @@ function Assert-NoPackagedUserState([string]$DataRoot) {
     "claude-code\home\AppData",
     "claude-code\home\Documents",
     "claude-code\home\claude-config\.claude.json",
+    "claude-code\home\claude-config\settings.json",
+    "claude-code\home\claude-config\backups",
+    "claude-code\home\claude-config\plans",
+    "claude-code\home\claude-config\projects",
+    "claude-code\home\claude-config\sessions",
     "claude-code\projects",
     "claude-code\sessions",
     "claude-panel\.claude",
@@ -1015,6 +1026,10 @@ foreach ($tool in @("node", "npm", "cargo", "rustc", "robocopy")) {
 Step "Checking required resources"
 Assert-Dir $ResourcesDir "Tauri resources"
 Assert-Dir (Join-Path $ResourcesDir "runtime\uv-python") "Portable Python runtime source"
+Assert-Dir (Join-Path $ResourcesDir "runtime\uv-tools") "UV tools runtime source"
+Assert-File (Join-Path $ResourcesDir "runtime\uv-tools\uv.exe") "UV tools executable source"
+Assert-Dir (Join-Path $ResourcesDir "runtime\hermes-agent") "Hermes agent runtime source"
+Assert-File (Join-Path $ResourcesDir "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable source"
 Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
@@ -1207,6 +1222,13 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
+Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
+Assert-File (Join-Path $PackagedResources "runtime\uv-tools\uv.exe") "Packaged UV tools executable"
+$PackagedPythonProbe = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $PackagedPythonProbe) {
+  Fail "Packaged UV Python executable not found under resources\runtime\uv-python"
+}
+Ok "Packaged UV Python executable"
 Assert-File (Join-Path $PackagedResources "runtime\claude-panel\server.js") "Packaged Claude UI panel"
 if (Test-Path -LiteralPath (Join-Path $PackagedResources "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
   Ok "Packaged Claude Code native CLI"

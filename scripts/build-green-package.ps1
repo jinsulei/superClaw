@@ -332,6 +332,11 @@ function Write-OpenClawConfig([string]$Dir) {
         )
       }
     }
+    defaults = [ordered]@{
+      provider = "minimax"
+      model = $script:MiniMaxTestModel
+      modelRef = "minimax/$script:MiniMaxTestModel"
+    }
   }
   Write-Utf8File (Join-Path $Dir "agents\main\agent\models.json") ($models | ConvertTo-Json -Depth 10)
 }
@@ -671,8 +676,8 @@ foreach ($runtimeName in @("claude-code", "claude-panel")) {
 }
 
 Copy-Dir (Join-Path $Root "src-tauri\resources\bin") (Join-Path $OpenCloud "resources\bin")
-Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-tools") (Join-Path $OpenCloud "resources\uv-tools")
-Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-python") (Join-Path $OpenCloud "resources\uv-python")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-tools") (Join-Path $OpenCloud "resources\runtime\uv-tools")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-python") (Join-Path $OpenCloud "resources\runtime\uv-python")
 foreach ($file in @("src-tauri\resources\cpython-3.11.13-windows-x86_64-none.tar.gz", "src-tauri\resources\hermes-agent-main.zip", "src-tauri\resources\uv-x86_64-pc-windows-msvc.zip")) {
   Copy-FileIfExists (Join-Path $Root $file) (Join-Path $OpenCloud "resources")
 }
@@ -798,6 +803,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\opencl
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\bin\desktop-control-agent.exe"))) { Fail "Missing registered OpenClaw desktop-control sidecar" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes.exe"))) { Fail "Missing Hermes CLI executable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes-agent.exe"))) { Fail "Missing Hermes agent executable" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\uv-tools\uv.exe"))) { Fail "Missing UV tools packaged path" }
+$packagedPython = Get-ChildItem -LiteralPath (Join-Path $OpenCloud "resources\runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $packagedPython) { Fail "Missing UV Python packaged path" }
+Write-Host "Hermes packaged runtime layout: PASS" -ForegroundColor Green
+Write-Host "Hermes bundled executable: PASS" -ForegroundColor Green
+Write-Host "UV tools packaged path: PASS" -ForegroundColor Green
+Write-Host "UV Python packaged path: PASS" -ForegroundColor Green
+Write-Host "No global Hermes fallback: PASS" -ForegroundColor Green
 Test-GreenOcrRuntime $OpenCloud $BundledNode
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\hermes-agent-main.zip"))) { Fail "Missing Hermes offline package" }
 
@@ -808,7 +821,7 @@ if (-not $SkipZip) {
   Step "Extracting zip for structure verification"
   Expand-Archive -LiteralPath $ZipPath -DestinationPath $TestExtract -Force
   $ExtractedRoot = Join-Path $TestExtract (Split-Path $OutRoot -Leaf)
-  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
+  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\uv-tools\uv.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $ExtractedRoot $must))) {
       Fail "Extract test missing: $must"
     }

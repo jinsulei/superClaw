@@ -564,6 +564,29 @@ fn uv_bin_dir() -> PathBuf {
 /// - 旧结构: <app_root>/uv-tools/（Dev 模式或旧 MSI 部署）
 /// 对应 UV_TOOL_DIR 环境变量，控制 uv tool install 的目标目录
 fn uv_tool_dir() -> PathBuf {
+    if let Some(resources) = super::app_resources_dir() {
+        let runtime_path = resources.join("runtime").join("uv-tools");
+        if runtime_path.exists() {
+            return runtime_path;
+        }
+        let legacy_resource_path = resources.join("uv-tools");
+        if legacy_resource_path.exists() {
+            return legacy_resource_path;
+        }
+    }
+
+    let new_path = app_root_dir()
+        .join("src-tauri")
+        .join("resources")
+        .join("runtime")
+        .join("uv-tools");
+    if new_path.exists() {
+        return new_path;
+    }
+    let new_path = app_root_dir().join("resources").join("runtime").join("uv-tools");
+    if new_path.exists() {
+        return new_path;
+    }
     let new_path = app_root_dir().join("resources").join("uv-tools");
     if new_path.exists() {
         return new_path;
@@ -581,6 +604,29 @@ fn uv_tool_bin_dir() -> PathBuf {
 /// - 旧结构: <app_root>/uv-python/（Dev 模式或旧 MSI 部署）
 /// 对应 UV_PYTHON_INSTALL_DIR 环境变量，控制 uv download 的 Python 解释器存放位置
 fn uv_python_dir() -> PathBuf {
+    if let Some(resources) = super::app_resources_dir() {
+        let runtime_path = resources.join("runtime").join("uv-python");
+        if runtime_path.exists() {
+            return runtime_path;
+        }
+        let legacy_resource_path = resources.join("uv-python");
+        if legacy_resource_path.exists() {
+            return legacy_resource_path;
+        }
+    }
+
+    let new_path = app_root_dir()
+        .join("src-tauri")
+        .join("resources")
+        .join("runtime")
+        .join("uv-python");
+    if new_path.exists() {
+        return new_path;
+    }
+    let new_path = app_root_dir().join("resources").join("runtime").join("uv-python");
+    if new_path.exists() {
+        return new_path;
+    }
     let new_path = app_root_dir().join("resources").join("uv-python");
     if new_path.exists() {
         return new_path;
@@ -1604,13 +1650,82 @@ fn hermes_system_executable(enhanced: &str) -> String {
     "hermes".into()
 }
 
-fn hermes_agent_scripts_dir() -> Option<PathBuf> {
-    let dir = uv_tool_dir().join("hermes-agent").join("Scripts");
-    if dir.exists() {
-        Some(dir)
-    } else {
-        None
+fn hermes_agent_runtime_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(resources) = super::app_resources_dir() {
+        candidates.push(resources.join("runtime").join("hermes-agent"));
+        candidates.push(resources.join("uv-tools").join("hermes-agent"));
     }
+    candidates.push(
+        app_root_dir()
+            .join("src-tauri")
+            .join("resources")
+            .join("runtime")
+            .join("hermes-agent"),
+    );
+    candidates.push(
+        app_root_dir()
+            .join("src-tauri")
+            .join("resources")
+            .join("uv-tools")
+            .join("hermes-agent"),
+    );
+    candidates.push(
+        app_root_dir()
+            .join("resources")
+            .join("runtime")
+            .join("hermes-agent"),
+    );
+    candidates.push(
+        app_root_dir()
+            .join("resources")
+            .join("uv-tools")
+            .join("hermes-agent"),
+    );
+    candidates.push(uv_tool_dir().join("hermes-agent"));
+
+    let mut seen = std::collections::HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
+fn hermes_agent_runtime_dir() -> Option<PathBuf> {
+    hermes_agent_runtime_candidates().into_iter().find(|dir| {
+        dir.join("Lib")
+            .join("site-packages")
+            .join("hermes_cli")
+            .exists()
+            || dir
+                .join(if cfg!(target_os = "windows") {
+                    "Scripts"
+                } else {
+                    "bin"
+                })
+                .exists()
+    })
+}
+
+fn expected_hermes_agent_runtime_dir() -> PathBuf {
+    hermes_agent_runtime_candidates()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| uv_tool_dir().join("hermes-agent"))
+}
+
+fn hermes_agent_scripts_dir() -> Option<PathBuf> {
+    for root in hermes_agent_runtime_candidates() {
+        let dir = root.join(if cfg!(target_os = "windows") {
+            "Scripts"
+        } else {
+            "bin"
+        });
+        if dir.exists() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 fn hermes_agent_python() -> Option<PathBuf> {
@@ -1638,15 +1753,13 @@ fn hermes_agent_python() -> Option<PathBuf> {
 }
 
 fn hermes_agent_site_packages() -> Option<PathBuf> {
-    let site = uv_tool_dir()
-        .join("hermes-agent")
-        .join("Lib")
-        .join("site-packages");
-    if site.join("hermes_cli").exists() {
-        Some(site)
-    } else {
-        None
+    for root in hermes_agent_runtime_candidates() {
+        let site = root.join("Lib").join("site-packages");
+        if site.join("hermes_cli").exists() {
+            return Some(site);
+        }
     }
+    None
 }
 
 #[cfg(target_os = "windows")]
@@ -1687,10 +1800,10 @@ fn hermes_runtime_diagnostics() -> String {
     let resources = app_root.join("resources");
     let python_root = uv_python_dir();
     let tool_root = uv_tool_dir();
+    let hermes_root = expected_hermes_agent_runtime_dir();
     let python = hermes_agent_python();
     let site = hermes_agent_site_packages();
-    let expected_site = tool_root
-        .join("hermes-agent")
+    let expected_site = hermes_root
         .join("Lib")
         .join("site-packages")
         .join("hermes_cli");
@@ -1708,7 +1821,7 @@ fn hermes_runtime_diagnostics() -> String {
         .unwrap_or_else(|| "(empty or missing)".to_string());
 
     format!(
-        "Hermes bundled runtime not found.\napp_root={}\nresources_exists={}\nuv_python_dir={}\nuv_python_exists={}\nuv_python_children={}\nresolved_python={}\nuv_tool_dir={}\nuv_tool_exists={}\nexpected_hermes_cli={}\nhermes_cli_exists={}",
+        "Hermes bundled runtime not found.\napp_root={}\nresources_exists={}\nuv_python_dir={}\nuv_python_exists={}\nuv_python_children={}\nresolved_python={}\nuv_tool_dir={}\nuv_tool_exists={}\nhermes_agent_dir={}\nhermes_agent_exists={}\nexpected_hermes_cli={}\nhermes_cli_exists={}",
         app_root.display(),
         resources.is_dir(),
         python_root.display(),
@@ -1720,6 +1833,8 @@ fn hermes_runtime_diagnostics() -> String {
             .unwrap_or_else(|| "(none)".to_string()),
         tool_root.display(),
         tool_root.is_dir(),
+        hermes_root.display(),
+        hermes_root.is_dir(),
         expected_site.display(),
         site.is_some()
     )
@@ -1728,6 +1843,7 @@ fn hermes_runtime_diagnostics() -> String {
 fn hermes_portable_runtime_error() -> Option<String> {
     let app_root = app_root_dir();
     let has_portable_layout = app_root.join("resources").is_dir()
+        || app_root.join("resources").join("runtime").is_dir()
         || app_root.join("uv-python").is_dir()
         || app_root.join("uv-tools").is_dir();
     let should_require_bundle = has_portable_layout || !cfg!(debug_assertions);
@@ -1751,7 +1867,10 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
-            .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
+            .env(
+                "VIRTUAL_ENV",
+                hermes_agent_runtime_dir().unwrap_or_else(expected_hermes_agent_runtime_dir),
+            );
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
@@ -1779,7 +1898,10 @@ fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Comman
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
-            .env("VIRTUAL_ENV", uv_tool_dir().join("hermes-agent"));
+            .env(
+                "VIRTUAL_ENV",
+                hermes_agent_runtime_dir().unwrap_or_else(expected_hermes_agent_runtime_dir),
+            );
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
