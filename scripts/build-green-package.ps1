@@ -773,7 +773,11 @@ $secretPatterns = @(
 )
 $secretHits = @()
 Get-ChildItem -LiteralPath $OutRoot -Recurse -File -ErrorAction SilentlyContinue |
-  Where-Object { $_.Length -lt 8MB -and $_.FullName -notmatch '\\resources\\runtime\\openclaw\\node_modules\\' } |
+  Where-Object {
+    $_.Length -lt 8MB `
+      -and $_.FullName -notmatch '\\resources\\runtime\\openclaw\\node_modules\\' `
+      -and $_.FullName -notmatch '\\[^\\]+\.dist-info\\RECORD$'
+  } |
   ForEach-Object {
     $file = $_.FullName
     foreach ($pat in $secretPatterns) {
