@@ -205,8 +205,40 @@ function Find-PackagedPythonExe([string]$PythonRoot) {
   return $null
 }
 
+function Get-PackagedPythonRoots([string]$PackagedResources) {
+  @(
+    (Join-Path $PackagedResources "uv-python"),
+    (Join-Path $PackagedResources "runtime\uv-python")
+  )
+}
+
+function Get-PackagedHermesToolRoots([string]$PackagedResources) {
+  @(
+    (Join-Path $PackagedResources "uv-tools\hermes-agent"),
+    (Join-Path $PackagedResources "runtime\hermes-agent")
+  )
+}
+
+function Find-PackagedPythonRoot([string]$PackagedResources) {
+  foreach ($root in (Get-PackagedPythonRoots $PackagedResources)) {
+    if (Find-PackagedPythonExe $root) {
+      return $root
+    }
+  }
+  return (Join-Path $PackagedResources "uv-python")
+}
+
+function Find-PackagedHermesToolRoot([string]$PackagedResources) {
+  foreach ($root in (Get-PackagedHermesToolRoots $PackagedResources)) {
+    if (Test-Path (Join-Path $root "Lib\site-packages\hermes_cli")) {
+      return $root
+    }
+  }
+  return (Join-Path $PackagedResources "uv-tools\hermes-agent")
+}
+
 function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
-  $PythonRoot = Join-Path $PackagedResources "uv-python"
+  $PythonRoot = Find-PackagedPythonRoot $PackagedResources
   $PythonExe = Find-PackagedPythonExe $PythonRoot
   if ($PythonExe -and (Test-Path $PythonExe)) {
     Ok "Portable Python runtime"
@@ -231,7 +263,8 @@ function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
 }
 
 function Test-PackagedHermesRuntime([string]$PackagedResources, [string]$PythonExe) {
-  $SitePackages = Join-Path $PackagedResources "uv-tools\hermes-agent\Lib\site-packages"
+  $HermesTool = Find-PackagedHermesToolRoot $PackagedResources
+  $SitePackages = Join-Path $HermesTool "Lib\site-packages"
   $HermesCli = Join-Path $SitePackages "hermes_cli"
   if (-not (Test-Path $HermesCli)) {
     return $false
@@ -578,15 +611,7 @@ skills:
   disabled: []
 "@
 
-  Set-Content -Path $envPath -Encoding UTF8 -Value @"
-MINIMAX_API_KEY=YOUR_API_KEY
-MINIMAX_BASE_URL=$MiniMaxTestBaseUrl
-HERMES_PROVIDER=minimax
-OPENAI_MODEL=$MiniMaxTestModel
-SUPERCLAW_FORCE_PROVIDER=minimax
-GATEWAY_ALLOW_ALL_USERS=true
-API_SERVER_KEY=clawpanel-local
-"@
+  Remove-IfExists $envPath
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -722,7 +747,10 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-panel\.claude",
     "claude-panel\AppData",
     "claude-panel\Documents",
+    "hermes\cron",
     "hermes\logs",
+    "hermes\memories",
+    "hermes\sessions",
     "hermes\skills\.curator_backups",
     "hermes\skills\.curator_state",
     "hermes\skills\.hub\audit.log",
@@ -769,7 +797,7 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
 }
 
 function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
-  $HermesTool = Join-Path $PackagedResources "uv-tools\hermes-agent"
+  $HermesTool = Find-PackagedHermesToolRoot $PackagedResources
   $HermesScripts = Join-Path $HermesTool "Scripts"
 
   # uv writes install receipts and non-Windows activation scripts with the build
@@ -797,10 +825,10 @@ function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
       Set-Content -Path $ActivatePs1 -Encoding UTF8
   }
 
-  foreach ($root in @(
-    (Join-Path $PackagedResources "uv-tools\hermes-agent"),
-    (Join-Path $PackagedResources "uv-python")
-  )) {
+  $CleanupRoots = @()
+  $CleanupRoots += Get-PackagedHermesToolRoots $PackagedResources
+  $CleanupRoots += Get-PackagedPythonRoots $PackagedResources
+  foreach ($root in $CleanupRoots) {
     if (Test-Path $root -PathType Container) {
       Get-ChildItem -Path $root -Recurse -Directory -Force -Filter "__pycache__" -ErrorAction SilentlyContinue |
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -811,6 +839,45 @@ function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
   foreach ($name in @("project-folders.json", "projects.json", "recent-projects.json")) {
     Remove-IfExists (Join-Path $ClaudePanelData $name)
   }
+}
+
+function Clear-PackagedForbiddenFiles([string]$PackageRoot) {
+  if (-not (Test-Path $PackageRoot -PathType Container)) {
+    return
+  }
+
+  Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @(".env", ".env.local") -or $_.Name -like "backup-*.patch" } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+  Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -Directory -Filter ".git" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Assert-NoForbiddenPackageFiles([string]$PackageRoot) {
+  $found = Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @(".env", ".env.local") -or $_.Name -like "backup-*.patch" -or ($_.PSIsContainer -and $_.Name -eq ".git") } |
+    Select-Object -First 10
+  if ($found) {
+    $names = ($found | ForEach-Object { $_.FullName.Replace($PackageRoot, "").TrimStart("\") }) -join ", "
+    Fail "Forbidden files remain in package: $names"
+  }
+  Ok "No .env, .env.local, backup patch, or .git files in package"
+}
+
+function Scrub-PackagedPathExamples([string]$PackageRoot) {
+  if (-not (Test-Path $PackageRoot -PathType Container)) {
+    return
+  }
+
+  Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".md", ".txt") } |
+    ForEach-Object {
+      $text = Get-Content -Raw -LiteralPath $_.FullName -ErrorAction SilentlyContinue
+      if ($null -ne $text -and $text.Contains("C:\tmp")) {
+        Set-Content -LiteralPath $_.FullName -Encoding UTF8 -Value ($text.Replace("C:\tmp", "%TEMP%"))
+      }
+    }
 }
 
 function Assert-NoPackagedUserState([string]$DataRoot) {
@@ -927,7 +994,7 @@ foreach ($tool in @("node", "npm", "cargo", "rustc", "robocopy")) {
 
 Step "Checking required resources"
 Assert-Dir $ResourcesDir "Tauri resources"
-Ensure-ResourceDir "uv-python"
+Assert-Dir (Join-Path $ResourcesDir "runtime\uv-python") "Portable Python runtime source"
 Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
@@ -948,6 +1015,11 @@ Assert-Dir (Join-Path $ResourcesDir "data") "Portable data"
 
 $TauriConf = Join-Path $TauriDir "tauri.conf.json"
 $TauriConfText = Get-Content -Raw -Path $TauriConf
+function Test-TauriResourceGlob([string]$Glob) {
+  if ($TauriConfText -like "*$Glob*") { return $true }
+  if ($Glob -like "resources/runtime/*" -and $TauriConfText -like "*resources/runtime/**/*") { return $true }
+  return $false
+}
 foreach ($glob in @(
   "resources/runtime/openclaw/**/*",
   "resources/runtime/claude-code/**/*",
@@ -955,7 +1027,7 @@ foreach ($glob in @(
   "resources/runtime/ocr/**/*",
   "resources/data/**/*"
 )) {
-  if ($TauriConfText -notlike "*$glob*") {
+  if (-not (Test-TauriResourceGlob $glob)) {
     Fail "tauri.conf.json is missing resource glob: $glob"
   }
 }
@@ -1070,8 +1142,10 @@ if ($SanitizedTest) {
 }
 
 Step "Fixing portable uv virtualenv paths"
-$ActivateBat = Join-Path $PackagedResources "uv-tools\hermes-agent\Scripts\activate.bat"
-$PyVenvCfg = Join-Path $PackagedResources "uv-tools\hermes-agent\pyvenv.cfg"
+$PackagedHermesTool = Find-PackagedHermesToolRoot $PackagedResources
+$PackagedPythonRoot = Find-PackagedPythonRoot $PackagedResources
+$ActivateBat = Join-Path $PackagedHermesTool "Scripts\activate.bat"
+$PyVenvCfg = Join-Path $PackagedHermesTool "pyvenv.cfg"
 if (Test-Path $ActivateBat) {
   (Get-Content $ActivateBat) -replace 'C:\\Users\\.*?hermes-agent', '%%~dp0..' | Set-Content $ActivateBat
   Ok "activate.bat"
@@ -1079,11 +1153,15 @@ if (Test-Path $ActivateBat) {
   Warn "activate.bat not found"
 }
 if (Test-Path $PyVenvCfg) {
-  $PythonExeForVenv = Find-PackagedPythonExe (Join-Path $PackagedResources "uv-python")
+  $PythonExeForVenv = Find-PackagedPythonExe $PackagedPythonRoot
   if ($PythonExeForVenv) {
     $PythonHomeForVenv = Split-Path -Parent $PythonExeForVenv
     $PythonHomeLeaf = Split-Path -Leaf $PythonHomeForVenv
-    $PortableHome = "..\..\..\uv-python\$PythonHomeLeaf"
+    if ($PackagedPythonRoot -like "*\runtime\uv-python") {
+      $PortableHome = "..\uv-python\$PythonHomeLeaf"
+    } else {
+      $PortableHome = "..\..\..\uv-python\$PythonHomeLeaf"
+    }
     (Get-Content $PyVenvCfg) -replace '^home = .*', "home = $PortableHome" | Set-Content $PyVenvCfg
   } else {
     Warn "portable Python home not found for pyvenv.cfg"
@@ -1098,6 +1176,8 @@ Step "Final packaged runtime cleanup"
 Stop-PackagedProcesses $OutDir
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 Clear-PackagedMachineSpecificPaths $PackagedResources
+Clear-PackagedForbiddenFiles $OutDir
+Scrub-PackagedPathExamples $OutDir
 Ok "Removed logs, locks, and pid files created during package verification"
 
 Step "Verifying package"
@@ -1118,6 +1198,7 @@ Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
 Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
+Assert-NoForbiddenPackageFiles $OutDir
 Assert-NoPackagedUserState (Join-Path $PackagedResources "data")
 Ok "No user sessions, usage records, logs, locks, or local project state in package data"
 
@@ -1125,8 +1206,8 @@ $HardcodedFound = $false
 foreach ($scan in @(
   (Join-Path $PackagedResources "runtime\openclaw\openclaw.cmd"),
   $ActivateBat,
-  (Join-Path $PackagedResources "uv-tools\hermes-agent\Scripts\activate.ps1"),
-  (Join-Path $PackagedResources "uv-tools\hermes-agent\pyvenv.cfg"),
+  (Join-Path $PackagedHermesTool "Scripts\activate.ps1"),
+  $PyVenvCfg,
   (Join-Path $PackagedResources "data\claude-panel\project-folders.json"),
   (Join-Path $PackagedResources "data\claude-panel\projects.json")
 )) {
