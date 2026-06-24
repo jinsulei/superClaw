@@ -771,7 +771,6 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "hermes\skills\.usage.json.lock",
     "hermes\skills\index-cache",
     ".openclaw\logs",
-    ".openclaw\agents",
     ".openclaw\state",
     ".openclaw\workspace-attestations",
     "clawpanel\logs",
@@ -893,7 +892,6 @@ function Scrub-PackagedPathExamples([string]$PackageRoot) {
 
 function Assert-NoPackagedUserState([string]$DataRoot) {
   $forbidden = @(
-    ".openclaw\agents",
     ".openclaw\devices\pending.json",
     ".openclaw\gateway-owner.json",
     ".openclaw\identity",
@@ -963,6 +961,17 @@ function Assert-NoPackagedUserState([string]$DataRoot) {
 
   if ($found.Count -gt 0) {
     Fail ("Packaged user/runtime state was not cleaned: " + (($found | Select-Object -Unique) -join ", "))
+  }
+
+  $agentsRoot = Join-Path $DataRoot ".openclaw\agents"
+  if (Test-Path $agentsRoot -PathType Container) {
+    $allowedAgentFiles = @("main\agent\models.json")
+    $unexpectedAgentFiles = Get-ChildItem -LiteralPath $agentsRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+      ForEach-Object { $_.FullName.Substring($agentsRoot.Length).TrimStart("\") } |
+      Where-Object { $allowedAgentFiles -notcontains $_ }
+    if ($unexpectedAgentFiles) {
+      Fail ("Packaged OpenClaw agent state was not cleaned: " + (($unexpectedAgentFiles | Select-Object -Unique) -join ", "))
+    }
   }
 }
 
