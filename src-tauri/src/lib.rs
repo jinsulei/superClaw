@@ -116,6 +116,11 @@ pub fn run() {
         })
         .setup(|app| {
             service::start_backend_guardian(app.handle().clone());
+            tauri::async_runtime::spawn(async {
+                if let Err(err) = claude_code::claude_code_start().await {
+                    eprintln!("[superclaw] failed to auto-start Claude Panel relay: {err}");
+                }
+            });
             allow_microphone_permission(app.handle());
             tray::setup_tray(app.handle())?;
 
