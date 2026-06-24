@@ -77,6 +77,37 @@ function Fail([string]$Message) {
   exit 1
 }
 
+function Set-SanitizedTestBuildEnv {
+  if (-not $SanitizedTest) { return @{} }
+  $keys = @(
+    "VITE_ENABLE_ECOMMERCE_ASSISTANT",
+    "VITE_SUPERCLAW_TEST_BUILD",
+    "VITE_SUPERCLAW_FORCE_PROVIDER",
+    "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_MINIMAX_BASE_URL",
+    "VITE_SUPERCLAW_MINIMAX_MODEL"
+  )
+  $previous = @{}
+  foreach ($key in $keys) {
+    $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+  }
+  [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $MiniMaxTestBaseUrl, "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $MiniMaxTestModel, "Process")
+  Ok "Sanitized test frontend flags: ecommerce=true, provider=minimax, YYAPI disabled"
+  return $previous
+}
+
+function Restore-SanitizedTestBuildEnv([hashtable]$Previous) {
+  if (-not $Previous) { return }
+  foreach ($key in $Previous.Keys) {
+    [Environment]::SetEnvironmentVariable($key, $Previous[$key], "Process")
+  }
+}
+
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$Title) {
   Step $Title
   Write-Host ("  > " + $File + " " + ($Arguments -join " ")) -ForegroundColor DarkGray
@@ -901,10 +932,13 @@ Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
 Sync-SuperClawOpenClawPlugins
-Assert-Dir (Join-Path $ResourcesDir "runtime\claude-code") "Claude Code runtime"
-Assert-File (Join-Path $ResourcesDir "runtime\claude-code\bin\claude.exe") "Claude Code CLI"
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-panel") "Claude UI panel runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\server.js") "Claude UI panel server"
+if (Test-Path -LiteralPath (Join-Path $ResourcesDir "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
+  Ok "Claude Code native CLI"
+} else {
+  Warn "Claude Code native CLI is not bundled; Claude Panel OPENAI_RELAY will be used for this EXE test package"
+}
 Assert-Dir (Join-Path $ResourcesDir "runtime\ocr") "Shared OCR runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\ocr\ocr-runner.cjs") "Shared OCR runner"
 Assert-File (Join-Path $ResourcesDir "runtime\ocr\tessdata\eng.traineddata.gz") "OCR English language data"
@@ -984,12 +1018,17 @@ if ($PackageOnly) {
   Step "Building Tauri shell"
   Warn "Skipped by -PackageOnly"
 } else {
-  Invoke-Checked -File "npm" -Arguments @("run", "build") -Title "Building frontend"
+  $previousBuildEnv = Set-SanitizedTestBuildEnv
+  try {
+    Invoke-Checked -File "npm" -Arguments @("run", "build") -Title "Building frontend"
 
-  if ($Debug) {
-    Invoke-Checked -File "cargo" -Arguments @("build", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Building Tauri shell"
-  } else {
-    Invoke-Checked -File "npm" -Arguments @("run", "tauri:build") -Title "Building Tauri shell with embedded frontend"
+    if ($Debug) {
+      Invoke-Checked -File "cargo" -Arguments @("build", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Building Tauri shell"
+    } else {
+      Invoke-Checked -File "npm" -Arguments @("run", "tauri:build") -Title "Building Tauri shell with embedded frontend"
+    }
+  } finally {
+    Restore-SanitizedTestBuildEnv $previousBuildEnv
   }
 }
 
@@ -1068,8 +1107,12 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
-Assert-File (Join-Path $PackagedResources "runtime\claude-code\bin\claude.exe") "Packaged Claude Code CLI"
 Assert-File (Join-Path $PackagedResources "runtime\claude-panel\server.js") "Packaged Claude UI panel"
+if (Test-Path -LiteralPath (Join-Path $PackagedResources "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
+  Ok "Packaged Claude Code native CLI"
+} else {
+  Warn "Packaged Claude Code native CLI is absent; packaged Claude Panel relay is the supported Claude Code surface"
+}
 Assert-File (Join-Path $PackagedResources "runtime\ocr\ocr-runner.cjs") "Packaged shared OCR runner"
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.gz") "Packaged OCR English language data"
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
