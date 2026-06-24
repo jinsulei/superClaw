@@ -10,7 +10,6 @@ import {
   loadHermesProviders,
   inferProviderByBaseUrl,
 } from '../lib/providers.js'
-import { getYyapiBaseUrl, isYyapiBaseUrl } from '../../../lib/yyapi-config.js'
 
 const ICONS = {
   running: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--success, #22c55e)" stroke-width="2.5" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`,
@@ -51,6 +50,15 @@ const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
 
 function normalizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
+}
+
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 /**
@@ -106,12 +114,6 @@ export function render() {
   let formApiKey = ''
   let formModel = ''
   let formInited = false    // 首次加载后用 hermesConfig 初始化
-  let apiKeyTokens = []
-  let apiKeyListLoaded = false
-  let apiKeyListBusy = false
-  let apiKeyApplyBusy = ''
-  let selectedApiKeyId = ''
-
   function syncFormFromDom() {
     const u = el.querySelector('#hm-cfg-baseurl')
     const k = el.querySelector('#hm-cfg-apikey')
@@ -119,35 +121,6 @@ export function render() {
     if (u) formBaseUrl = u.value
     if (k) formApiKey = k.value
     if (m) formModel = m.value
-  }
-
-  function applyYyapiManagedFormGuard() {
-    if (!isYyapiBaseUrl(formBaseUrl || hermesConfig?.base_url)) return false
-    formBaseUrl = getYyapiBaseUrl()
-    try {
-      const yyapiKey = localStorage.getItem('superclaw_yyapi_key') || ''
-      if (yyapiKey) formApiKey = yyapiKey
-    } catch {}
-    if (!formApiKey && hermesConfig?.api_key) formApiKey = hermesConfig.api_key
-    return true
-  }
-
-  function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') }
-
-  function tokenId(token) {
-    return String(token?.id ?? token?.token_id ?? token?.tokenId ?? token?.key_id ?? token?.uuid ?? '').trim()
-  }
-
-  function tokenLabel(token, index) {
-    const name = token?.name || token?.label || token?.remark || token?.title || `API Key ${index + 1}`
-    const hint = token?.masked_key || token?.maskedKey || token?.key_mask || token?.keyMasked || token?.key
-    const suffix = token?.is_default || token?.isDefault || token?.default ? ' · 默认' : ''
-    return `${name}${suffix}${hint && String(hint).includes('*') ? ` · ${hint}` : ''}`
-  }
-
-  function extractFullTokenKey(data) {
-    if (typeof data === 'string') return data
-    return data?.key || data?.apiKey || data?.api_key || data?.token || ''
   }
 
   function getOpenclawGatewayStatus(services) {
@@ -272,7 +245,6 @@ export function render() {
 
     // 服务商高亮匹配
     const activePreset = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    const yyapiManaged = isYyapiBaseUrl(formBaseUrl || hermesConfig?.base_url)
 
     // 模型下拉 HTML（data-dense）
     const dropdownHtml = showDropdown && models.length
@@ -280,22 +252,6 @@ export function render() {
           `<div class="hm-dropdown-item hm-model-opt ${m === formModel ? 'is-selected' : ''}" data-model="${esc(m)}">${esc(m)}</div>`
         ).join('')}</div>`
       : ''
-    const effectiveApiKeyId = selectedApiKeyId || (apiKeyTokens.length ? tokenId(apiKeyTokens[0]) : '')
-    const apiKeyOptionsHtml = [
-      `<option value="" ${!effectiveApiKeyId ? 'selected' : ''}>请选择 API Key</option>`,
-      ...apiKeyTokens.map((token, index) => {
-        const id = tokenId(token)
-        if (!id) return ''
-        return `<option value="${esc(id)}" ${effectiveApiKeyId === id ? 'selected' : ''}>${esc(tokenLabel(token, index))}</option>`
-      }).filter(Boolean),
-    ].join('')
-    const apiKeySelectHint = apiKeyListBusy
-      ? '正在刷新 API Key...'
-      : apiKeyTokens.length
-        ? `已获取 ${apiKeyTokens.length} 个 API Key，可切换后自动重新获取模型`
-        : apiKeyListLoaded
-          ? '未获取到账号 API Key，请先在账号后台创建'
-          : '点击刷新，获取当前账号下所有 API Key'
 
     el.innerHTML = `
       <!-- Hero strip: dynamic colored bar + title + CTA + icon actions -->
@@ -433,20 +389,12 @@ export function render() {
           <div class="hm-field-row">
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
-              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimax.io/v1" ${yyapiManaged ? 'readonly aria-readonly="true"' : ''}>
+              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimax.io/v1" >
             </label>
             <label class="hm-field">
               <span class="hm-field-label">${t('engine.dashApiKey')}</span>
-              <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin-bottom:8px">
-                <select id="hm-cfg-apikey-select" class="hm-input" ${apiKeyListBusy ? 'disabled' : ''}>
-                  ${apiKeyOptionsHtml}
-                </select>
-                <button type="button" class="hm-btn hm-btn--icon hm-refresh-apikeys" title="刷新 API Key 列表" ${apiKeyListBusy ? 'disabled' : ''}>${apiKeyListBusy ? '...' : ICONS.refresh}</button>
-              </div>
-              <div class="hm-muted" style="border:1px dashed var(--hm-border);border-radius:8px;padding:8px 10px;font-size:11px;background:var(--hm-surface-soft)">
-                API Key 由账号后台统一管理，此处只允许选择，不支持手动编辑。
-              </div>
-              <div class="hm-muted" style="margin-top:6px;font-size:11px">${apiKeyApplyBusy ? '正在切换 API Key...' : apiKeySelectHint}</div>
+              <input type="password" id="hm-cfg-apikey" class="hm-input" value="${esc(formApiKey)}" placeholder="MiniMax API Key">
+              <div class="hm-muted" style="margin-top:6px;font-size:11px">API Key ??????????</div>
             </label>
           </div>
           <div style="display:flex;gap:10px;align-items:flex-end;margin-top:12px">
@@ -658,7 +606,6 @@ export function render() {
       syncFormFromDom()
       modelConfigCollapsed = !modelConfigCollapsed
       draw()
-      if (!modelConfigCollapsed) loadUserApiKeys({ force: false })
     })
     // Gateway actions
     el.querySelector('.hm-dash-start')?.addEventListener('click', async () => {
@@ -947,20 +894,6 @@ export function render() {
       })
     })
     // Fetch models — 通过 Rust 后端代理获取（避免 CORS）
-    el.querySelector('.hm-refresh-apikeys')?.addEventListener('click', () => {
-      loadUserApiKeys({ force: true })
-    })
-    el.querySelector('#hm-cfg-apikey-select')?.addEventListener('change', (e) => {
-      const value = e.currentTarget.value
-      if (!value) {
-        selectedApiKeyId = ''
-        formApiKey = ''
-        syncFormFromDom()
-        draw()
-        return
-      }
-      applyUserApiKey(value, { fetchModels: true })
-    })
     el.querySelector('.hm-fetch-models')?.addEventListener('click', doFetchModels)
     // Model dropdown click
     el.querySelectorAll('.hm-model-opt').forEach(opt => {
@@ -1011,89 +944,8 @@ export function render() {
     })
   }
 
-  async function loadUserApiKeys({ force = false, selectFirst = false } = {}) {
-    if (apiKeyListBusy) return
-    if (apiKeyListLoaded && !force) return
-    syncFormFromDom()
-    apiKeyListBusy = true
-    if (force) cfgMsg = '<span style="color:var(--hm-accent)">正在获取账号 API Key...</span>'
-    draw()
-    try {
-      const { getTokenList } = await import('../../../lib/user-api.js')
-      const tokens = await getTokenList()
-      apiKeyTokens = Array.isArray(tokens) ? tokens : []
-      apiKeyListLoaded = true
-      if (apiKeyTokens.length && !selectedApiKeyId && (selectFirst || formApiKey)) {
-        await preloadUserApiKey(tokenId(apiKeyTokens[0]))
-        return
-      }
-      if (apiKeyTokens.length && !selectedApiKeyId) {
-        selectedApiKeyId = tokenId(apiKeyTokens[0])
-      }
-      cfgMsg = `<span style="color:var(--success)">已获取 ${apiKeyTokens.length} 个 API Key</span>`
-    } catch (err) {
-      apiKeyListLoaded = true
-      cfgMsg = `<span style="color:var(--error)">获取 API Key 失败：${esc(String(err).replace(/^Error:\s*/, ''))}</span>`
-    } finally {
-      apiKeyListBusy = false
-      draw()
-    }
-  }
-
-  async function preloadUserApiKey(id) {
-    if (!id) return
-    selectedApiKeyId = id
-    try {
-      const { getFullTokenKey } = await import('../../../lib/user-api.js')
-      const keyData = await getFullTokenKey(id)
-      const fullKey = extractFullTokenKey(keyData)
-      if (!fullKey || String(fullKey).includes('*')) return
-      formApiKey = String(fullKey).trim()
-      try { localStorage.setItem('superclaw_yyapi_key', formApiKey) } catch {}
-    } catch (err) {
-      console.warn('[hermes/dashboard] preload api key failed:', err)
-    }
-  }
-
-  async function applyUserApiKey(id, { fetchModels = true, silent = false } = {}) {
-    if (!id) {
-      selectedApiKeyId = ''
-      formApiKey = ''
-      draw()
-      return
-    }
-    syncFormFromDom()
-    selectedApiKeyId = id
-    apiKeyApplyBusy = id
-    cfgMsg = '<span style="color:var(--hm-accent)">正在切换 API Key...</span>'
-    draw()
-    try {
-      const { getFullTokenKey } = await import('../../../lib/user-api.js')
-      const keyData = await getFullTokenKey(id)
-      const fullKey = extractFullTokenKey(keyData)
-      if (!fullKey || String(fullKey).includes('*')) throw new Error('没有获取到完整 API Key')
-      formApiKey = String(fullKey).trim()
-      try { localStorage.setItem('superclaw_yyapi_key', formApiKey) } catch {}
-      cfgMsg = silent
-        ? ''
-        : (fetchModels
-          ? '<span style="color:var(--success)">API Key 已切换，正在重新获取模型...</span>'
-          : '<span style="color:var(--success)">API Key 已切换</span>')
-      draw()
-      if (fetchModels) await doFetchModels()
-    } catch (err) {
-      selectedApiKeyId = ''
-      cfgMsg = `<span style="color:var(--error)">切换 API Key 失败：${esc(String(err).replace(/^Error:\s*/, ''))}</span>`
-      draw()
-    } finally {
-      apiKeyApplyBusy = ''
-      draw()
-    }
-  }
-
   async function doFetchModels() {
     syncFormFromDom()
-    const yyapiManaged = applyYyapiManagedFormGuard()
     if (!formBaseUrl) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedUrl')}</span>`; draw(); return }
     if (!formApiKey) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedKey')}</span>`; draw(); return }
 
@@ -1103,7 +955,7 @@ export function render() {
         : matched.transport === 'google_gemini' ? 'google-generative-ai'
         : 'openai-completions')
       : 'openai-completions'
-    const nextApiType = yyapiManaged ? 'openai-completions' : apiType
+    const nextApiType = apiType
 
     fetchBusy = true; cfgMsg = ''; draw()
     try {
@@ -1138,17 +990,11 @@ export function render() {
 
   async function doSaveModel() {
     syncFormFromDom()
-    const yyapiManaged = applyYyapiManagedFormGuard()
-    if (yyapiManaged && selectedApiKeyId) {
-      await applyUserApiKey(selectedApiKeyId, { fetchModels: false })
-    }
     if (!formApiKey) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configFetchNeedKey')}</span>`; draw(); return }
     if (!formModel) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configModelRequired')}</span>`; draw(); return }
 
     const matched = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    // Hermes 0.16 的 bare custom provider 会走本地占位 key；yyapi 是
-    // OpenAI-compatible endpoint，必须用 openai-api + OPENAI_BASE_URL。
-    const provider = yyapiManaged ? 'openai-api' : (matched?.id || 'custom')
+    const provider = matched?.id || 'custom'
 
     modelBusy = true; cfgMsg = ''; draw()
     try {

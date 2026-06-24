@@ -13,12 +13,6 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
     });
 
-fn configured_yyapi_base_url() -> Option<String> {
-    std::env::var("YYAPI_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-}
 
 pub mod agent;
 pub mod assistant;
@@ -343,6 +337,18 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             );
             changed = true;
         }
+        if gateway
+            .get("remote")
+            .and_then(|v| v.get("token"))
+            .and_then(|v| v.as_str())
+            != Some("superclaw-portable-local")
+        {
+            gateway.insert(
+                "remote".into(),
+                serde_json::json!({ "token": "superclaw-portable-local" }),
+            );
+            changed = true;
+        }
         if !gateway.get("controlUi").is_some_and(|v| v.is_object()) {
             gateway.insert(
                 "controlUi".into(),
@@ -417,7 +423,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
                         "profile": "minimal",
-                        "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec"]
+                        "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"]
                     },
                     "thinkingDefault": "off",
                     "verboseDefault": "off"
@@ -426,81 +432,14 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             changed = true;
         }
     }
-
     if !obj.get("models").is_some_and(|v| v.is_object()) {
-        let providers = if let Some(base_url) = configured_yyapi_base_url() {
-            serde_json::json!({
-                "yyapi": {
-                    "baseUrl": base_url,
-                    "apiKey": "superclaw-login-required",
-                    "api": "openai-completions",
-                    "models": []
-                }
-            })
-        } else {
-            serde_json::json!({})
-        };
         obj.insert(
             "models".into(),
             serde_json::json!({
-                "providers": providers
+                "providers": {}
             }),
         );
         changed = true;
-    }
-    let yyapi_primary = obj
-        .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("yyapi"))
-        .and_then(|v| v.get("models"))
-        .and_then(|v| v.as_array())
-        .and_then(|models| models.first())
-        .and_then(|model| model.get("id"))
-        .and_then(|v| v.as_str())
-        .map(|id| format!("yyapi/{id}"))
-        .unwrap_or_default();
-    let yyapi_fallback = obj
-        .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("yyapi"))
-        .and_then(|v| v.get("models"))
-        .and_then(|v| v.as_array())
-        .and_then(|models| models.get(1).or_else(|| models.first()))
-        .and_then(|model| model.get("id"))
-        .and_then(|v| v.as_str())
-        .map(|id| format!("yyapi/{id}"))
-        .unwrap_or_else(|| yyapi_primary.clone());
-    if let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
-        if let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-            if let Some(model) = defaults.get_mut("model").and_then(|v| v.as_object_mut()) {
-                if let Some(fallbacks) = model.get_mut("fallbacks").and_then(|v| v.as_array_mut()) {
-                    if fallbacks.is_empty()
-                        && !yyapi_fallback.is_empty()
-                        && !yyapi_primary.is_empty()
-                    {
-                        fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
-                        changed = true;
-                    }
-                }
-            }
-        }
-        if let Some(list) = agents.get_mut("list").and_then(|v| v.as_array_mut()) {
-            for agent in list.iter_mut().filter_map(|v| v.as_object_mut()) {
-                if let Some(model) = agent.get_mut("model").and_then(|v| v.as_object_mut()) {
-                    if let Some(fallbacks) =
-                        model.get_mut("fallbacks").and_then(|v| v.as_array_mut())
-                    {
-                        if fallbacks.is_empty()
-                            && !yyapi_fallback.is_empty()
-                            && !yyapi_primary.is_empty()
-                        {
-                            fallbacks.push(serde_json::json!(yyapi_fallback.clone()));
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     if !obj.get("plugins").is_some_and(|v| v.is_object()) {
@@ -550,7 +489,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "tools".into(),
             serde_json::json!({
                 "profile": "minimal",
-                "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec"],
+                "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"],
                 "exec": { "host": "gateway", "security": "full", "ask": "off" },
                 "sessions": { "visibility": "agent" }
             }),
@@ -561,7 +500,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             tools.insert("profile".into(), serde_json::json!("minimal"));
             changed = true;
         }
-        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec"]);
+        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec", "process"]);
         if tools.get("alsoAllow") != Some(&allow) {
             tools.insert("alsoAllow".into(), allow);
             changed = true;

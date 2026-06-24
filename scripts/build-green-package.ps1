@@ -6,7 +6,6 @@ param(
   [switch]$SkipZip,
   [switch]$SanitizedTest,
   [switch]$TestBuild,
-  [switch]$DisableYyapi,
   [switch]$SkipActivation,
   [switch]$PortableMode,
   [switch]$FailIfPortOccupied
@@ -16,11 +15,11 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DateStamp = Get-Date -Format "yyyyMMdd"
 $script:EffectiveSanitizedTest = $SanitizedTest.IsPresent -or $TestBuild.IsPresent
-$script:EffectiveDisableYyapi = $DisableYyapi.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectiveSkipActivation = $SkipActivation.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectivePortableMode = $PortableMode.IsPresent -or $script:EffectiveSanitizedTest
 $script:EffectiveFailIfPortOccupied = $true
-$script:MiniMaxTestBaseUrl = "https://api.minimax.io/v1"
+$script:MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
+$script:MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
 $script:MiniMaxTestModel = "MiniMax-M3"
 $StrictPort = 1420
 $StrictPortRequired = $true
@@ -168,27 +167,11 @@ function Write-Utf8File([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Get-ConfiguredYyapiBaseUrl {
-  if ($script:EffectiveDisableYyapi) {
-    return ""
-  }
-  foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
-    $value = [Environment]::GetEnvironmentVariable($name)
-    if ($value -and $value.Trim()) {
-      return $value.Trim().TrimEnd("/")
-    }
-  }
-  return ""
-}
-
 function Set-TestBuildViteEnv {
   if (-not $script:EffectiveSanitizedTest) { return @{} }
   $keys = @(
     "VITE_ENABLE_ECOMMERCE_ASSISTANT",
     "VITE_SUPERCLAW_TEST_BUILD",
-    "VITE_SUPERCLAW_SKIP_AUTH",
-    "VITE_SUPERCLAW_SKIP_ACTIVATION",
-    "VITE_SUPERCLAW_DISABLE_YYAPI",
     "VITE_SUPERCLAW_FORCE_PROVIDER",
     "VITE_SUPERCLAW_MINIMAX_BASE_URL",
     "VITE_SUPERCLAW_MINIMAX_MODEL"
@@ -199,13 +182,10 @@ function Set-TestBuildViteEnv {
   }
   [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_AUTH", "1", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_ACTIVATION", "1", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "1", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $script:MiniMaxTestBaseUrl, "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $script:MiniMaxTestModel, "Process")
-  Write-Host "Test build Vite env: auth bypass, activation bypass, yyapi disabled, provider=minimax, model=$script:MiniMaxTestModel" -ForegroundColor Green
+  Write-Host "Test build Vite env: ecommerce assistant=true, no user system, provider=minimax, model=$script:MiniMaxTestModel" -ForegroundColor Green
   return $previous
 }
 
@@ -223,12 +203,8 @@ function Write-OpenClawConfig([string]$Dir) {
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
     meta = [ordered]@{
-      lastTouchedVersion = "YY1.0.1"
-      package = "OpenCloud-Hermes-Green"
-      sanitizedTest = $script:EffectiveSanitizedTest
-      disableYyapi = $script:EffectiveDisableYyapi
-      skipActivation = $script:EffectiveSkipActivation
-      portableMode = $script:EffectivePortableMode
+      lastTouchedVersion = "2026.5.26-zh.1"
+      lastTouchedAt = (Get-Date).ToUniversalTime().ToString("o")
     }
     models = [ordered]@{
       providers = [ordered]@{
@@ -237,23 +213,23 @@ function Write-OpenClawConfig([string]$Dir) {
           apiKey = '${MINIMAX_API_KEY}'
           api = "openai-completions"
           models = @(
-            [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $false; input = @("text", "image"); contextWindow = 1000000; maxTokens = 8192 }
+            [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $true; input = @("text"); contextWindow = 204800; maxTokens = 131072 }
           )
         }
         "openai-compatible" = [ordered]@{
           baseUrl = '${OPENAI_COMPATIBLE_BASE_URL}'
           apiKey = '${OPENAI_API_KEY}'
-          api = "openai-chat-completions"
+          api = "openai-completions"
           models = @(
-            [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+            [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
           )
         }
         custom = [ordered]@{
           baseUrl = '${CUSTOM_OPENAI_BASE_URL}'
           apiKey = '${CUSTOM_API_KEY}'
-          api = "openai-chat-completions"
+          api = "openai-completions"
           models = @(
-            [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+            [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
           )
         }
       }
@@ -279,7 +255,7 @@ function Write-OpenClawConfig([string]$Dir) {
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 0 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
+          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
         }
         thinkingDefault = "off"
         verboseDefault = "off"
@@ -288,18 +264,41 @@ function Write-OpenClawConfig([string]$Dir) {
     bindings = @()
     channels = [ordered]@{}
     commands = [ordered]@{ native = "auto"; nativeSkills = "auto"; ownerDisplay = "raw"; restart = $true }
-    plugins = [ordered]@{ entries = [ordered]@{ browser = [ordered]@{ enabled = $true }; "desktop-control" = [ordered]@{ enabled = $true }; "skill-manager" = [ordered]@{ enabled = $true }; minimax = [ordered]@{ enabled = $true } } }
+    plugins = [ordered]@{
+      allow = @("browser", "desktop-control", "skill-manager")
+      entries = [ordered]@{
+        browser = [ordered]@{ enabled = $true }
+        "desktop-control" = [ordered]@{ enabled = $true }
+        "skill-manager" = [ordered]@{ enabled = $true }
+        minimax = [ordered]@{ enabled = $true }
+      }
+    }
     session = [ordered]@{ dmScope = "per-channel-peer" }
     skills = [ordered]@{ entries = [ordered]@{}; limits = [ordered]@{ maxSkillsPromptChars = 0 } }
-    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control", "skill_manager", "exec"); exec = [ordered]@{ host = "gateway"; security = "full"; ask = "off" }; sessions = [ordered]@{ visibility = "agent" } }
+    tools = [ordered]@{ profile = "minimal"; alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process"); exec = [ordered]@{ host = "gateway"; security = "full"; ask = "off" }; sessions = [ordered]@{ visibility = "agent" } }
     gateway = [ordered]@{
       mode = "local"
       bind = "loopback"
       port = 18789
-      auth = [ordered]@{ mode = "token"; token = "opencloud-portable-local" }
+      auth = [ordered]@{ mode = "token"; token = "superclaw-portable-local" }
+      remote = [ordered]@{ token = "superclaw-portable-local" }
       controlUi = [ordered]@{
         enabled = $true
-        allowedOrigins = @("http://127.0.0.1:1420", "http://localhost:1420", "http://127.0.0.1:18789")
+        allowedOrigins = @(
+          "tauri://localhost",
+          "https://tauri.localhost",
+          "http://tauri.localhost",
+          "http://localhost",
+          "http://127.0.0.1",
+          "http://localhost:1420",
+          "http://127.0.0.1:1420",
+          "http://localhost:3020",
+          "http://127.0.0.1:3020",
+          "http://127.0.0.1:18789",
+          "app://localhost",
+          "app://",
+          "null"
+        )
         allowInsecureAuth = $true
       }
     }
@@ -313,23 +312,23 @@ function Write-OpenClawConfig([string]$Dir) {
         apiKey = '${MINIMAX_API_KEY}'
         api = "openai-completions"
         models = @(
-          [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $false; input = @("text", "image"); contextWindow = 1000000; maxTokens = 8192 }
+          [ordered]@{ id = $script:MiniMaxTestModel; name = "MiniMax M3"; api = "openai-completions"; reasoning = $true; input = @("text"); contextWindow = 204800; maxTokens = 131072 }
         )
       }
       "openai-compatible" = [ordered]@{
         baseUrl = '${OPENAI_COMPATIBLE_BASE_URL}'
         apiKey = '${OPENAI_API_KEY}'
-        api = "openai-chat-completions"
+        api = "openai-completions"
         models = @(
-          [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+          [ordered]@{ id = "custom-model"; name = "OpenAI Compatible"; api = "openai-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
         )
       }
       custom = [ordered]@{
         baseUrl = '${CUSTOM_OPENAI_BASE_URL}'
         apiKey = '${CUSTOM_API_KEY}'
-        api = "openai-chat-completions"
+        api = "openai-completions"
         models = @(
-          [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-chat-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
+          [ordered]@{ id = "custom-model"; name = "Custom Provider"; api = "openai-completions"; reasoning = $false; input = @("text"); contextWindow = 128000; maxTokens = 8192 }
         )
       }
     }
@@ -339,18 +338,15 @@ function Write-OpenClawConfig([string]$Dir) {
 
 function Write-HermesConfig([string]$Dir) {
   New-Item -ItemType Directory -Path $Dir -Force | Out-Null
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
-  $baseUrlYamlLine = if ($script:EffectiveSanitizedTest) { "  base_url: $script:MiniMaxTestBaseUrl`n" } elseif ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
-  $modelYaml = if ($script:EffectiveSanitizedTest) { $script:MiniMaxTestModel } else { "" }
-  $providerYaml = if ($script:EffectiveSanitizedTest) { "minimax" } else { "custom" }
+  $baseUrlYamlLine = "  base_url: $script:MiniMaxTestBaseUrl`n"
   foreach ($name in @("cron", "sessions", "logs", "memories", "skills", "pairing", "hooks", "image_cache", "audio_cache", "plugins")) {
     New-Item -ItemType Directory -Path (Join-Path $Dir $name) -Force | Out-Null
   }
   Write-Utf8File (Join-Path $Dir "config.yaml") @"
 # Hermes Agent portable configuration.
 model:
-  default: $modelYaml
-  provider: $providerYaml
+  default: $script:MiniMaxTestModel
+  provider: minimax
 ${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
@@ -366,6 +362,15 @@ terminal:
 platforms:
   api_server:
     enabled: true
+"@
+  Write-Utf8File (Join-Path $Dir ".env") @"
+MINIMAX_API_KEY=YOUR_API_KEY
+MINIMAX_BASE_URL=$script:MiniMaxTestBaseUrl
+HERMES_PROVIDER=minimax
+OPENAI_MODEL=$script:MiniMaxTestModel
+SUPERCLAW_FORCE_PROVIDER=minimax
+API_SERVER_KEY=clawpanel-local
+GATEWAY_ALLOW_ALL_USERS=true
 "@
 }
 
@@ -388,6 +393,31 @@ function log(msg) { console.log(`[Launcher] ${msg}`); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function exists(p) { return fs.existsSync(p); }
 function fail(msg) { console.error(`\n[ERROR] ${msg}\n`); process.exit(1); }
+
+function registerOpenClawTools() {
+  const script = path.join(app, 'scripts', 'register-openclaw-tools.ps1');
+  const resources = path.join(app, 'resources');
+  const data = path.join(resources, 'data');
+  if (!exists(script)) fail('Missing OpenClaw tool registration script. Please extract the full package again.');
+  const result = cp.spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    script,
+    '-ResourcesRoot',
+    resources,
+    '-DataRoot',
+    data,
+  ], {
+    cwd: app,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    fail(`OpenClaw desktop-control registration failed before gateway startup (exit ${result.status ?? 'unknown'}).`);
+  }
+}
 
 function spawnManaged(file, args, opts = {}) {
   const child = cp.spawn(file, args, { windowsHide: false, stdio: 'inherit', ...opts });
@@ -491,6 +521,7 @@ async function startOpenClaw() {
   const openclaw = path.join(app, 'resources', 'runtime', 'openclaw', 'openclaw.cmd');
   const home = path.join(app, 'resources', 'data', '.openclaw');
   if (!exists(openclaw)) fail('Missing OpenClaw runtime. Please extract the full package again.');
+  registerOpenClawTools();
   if (!(await tcpOpen(18789))) {
     log('Starting OpenCloud/OpenClaw Gateway: http://127.0.0.1:18789');
     spawnManaged(openclaw, ['gateway', 'run'], {
@@ -622,20 +653,20 @@ Copy-Dir (Join-Path $Root "dist") (Join-Path $OpenCloud "dist")
 Copy-Dir (Join-Path $Root "src") (Join-Path $OpenCloud "src")
 Copy-Dir (Join-Path $Root "public") (Join-Path $OpenCloud "public")
 Copy-Dir (Join-Path $Root "scripts") (Join-Path $OpenCloud "scripts") -XD @("__pycache__", ".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
-Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\openclaw") (Join-Path $OpenCloud "resources\runtime\openclaw") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
-Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\hermes-agent") (Join-Path $OpenCloud "resources\runtime\hermes-agent") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\openclaw") (Join-Path $OpenCloud "resources\runtime\openclaw") -XD @(".cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\hermes-agent") (Join-Path $OpenCloud "resources\runtime\hermes-agent") -XD @(".cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 $legacyHermesRuntime = Join-Path $Root "src-tauri\resources\runtime\hermes"
 if (Test-Path -LiteralPath $legacyHermesRuntime -PathType Container) {
-  Copy-Dir $legacyHermesRuntime (Join-Path $OpenCloud "resources\runtime\hermes") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+  Copy-Dir $legacyHermesRuntime (Join-Path $OpenCloud "resources\runtime\hermes") -XD @(".cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 } else {
   Write-Host "[WARN] Hermes legacy runtime: optional and not present. Using runtime/hermes-agent as Hermes executable runtime." -ForegroundColor Yellow
 }
-Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\ocr") (Join-Path $OpenCloud "resources\runtime\ocr") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\ocr") (Join-Path $OpenCloud "resources\runtime\ocr") -XD @(".cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 
 foreach ($runtimeName in @("claude-code", "claude-panel")) {
   $rp = Join-Path $Root "src-tauri\resources\runtime\$runtimeName"
   if (Test-Path -LiteralPath $rp) {
-    Copy-Dir $rp (Join-Path $OpenCloud "resources\runtime\$runtimeName") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
+    Copy-Dir $rp (Join-Path $OpenCloud "resources\runtime\$runtimeName") -XD @(".cache", "tmp", "temp") -XF @("*.log", "*.tmp")
   }
 }
 
@@ -668,15 +699,23 @@ if (Test-Path -LiteralPath $hermesPluginsSrc) {
 }
 Copy-FileIfExists (Join-Path $Root "src-tauri\resources\data\hermes\SOUL.md") (Join-Path $Hermes "docs")
 
-$templateYyapiBaseUrl = Get-ConfiguredYyapiBaseUrl
-$templateBaseUrlLine = if ($templateYyapiBaseUrl) { "OPENAI_BASE_URL=$templateYyapiBaseUrl`n" } else { "" }
+Step "Registering OpenClaw portable tools"
+& powershell -NoProfile -ExecutionPolicy Bypass `
+  -File (Join-Path $OpenCloud "scripts\register-openclaw-tools.ps1") `
+  -ResourcesRoot (Join-Path $OpenCloud "resources") `
+  -DataRoot (Join-Path $OpenCloud "resources\data")
+if ($LASTEXITCODE -ne 0) { Fail "OpenClaw desktop-control registration failed" }
+
 Write-Utf8File (Join-Path $ConfigTemplate "OpenCloud-openclaw.json.template") (Get-Content -Raw -LiteralPath (Join-Path $OpenCloud "resources\data\.openclaw\openclaw.json"))
 Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
 MINIMAX_API_KEY=YOUR_API_KEY
 MINIMAX_BASE_URL=$script:MiniMaxTestBaseUrl
-${templateBaseUrlLine}API_SERVER_KEY=clawpanel-local
+HERMES_PROVIDER=minimax
+OPENAI_MODEL=$script:MiniMaxTestModel
+SUPERCLAW_FORCE_PROVIDER=minimax
+API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@
 Write-Utf8File (Join-Path $ConfigTemplate "README-config.txt") @"
@@ -754,6 +793,9 @@ $BundledNode = Join-Path $Runtime "node-win\node.exe"
 if ($LASTEXITCODE -ne 0) { Fail "Bundled Node is not usable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "scripts\serve.js"))) { Fail "Missing serve.js" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\openclaw.cmd"))) { Fail "Missing openclaw.cmd" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json"))) { Fail "Missing registered OpenClaw desktop-control plugin" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json"))) { Fail "Missing registered OpenClaw skill-manager plugin" }
+if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\bin\desktop-control-agent.exe"))) { Fail "Missing registered OpenClaw desktop-control sidecar" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes.exe"))) { Fail "Missing Hermes CLI executable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\hermes-agent\Scripts\hermes-agent.exe"))) { Fail "Missing Hermes agent executable" }
 Test-GreenOcrRuntime $OpenCloud $BundledNode

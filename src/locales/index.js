@@ -37,7 +37,6 @@ import engine from './modules/engine.js'
 import ciaoBug from './modules/ciaoBug.js'
 import cliConflict from './modules/cliConflict.js'
 import auth from './modules/auth.js'
-import profile from './modules/profile.js'
 import payment from './modules/payment.js'
 
 const MODULES = {
@@ -45,7 +44,7 @@ const MODULES = {
   models, agents, agentDetail, gateway, security, communication, channels,
   memory, dreaming, cron, usage, skills, chat, chatDebug, setup, about,
   ext, logs, assistant, toast, modal, diagnose, routeMap, extensions,
-  engine, ciaoBug, cliConflict, auth, profile, payment,
+  engine, ciaoBug, cliConflict, auth, payment,
 }
 
 /** 构建所有语言字典 { 'zh-CN': { common: {...}, sidebar: {...}, ... }, ... } */

@@ -16,35 +16,8 @@ import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
-function cleanConfiguredUrl(value) {
-  return String(value || '').trim().replace(/\/+$/, '')
-}
-
-function stripApiVersion(url) {
-  const clean = cleanConfiguredUrl(url)
-  const parts = clean.split('/')
-  const last = parts[parts.length - 1] || ''
-  if (/^v\d+$/i.test(last)) {
-    parts.pop()
-    return parts.join('/')
-  }
-  return clean
-}
-
-function configuredYyapiBaseUrl() {
-  return cleanConfiguredUrl(process.env.YYAPI_BASE_URL || process.env.OPENAI_BASE_URL || '')
-}
-
-function configuredYyapiAuthBaseUrl() {
-  return cleanConfiguredUrl(process.env.YYAPI_AUTH_BASE_URL || stripApiVersion(configuredYyapiBaseUrl()))
-}
-
-function isConfiguredYyapiBaseUrl(value) {
-  const configured = configuredYyapiBaseUrl()
-  return !!configured && cleanConfiguredUrl(value).toLowerCase() === configured.toLowerCase()
-}
-
 // ---------------------------------------------------------------------------
+// Hermes Agent// ---------------------------------------------------------------------------
 // Hermes Agent — 路径 / 工具函数
 // ---------------------------------------------------------------------------
 const HERMES_DEFAULT_PORT = 8642
@@ -76,6 +49,21 @@ function hermesMemoryFilePath(kind) {
 /** 应用根目录（Vite dev: 项目根目录，便携: exe 所在目录） */
 function appRootDir() {
   return process.cwd()
+}
+
+function envFlag(name) {
+  const value = String(process.env[name] || '').trim().toLowerCase()
+  return ['1', 'true', 'yes', 'on'].includes(value)
+}
+
+function isServerTestBuild() {
+  return envFlag('SUPERCLAW_TEST_BUILD') || envFlag('VITE_SUPERCLAW_TEST_BUILD')
+}
+
+function isPathInside(parent, child) {
+  const parentPath = path.resolve(parent)
+  const childPath = path.resolve(child)
+  return childPath === parentPath || childPath.startsWith(parentPath + path.sep)
 }
 
 function uvBinDir() {
@@ -112,8 +100,10 @@ function uvPythonDir() {
 function existingPortableDirs(kind) {
   return [...new Set([
     path.join(appRootDir(), 'resources', kind),
+    path.join(appRootDir(), 'resources', 'runtime', kind),
     path.join(appRootDir(), kind),
     path.join(appRootDir(), 'src-tauri', 'resources', kind),
+    path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', kind),
   ].map(p => path.resolve(p)))].filter(p => fs.existsSync(p))
 }
 
@@ -231,75 +221,96 @@ function hermesAgentSitePackages() {
   return ''
 }
 
+function hermesBundledRuntimeDir() {
+  for (const root of [
+    path.join(appRootDir(), 'resources', 'runtime', 'hermes-agent'),
+    path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'hermes-agent'),
+  ]) {
+    if (fs.existsSync(root)) return root
+  }
+  return ''
+}
+
+function hermesBundledExecutable() {
+  const root = hermesBundledRuntimeDir()
+  if (!root) return ''
+  const candidates = isWindows
+    ? [path.join(root, 'Scripts', 'hermes.exe'), path.join(root, 'Scripts', 'hermes-agent.exe')]
+    : [path.join(root, 'bin', 'hermes'), path.join(root, 'bin', 'hermes-agent')]
+  return candidates.find(candidate => fs.existsSync(candidate)) || ''
+}
+
+function hermesBundledPythonExecutable() {
+  const root = hermesBundledRuntimeDir()
+  if (!root) return ''
+  const candidate = isWindows ? path.join(root, 'Scripts', 'python.exe') : path.join(root, 'bin', 'python')
+  return fs.existsSync(candidate) ? candidate : ''
+}
+
 function isBadHermesLauncher(exePath) {
   if (!exePath) return false
   return exePath.replace(/\\/g, '/').toLowerCase().includes('/.local/bin/hermes.exe')
 }
 
 function hermesSystemExecutable() {
-  const candidates = []
-  if (process.env.HERMES_EXE) candidates.push(process.env.HERMES_EXE)
-  if (process.platform === 'win32') {
-    const localAppData = process.env.LOCALAPPDATA || ''
-    if (localAppData) {
-      for (const py of ['Python312', 'Python311', 'Python310']) {
-        candidates.push(path.join(localAppData, 'Programs', 'Python', py, 'Scripts', 'hermes.exe'))
-      }
-    }
-  }
-  const fromPath = findCommandPath('hermes')
-  if (fromPath) candidates.push(fromPath)
-
-  for (const candidate of candidates) {
-    if (!candidate || isBadHermesLauncher(candidate)) continue
-    if (!candidate.includes('\\') && !candidate.includes('/')) return candidate
-    if (fs.existsSync(candidate)) return candidate
-  }
-  return 'hermes'
+  const bundled = hermesBundledExecutable()
+  if (bundled && !isBadHermesLauncher(bundled)) return bundled
+  const error = new Error('HERMES_BUNDLED_RUNTIME_MISSING: bundled Hermes runtime is required for green/test builds.')
+  error.code = 'HERMES_BUNDLED_RUNTIME_MISSING'
+  throw error
 }
 
 function hermesCommandSpec(args = []) {
   patchHermesPyvenvCfgs()
   const env = hermesRuntimeEnv()
-  const python = hermesPortablePython()
-  const sitePackages = hermesAgentSitePackages()
-  if (python && sitePackages) {
-    env.PYTHONPATH = env.PYTHONPATH ? `${sitePackages}${path.delimiter}${env.PYTHONPATH}` : sitePackages
-    env.VIRTUAL_ENV = path.dirname(path.dirname(path.dirname(sitePackages)))
+  const python = hermesBundledPythonExecutable()
+  if (python) {
     return {
       command: python,
       args: ['-m', 'hermes_cli.main', ...args],
       env,
-      cwd: path.dirname(python),
+      cwd: hermesBundledRuntimeDir() || path.dirname(python),
     }
   }
-  // The global Windows hermes.exe launcher can fail with
-  // "Failed to canonicalize script path" when its working directory contains
-  // non-ASCII characters. Keep HERMES_HOME pointed at the project data folder,
-  // but run the launcher from the user's home directory.
-  return { command: hermesSystemExecutable(), args, env, cwd: homedir() }
+  const executable = hermesSystemExecutable()
+  return { command: executable, args, env, cwd: path.dirname(executable) }
 }
 
 function patchHermesPyvenvCfgs() {
   const toolRoots = existingPortableDirs('uv-tools')
   const pythonRoots = existingPortableDirs('uv-python')
+  const pythonHome = pythonRoots.map(findHermesPythonHome).find(Boolean)
+  if (!pythonHome) return
+  const patchCfg = (cfgPath) => {
+    if (!fs.existsSync(cfgPath)) return
+    let content = fs.readFileSync(cfgPath, 'utf8')
+    const nextLine = `home = ${pythonHome}`
+    const newline = content.includes('\r\n') ? '\r\n' : '\n'
+    const rest = content
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .filter(line => {
+        const trimmed = line.replace(/^\uFEFF/, '').trim()
+        if (!trimmed) return true
+        if (/^home\s*=/i.test(trimmed)) return false
+        if (/uv-python[\\/]+python/i.test(trimmed)) return false
+        return true
+      })
+    const nextContent = [nextLine, ...rest].join(newline).replace(/\s*$/, newline)
+    if (content === nextContent) return
+    fs.writeFileSync(cfgPath, nextContent, 'utf8')
+  }
+  for (const root of [
+    hermesBundledRuntimeDir(),
+    ...existingPortableDirs(path.join('runtime', 'hermes-agent')),
+  ].filter(Boolean)) {
+    patchCfg(path.join(root, 'pyvenv.cfg'))
+  }
   for (const toolRoot of toolRoots) {
-    const pythonHome = pythonRoots.map(findHermesPythonHome).find(Boolean)
-    if (!pythonHome) continue
     for (const entry of fs.readdirSync(toolRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       const cfgPath = path.join(toolRoot, entry.name, 'pyvenv.cfg')
-      if (!fs.existsSync(cfgPath)) continue
-      let content = fs.readFileSync(cfgPath, 'utf8')
-      const nextLine = `home = ${pythonHome}`
-      if (content.split(/\r?\n/).some(line => line.trim().toLowerCase() === nextLine.toLowerCase())) continue
-      const newline = content.includes('\r\n') ? '\r\n' : '\n'
-      if (/^home\s*=.*$/mi.test(content)) {
-        content = content.replace(/^home\s*=.*$/mi, nextLine)
-      } else {
-        content = nextLine + newline + content
-      }
-      fs.writeFileSync(cfgPath, content, 'utf8')
+      patchCfg(cfgPath)
     }
   }
 }
@@ -660,11 +671,35 @@ function extractBundledPython(targetDir) {
 
 /** 查找应用 resources 目录（优先 src-tauri/resources/ 开发模式，其次 resources/ 便携模式） */
 function appResourcesDir() {
+  const explicit = String(process.env.SUPERCLAW_RESOURCES_DIR || '').trim()
+  if (explicit) {
+    const resolved = path.resolve(explicit)
+    const allowed = [
+      path.resolve(appRootDir(), 'src-tauri', 'resources'),
+      path.resolve(appRootDir(), 'resources'),
+    ]
+    if (!allowed.some(dir => resolved === dir)) {
+      throw new Error('SUPERCLAW_RESOURCES_DIR must point to this worktree resources directory')
+    }
+    if (fs.existsSync(resolved)) return resolved
+  }
   const devDir = path.join(appRootDir(), 'src-tauri', 'resources')
   if (fs.existsSync(devDir)) return devDir
   const portableDir = path.join(appRootDir(), 'resources')
   if (fs.existsSync(portableDir)) return portableDir
   return null
+}
+
+function testConfigHomeDir() {
+  if (!isServerTestBuild()) return null
+  const resDir = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+  const dataDir = path.join(resDir, 'data')
+  const explicit = String(process.env.SUPERCLAW_TEST_CONFIG_HOME || '').trim()
+  const target = explicit ? path.resolve(explicit) : path.join(dataDir, '.openclaw')
+  if (!isPathInside(dataDir, target)) {
+    throw new Error('SUPERCLAW_TEST_CONFIG_HOME must stay inside this worktree resources/data directory')
+  }
+  return target
 }
 
 /** 便携模式下内置 OpenClaw 运行时目录（含 Node.js）例: resources/runtime/openclaw/ */
@@ -677,6 +712,8 @@ function bundledOpenclawBinDir() {
 
 /** 便携模式下的 OpenClaw 数据目录 例: resources/data/.openclaw/ */
 function portableOpenclawDataDir() {
+  const testDir = testConfigHomeDir()
+  if (testDir) return testDir
   const resDir = appResourcesDir()
   if (!resDir) return null
   const dir = path.join(resDir, 'data', '.openclaw')
@@ -828,7 +865,17 @@ function hermesGitBashPath() {
 }
 
 function hermesRuntimeEnv(extra = {}) {
-  const env = { ...process.env, PATH: hermesEnhancedPath(), ...extra }
+  const env = {
+    ...process.env,
+    PATH: hermesEnhancedPath(),
+    HERMES_PROVIDER: 'minimax',
+    OPENAI_BASE_URL: 'https://api.minimaxi.com/v1',
+    OPENAI_MODEL: 'MiniMax-M3',
+    SUPERCLAW_FORCE_PROVIDER: 'minimax',
+    MINIMAX_BASE_URL: 'https://api.minimaxi.com/v1',
+    MINIMAX_CN_BASE_URL: 'https://api.minimaxi.com/v1',
+    ...extra,
+  }
   const bash = hermesGitBashPath()
   if (bash) env.HERMES_GIT_BASH_PATH = bash
   return env
@@ -914,9 +961,8 @@ function inspectHermesGatewayPortOwners(port = hermesGatewayPort()) {
   let output = ''
   try { output = execSync('netstat -ano', { windowsHide: true }).toString() } catch {}
   const listeningPids = parseWindowsListeningPids(output, port)
-  const appRootSig = normalizeForCompare(appRootDir())
-  const homeSig = normalizeForCompare(hermesHome())
-  const pythonSig = normalizeForCompare(hermesPortablePython())
+  const bundledRuntimeSig = normalizeForCompare(hermesBundledRuntimeDir())
+  const bundledExeSig = normalizeForCompare(hermesBundledExecutable())
   const portablePids = []
   const hermesPids = []
   const foreignPids = []
@@ -925,9 +971,8 @@ function inspectHermesGatewayPortOwners(port = hermesGatewayPort()) {
     const text = normalizeForCompare(commandLine)
     const looksHermes = text.includes('hermes') && text.includes('gateway')
     const looksPortable = looksHermes && (
-      (appRootSig && text.includes(appRootSig))
-      || (homeSig && text.includes(homeSig))
-      || (pythonSig && text.includes(pythonSig))
+      (bundledRuntimeSig && text.includes(bundledRuntimeSig))
+      || (bundledExeSig && text.includes(bundledExeSig))
     )
     if (looksPortable) portablePids.push(pid)
     else if (looksHermes) hermesPids.push(pid)
@@ -2767,10 +2812,7 @@ function readPanelConfig() {
   }
   try {
     // 便携模式优先：resources/data/.openclaw/clawpanel.json
-    const portableCfg = portableOpenclawDataDir()
-      ? path.join(portableOpenclawDataDir(), 'clawpanel.json')
-      : null
-    const effectivePath = (portableCfg && fs.existsSync(portableCfg)) ? portableCfg : PANEL_CONFIG_PATH
+    const effectivePath = panelConfigFilePath()
     if (fs.existsSync(effectivePath)) {
       _panelConfigCache = JSON.parse(fs.readFileSync(effectivePath, 'utf8'))
       _panelConfigCacheTime = now
@@ -2859,18 +2901,36 @@ function parseCookies(req) {
   return obj
 }
 
+function normalizeHostValue(value = '') {
+  const raw = String(value || '').trim().toLowerCase()
+  if (!raw) return ''
+  if (raw.startsWith('[')) return raw.slice(1).split(']')[0]
+  return raw.split(':')[0]
+}
+
+function normalizeSocketAddress(value = '') {
+  const raw = String(value || '').trim().toLowerCase()
+  return raw.startsWith('::ffff:') ? raw.slice('::ffff:'.length) : raw
+}
+
+function isLoopbackHostHeader(req) {
+  const host = normalizeHostValue(req?.headers?.host || '')
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1'
+}
+
+function isLoopbackSocketAddress(value = '') {
+  const address = normalizeSocketAddress(value)
+  return address === '127.0.0.1' || address === '::1' || address === 'localhost'
+}
+
+function isLoopbackRequest(req) {
+  return isLoopbackSocketAddress(req?.socket?.remoteAddress)
+    && isLoopbackSocketAddress(req?.socket?.localAddress)
+    && isLoopbackHostHeader(req)
+}
+
 function isAuthenticated(req) {
-  const pw = getAccessPassword()
-  if (!pw) return true // 未设密码，放行
-  const cookies = parseCookies(req)
-  const token = cookies.clawpanel_session
-  if (!token) return false
-  const session = _sessions.get(token)
-  if (!session || Date.now() > session.expires) {
-    _sessions.delete(token)
-    return false
-  }
-  return true
+  return isLoopbackRequest(req)
 }
 
 function checkPasswordStrength(pw) {
@@ -3202,7 +3262,7 @@ function generateCalibrationToken() {
   return `cp-${crypto.randomBytes(16).toString('hex')}`
 }
 
-const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec', 'process']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 const OPENCLAW_STATUS_ENABLED_PLUGINS = [
   'browser',
@@ -3221,6 +3281,86 @@ const OPENCLAW_STATUS_ENABLED_PLUGINS = [
 ]
 const OPENCLAW_WEB_SEARCH_PLUGIN_IDS = ['duckduckgo', 'exa', 'firecrawl', 'perplexity', 'searxng', 'tavily']
 const OPENCLAW_MEMORY_PLUGIN_IDS = ['memory-core', 'active-memory', 'memory-wiki']
+const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager']
+
+function sha256File(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return ''
+    return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex')
+  } catch {
+    return ''
+  }
+}
+
+function copyDirExactSync(sourceDir, destinationDir) {
+  if (fs.existsSync(destinationDir)) fs.rmSync(destinationDir, { recursive: true, force: true })
+  fs.mkdirSync(path.dirname(destinationDir), { recursive: true })
+  fs.cpSync(sourceDir, destinationDir, { recursive: true, force: true })
+}
+
+function copyFileIfDifferentSync(sourcePath, destinationPath) {
+  if (sha256File(sourcePath) && sha256File(sourcePath) === sha256File(destinationPath)) return false
+  fs.mkdirSync(path.dirname(destinationPath), { recursive: true })
+  fs.copyFileSync(sourcePath, destinationPath)
+  return true
+}
+
+function ensurePortableOpenClawTools() {
+  const runtimeDir = bundledOpenclawBinDir()
+  const resourcesDir = appResourcesDir()
+  if (!runtimeDir || !resourcesDir) return { ok: false, skipped: true, reason: 'missing-runtime-or-resources' }
+
+  const sourceExtensions = path.join(runtimeDir, 'dist', 'extensions')
+  const runtimeExtensions = path.join(runtimeDir, 'node_modules', '@qingchencloud', 'openclaw-zh', 'dist', 'extensions')
+  const installed = []
+  for (const pluginId of OPENCLAW_PORTABLE_TOOL_PLUGINS) {
+    const source = path.join(sourceExtensions, pluginId)
+    const destination = path.join(runtimeExtensions, pluginId)
+    const sourceManifest = path.join(source, 'openclaw.plugin.json')
+    const sourceEntry = path.join(source, 'index.js')
+    if (!fs.existsSync(sourceManifest) || !fs.existsSync(sourceEntry)) {
+      throw new Error(`OpenClaw portable plugin source is missing: ${pluginId}`)
+    }
+    const destManifest = path.join(destination, 'openclaw.plugin.json')
+    const destEntry = path.join(destination, 'index.js')
+    if (sha256File(sourceManifest) !== sha256File(destManifest) || sha256File(sourceEntry) !== sha256File(destEntry)) {
+      copyDirExactSync(source, destination)
+    }
+    installed.push(pluginId)
+  }
+
+  const sidecarSource = path.join(resourcesDir, 'bin', 'desktop-control-agent.exe')
+  const sidecarDestination = path.join(runtimeDir, 'bin', 'desktop-control-agent.exe')
+  if (!fs.existsSync(sidecarSource)) throw new Error(`OpenClaw desktop-control sidecar is missing: ${sidecarSource}`)
+  const sidecarCopied = copyFileIfDifferentSync(sidecarSource, sidecarDestination)
+
+  let configChanged = false
+  if (fs.existsSync(CONFIG_PATH)) {
+    const cfg = JSON.parse(decodeJsonFileContent(CONFIG_PATH))
+    cfg.plugins = cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins) ? cfg.plugins : {}
+    cfg.plugins.entries = cfg.plugins.entries && typeof cfg.plugins.entries === 'object' && !Array.isArray(cfg.plugins.entries) ? cfg.plugins.entries : {}
+    for (const pluginId of ['browser', ...OPENCLAW_PORTABLE_TOOL_PLUGINS]) {
+      const current = cfg.plugins.entries[pluginId] && typeof cfg.plugins.entries[pluginId] === 'object' && !Array.isArray(cfg.plugins.entries[pluginId])
+        ? cfg.plugins.entries[pluginId]
+        : {}
+      if (current.enabled !== true || cfg.plugins.entries[pluginId] !== current) {
+        cfg.plugins.entries[pluginId] = { ...current, enabled: true }
+        configChanged = true
+      }
+    }
+    const allow = Array.isArray(cfg.plugins.allow) ? [...cfg.plugins.allow] : []
+    for (const pluginId of ['browser', ...OPENCLAW_PORTABLE_TOOL_PLUGINS]) {
+      if (!allow.includes(pluginId)) {
+        allow.push(pluginId)
+        configChanged = true
+      }
+    }
+    cfg.plugins.allow = allow
+    if (configChanged) fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+  }
+
+  return { ok: true, installed, sidecar: fs.existsSync(sidecarDestination), sidecarCopied, configChanged }
+}
 
 function normalizeOpenClawDirectTools(tools, { includeExecConfig = false } = {}) {
   const next = tools && typeof tools === 'object' && !Array.isArray(tools) ? tools : {}
@@ -3347,6 +3487,9 @@ function buildCalibrationBaseline() {
         mode: 'token',
         token: generateCalibrationToken(),
       },
+      remote: {
+        token: generateCalibrationToken(),
+      },
       controlUi: {
         enabled: true,
         allowedOrigins: requiredControlUiOrigins(),
@@ -3467,6 +3610,11 @@ function normalizeCalibratedConfig(input) {
       mode: 'token',
       token: generateCalibrationToken(),
     }
+  }
+  config.gateway.remote = config.gateway.remote && typeof config.gateway.remote === 'object' && !Array.isArray(config.gateway.remote) ? config.gateway.remote : {}
+  const authToken = String(config.gateway.auth?.token || '').trim()
+  if (authToken && String(config.gateway.remote.token || '').trim() !== authToken) {
+    config.gateway.remote.token = authToken
   }
   config.gateway.controlUi = config.gateway.controlUi && typeof config.gateway.controlUi === 'object' && !Array.isArray(config.gateway.controlUi) ? config.gateway.controlUi : {}
   const existingOrigins = Array.isArray(config.gateway.controlUi.allowedOrigins) ? config.gateway.controlUi.allowedOrigins.filter(Boolean) : []
@@ -4301,6 +4449,7 @@ function formatPidList(pids) {
 
 function winStartGateway() {
   const port = readGatewayPort()
+  ensurePortableOpenClawTools()
   const { gatewayPids, foreignPids } = inspectWindowsPortOwners(port)
   if (gatewayPids.length) {
     ensureOwnedGatewayOrThrow(gatewayPids[0])
@@ -4682,6 +4831,7 @@ function linuxCheckGateway() {
 }
 
 function linuxStartGateway() {
+  ensurePortableOpenClawTools()
   if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true })
   const logPath = path.join(LOGS_DIR, 'gateway.log')
   const errPath = path.join(LOGS_DIR, 'gateway.err.log')
@@ -5151,8 +5301,9 @@ const MINIMAX_TEST_DEFAULTS = {
   providerId: 'minimax',
   providerName: 'MiniMax',
   model: 'MiniMax-M3',
-  baseUrl: 'https://api.minimax.io/v1',
+  baseUrl: 'https://api.minimaxi.com/v1',
   cnBaseUrl: 'https://api.minimaxi.com/v1',
+  intlBaseUrl: 'https://api.minimax.io/v1',
 }
 
 function cleanMiniMaxValue(value) {
@@ -5172,7 +5323,12 @@ function maskMiniMaxApiKey(value) {
 
 function normalizeMiniMaxTestPayload(input = {}) {
   const rawBaseUrl = cleanMiniMaxBaseUrl(input.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl)
-  const baseUrl = [MINIMAX_TEST_DEFAULTS.baseUrl, MINIMAX_TEST_DEFAULTS.cnBaseUrl].includes(rawBaseUrl)
+  const allowedBaseUrls = [
+    MINIMAX_TEST_DEFAULTS.baseUrl,
+    MINIMAX_TEST_DEFAULTS.cnBaseUrl,
+    MINIMAX_TEST_DEFAULTS.intlBaseUrl,
+  ].filter(Boolean)
+  const baseUrl = allowedBaseUrls.includes(rawBaseUrl)
     ? rawBaseUrl
     : MINIMAX_TEST_DEFAULTS.baseUrl
   const out = {
@@ -5239,7 +5395,7 @@ function miniMaxProviderForBaseUrl(baseUrl) {
 function miniMaxOpenAiBaseUrlForBaseUrl(baseUrl) {
   const value = cleanMiniMaxBaseUrl(baseUrl)
   if (value.includes('api.minimaxi.com')) return MINIMAX_TEST_DEFAULTS.cnBaseUrl
-  if (value.includes('api.minimax.io')) return MINIMAX_TEST_DEFAULTS.baseUrl
+  if (value.includes('api.minimax.io')) return MINIMAX_TEST_DEFAULTS.intlBaseUrl
   return value
 }
 
@@ -5810,10 +5966,16 @@ async function forwardPaymentRequest(action, payload = {}) {
   }
   return json
 }
+
 const handlers = {
+  health() {
+    return { ok: true, mode: 'dev-api', noUserSystem: true, provider: 'minimax' }
+  },
+
   async payment_request({ action, payload } = {}) {
     return forwardPaymentRequest(action, payload || {})
   },
+
   // 配置读写
   read_openclaw_config() {
     const cfg = readOpenclawConfigRequired()
@@ -6021,12 +6183,9 @@ const handlers = {
     if (!fs.existsSync(CONFIG_PATH)) return []
     const cfg = readOpenclawConfigOptional()
     const channels = cfg.channels || {}
-    const rows = Object.entries(channels).map(([id, val]) => normalizeMessageChannelEntry(id, val))
-    const seen = new Set(rows.map(row => row.id))
-    for (const id of DEFAULT_MESSAGE_CHANNELS) {
-      if (!seen.has(id)) rows.push(normalizeMessageChannelEntry(id, channels[id] || {}))
-    }
-    return rows
+    return Object.entries(channels)
+      .map(([id, val]) => normalizeMessageChannelEntry(id, val))
+      .filter(row => row.configured || (Array.isArray(row.accounts) && row.accounts.length > 0))
   },
 
   read_platform_config({ platform, accountId }) {
@@ -9384,7 +9543,7 @@ const handlers = {
       const verMatch = r.stdout.split(/\s+/).find(s => /^v?\d/.test(s)) || r.stdout
       result.installed = true
       result.version = verMatch.replace(/^v/, '')
-      result.path = findCommandPath('hermes')
+      result.path = hermesBundledExecutable()
     } else {
       result.installed = false; result.version = null; result.path = null
     }
@@ -9598,13 +9757,10 @@ const handlers = {
     const lowerProvider = providerName.toLowerCase()
     const modelStr = model || (['minimax', 'minimax-cn'].includes(lowerProvider) ? 'MiniMax-M3' : 'gpt-5.5')
     const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
-    const isYyapi = lowerProvider === 'custom' || lowerProvider === 'yyapi'
-    const isOpenAiChat = isYyapi || ['openai', 'openai-api', 'openrouter', 'deepseek', 'minimax', 'minimax-cn'].includes(lowerProvider)
-    const providerLine = `  provider: ${isYyapi ? 'custom' : providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`
+    const isOpenAiChat = ['custom', 'openai', 'openai-api', 'openrouter', 'deepseek', 'minimax', 'minimax-cn'].includes(lowerProvider)
+    const providerLine = `  provider: ${providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`
     const baseUrlLine = baseUrlValue ? `  base_url: ${baseUrlValue}\n` : ''
-    const customProvidersBlock = isYyapi && baseUrlValue
-      ? `custom_providers:\n  - name: yyapi\n    base_url: ${baseUrlValue}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr}\n`
-      : ''
+    const customProvidersBlock = ''
     // config.yaml
     const configPath = path.join(home, 'config.yaml')
     let configContent
@@ -9787,10 +9943,6 @@ const handlers = {
 
   async hermes_agent_run({ input, sessionId, conversationHistory, instructions, attachments } = {}) {
     // Web 模式下简化实现：POST /v1/runs 然后轮询或直接返回
-    const repaired = handlers._hermesRepairYyapiEnvFromOpenclaw()
-    if (repaired && await _tcpProbe('127.0.0.1', hermesGatewayPort(), 300)) {
-      await handlers.hermes_gateway_action({ action: 'restart' }).catch(() => {})
-    }
     await handlers._hermesEnsureGatewayReady()
     const gwUrl = hermesGatewayUrl()
     const home = hermesHome()
@@ -9816,7 +9968,6 @@ const handlers = {
   },
 
   hermes_read_config() {
-    handlers._hermesRepairYyapiEnvFromOpenclaw()
     const home = hermesHome()
     const configPath = path.join(home, 'config.yaml')
     const envPath = path.join(home, '.env')
@@ -9878,7 +10029,7 @@ const handlers = {
         id: 'minimax',
         name: 'MiniMax',
         authType: 'api_key',
-        baseUrl: process.env.MINIMAX_BASE_URL || 'https://api.minimax.io/v1',
+        baseUrl: process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1',
         baseUrlEnvVar: 'MINIMAX_BASE_URL',
         apiKeyEnvVars: ['MINIMAX_API_KEY'],
         transport: 'openai_chat',
@@ -9910,19 +10061,6 @@ const handlers = {
         transport: 'openai_chat',
         modelsProbe: 'openai',
         models: [],
-        isAggregator: true,
-        cliAuthHint: '',
-      },
-      {
-        id: 'yyapi',
-        name: 'YYAPI',
-        authType: 'api_key',
-        baseUrl: configuredYyapiBaseUrl(),
-        baseUrlEnvVar: 'OPENAI_BASE_URL',
-        apiKeyEnvVars: ['OPENAI_API_KEY', 'CUSTOM_API_KEY'],
-        transport: 'openai_chat',
-        modelsProbe: 'openai',
-        models: ['gpt-5.5'],
         isAggregator: true,
         cliAuthHint: '',
       },
@@ -10034,93 +10172,7 @@ const handlers = {
     console.warn(`[hermes guardian] patched config.yaml (api_server.enabled). Backup: ${backupPath}`)
   },
 
-  _hermesRepairYyapiEnvFromOpenclaw() {
-    const home = hermesHome()
-    const envPath = path.join(home, '.env')
-    const configPath = path.join(home, 'config.yaml')
-    const configRaw = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : ''
-    if (configRaw.trim()) {
-      let currentProvider = ''
-      let currentBaseUrl = ''
-      for (const line of configRaw.split(/\r?\n/)) {
-        const t = line.trim()
-        if (t.startsWith('provider:')) currentProvider = t.slice(9).trim().replace(/^["']|["']$/g, '')
-        if (t.startsWith('base_url:')) currentBaseUrl = t.slice(9).trim().replace(/^["']|["']$/g, '')
-      }
-      const providerLower = currentProvider.toLowerCase()
-      const baseLower = currentBaseUrl.toLowerCase()
-      const wantsYyapi = providerLower === 'custom'
-        || providerLower === 'yyapi'
-        || isConfiguredYyapiBaseUrl(baseLower)
-        || configRaw.includes('custom_providers:')
-      const isMiniMax = providerLower === 'minimax'
-        || providerLower === 'minimax-cn'
-        || baseLower.includes('minimax')
-        || baseLower.includes('minimaxi')
-      if (isMiniMax || !wantsYyapi) return false
-    }
-    const cfg = readOpenclawConfigOptional()
-    const providers = cfg?.models?.providers && typeof cfg.models.providers === 'object'
-      ? cfg.models.providers
-      : {}
-    const provider = providers.yyapi
-      || Object.values(providers).find(p => isConfiguredYyapiBaseUrl(p?.baseUrl || ''))
-    const apiKey = String(provider?.apiKey || '').trim()
-    if (!apiKey || apiKey === 'YYAPI' || apiKey === 'superclaw-login-required' || apiKey.includes('*')) return false
-    const baseUrl = String(provider?.baseUrl || configuredYyapiBaseUrl()).trim()
-    if (!baseUrl) return false
-    fs.mkdirSync(home, { recursive: true })
-    const envRaw = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
-    const env = {}
-    for (const line of envRaw.split(/\r?\n/)) {
-      const t = line.trim()
-      if (!t || t.startsWith('#')) continue
-      const eq = t.indexOf('=')
-      if (eq > 0) env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim()
-    }
-
-    let changed = false
-    const openaiKeyCount = (envRaw.match(/^OPENAI_API_KEY=/gm) || []).length
-    if (env.OPENAI_API_KEY !== apiKey || openaiKeyCount !== 1 || env.OPENAI_BASE_URL !== baseUrl) {
-      const managed = handlers._hermesManagedEnvKeys()
-      const pairs = [
-        ['OPENAI_API_KEY', apiKey],
-        ['OPENAI_BASE_URL', baseUrl],
-        ['GATEWAY_ALLOW_ALL_USERS', 'true'],
-        ['API_SERVER_KEY', env.API_SERVER_KEY || 'clawpanel-local'],
-      ]
-      fs.writeFileSync(envPath, _mergeEnvFile(envRaw, managed, pairs))
-      changed = true
-    }
-
-    let model = ''
-    for (const line of configRaw.split(/\r?\n/)) {
-      const t = line.trim()
-      if (t.startsWith('default:')) {
-        model = t.slice(8).trim().replace(/^["']|["']$/g, '')
-        break
-      }
-    }
-    if (!model) {
-      model = String(cfg?.agents?.defaults?.model?.primary || '').split('/').pop() || ''
-    }
-    const nextConfig = configRaw.trim()
-      ? _mergeHermesConfigYaml(
-        configRaw,
-        model,
-        `  base_url: ${baseUrl}\n`,
-        '  provider: custom\n  api_mode: chat_completions\n',
-        _hermesYyapiCustomProviderBlock(model, baseUrl),
-      )
-      : `# Hermes Agent configuration (managed by SuperClaw)\nmodel:\n  default: ${model}\n  provider: custom\n  api_mode: chat_completions\n  base_url: ${baseUrl}\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n${_hermesYyapiCustomProviderBlock(model, baseUrl)}`
-    if (nextConfig !== configRaw) {
-      fs.writeFileSync(configPath, nextConfig)
-      changed = true
-    }
-    return changed
-  },
-
-  // =========================================================================
+  // =========================================================================  // =========================================================================
   // .env editor (Step 4) — Web-mode implementations mirroring Rust behavior.
   // The managed-key list is duplicated here since Rust's hermes_providers is
   // not accessible from Node. Keep in sync with
@@ -11503,12 +11555,6 @@ function _isHermesModelProviderSection(trimmed) {
     || trimmed.startsWith('auxiliary:')
 }
 
-function _hermesYyapiCustomProviderBlock(modelStr, baseUrl) {
-  const cleanBaseUrl = String(baseUrl || '').trim().replace(/\/+$/, '')
-  if (!cleanBaseUrl) return ''
-  return `custom_providers:\n  - name: yyapi\n    base_url: ${cleanBaseUrl}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr || 'gpt-5.5'}\n`
-}
-
 function _mergeEnvFile(existing, managedKeys, newPairs) {
   const result = []
   for (const line of existing.split('\n')) {
@@ -11833,21 +11879,25 @@ async function claudeCodeStatus() {
 
   const panel = claudePanelPaths(paths)
   const panelRunning = await claudePanelRunning(panel)
+  const cliInstalled = fs.existsSync(paths.claude)
+  const panelInstalled = fs.existsSync(panel.server)
+  const panelRelayConnected = panelInstalled && panelRunning
 
   return {
-    installed: fs.existsSync(paths.claude),
-    connected: !!version,
+    installed: cliInstalled || panelInstalled,
+    connected: !!version || panelRelayConnected,
     running: panelRunning,
     mode: 'panel',
+    runtimeMode: 'OPENAI_RELAY',
     needsPanel: true,
-    message: 'Claude Code UI panel is available through the portable clean-claude-panel runtime.',
-    version,
-    versionError,
+    message: 'Claude Code UI panel relay is available through the portable clean-claude-panel runtime.',
+    version: version || (panelInstalled ? 'Claude Code Panel relay' : null),
+    versionError: cliInstalled ? versionError : '',
     paths,
     url: panel.url,
     panelUrl: panel.url,
     panel: {
-      installed: fs.existsSync(panel.server),
+      installed: panelInstalled,
       running: panelRunning,
       url: panel.url,
       port: panel.port,
@@ -12481,416 +12531,36 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
   }
 }
 
-// --- YYApi 认证缓存（createYYApiSession 存储，proxy 读取用于 localStorage 注入）---
-const yyapiAuthCache = new Map()
-
-/** 从 cookie 中提取 yyapi_session 值 */
-function extractYYApiSession(req) {
-  const incomingCookie = req.headers['cookie'] || ''
-  let val = ''
-  incomingCookie.split(';').forEach(c => {
-    const parts = c.trim().split('=')
-    if (parts[0] === 'yyapi_session') val = parts.slice(1).join('=')
-  })
-  if (val) {
-    try { val = decodeURIComponent(val) } catch (_) {}
-  }
-  return val
-}
-
-/** 构建转发给 YYApi 的 Cookie 头 */
-function buildYYApiCookie(sessionVal) {
-  if (!sessionVal) return ''
-  return sessionVal.includes('=') ? sessionVal : `session=${sessionVal}`
-}
-
-/** 转发请求到 YYApi（供 proxy 和 API handler 共用） */
-async function proxyToYYApi(targetUrl, yyapiCookie, method = 'GET', body = null) {
-  const headers = { 'Accept': '*/*' }
-  if (yyapiCookie) headers['Cookie'] = yyapiCookie
-  if (body) {
-    headers['Content-Type'] = 'application/json'
-    return await globalThis.fetch(targetUrl, { method, headers, body: JSON.stringify(body) })
-  }
-  return await globalThis.fetch(targetUrl, { method, headers })
-}
-
-// API 中间件（dev server 和 preview server 共用）
 async function _apiMiddleware(req, res, next) {
-  // --- YYApi JS API 转发：iframe 中 fetch('/api/...') 走此路径 ---
-  //    必须放在 /__api/ 检查之前，因为 /api/ 不是 /__api/ 前缀
-  if (req.url.startsWith('/api/')) {
-    const yyapiSessionVal = extractYYApiSession(req)
-    if (yyapiSessionVal) {
-      const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
-      if (!yyapiAuthBaseUrl) {
-        res.statusCode = 503
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'YYAPI 未配置' }))
-        return
-      }
-      const yyapiCookie = buildYYApiCookie(yyapiSessionVal)
-      const targetUrl = `${yyapiAuthBaseUrl}${req.url}`
-      try {
-        const apiResp = await globalThis.fetch(targetUrl, {
-          method: req.method || 'GET',
-          headers: { 'Cookie': yyapiCookie, 'Content-Type': req.headers['content-type'] || 'application/json' },
-          body: req.method !== 'GET' && req.method !== 'HEAD' ? await readBodyRaw(req) : undefined,
-        })
-        const ct = apiResp.headers.get('content-type') || ''
-        if (ct.includes('application/json') || ct.includes('text/')) {
-          const text = await apiResp.text()
-          res.setHeader('Content-Type', ct)
-          res.end(text)
-        } else {
-          const buf = await apiResp.arrayBuffer()
-          res.setHeader('Content-Type', ct)
-          res.end(Buffer.from(buf))
-        }
-      } catch (e) {
-        res.statusCode = 502
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'YYApi proxy error: ' + (e.message || String(e)) }))
-      }
-    } else {
-      res.statusCode = 401
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '未登录' }))
-    }
-    return
-  }
-
   if (!req.url?.startsWith('/__api/')) return next()
 
-  // --- YYApi 控制台反向代理：同源代理 + localStorage 注入 ---
-  if (req.url.startsWith('/__api/yyapi_proxy/')) {
-    const targetPath = req.url.slice('/__api/yyapi_proxy/'.length)
-    const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
-    if (!yyapiAuthBaseUrl) {
-      res.statusCode = 503
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: 'YYAPI 未配置' }))
-      return
-    }
-    const targetUrl = `${yyapiAuthBaseUrl}/${targetPath}`
-    try {
-      // 提取 session cookie
-      const yyapiSessionVal = extractYYApiSession(req)
-      const yyapiCookie = buildYYApiCookie(yyapiSessionVal)
-      const proxyHeaders = { 'Accept': req.headers['accept'] || '*/*' }
-      if (yyapiCookie) proxyHeaders['Cookie'] = yyapiCookie
-      const proxyResp = await globalThis.fetch(targetUrl, { headers: proxyHeaders })
-      const contentType = proxyResp.headers.get('content-type') || ''
-      const isHtml = contentType.includes('text/html')
-      if (isHtml) {
-        let html = await proxyResp.text()
-        // 重写 HTML 中的绝对路径资源，使其走代理（代替 <base> 标签，避免 SPA 冲突）
-        // 匹配 src="/xxx" 和 href="/xxx"（排除已带 /__api/ 前缀的）
-        html = html.replace(
-          /(src|href)\s*=\s*"(\/(?!__api\/)[^"]+)"/gi,
-          (m, attr, path) => `${attr}="/__api/yyapi_proxy${path}"`
-        )
-        // 注入 localStorage 认证数据（从服务端缓存读取，无需二次请求 YYApi）
-        if (yyapiSessionVal) {
-          const cached = yyapiAuthCache.get(yyapiSessionVal)
-          const injectLines = []
-          injectLines.push(`var yyToken=${JSON.stringify(yyapiSessionVal)};`)
-          if (cached && cached.user) {
-            injectLines.push(`var yyUser=${JSON.stringify(JSON.stringify(cached.user))};`)
-          }
-          const injectScript = `<script>(function(){try{${injectLines.join('')}
-if(typeof yyToken!=='undefined'){localStorage.setItem('session',yyToken);localStorage.setItem('token',yyToken);}
-if(typeof yyUser!=='undefined'){localStorage.setItem('user',yyUser);}
-}catch(e){}})();<\/script>`
-          html = html.replace('<head>', '<head>' + injectScript)
-        }
-        res.setHeader('Content-Type', contentType)
-        res.end(html)
-      } else {
-        // 非 HTML 直接透传
-        const buffer = await proxyResp.arrayBuffer()
-        res.setHeader('Content-Type', contentType)
-        res.end(Buffer.from(buffer))
-      }
-    } catch (e) {
-      res.statusCode = 502
-      res.setHeader('Content-Type', 'text/plain')
-      res.end('YYApi proxy error: ' + (e.message || String(e)))
-    }
-    return
+  const rawPath = req.url.slice('/__api/'.length).split(/[?#]/)[0]
+  let cmd = ''
+  try {
+    cmd = decodeURIComponent(rawPath)
+  } catch {
+    cmd = rawPath
   }
-
-  const cmd = req.url.slice(7).split('?')[0]
-
-  // --- 健康检查（前端用于检测后端是否在线） ---
-  if (cmd === 'health') {
+  if (!cmd) {
+    res.statusCode = 400
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ ok: true, ts: Date.now() }))
+    res.end(JSON.stringify({ error: 'Missing API command' }))
     return
   }
-
-  if (cmd === 'payment_request') {
-    try {
-      const args = await readBody(req)
-      const result = await forwardPaymentRequest(args?.action, args?.payload || {})
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify(result))
-    } catch (e) {
-      res.statusCode = Number(e.statusCode || e.status || 500) || 500
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: e.message || String(e), code: e.code || undefined }))
-    }
-    return
-  }
-  // --- 认证特殊处理 ---
-  if (cmd === 'auth_check') {
-    const cfg = readPanelConfig()
-    const pw = cfg.accessPassword || ''
-    const isDefault = pw === '123456'
-    const resp = {
-      required: !!pw,
-      authenticated: !pw || isAuthenticated(req),
-      mustChangePassword: isDefault,
-    }
-    if (isDefault) resp.defaultPassword = '123456'
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify(resp))
-    return
-  }
-
-  if (cmd === 'auth_login') {
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || ''
-    const rateLimitErr = checkLoginRateLimit(clientIp)
-    if (rateLimitErr) {
-      res.statusCode = 429
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: rateLimitErr }))
-      return
-    }
-    const args = await readBody(req)
-    const cfg = readPanelConfig()
-    const pw = cfg.accessPassword || ''
-    if (!pw) {
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ success: true }))
-      return
-    }
-    if (args.password !== pw) {
-      recordLoginFailure(clientIp)
-      res.statusCode = 401
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '密码错误' }))
-      return
-    }
-    clearLoginAttempts(clientIp)
-    const token = crypto.randomUUID()
-    _sessions.set(token, { expires: Date.now() + SESSION_TTL })
-    res.setHeader('Set-Cookie', `clawpanel_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL / 1000}`)
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ success: true, mustChangePassword: !!cfg.mustChangePassword }))
-    return
-  }
-
-  if (cmd === 'auth_change_password') {
-    const args = await readBody(req)
-    const cfg = readPanelConfig()
-    const pw = cfg.accessPassword || ''
-    if (pw && !isAuthenticated(req)) {
-      res.statusCode = 401
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '未登录' }))
-      return
-    }
-    if (pw && args.oldPassword !== pw) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '当前密码错误' }))
-      return
-    }
-    const weakErr = checkPasswordStrength(args.newPassword)
-    if (weakErr) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: weakErr }))
-      return
-    }
-    if (args.newPassword === pw) {
-      res.statusCode = 400
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '新密码不能与旧密码相同' }))
-      return
-    }
-    cfg.accessPassword = args.newPassword
-    delete cfg.mustChangePassword
-    delete cfg.ignoreRisk
-    fs.writeFileSync(panelConfigFilePath(), JSON.stringify(cfg, null, 2))
-    invalidateConfigCache()
-    _sessions.clear()
-    const token = crypto.randomUUID()
-    _sessions.set(token, { expires: Date.now() + SESSION_TTL })
-    res.setHeader('Set-Cookie', `clawpanel_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL / 1000}`)
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ success: true }))
-    return
-  }
-
-  if (cmd === 'auth_status') {
-    const cfg = readPanelConfig()
-    if (cfg.accessPassword && !isAuthenticated(req)) {
-      res.statusCode = 401
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '未登录' }))
-      return
-    }
-    const isDefault = cfg.accessPassword === '123456'
-    const result = {
-      hasPassword: !!cfg.accessPassword,
-      mustChangePassword: isDefault,
-      ignoreRisk: !!cfg.ignoreRisk,
-    }
-    if (isDefault) {
-      result.defaultPassword = '123456'
-    }
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify(result))
-    return
-  }
-
-  if (cmd === 'auth_ignore_risk') {
-    if (!isAuthenticated(req)) {
-      res.statusCode = 401
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: '未登录' }))
-      return
-    }
-    const args = await readBody(req)
-    const cfg = readPanelConfig()
-    if (args.enable) {
-      delete cfg.accessPassword
-      delete cfg.mustChangePassword
-      cfg.ignoreRisk = true
-      _sessions.clear()
-    } else {
-      delete cfg.ignoreRisk
-    }
-    fs.writeFileSync(panelConfigFilePath(), JSON.stringify(cfg, null, 2))
-    invalidateConfigCache()
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ success: true }))
-    return
-  }
-
-  if (cmd === 'auth_logout') {
-    const cookies = parseCookies(req)
-    if (cookies.clawpanel_session) _sessions.delete(cookies.clawpanel_session)
-    res.setHeader('Set-Cookie', 'clawpanel_session=; Path=/; HttpOnly; Max-Age=0')
-    res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ success: true }))
-    return
-  }
-
-  // --- 认证中间件：非豁免接口必须校验 ---
-  if (!isAuthenticated(req)) {
-    res.statusCode = 401
-    res.setHeader('Content-Type', 'application/json')
-    if (cmd === 'validate_openclaw_config') {
-      res.end(JSON.stringify({
-        error: 'AUTH_REQUIRED',
-        code: 'AUTH_REQUIRED',
-        severity: 'info',
-        expectedForDirectAccess: true,
-        message: 'validate 接口需要页面会话鉴权；直连 401 属预期。',
-      }))
-    } else {
-      res.end(JSON.stringify({ error: '未登录', code: 'AUTH_REQUIRED' }))
-    }
-    return
-  }
-
-  const activeInst = getActiveInstance()
 
   if (cmd === 'hermes_agent_run_stream') {
-    const args = await readBody(req)
-    if (activeInst.type !== 'local' && activeInst.endpoint && !ALWAYS_LOCAL.has(cmd)) {
-      await proxyStreamToInstance(activeInst, cmd, args, req, res)
-    } else {
+    try {
+      const args = await readBody(req)
       await _handleHermesAgentRunStream(req, res, args)
-    }
-    return
-  }
-
-  // --- 实例代理：非 ALWAYS_LOCAL 命令，活跃实例非本机时代理转发 ---
-  if (activeInst.type !== 'local' && activeInst.endpoint && !ALWAYS_LOCAL.has(cmd)) {
-    try {
-      const args = await readBody(req)
-      const result = await proxyToInstance(activeInst, cmd, args)
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify(result))
     } catch (e) {
-      res.statusCode = 502
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: `实例「${activeInst.name}」不可达: ${e.message}` }))
-    }
-    return
-  }
-
-  // --- YYApi 控制台会话代理：通过 YYApi 用户凭证创建登录会话 ---
-  if (cmd === 'yyapi_create_session') {
-    try {
-      const args = await readBody(req)
-      const { username, password } = args
-      if (!username || !password) {
-        res.statusCode = 400
+      if (!res.headersSent) {
+        res.statusCode = Number(e.statusCode || e.status || 500) || 500
         res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: '缺少 username 或 password' }))
-        return
+        res.end(JSON.stringify({ error: e.message || String(e), code: e.code || undefined }))
+      } else {
+        _writeStreamEvent(res, { event: 'run.failed', error: e.message || String(e), code: e.code || undefined })
+        _endStream(res)
       }
-      // 调用 YYApi 登录接口
-      const yyapiAuthBaseUrl = configuredYyapiAuthBaseUrl()
-      if (!yyapiAuthBaseUrl) {
-        throw new Error('YYAPI 未配置')
-      }
-      const loginResp = await globalThis.fetch(`${yyapiAuthBaseUrl}/api/user/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      })
-      const setCookie = loginResp.headers.get('set-cookie') || ''
-      if (loginResp.status !== 200 || !setCookie) {
-        const text = await loginResp.text().catch(() => '')
-        res.statusCode = 401
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: `YYApi 登录失败: ${text || loginResp.status}` }))
-        return
-      }
-      // 提取 session 值（分号前的第一段：session=xxx）
-      const sessionValue = setCookie.split(';')[0].trim()
-      // 也尝试解析登录响应体中的用户信息
-      let userInfo = null
-      let tokenInfo = null
-      try {
-        const loginBody = await loginResp.json()
-        userInfo = loginBody.user || loginBody.data?.user || null
-        tokenInfo = loginBody.token || loginBody.data?.token || null
-      } catch (_) { /* 响应体可能不是 JSON */ }
-
-      // 存入服务端缓存，供 proxy 注入 localStorage 使用（避免二次请求 YYApi）
-      yyapiAuthCache.set(sessionValue, { user: userInfo, token: tokenInfo })
-
-      // 在代理域名上设置同名的 session cookie，后续 iframe 通过代理请求时会自动携带
-      res.setHeader('Set-Cookie', `yyapi_session=${sessionValue}; Path=/; SameSite=Lax`)
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({
-        success: true,
-        sessionCookie: setCookie,
-        sessionValue,
-        user: userInfo,
-        token: tokenInfo,
-      }))
-    } catch (e) {
-      res.statusCode = 500
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ error: e.message || String(e) }))
     }
     return
   }
@@ -12910,9 +12580,9 @@ if(typeof yyUser!=='undefined'){localStorage.setItem('user',yyUser);}
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify(result))
   } catch (e) {
-    res.statusCode = 500
+    res.statusCode = Number(e.statusCode || e.status || 500) || 500
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: e.message || String(e) }))
+    res.end(JSON.stringify({ error: e.message || String(e), code: e.code || undefined }))
   }
 }
 

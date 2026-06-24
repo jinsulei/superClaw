@@ -3051,7 +3051,7 @@ pub async fn configure_hermes(
     };
     let custom_provider_block = if custom_provider && !base_url_value.is_empty() {
         format!(
-            "custom_providers:\n  - name: yyapi\n    base_url: {base_url_value}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: {model_str}\n"
+            "custom_providers:\n  - name: custom_openai\n    base_url: {base_url_value}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: {model_str}\n"
         )
     } else {
         String::new()
@@ -3061,7 +3061,7 @@ pub async fn configure_hermes(
         _ => None,
     };
     // Provider 字段：Hermes v0.14+ 的 model_switch 依赖该字段决定 env_var。
-    // MiniMax/Anthropic transport 不能写 chat_completions，也不能带 yyapi custom_providers。
+    // MiniMax/Anthropic transport 不能写 chat_completions，也不能带 custom OpenAI-compatible providers。
     let provider_line = if provider.is_empty() {
         String::new()
     } else {
@@ -3328,183 +3328,9 @@ fn merge_env_file(existing: &str, managed_keys: &[&str], new_pairs: &[(String, S
     content
 }
 
-fn repair_hermes_yyapi_env_from_openclaw() -> Result<bool, String> {
-    let openclaw_paths = [
-        app_root_dir()
-            .join("resources")
-            .join("data")
-            .join(".openclaw")
-            .join("openclaw.json"),
-        app_root_dir()
-            .join("data")
-            .join(".openclaw")
-            .join("openclaw.json"),
-    ];
-    let openclaw_raw = openclaw_paths
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default();
-    if openclaw_raw.trim().is_empty() {
-        return Ok(false);
-    }
-    let openclaw: Value = serde_json::from_str(&openclaw_raw).unwrap_or(Value::Null);
-    let yyapi = openclaw
-        .get("models")
-        .and_then(|v| v.get("providers"))
-        .and_then(|v| v.get("yyapi"))
-        .unwrap_or(&Value::Null);
-    let base_url = yyapi
-        .get("baseUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = yyapi
-        .get("apiKey")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if base_url.is_empty() || api_key.is_empty() {
-        return Ok(false);
-    }
-
-    let yyapi_models: Vec<String> = yyapi
-        .get("models")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    item.get("id")
-                        .and_then(|v| v.as_str())
-                        .or_else(|| item.as_str())
-                        .map(|s| s.trim().to_string())
-                })
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    let yyapi_primary = openclaw
-        .get("agents")
-        .and_then(|v| v.get("defaults"))
-        .and_then(|v| v.get("model"))
-        .and_then(|v| v.get("primary"))
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.strip_prefix("yyapi/"))
-        .map(|s| s.to_string())
-        .or_else(|| yyapi_models.first().cloned())
-        .unwrap_or_else(|| "superclaw-login-required".to_string());
-
-    let home = hermes_home();
-    let config_path = home.join("config.yaml");
-    let config_raw = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut current_model = String::new();
-    let mut current_provider = String::new();
-    let mut current_base_url = String::new();
-    let mut in_model = false;
-    for line in config_raw.lines() {
-        let trimmed = line.trim();
-        if trimmed == "model:" || trimmed.starts_with("model:") {
-            in_model = true;
-            if let Some(value) = trimmed.strip_prefix("model:") {
-                let value = value.trim().trim_matches('"').trim_matches('\'');
-                if !value.is_empty() {
-                    current_model = value.to_string();
-                }
-            }
-            continue;
-        }
-        if in_model && !trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
-            in_model = false;
-        }
-        if !in_model {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix("default:") {
-            current_model = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-        } else if let Some(value) = trimmed.strip_prefix("provider:") {
-            current_provider = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-        } else if let Some(value) = trimmed.strip_prefix("base_url:") {
-            current_base_url = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-        }
-    }
-
-    let current_model_is_yyapi = current_model == "superclaw-login-required"
-        || yyapi_models.iter().any(|m| m == &current_model)
-        || current_model.starts_with("gpt-");
-    let provider_is_stale = matches!(
-        current_provider.as_str(),
-        "" | "custom" | "openai" | "minimax" | "minimax-cn"
-    );
-    let base_is_stale = current_base_url.is_empty()
-        || current_base_url.contains("api.minimax")
-        || current_base_url.contains("api.minimaxi");
-
-    if !current_model_is_yyapi && !(provider_is_stale && base_is_stale) {
-        return Ok(false);
-    }
-    if current_provider == "openai-api" && current_base_url.trim_end_matches('/') == base_url {
-        return Ok(false);
-    }
-
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create Hermes dir: {e}"))?;
-    }
-    let next_model = if current_model_is_yyapi && !current_model.is_empty() {
-        current_model
-    } else {
-        yyapi_primary
-    };
-    let existing = if config_raw.trim().is_empty() {
-        "model:\n  default: superclaw-login-required\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n".to_string()
-    } else {
-        config_raw
-    };
-    let next_config = merge_hermes_config_yaml(
-        &existing,
-        &next_model,
-        &format!("  base_url: {base_url}\n"),
-        "  provider: openai-api\n",
-        "",
-    );
-    std::fs::write(&config_path, next_config)
-        .map_err(|e| format!("Failed to repair Hermes yyapi config: {e}"))?;
-
-    let env_path = home.join(".env");
-    let existing_env = std::fs::read_to_string(&env_path).unwrap_or_default();
-    let managed_keys_owned = super::hermes_providers::all_managed_env_keys();
-    let managed_keys: Vec<&str> = managed_keys_owned.to_vec();
-    let new_pairs = vec![
-        ("OPENAI_API_KEY".to_string(), api_key),
-        ("OPENAI_BASE_URL".to_string(), base_url),
-        ("GATEWAY_ALLOW_ALL_USERS".to_string(), "true".to_string()),
-        ("API_SERVER_KEY".to_string(), "clawpanel-local".to_string()),
-    ];
-    let next_env = merge_env_file(&existing_env, &managed_keys, &new_pairs);
-    std::fs::write(&env_path, next_env)
-        .map_err(|e| format!("Failed to repair Hermes yyapi env: {e}"))?;
-
-    Ok(true)
-}
 #[tauri::command]
 pub async fn hermes_read_config() -> Result<Value, String> {
     use super::hermes_providers;
-
-    let _ = repair_hermes_yyapi_env_from_openclaw();
 
     let home = hermes_home();
     let config_path = home.join("config.yaml");
@@ -3872,7 +3698,6 @@ pub async fn hermes_gateway_action(
     let enhanced = hermes_enhanced_path();
     match action.as_str() {
         "start" => {
-            let _ = repair_hermes_yyapi_env_from_openclaw();
 
             // Guardian: ensure platforms.api_server.enabled:true is present
             // before every start. Auto-heal if missing (with a .bak backup).
@@ -5049,11 +4874,6 @@ pub async fn hermes_agent_run(
 ) -> Result<String, String> {
     let gw_url = hermes_gateway_url();
     let runs_url = format!("{gw_url}/v1/runs");
-
-    let repaired = repair_hermes_yyapi_env_from_openclaw()?;
-    if repaired && gateway_quick_health_check().await {
-        let _ = hermes_gateway_action(app.clone(), "restart".into()).await;
-    }
 
     ensure_managed_gateway_ready(&app, &gw_url).await?;
 

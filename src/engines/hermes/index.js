@@ -137,8 +137,8 @@ export default {
     }, {
       section: '',
       items: [
-        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        { route: '/models', label: t('sidebar.models'), icon: 'models' },
+        { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]
@@ -167,10 +167,11 @@ export default {
       { path: '/h/recharge', loader: () => import('../../pages/payment.js') },
       // 共用页面（引擎无关）
       { path: '/assistant', loader: () => import('../../pages/assistant.js') },
+      { path: '/models', loader: () => import('../../pages/models.js') },
       { path: '/settings', loader: () => import('../../pages/settings.js') },
       { path: '/about', loader: () => import('../../pages/about.js') },
       { path: '/recharge', loader: () => import('../../pages/payment.js') },
-      { path: '/profile', loader: () => import('../../pages/profile.js') },
+      { path: '/payment', loader: () => import('../../pages/payment.js') },
     ]
   },
 

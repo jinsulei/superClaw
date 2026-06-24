@@ -36,7 +36,7 @@
   Optional output directory for the portable desktop client.
 
 .PARAMETER SanitizedTest
-  Create a test package without remote activation, bundled YYAPI provider,
+  Create a test package without the customer user system,
   or embedded API keys. Existing customer credentials are not copied.
 
 .PARAMETER PackageOnly
@@ -55,7 +55,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$DefaultYyapiBaseUrl = ""
+$MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
+$MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
+$MiniMaxTestModel = "MiniMax-M3"
 
 function Step([string]$Message) {
   Write-Host ""
@@ -73,19 +75,6 @@ function Warn([string]$Message) {
 function Fail([string]$Message) {
   Write-Host "  FAIL $Message" -ForegroundColor Red
   exit 1
-}
-
-function Get-ConfiguredYyapiBaseUrl([bool]$AllowDefault = $true) {
-  foreach ($name in @("YYAPI_BASE_URL", "OPENAI_BASE_URL")) {
-    $value = [Environment]::GetEnvironmentVariable($name)
-    if ($value -and $value.Trim()) {
-      return $value.Trim().TrimEnd("/")
-    }
-  }
-  if ($AllowDefault -and $DefaultYyapiBaseUrl.Trim()) {
-    return $DefaultYyapiBaseUrl.TrimEnd("/")
-  }
-  return ""
 }
 
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$Title) {
@@ -154,8 +143,8 @@ function Scrub-SanitizedTextExamples([string]$Root) {
       $clean = $text
       $clean = $clean -replace 'Bearer\s+sk-[A-Za-z0-9_-]{8,}', 'Bearer YOUR_API_TOKEN'
       $clean = $clean -replace 'sk-[A-Za-z0-9_-]{20,}', 'sk-REDACTED'
-      $clean = $clean -replace '(?im)^(\s*export\s+(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY))=.*$', '$1  # set your own key'
-      $clean = $clean -replace '(?im)^(\s*(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY|YYAPI_KEY)\s*=\s*).+$', '$1YOUR_API_KEY'
+      $clean = $clean -replace '(?im)^(\s*export\s+(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY))=.*$', '$1  # set your own key'
+      $clean = $clean -replace '(?im)^(\s*(OPENAI_API_KEY|MINIMAX_API_KEY|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|CUSTOM_API_KEY)\s*=\s*).+$', '$1YOUR_API_KEY'
 
       if ($clean -ne $text) {
         Write-Utf8NoBom $path $clean
@@ -359,35 +348,32 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
     Copy-Directory $RuntimeSkills $PortableSkills
   }
 
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl (-not $SanitizedTestMode)
-  $providers = [ordered]@{}
-  $defaultModelRef = ""
-  $defaultModels = [ordered]@{}
-  if ($yyapiBaseUrl) {
-    $providers.yyapi = [ordered]@{
-      baseUrl = $yyapiBaseUrl
-      apiKey = "LOGIN_REQUIRED"
+  $providers = [ordered]@{
+    minimax = [ordered]@{
+      baseUrl = $MiniMaxTestBaseUrl
+      apiKey = '${MINIMAX_API_KEY}'
       api = "openai-completions"
       models = @(
         [ordered]@{
-          id = "superclaw-login-required"
-          name = "Login required"
+          id = $MiniMaxTestModel
+          name = $MiniMaxTestModel
           api = "openai-completions"
-          reasoning = $false
+          reasoning = $true
           input = @("text")
-          contextWindow = 128000
-          maxTokens = 4096
+          contextWindow = 204800
+          maxTokens = 131072
         }
       )
     }
-    $defaultModelRef = "yyapi/superclaw-login-required"
-    $defaultModels[$defaultModelRef] = [ordered]@{}
   }
+  $defaultModelRef = "minimax/$MiniMaxTestModel"
+  $defaultModels = [ordered]@{}
+  $defaultModels[$defaultModelRef] = [ordered]@{}
 
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
     meta = [ordered]@{
-      lastTouchedVersion = "YY1.0.1"
+      lastTouchedVersion = "2026.5.26-zh.1"
       lastTouchedAt = (Get-Date).ToUniversalTime().ToString("o")
     }
     models = [ordered]@{
@@ -418,7 +404,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
         tools = [ordered]@{
           profile = "minimal"
-          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
+          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
           exec = [ordered]@{
             host = "gateway"
             security = "full"
@@ -452,7 +438,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
     }
     tools = [ordered]@{
       profile = "minimal"
-      alsoAllow = @("browser", "desktop_control", "skill_manager", "exec")
+      alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
       exec = [ordered]@{
         host = "gateway"
         security = "full"
@@ -466,6 +452,9 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       port = 18789
       auth = [ordered]@{
         mode = "token"
+        token = "superclaw-portable-local"
+      }
+      remote = [ordered]@{
         token = "superclaw-portable-local"
       }
       controlUi = [ordered]@{
@@ -503,7 +492,8 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
   }
   if ($SanitizedTestMode) {
     $config.sanitizedTestMode = $true
-    $config.disableYyapiAutoSync = $true
+    $config.noUserSystem = $true
+    $config.forceProvider = "minimax"
   }
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
@@ -511,23 +501,19 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
 function Write-PortableClaudePanelRelayConfig([string]$ClaudePanelDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $ClaudePanelDataDir -Force | Out-Null
   $configPath = Join-Path $ClaudePanelDataDir "relay-config.json"
-  if ($SanitizedTestMode) {
-    Remove-IfExists $configPath
-    return
-  }
-
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl $true
-  $models = @("gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-image-2")
+  $models = @($MiniMaxTestModel)
   $config = [ordered]@{
     enabled = $true
     interfaceType = "relay"
-    name = "YYApi"
+    name = "MiniMax"
     provider = "openai-compatible"
-    baseUrl = $yyapiBaseUrl
+    defaultProvider = "minimax"
+    baseUrl = $MiniMaxTestBaseUrl
     model = $models[0]
+    models = $models
     branchModels = $models
-    apiKey = "LOGIN_REQUIRED"
-    managedBy = "superclaw-yyapi"
+    apiKey = "YOUR_API_KEY"
+    managedBy = "superclaw-minimax-test"
     updatedAt = (Get-Date).ToUniversalTime().ToString("o")
   }
   Write-Utf8NoBom $configPath ($config | ConvertTo-Json -Depth 10)
@@ -537,48 +523,16 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
-  $yyapiBaseUrl = Get-ConfiguredYyapiBaseUrl (-not $SanitizedTestMode)
-  $baseUrlYamlLine = if ($yyapiBaseUrl) { "  base_url: $yyapiBaseUrl`n" } else { "" }
-  $baseUrlEnvLine = if ($yyapiBaseUrl) { "OPENAI_BASE_URL=$yyapiBaseUrl`n" } else { "" }
-
-  if ($SanitizedTestMode) {
-    Set-Content -Path $configPath -Encoding UTF8 -Value @"
-# Hermes Agent configuration (sanitized SuperClaw test package)
-# No real API key is bundled. Login/model sync must provide usable credentials.
-model:
-  default: superclaw-login-required
-  provider: openai-api
-  api_mode: chat_completions
-${baseUrlYamlLine}platform_toolsets:
-  api_server:
-    - hermes-api-server
-terminal:
-  backend: local
-platforms:
-  api_server:
-    enabled: true
-api_server:
-  host: 127.0.0.1
-  port: 8642
-skills:
-  disabled: []
-"@
-    Set-Content -Path $envPath -Encoding UTF8 -Value @"
-OPENAI_API_KEY=superclaw-login-required
-${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
-API_SERVER_KEY=clawpanel-local
-"@
-    return
-  }
 
   Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (managed by SuperClaw)
 # Rewritten during portable packaging to avoid leaking local provider state.
 model:
-  default: superclaw-login-required
-  provider: openai-api
+  default: $MiniMaxTestModel
+  provider: minimax
   api_mode: chat_completions
-${baseUrlYamlLine}platform_toolsets:
+  base_url: $MiniMaxTestBaseUrl
+platform_toolsets:
   api_server:
     - hermes-api-server
 terminal:
@@ -594,8 +548,12 @@ skills:
 "@
 
   Set-Content -Path $envPath -Encoding UTF8 -Value @"
-OPENAI_API_KEY=superclaw-login-required
-${baseUrlEnvLine}GATEWAY_ALLOW_ALL_USERS=true
+MINIMAX_API_KEY=YOUR_API_KEY
+MINIMAX_BASE_URL=$MiniMaxTestBaseUrl
+HERMES_PROVIDER=minimax
+OPENAI_MODEL=$MiniMaxTestModel
+SUPERCLAW_FORCE_PROVIDER=minimax
+GATEWAY_ALLOW_ALL_USERS=true
 API_SERVER_KEY=clawpanel-local
 "@
 }
@@ -922,7 +880,7 @@ Write-Host ("Project: " + $Root)
 Write-Host ("Mode:    " + $(if ($Debug) { "debug" } else { "release" }))
 Write-Host ("Output:  " + $OutDir)
 if ($SanitizedTest) {
-  Write-Host "Package: Sanitized test build (activation and bundled YYAPI disabled)" -ForegroundColor Yellow
+  Write-Host "Package: MiniMax-only test build without customer user system" -ForegroundColor Yellow
 }
 if ($PackageOnly) {
   Write-Host "Build:   PackageOnly (using existing executable)" -ForegroundColor Yellow
@@ -1060,11 +1018,11 @@ Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
 
 if ($SanitizedTest) {
   $SanitizedReadmeLines = @(
-    "SuperClaw sanitized test package",
+    "SuperClaw MiniMax-only test package",
     "",
-    "1. Local activation and access password are skipped. Double-click superclaw.exe to open the control panel.",
-    "2. No YYAPI base URL, real API key, or local customer session is bundled.",
-    "3. OpenClaw and Hermes keep login-required placeholders only. Configure a user model before chat testing.",
+    "1. Customer login, registration, activation, claim, and profile pages are not part of this test package.",
+    "2. No real API key or local customer session is bundled.",
+    "3. OpenClaw, Hermes, and Claude Panel default to MiniMax. Fill the MiniMax API Key from the local Models page before chat testing.",
     "4. Hermes starts in the normal dashboard/chat flow, not the first-run install wizard.",
     "5. This is a USB test package, not a customer delivery package."
   )

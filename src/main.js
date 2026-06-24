@@ -7,8 +7,7 @@ window._splashModuleStart = Date.now()
 // 标记 JS 模块已加载（供 index.html 多阶段启动检测使用）
 window._jsLoaded = true
 
-import { registerRoute, initRouter, navigate, setDefaultRoute } from './router.js'
-import { isLoggedIn, navigateTo } from './lib/user-api.js'
+import { initRouter, navigate, setDefaultRoute } from './router.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
@@ -23,8 +22,7 @@ import { initFeatureGates } from './lib/feature-gates.js'
 import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
-import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
-import { getMiniMaxDefaultConfig, getTestUser, isAuthBypassEnabled, isMiniMaxOnlyMode, isYyapiDisabled } from './lib/test-build-mode.js'
+import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -75,29 +73,7 @@ function isLocalDevAuthBypass() {
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
-  if (isAuthBypassEnabled() || isLocalDevAuthBypass()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    try { localStorage.setItem('superclaw_user', JSON.stringify(getTestUser())) } catch {}
-    return { ok: true }
-  }
-
-  if (isLoggedIn()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    try {
-      if (isTauri) {
-        await api.readPanelConfig()
-      } else {
-        await fetch('/__api/auth_login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: '123456' }),
-        })
-      }
-    } catch {}
-    return { ok: true }
-  }
-
-  return { ok: false }
+  return { ok: true }
 }
 
 const _logoSvg = `<svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -188,26 +164,7 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
-  if (isAuthBypassEnabled()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    navigate('/dashboard')
-    return
-  }
-  if (isLoggedIn()) {
-    try {
-      if (isTauri) {
-        await api.readPanelConfig()
-      } else {
-        fetch('/__api/auth_login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: '123456' }),
-        }).catch(() => {})
-      }
-    } catch {}
-    return
-  }
-  navigateTo('login')
+  navigate('/dashboard')
 }
 
 const sidebar = document.getElementById('sidebar')
@@ -219,122 +176,19 @@ const content = document.getElementById('content')
  * @param {HTMLElement} app
  */
 async function renderAuthPage(app) {
-  if (isAuthBypassEnabled()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    navigate('/dashboard')
-    return
-  }
-  const authRoute = (window.location.hash.slice(1) || '').split('?')[0]
-  let pageMod
-  try {
-    if (authRoute === '/register') {
-      pageMod = await import('./pages/register.js')
-    } else if (authRoute === '/activate') {
-      pageMod = await import('./pages/activate.js')
-    } else if (authRoute === '/claim') {
-      pageMod = await import('./pages/claim.js')
-    } else if (authRoute === '/login') {
-      pageMod = await import('./pages/login.js')
-    } else {
-      window.location.hash = '#/activate'
-      pageMod = await import('./pages/activate.js')
-    }
-    const page = await pageMod.render()
-    app.innerHTML = ''
-    app.appendChild(page)
-  } catch (e) {
-    app.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:var(--text-secondary);font-size:14px">${t('common.loadFailed')}: ${escapeHtml(e.message)}</div>`
-  }
+  if (app) app.innerHTML = ''
+  navigate('/dashboard')
 }
 
 async function renderLocalAccessPage(app) {
-  const { api } = await import('./lib/tauri-api.js')
-  const cfg = await api.readPanelConfig().catch(() => ({ accessPassword: '123456' }))
-  const password = cfg?.accessPassword || ''
-
-  app.innerHTML = `
-    <div class="auth-page">
-      <div class="auth-container">
-        <div class="auth-card">
-          <div class="auth-logo">${_logoSvg}</div>
-          <h1 class="auth-title">SuperClaw</h1>
-          <p class="auth-desc">${t('security.loginPrompt')}</p>
-          <form id="form-local-login">
-            <div class="auth-field">
-              <label class="auth-label" for="local-password">${t('security.accessPasswordPlaceholder')}</label>
-              <div class="auth-input-wrap has-toggle">
-                <input type="password" id="local-password" class="auth-input" placeholder="${t('security.accessPasswordPlaceholder')}" autocomplete="current-password" autofocus />
-                <button type="button" class="auth-password-toggle" id="local-password-toggle" title="${t('gateway.show') || '显示'}">${_eyeSvg}</button>
-              </div>
-            </div>
-            <div id="local-login-error" class="auth-error" style="display:none"></div>
-            <button type="submit" class="auth-btn" id="btn-local-login">${t('security.loginAction')}</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  `
-
-  const form = app.querySelector('#form-local-login')
-  const input = app.querySelector('#local-password')
-  const errorEl = app.querySelector('#local-login-error')
-  app.querySelector('#local-password-toggle')?.addEventListener('click', () => {
-    if (!input) return
-    input.type = input.type === 'password' ? 'text' : 'password'
-  })
-  input?.focus()
-  form?.addEventListener('submit', (event) => {
-    event.preventDefault()
-    const entered = input?.value || ''
-    if (password && entered !== password) {
-      errorEl.textContent = t('security.loginWrongPassword')
-      errorEl.style.display = 'block'
-      return
-    }
-    sessionStorage.setItem('superclaw_authed', '1')
-    window.location.hash = window.location.hash && window.location.hash !== '#/login'
-      ? window.location.hash
-      : '#/h/dashboard'
-    window.location.reload()
-  })
+  if (app) app.innerHTML = ''
+  navigate('/dashboard')
 }
 
-// YYApi 常量
+// OpenClaw portable defaults
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
-
-function normalizeYyapiModelRows(raw) {
-  const rows = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : [])
-  return rows
-    .map(m => (typeof m === 'string' ? m : m?.id))
-    .filter(Boolean)
-    .map(id => ({ id, name: id, input: ['text', 'image'] }))
-}
-
-function pickYyapiDefaultModel(modelIds = []) {
-  const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
-  return ids[0] || ''
-}
-
-function modelIdFromRef(ref = '') {
-  const value = String(ref || '').trim()
-  if (!value) return ''
-  const slash = value.indexOf('/')
-  return slash >= 0 ? value.slice(slash + 1) : value
-}
-
-function yyapiModelRef(modelId = '') {
-  const id = String(modelId || '').trim()
-  return id ? `${YYAPI_PROVIDER_KEY}/${id}` : ''
-}
-
-function isYyapiPrimary(ref = '', yyapiModelIds = []) {
-  const value = String(ref || '').trim()
-  if (!value) return true
-  if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
-  return yyapiModelIds.includes(value)
-}
 
 function ensurePortableOpenClawSkills(config) {
   if (!config.agents) config.agents = {}
@@ -393,257 +247,6 @@ function ensurePortableOpenClawSkills(config) {
   }
 }
 
-function ensureYyapiManagedModelSelection(config, yyapiModelIds = [], defaultModel = '') {
-  const fallbackModel = yyapiModelIds.includes(defaultModel) ? defaultModel : yyapiModelIds[0]
-  const fallbackRef = yyapiModelRef(fallbackModel)
-  if (!fallbackRef) return { primary: '', managed: false }
-
-  if (!config.agents) config.agents = {}
-  if (!config.agents.defaults) config.agents.defaults = {}
-  if (!config.agents.defaults.model) config.agents.defaults.model = {}
-
-  const defaults = config.agents.defaults
-  const currentPrimary = String(defaults.model.primary || '').trim()
-  const defaultsManaged = isYyapiPrimary(currentPrimary, yyapiModelIds)
-  let primary = currentPrimary
-
-  if (defaultsManaged) {
-    const currentModelId = modelIdFromRef(currentPrimary)
-    primary = yyapiModelIds.includes(currentModelId) ? yyapiModelRef(currentModelId) : fallbackRef
-    defaults.model.primary = primary
-
-    if (Array.isArray(defaults.model.fallbacks)) {
-      defaults.model.fallbacks = defaults.model.fallbacks.filter(ref => {
-        const value = String(ref || '').trim()
-        return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
-      })
-    }
-
-    if (!defaults.models || typeof defaults.models !== 'object' || Array.isArray(defaults.models)) {
-      defaults.models = {}
-    }
-    for (const key of Object.keys(defaults.models)) {
-      if (key.startsWith(`${YYAPI_PROVIDER_KEY}/`) && !yyapiModelIds.includes(modelIdFromRef(key))) {
-        delete defaults.models[key]
-      }
-    }
-    defaults.models[primary] = defaults.models[primary] || {}
-  }
-
-  if (Array.isArray(config.agents.list)) {
-    for (const agent of config.agents.list) {
-      if (!agent || typeof agent !== 'object') continue
-      if (!agent.model) agent.model = {}
-      const agentPrimary = String(agent.model.primary || '').trim()
-      if (isYyapiPrimary(agentPrimary, yyapiModelIds)) {
-        const agentModelId = modelIdFromRef(agentPrimary)
-        agent.model.primary = yyapiModelIds.includes(agentModelId) ? yyapiModelRef(agentModelId) : primary || fallbackRef
-      }
-      if (Array.isArray(agent.model.fallbacks)) {
-        agent.model.fallbacks = agent.model.fallbacks.filter(ref => {
-          const value = String(ref || '').trim()
-          return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
-        })
-      }
-    }
-  }
-
-  return { primary, managed: defaultsManaged }
-}
-
-async function getDefaultYyapiProfile() {
-  if (isYyapiDisabled() || isMiniMaxOnlyMode()) return null
-  if (!isLoggedIn()) return null
-  const yyapiBaseUrl = getYyapiBaseUrl()
-  if (!yyapiBaseUrl) return null
-
-  let fullKey = ''
-
-  try {
-    const { getTokenList, getFullTokenKey } = await import('./lib/user-api.js')
-    const tokenList = await getTokenList()
-    const tokens = Array.isArray(tokenList)
-      ? tokenList
-      : (Array.isArray(tokenList?.items) ? tokenList.items : (Array.isArray(tokenList?.tokens) ? tokenList.tokens : []))
-    const token = tokens.find(t => t?.is_default || t?.isDefault || t?.default)
-      || tokens.find(t => t?.enabled !== false && t?.status !== 'disabled')
-      || tokens[0]
-
-    if (token?.id) {
-      const keyData = await getFullTokenKey(token.id)
-      fullKey = typeof keyData === 'string'
-        ? keyData
-        : (keyData?.key || keyData?.apiKey || keyData?.api_key || '')
-    } else {
-      fullKey = token?.key || token?.apiKey || token?.api_key || ''
-    }
-
-    if (fullKey && !fullKey.includes('*')) {
-      try { localStorage.setItem('superclaw_yyapi_key', fullKey) } catch {}
-    }
-  } catch (err) {
-    console.warn('[yyapi] default key fetch failed, falling back to local cache:', err.message)
-  }
-
-  if (!fullKey) fullKey = localStorage.getItem('superclaw_yyapi_key') || ''
-  if (!fullKey || fullKey.includes('*')) return null
-
-  const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
-    headers: { Authorization: `Bearer ${fullKey}` },
-    signal: AbortSignal.timeout(10000),
-  })
-  if (modelResp.status === 401) {
-    try { localStorage.removeItem('superclaw_yyapi_key') } catch {}
-  }
-  if (!modelResp.ok) throw new Error(`YYAPI models HTTP ${modelResp.status}`)
-
-  const modelData = await modelResp.json()
-  const modelIds = normalizeYyapiModelRows(modelData)
-  if (!modelIds.length) return null
-
-  return {
-    apiKey: fullKey,
-    baseUrl: yyapiBaseUrl,
-    models: modelIds,
-    defaultModel: pickYyapiDefaultModel(modelIds),
-  }
-}
-
-/**
- * 从远程 v2 API 同步 YYApi 可用模型列表到本地配置
- * 自动创建/更新 yyapi provider，不覆盖用户主动删除的状态
- */
-async function syncYYApiKeys() {
-  return syncDefaultModelSettings()
-  // 只有在已登录的情况下才同步
-  if (!isLoggedIn()) return
-
-  // 用户曾主动隐藏过 YYApi provider，跳过同步（sessionStorage 级，刷新后重新拉取）
-  if (sessionStorage.getItem('superclaw_yyapi_dismissed')) return
-
-  try {
-    const { api } = await import('./lib/tauri-api.js')
-    const yyapiBaseUrl = getYyapiBaseUrl()
-    if (!yyapiBaseUrl) return
-    const config = await api.readOpenclawConfig()
-
-    // 确保 models.providers 存在
-    if (!config.models) config.models = {}
-    if (!config.models.providers) config.models.providers = {}
-
-    // 检查用户是否手动删除了 YYApi provider（本地标记）
-    const yyapiDeleted = config.models.providers[YYAPI_PROVIDER_KEY] === undefined
-      && localStorage.getItem('superclaw_yyapi_deleted') === '1'
-    if (yyapiDeleted) return
-
-    // 优先使用 localStorage 中保存的 key（v2 注册时自动写入）
-    let fullKey = localStorage.getItem('superclaw_yyapi_key') || ''
-
-    // 本地没有保存的 key 时，从远程获取 token 列表
-    if (!fullKey) {
-      const { getTokenList, getFullTokenKey } = await import('./lib/user-api.js')
-      console.log('[yyapi] 正在获取 token 列表...')
-      const tokens = await getTokenList()
-      console.log('[yyapi] token 列表返回:', tokens)
-      if (tokens && tokens.length) {
-        const firstToken = tokens[0]
-        console.log('[yyapi] 首个 token:', JSON.stringify(firstToken))
-        // 只要有 token ID，就获取完整 key（list 接口返回的 key 可能是脱敏的）
-        if (firstToken.id) {
-          console.log('[yyapi] 准备调用 getFullTokenKey, id:', firstToken.id)
-          try {
-            const keyData = await getFullTokenKey(firstToken.id)
-            console.log('[yyapi] getFullTokenKey 返回:', JSON.stringify(keyData))
-            // 处理 keyData 可能是纯字符串的情况
-            if (typeof keyData === 'string') {
-              fullKey = keyData
-            } else {
-              fullKey = keyData.key || keyData.apiKey || ''
-            }
-          } catch (err) {
-            console.warn('[yyapi] getFullTokenKey 失败:', err.message)
-            // fallback: 使用 list 接口返回的 key（可能是脱敏的，聊胜于无）
-            fullKey = firstToken.key || ''
-          }
-        } else {
-          console.log('[yyapi] token 无 id 字段，使用 list 返回的 key')
-          fullKey = firstToken.key || ''
-        }
-      }
-    }
-    if (!fullKey) return
-
-    // 从 YYApi 获取模型列表
-    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
-      headers: { 'Authorization': `Bearer ${fullKey}` },
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!modelResp.ok) return
-    const modelData = await modelResp.json()
-    const modelIds = (modelData.data || modelData || [])
-      .filter(m => m.id)
-      .map(m => ({ id: m.id, name: m.id, input: ['text', 'image'] }))
-
-    if (!modelIds.length) return
-
-    // 创建/更新 YYApi provider
-    const existing = config.models.providers[YYAPI_PROVIDER_KEY]
-    if (!existing) {
-      config.models.providers[YYAPI_PROVIDER_KEY] = {
-        baseUrl: yyapiBaseUrl,
-        apiKey: fullKey,
-        api: 'openai-completions',
-        models: modelIds,
-      }
-    } else {
-      // 只更新 baseUrl、apiKey，保留用户自定义的模型顺序
-      existing.baseUrl = yyapiBaseUrl
-      existing.apiKey = fullKey
-      existing.api = existing.api || 'openai-completions'
-
-      // 合并模型：保留现有 + 新增不存在的
-      if (existing.models) {
-        const existingIds = new Set(existing.models.map(m => typeof m === 'string' ? m : m.id))
-        for (const m of modelIds) {
-          if (!existingIds.has(m.id)) {
-            existing.models.push(m)
-          }
-        }
-      } else {
-        existing.models = modelIds
-      }
-    }
-
-    // 同步完成后，验证主模型是否存在，不存在则自动设置第一个可用模型
-    const allModelList = []
-    for (const [pk, pv] of Object.entries(config.models.providers || {})) {
-      for (const m of (pv.models || [])) {
-        const id = typeof m === 'string' ? m : m.id
-        if (id) allModelList.push(`${pk}/${id}`)
-      }
-    }
-    const currentPrimary = getCurrentPrimary(config)
-    if (allModelList.length > 0) {
-      if (!currentPrimary || !allModelList.includes(currentPrimary)) {
-        if (!config.agents) config.agents = {}
-        if (!config.agents.defaults) config.agents.defaults = {}
-        if (!config.agents.defaults.model) config.agents.defaults.model = {}
-        const newPrimary = allModelList[0]
-        config.agents.defaults.model.primary = newPrimary
-        console.log(`[yyapi] 主模型已设为: ${newPrimary}`)
-      }
-      // 持久化到 localStorage，下次进入模型页面时恢复
-      try { localStorage.setItem('superclaw-primary-model', config.agents.defaults.model.primary) } catch {}
-    }
-
-    await api.writeOpenclawConfig(config)
-    console.log(`[yyapi] 已同步 ${modelIds.length} 个模型到 ${YYAPI_PROVIDER_KEY} provider`)
-  } catch (err) {
-    console.warn('[yyapi] 同步失败（非致命）:', err.message)
-  }
-}
-
-// ── Hermes 模型同步：登录/启动时刷新模型列表 + 验证主模型 ──
 async function syncHermesModel() {
   try {
     const config = await api.hermesReadConfig()
@@ -748,76 +351,9 @@ async function syncMiniMaxTestModelSettings() {
 
 async function syncDefaultModelSettings() {
   try {
-    if (isYyapiDisabled() || isMiniMaxOnlyMode()) {
-      await syncMiniMaxTestModelSettings()
-      return
-    }
-
-    const profile = await getDefaultYyapiProfile()
-    if (!profile) {
-      await syncHermesModel()
-      return
-    }
-
-    const { api } = await import('./lib/tauri-api.js')
-
-    const config = await api.readOpenclawConfig()
-    if (!config.models) config.models = {}
-    if (!config.models.providers) config.models.providers = {}
-
-    const yyapiModelIds = profile.models.map(m => m.id).filter(Boolean)
-    if (!yyapiModelIds.length || !profile.defaultModel) {
-      await syncHermesModel()
-      return
-    }
-
-    const previous = config.models.providers[YYAPI_PROVIDER_KEY] || {}
-    config.models.providers[YYAPI_PROVIDER_KEY] = {
-      ...previous,
-      baseUrl: profile.baseUrl,
-      apiKey: profile.apiKey,
-      api: previous.api || 'openai-completions',
-      models: profile.models,
-    }
-
-    if (!config.agents) config.agents = {}
-    if (!config.agents.defaults) config.agents.defaults = {}
-    if (!config.agents.defaults.model) config.agents.defaults.model = {}
-    const openclawSelection = ensureYyapiManagedModelSelection(config, yyapiModelIds, profile.defaultModel)
-    ensurePortableOpenClawSkills(config)
-    const openclawPrimary = openclawSelection.primary
-    if (openclawSelection.managed && openclawPrimary) {
-      try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
-    }
-
-    await api.writeOpenclawConfig(config)
-
-    const hermesConfig = await api.hermesReadConfig().catch(() => null)
-    const hermesSaved = loadHermesPrimary()
-    const hermesCurrent = hermesConfig?.model || ''
-    const hermesModel = yyapiModelIds.includes(hermesSaved)
-      ? hermesSaved
-      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
-
-    // Hermes 0.16 的 bare custom provider 不读取 OPENAI_API_KEY，会落到
-    // 本地占位 key；用 openai-api + OPENAI_BASE_URL 才能稳定对接 yyapi。
-    // 同时补齐本地 Gateway 所需的 API_SERVER_KEY。
-    await api.configureHermes('openai-api', profile.apiKey, hermesModel, profile.baseUrl)
-    saveHermesPrimary(hermesModel)
-
-    if (openclawSelection.managed && typeof api.configureClaudeCodeRelay === 'function') {
-      await api.configureClaudeCodeRelay({
-        baseUrl: profile.baseUrl,
-        apiKey: profile.apiKey,
-        model: modelIdFromRef(openclawPrimary) || profile.defaultModel,
-        models: yyapiModelIds,
-        force: false,
-      }).catch(err => console.warn('[model-sync] Claude Code relay sync failed:', err.message))
-    }
-
-    console.log(`[model-sync] yyapi synced: openclaw=${openclawPrimary || 'unchanged'}, hermes=${hermesModel || 'unchanged'}`)
+    await syncMiniMaxTestModelSettings()
   } catch (err) {
-    console.warn('[model-sync] default model sync failed:', err.message)
+    console.warn('[model-sync] MiniMax default model sync failed:', err.message)
     await syncHermesModel()
   }
 }
@@ -1010,9 +546,6 @@ async function boot() {
     syncDefaultModelSettings()
 
     // 登录/重新登录后自动触发同步
-    window.addEventListener('superclaw:login', () => {
-      syncDefaultModelSettings()
-    }, { once: true })
 
     // 自动隔离系统 PATH 中的外部 OpenClaw（非阻塞）
     autoIsolateConflictingOpenclaw()
@@ -1549,32 +1082,11 @@ function startUpdateChecker() {
     }
   }
 
-  // 远程 JWT 认证检查：未登录时直接渲染对应的 auth 页面
-  const auth = await checkRemoteAuth()
-  if (!auth.ok) {
-    _hideSplash()
-    const app = document.getElementById('app')
-    if (app) {
-      if (auth.local) {
-        renderLocalAccessPage(app)
-        return
-      }
-      renderAuthPage(app)
-      // 监听 hash 变化，支持 auth 页面间的 SPA 导航
-      window._authHashHandler = () => {
-        // 避免 hashchange 触发了已经 boot 完成的情况
-        if (window._bootDone) {
-          window.removeEventListener('hashchange', window._authHashHandler)
-          return
-        }
-        renderAuthPage(app)
-      }
-      window.addEventListener('hashchange', window._authHashHandler)
-    }
-    return
+  const legacyUserRoutes = new Set(['/login', '/register', '/activate', '/claim', '/profile'])
+  const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
+  if (legacyUserRoutes.has(currentRoute)) {
+    window.location.hash = '#/dashboard'
   }
-  // 进入 boot 后移除 auth hash 监听
-  window.removeEventListener('hashchange', window._authHashHandler)
   try {
     await boot()
     console.timeEnd('[boot] total')

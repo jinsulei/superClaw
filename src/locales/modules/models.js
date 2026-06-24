@@ -174,19 +174,4 @@ export default {
   remove: _('移除', 'Remove'),
   add: _('加入', 'Add'),
 
-  // YYApi 集成
-  managedProvider: _('托管', 'Managed'),
-  cannotEditManaged: _('托管服务商不可编辑，请刷新模型列表更新', 'Managed provider is read-only. Use refresh to update.'),
-  refreshYYApi: _('刷新 YYApi', 'Refresh YYApi'),
-  refreshYYApiKeys: _('刷新 YYApi Keys', 'Refresh YYApi'),
-  refreshing: _('刷新中...', 'Refreshing...'),
-  openYYApiConsole: _('YYApi 控制台', 'YYApi Console'),
-  console: _('控制台', 'Console'),
-  yyapiNoToken: _('YYApi 暂无可用密钥，请先在控制台创建', 'No YYApi tokens. Create one in the console first.'),
-  yyapiNoKey: _('YYApi 密钥未就绪', 'YYApi key not ready'),
-  yyapiFetchFailed: _('YYApi 模型列表获取失败', 'Failed to fetch YYApi models'),
-  yyapiNoModels: _('YYApi 暂无可用模型', 'No models available from YYApi'),
-  yyapiRefreshDone: _('YYApi 已同步 {count} 个模型', 'YYApi synced {count} models'),
-  yyapiRefreshFailed: _('YYApi 同步失败', 'YYApi sync failed'),
-  yyapiLoginPrompt: _('请输入密码自动登录 YYApi 控制台（注册时设置的密码）', 'Enter password to auto-login YYApi console (the password you set during registration)'),
 }

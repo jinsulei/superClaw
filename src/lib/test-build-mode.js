@@ -36,18 +36,6 @@ export function isTestBuildMode() {
   return flag('VITE_SUPERCLAW_TEST_BUILD', 'superclaw_test_build')
 }
 
-export function isAuthBypassEnabled() {
-  return flag('VITE_SUPERCLAW_SKIP_AUTH', 'superclaw_skip_auth', isTestBuildMode())
-}
-
-export function isActivationBypassEnabled() {
-  return flag('VITE_SUPERCLAW_SKIP_ACTIVATION', 'superclaw_skip_activation', isTestBuildMode())
-}
-
-export function isYyapiDisabled() {
-  return flag('VITE_SUPERCLAW_DISABLE_YYAPI', 'superclaw_disable_yyapi', isTestBuildMode())
-}
-
 export function getForcedProvider() {
   return value(
     'VITE_SUPERCLAW_FORCE_PROVIDER',
@@ -64,17 +52,7 @@ export function getMiniMaxDefaultConfig() {
   return {
     provider: 'minimax',
     model: value('VITE_SUPERCLAW_MINIMAX_MODEL', 'superclaw_minimax_model', 'MiniMax-M3'),
-    baseUrl: value('VITE_SUPERCLAW_MINIMAX_BASE_URL', 'superclaw_minimax_base_url', 'https://api.minimax.io/v1'),
+    baseUrl: value('VITE_SUPERCLAW_MINIMAX_BASE_URL', 'superclaw_minimax_base_url', 'https://api.minimaxi.com/v1'),
     cnBaseUrl: 'https://api.minimaxi.com/v1',
-  }
-}
-
-export function getTestUser() {
-  return {
-    id: 'test-user',
-    username: 'test-user',
-    name: '测试版用户',
-    plan: 'test',
-    authBypassed: true,
   }
 }

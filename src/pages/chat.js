@@ -685,7 +685,7 @@ async function loadModelOptions(showToast = false) {
       for (const item of (provider?.models || [])) {
         const modelId = typeof item === 'string' ? item : item?.id
         if (!modelId) continue
-        const full = providerKey === 'yyapi' ? modelId : `${providerKey}/${modelId}`
+        const full = `${providerKey}/${modelId}`
         if (seen.has(full)) continue
         seen.add(full)
         models.push(full)

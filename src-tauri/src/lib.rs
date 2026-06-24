@@ -161,7 +161,6 @@ pub fn run() {
             config::test_proxy,
             config::get_npm_registry,
             config::set_npm_registry,
-            config::yyapi_create_session,
             config::check_git,
             config::scan_git_paths,
             config::auto_install_git,

@@ -94,7 +94,6 @@ export default {
         items: [
           // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
           { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
-          { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
           // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
@@ -135,8 +134,7 @@ export default {
     }, {
       section: '',
       items: [
-        { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+        { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
         // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
         // HIDDEN: { route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -160,7 +158,6 @@ export default {
       { path: '/dreaming', loader: () => import('../../pages/dreaming.js') },
       { path: '/skills', loader: () => import('../../pages/skills.js') },
       { path: '/security', loader: () => import('../../pages/security.js') },
-      { path: '/profile', loader: () => import('../../pages/profile.js') },
       { path: '/about', loader: () => import('../../pages/about.js') },
       { path: '/assistant', loader: () => import('../../pages/assistant.js') },
       { path: '/setup', loader: () => import('../../pages/setup.js') },
@@ -172,12 +169,8 @@ export default {
       { path: '/route-map', loader: () => import('../../pages/route-map.js') },
       { path: '/plugin-hub', loader: () => import('../../pages/plugin-hub.js') },
       { path: '/diagnose', loader: () => import('../../pages/chat-debug.js') },
-      // 用户认证流程
-      { path: '/login', loader: () => import('../../pages/login.js') },
-      { path: '/activate', loader: () => import('../../pages/activate.js') },
-      { path: '/register', loader: () => import('../../pages/register.js') },
-      { path: '/claim', loader: () => import('../../pages/claim.js') },
       { path: '/recharge', loader: () => import('../../pages/payment.js') },
+      { path: '/payment', loader: () => import('../../pages/payment.js') },
     ]
   },
 

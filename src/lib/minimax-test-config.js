@@ -59,12 +59,14 @@ function cloneConfig(input) {
 
 export function getMiniMaxTestDefaults() {
   const base = getMiniMaxDefaultConfig()
+  const configuredBaseUrl = withTrailingBaseUrl(base.baseUrl)
   return {
     providerId: PROVIDER_ID,
     providerName: PROVIDER_NAME,
     model: clean(base.model) || MODEL_ID,
-    baseUrl: withTrailingBaseUrl(base.baseUrl) || INTL_BASE_URL,
+    baseUrl: configuredBaseUrl === INTL_BASE_URL ? CN_BASE_URL : configuredBaseUrl || CN_BASE_URL,
     cnBaseUrl: withTrailingBaseUrl(base.cnBaseUrl) || CN_BASE_URL,
+    intlBaseUrl: INTL_BASE_URL,
   }
 }
 
@@ -78,7 +80,8 @@ export function maskApiKey(apiKey) {
 export function normalizeMiniMaxTestConfig(input = {}) {
   const defaults = getMiniMaxTestDefaults()
   const rawBaseUrl = withTrailingBaseUrl(input.baseUrl || defaults.baseUrl)
-  const baseUrl = [defaults.baseUrl, defaults.cnBaseUrl].includes(rawBaseUrl)
+  const allowedBaseUrls = [defaults.baseUrl, defaults.cnBaseUrl, defaults.intlBaseUrl].filter(Boolean)
+  const baseUrl = allowedBaseUrls.includes(rawBaseUrl)
     ? rawBaseUrl
     : defaults.baseUrl
   const next = {

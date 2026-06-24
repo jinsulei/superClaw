@@ -12,7 +12,6 @@ import {
   inferProviderByBaseUrl,
   findProviderById,
 } from '../lib/providers.js'
-import { isYyapiBaseUrl } from '../../../lib/yyapi-config.js'
 
 // SVG 图标
 const ICONS = {
@@ -620,12 +619,8 @@ export function render() {
     const baseUrl = el.querySelector('#hm-baseurl')?.value?.trim()
     const apiKey = el.querySelector('#hm-apikey')?.value?.trim()
     const model = el.querySelector('#hm-model')?.value?.trim()
-    // yyapi 是 OpenAI-compatible endpoint；Hermes 0.16 的 bare custom
-    // provider 不读取 OPENAI_API_KEY，会落到本地占位 key。
     const matched = inferProviderByBaseUrl(hermesProviders, baseUrl)
-    const provider = isYyapiBaseUrl(baseUrl)
-      ? 'openai-api'
-      : (matched?.id || 'custom')
+    const provider = matched?.id || 'custom'
 
     if (!apiKey) {
       alert('请输入 API Key')

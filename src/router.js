@@ -40,7 +40,12 @@ async function loadRoute() {
   const hash = window.location.hash.slice(1) || _defaultRoute
   const routePath = hash.split('?')[0]
   const loader = routes[routePath]
-  if (!loader || !_contentEl) return
+  if (!loader || !_contentEl) {
+    if (_contentEl && routePath !== _defaultRoute) {
+      navigate(_defaultRoute)
+    }
+    return
+  }
 
   // 竞态防护：记录本次加载 ID
   const thisLoad = ++_loadId

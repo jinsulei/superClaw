@@ -281,24 +281,27 @@ fn status_impl() -> Result<Value, String> {
     let projects = claude_projects_path(&resources);
     ensure_portable_dirs(&home, &projects)?;
     let (version, error) = read_claude_version(&claude, &home, &projects);
-    let connected = version.is_some();
     let panel = panel_running_info(&resources);
+    let panel_installed = claude_panel_server(&resources).is_file();
     let panel_running = panel
         .get("running")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let cli_installed = claude.is_file();
+    let connected = version.is_some() || (panel_installed && panel_running);
 
     Ok(json!({
-        "installed": claude.is_file(),
+        "installed": cli_installed || panel_installed,
         "connected": connected,
         "running": panel_running,
         "mode": "panel",
+        "runtimeMode": "OPENAI_RELAY",
         "needsPanel": true,
-        "message": "Claude Code CLI and the local Claude UI panel are available.",
+        "message": "Claude Code panel relay is available through the portable clean-claude-panel runtime.",
         "panelUrl": panel_url(),
         "url": panel_url(),
-        "version": version,
-        "versionError": error,
+        "version": version.or_else(|| panel_installed.then(|| "Claude Code Panel relay".to_string())),
+        "versionError": if cli_installed { error } else { String::new() },
         "paths": {
             "resources": resources,
             "claude": claude,
@@ -338,13 +341,6 @@ fn start_cli_impl() -> Result<Value, String> {
     if !server.is_file() {
         return Err(format!("Claude Code 面板资源缺失：{}", server.display()));
     }
-    if !claude_cli_path(&resources).is_file() {
-        return Err(format!(
-            "Claude Code CLI 缺失：{}",
-            claude_cli_path(&resources).display()
-        ));
-    }
-
     let node = bundled_node_path(&resources);
     let node_cmd = if node.is_file() {
         node

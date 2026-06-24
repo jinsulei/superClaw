@@ -58,8 +58,7 @@ function NAV_ITEMS_FULL() { return [
   {
     section: '',
     items: [
-      { route: '/recharge', label: t('sidebar.recharge'), icon: 'recharge' },
-      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
+      { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
       // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },
@@ -78,7 +77,6 @@ function NAV_ITEMS_SETUP() { return [
   {
     section: '',
     items: [
-      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.chatDebug'), icon: 'debug' },
       //{ route: '/about', label: t('sidebar.about'), icon: 'about' },

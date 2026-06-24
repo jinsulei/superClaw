@@ -35,7 +35,7 @@ function Get-NormalizedPath([string]$Path) {
 function Test-AllowedPlaceholder([string]$Value) {
   $clean = ($Value -replace '^["'']|["'']$', '').Trim()
   if (-not $clean) { return $true }
-  if ($clean -in @("superclaw-login-required", "YOUR_API_KEY", "<YOUR_API_KEY>", "REPLACE_ME", "LOGIN_REQUIRED")) { return $true }
+  if ($clean -in @("YOUR_API_KEY", "<YOUR_API_KEY>", "REPLACE_ME")) { return $true }
   if ($clean -match '^\$\{[A-Z0-9_]+\}$') { return $true }
   if ($clean -match '^%[A-Z0-9_]+%$') { return $true }
   return $false
@@ -79,19 +79,44 @@ function Test-WorkspaceStatus {
   param([string]$ProjectRoot)
 
   $allowedDirty = @(
-    "scripts/build-green-package.ps1",
-    "scripts/preflight-green-package.ps1",
-    "src/lib/yyapi-config.js",
     "scripts/build-desktop-client.ps1",
-    "src/lib/test-build-mode.js",
-    "src/main.js",
-    "src/lib/user-api.js",
-    "src/lib/model-presets.js",
-    "src/lib/minimax-test-config.js",
-    "src/pages/models.js",
+    "scripts/build-green-package.ps1",
     "scripts/dev-api.js",
+    "scripts/preflight-green-package.ps1",
+    "scripts/register-openclaw-tools.ps1",
+    "scripts/regression-usb-exe.ps1",
+    "scripts/verify-green-runtime.ps1",
     "src-tauri/src/commands/claude_code.rs",
-    "src-tauri/tauri.conf.json"
+    "src-tauri/src/commands/config.rs",
+    "src-tauri/src/commands/hermes.rs",
+    "src-tauri/src/commands/mod.rs",
+    "src-tauri/src/lib.rs",
+    "src/components/sidebar.js",
+    "src/engines/hermes/index.js",
+    "src/engines/hermes/pages/dashboard.js",
+    "src/engines/hermes/pages/setup.js",
+    "src/engines/openclaw/index.js",
+    "src/lib/engine-manager.js",
+    "src/lib/license-binding.js",
+    "src/lib/minimax-test-config.js",
+    "src/lib/payment-api.js",
+    "src/lib/test-build-mode.js",
+    "src/lib/user-api.js",
+    "src/lib/yyapi-config.js",
+    "src/locales/index.js",
+    "src/locales/modules/models.js",
+    "src/locales/modules/profile.js",
+    "src/main.js",
+    "src/pages/activate.js",
+    "src/pages/channels.js",
+    "src/pages/chat.js",
+    "src/pages/claim.js",
+    "src/pages/login.js",
+    "src/pages/models.js",
+    "src/pages/payment.js",
+    "src/pages/profile.js",
+    "src/pages/register.js",
+    "src/router.js"
   )
 
   $unexpected = @()
@@ -104,7 +129,7 @@ function Test-WorkspaceStatus {
       $unexpected += $line
       continue
     }
-    if ($code -notin @("M", "A", "??")) {
+    if ($code -notin @("M", "A", "D", "??")) {
       $unexpected += $line
     }
   }
@@ -181,13 +206,10 @@ function Test-MiniMaxOnlyTestBuildLogic {
   $viteMinimaxApiKeyPattern = ("VITE_MINIMAX_" + "API_KEY")
   $requiredBuildTerms = @(
     "VITE_SUPERCLAW_TEST_BUILD",
-    "VITE_SUPERCLAW_SKIP_AUTH",
-    "VITE_SUPERCLAW_SKIP_ACTIVATION",
-    "VITE_SUPERCLAW_DISABLE_YYAPI",
     "VITE_SUPERCLAW_FORCE_PROVIDER",
     "VITE_SUPERCLAW_MINIMAX_BASE_URL",
     "VITE_SUPERCLAW_MINIMAX_MODEL",
-    "https://api.minimax.io/v1",
+    "https://api.minimaxi.com/v1",
     "MiniMax-M3"
   )
   foreach ($term in $requiredBuildTerms) {
@@ -197,13 +219,9 @@ function Test-MiniMaxOnlyTestBuildLogic {
   }
   $requiredModeTerms = @(
     "isTestBuildMode",
-    "isAuthBypassEnabled",
-    "isActivationBypassEnabled",
-    "isYyapiDisabled",
     "getForcedProvider",
     "isMiniMaxOnlyMode",
-    "getMiniMaxDefaultConfig",
-    "getTestUser"
+    "getMiniMaxDefaultConfig"
   )
   foreach ($term in $requiredModeTerms) {
     if ($modeText -notmatch [regex]::Escape($term)) {
@@ -213,14 +231,96 @@ function Test-MiniMaxOnlyTestBuildLogic {
   if ($buildText -match [regex]::Escape($viteMinimaxApiKeyPattern) -or $modeText -match [regex]::Escape($viteMinimaxApiKeyPattern)) {
     throw "MiniMax-only test mode must not use $viteMinimaxApiKeyPattern."
   }
-  Write-Host "Test build auth bypass: PASS" -ForegroundColor Green
+  foreach ($forbidden in @("VITE_SUPERCLAW_SKIP_AUTH", "VITE_SUPERCLAW_SKIP_ACTIVATION", "VITE_SUPERCLAW_DISABLE_YYAPI", "isAuthBypassEnabled", "isActivationBypassEnabled", "isYyapiDisabled", "getTestUser")) {
+    if (($buildText + "`n" + $modeText) -match [regex]::Escape($forbidden)) {
+      throw "Test build must not retain legacy auth/activation/YYAPI bypass term: $forbidden"
+    }
+  }
+  Write-Host "No user-system test mode: PASS" -ForegroundColor Green
   Write-Host "MiniMax only mode: PASS" -ForegroundColor Green
-  Write-Host "YYAPI disabled: PASS" -ForegroundColor Green
+  Write-Host "Legacy provider bypass flags removed: PASS" -ForegroundColor Green
+}
+
+function Test-MiniMaxCNGatewayDefaults {
+  $cnBaseUrl = "https://api.minimaxi.com/v1"
+  $devApiText = Get-Content -LiteralPath "scripts/dev-api.js" -Raw -Encoding UTF8
+  $greenText = Get-Content -LiteralPath "scripts/build-green-package.ps1" -Raw -Encoding UTF8
+  $desktopText = Get-Content -LiteralPath "scripts/build-desktop-client.ps1" -Raw -Encoding UTF8
+
+  foreach ($entry in @(
+    @{ path = "scripts/build-green-package.ps1"; text = $greenText },
+    @{ path = "scripts/build-desktop-client.ps1"; text = $desktopText },
+    @{ path = "scripts/dev-api.js"; text = $devApiText }
+  )) {
+    if ($entry.text -notmatch [regex]::Escape($cnBaseUrl)) {
+      throw "$($entry.path) is missing MiniMax CN default: $cnBaseUrl"
+    }
+  }
+
+  if ($devApiText -notmatch "HERMES_BUNDLED_RUNTIME_MISSING" -or $devApiText -notmatch "hermesBundledExecutable") {
+    throw "scripts/dev-api.js must require bundled Hermes runtime."
+  }
+  if ($devApiText -match "Programs', 'Python', py, 'Scripts', 'hermes.exe" -or $devApiText -match "findCommandPath\('hermes'\)") {
+    throw "scripts/dev-api.js still contains global Hermes fallback."
+  }
+  if ($devApiText -notmatch "/api/status") {
+    throw "scripts/dev-api.js must probe Claude Panel through /api/status."
+  }
+
+  $openclawPath = "src-tauri/resources/data/.openclaw/openclaw.json"
+  $openclawAgentPath = "src-tauri/resources/data/.openclaw/agents/main/agent/models.json"
+  $hermesConfigPath = "src-tauri/resources/data/hermes/config.yaml"
+  $hermesEnvPath = "src-tauri/resources/data/hermes/.env"
+  $relayPath = "src-tauri/resources/data/claude-panel/relay-config.json"
+
+  foreach ($path in @($openclawPath, $openclawAgentPath, $hermesConfigPath, $hermesEnvPath, $relayPath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "Missing MiniMax local config for preflight: $path"
+    }
+  }
+
+  $openclaw = Get-Content -LiteralPath $openclawPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $agentModels = Get-Content -LiteralPath $openclawAgentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $relay = Get-Content -LiteralPath $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $hermesConfig = Get-Content -LiteralPath $hermesConfigPath -Raw -Encoding UTF8
+  $hermesEnv = Get-Content -LiteralPath $hermesEnvPath -Raw -Encoding UTF8
+
+  if ($openclaw.models.providers.minimax.baseUrl -ne $cnBaseUrl) {
+    throw "OpenClaw minimax baseUrl must be $cnBaseUrl"
+  }
+  if ($agentModels.providers.minimax.baseUrl -ne $cnBaseUrl) {
+    throw "OpenClaw agent minimax baseUrl must be $cnBaseUrl"
+  }
+  if ($hermesConfig -notmatch "provider:\s*minimax" -or $hermesConfig -notmatch "base_url:\s*$([regex]::Escape($cnBaseUrl))" -or $hermesConfig -notmatch "default:\s*MiniMax-M3") {
+    throw "Hermes config.yaml must use minimax MiniMax-M3 on $cnBaseUrl"
+  }
+  $hermesHasCnBaseUrl = $hermesEnv -match "(?m)^OPENAI_BASE_URL=$([regex]::Escape($cnBaseUrl))$" -or $hermesEnv -match "(?m)^MINIMAX_BASE_URL=$([regex]::Escape($cnBaseUrl))$"
+  if (-not $hermesHasCnBaseUrl -or $hermesEnv -notmatch "(?m)^OPENAI_MODEL=MiniMax-M3$" -or $hermesEnv -notmatch "(?m)^SUPERCLAW_FORCE_PROVIDER=minimax$") {
+    throw "Hermes .env must use MiniMax CN OpenAI-compatible settings."
+  }
+  if ($relay.baseUrl -ne $cnBaseUrl -or $relay.model -ne "MiniMax-M3") {
+    throw "Claude Panel relay must use MiniMax-M3 on $cnBaseUrl"
+  }
+  if ($relay.interfaceType -and $relay.interfaceType -ne "relay") {
+    throw "Claude Panel must remain in OPENAI_RELAY mode."
+  }
+
+  Write-Host "MiniMax CN test default: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw MiniMax CN config: PASS" -ForegroundColor Green
+  Write-Host "Hermes MiniMax CN config: PASS" -ForegroundColor Green
+  Write-Host "Claude Panel MiniMax CN config: PASS" -ForegroundColor Green
+  Write-Host "Hermes bundled runtime only: PASS" -ForegroundColor Green
+  Write-Host "Claude Panel status route: PASS" -ForegroundColor Green
 }
 
 function Test-EcommerceAssistantBuildFlag {
   $buildPath = "scripts/build-green-package.ps1"
+  $chatPath = "src/engines/hermes/pages/chat.js"
+  $packagePath = "package.json"
   $buildText = Get-Content -LiteralPath $buildPath -Raw -Encoding UTF8
+  $chatText = Get-Content -LiteralPath $chatPath -Raw -Encoding UTF8
+  $package = Get-Content -LiteralPath $packagePath -Raw -Encoding UTF8 | ConvertFrom-Json
+
   $requiredSetPattern = 'SetEnvironmentVariable\("VITE_ENABLE_ECOMMERCE_ASSISTANT",\s*"true",\s*"Process"\)'
   if ($buildText -notmatch $requiredSetPattern) {
     throw "$buildPath must set VITE_ENABLE_ECOMMERCE_ASSISTANT to string true in TestBuild/SanitizedTest mode."
@@ -229,8 +329,131 @@ function Test-EcommerceAssistantBuildFlag {
     throw "$buildPath must not set VITE_ENABLE_ECOMMERCE_ASSISTANT to 1; feature flags require true."
   }
 
+  foreach ($stage in @("stage1", "stage2", "stage3", "stage4", "stage56")) {
+    $dir = "src/shared/ecommerce-$stage"
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+      throw "Missing ecommerce stage directory: $dir"
+    }
+    $smoke = "scripts/smoke-ecommerce-$stage.mjs"
+    if (-not (Test-Path -LiteralPath $smoke -PathType Leaf)) {
+      throw "Missing ecommerce smoke script: $smoke"
+    }
+    $scriptName = "smoke:ecommerce-$stage"
+    $expected = "node $smoke"
+    if ($package.scripts.$scriptName -ne $expected) {
+      throw "$packagePath script $scriptName must be: $expected"
+    }
+  }
+
+  if ($chatText -notmatch "maybeRunEcommerceStage") {
+    throw "$chatPath is missing maybeRunEcommerceStage."
+  }
+
   Write-Host "Ecommerce assistant build flag: PASS" -ForegroundColor Green
+  Write-Host "Ecommerce stage smoke wiring: PASS" -ForegroundColor Green
 }
+
+function Assert-Leaf {
+  param(
+    [string]$Path,
+    [string]$Label
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "$Label missing: $Path"
+  }
+}
+
+function Test-OpenClawDesktopControlRegistration {
+  $scriptPath = "scripts/register-openclaw-tools.ps1"
+  $buildPath = "scripts/build-green-package.ps1"
+  $devApiPath = "scripts/dev-api.js"
+  Assert-Leaf $scriptPath "OpenClaw tool registration script"
+
+  $runtime = "src-tauri/resources/runtime/openclaw"
+  $sourceRoot = Join-Path $runtime "dist/extensions"
+  $registeredRoot = Join-Path $runtime "node_modules/@qingchencloud/openclaw-zh/dist/extensions"
+  foreach ($pluginId in @("desktop-control", "skill-manager")) {
+    $sourceManifest = Join-Path $sourceRoot "$pluginId/openclaw.plugin.json"
+    $sourceEntry = Join-Path $sourceRoot "$pluginId/index.js"
+    $registeredManifest = Join-Path $registeredRoot "$pluginId/openclaw.plugin.json"
+    $registeredEntry = Join-Path $registeredRoot "$pluginId/index.js"
+    Assert-Leaf $sourceManifest "OpenClaw plugin source manifest $pluginId"
+    Assert-Leaf $sourceEntry "OpenClaw plugin source entry $pluginId"
+    Assert-Leaf $registeredManifest "OpenClaw registered plugin manifest $pluginId"
+    Assert-Leaf $registeredEntry "OpenClaw registered plugin entry $pluginId"
+
+    $sourceJson = Get-Content -LiteralPath $sourceManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    $registeredJson = Get-Content -LiteralPath $registeredManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($sourceJson.id -ne $pluginId -or $registeredJson.id -ne $pluginId) {
+      throw "OpenClaw plugin manifest id mismatch for $pluginId"
+    }
+    if ((Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $registeredManifest -Algorithm SHA256).Hash) {
+      throw "OpenClaw registered plugin manifest hash mismatch for $pluginId"
+    }
+    if ((Get-FileHash -LiteralPath $sourceEntry -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $registeredEntry -Algorithm SHA256).Hash) {
+      throw "OpenClaw registered plugin entry hash mismatch for $pluginId"
+    }
+  }
+
+  $sidecarSource = "src-tauri/resources/bin/desktop-control-agent.exe"
+  $sidecarRegistered = Join-Path $runtime "bin/desktop-control-agent.exe"
+  Assert-Leaf $sidecarSource "desktop-control sidecar source"
+  Assert-Leaf $sidecarRegistered "desktop-control sidecar registered copy"
+  if ((Get-FileHash -LiteralPath $sidecarSource -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $sidecarRegistered -Algorithm SHA256).Hash) {
+    throw "desktop-control sidecar registered copy hash mismatch"
+  }
+
+  $openclawConfigPath = "src-tauri/resources/data/.openclaw/openclaw.json"
+  Assert-Leaf $openclawConfigPath "OpenClaw local config"
+  $openclawConfig = Get-Content -LiteralPath $openclawConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  foreach ($pluginId in @("browser", "desktop-control", "skill-manager")) {
+    $entry = $openclawConfig.plugins.entries.PSObject.Properties[$pluginId]
+    if (-not $entry -or $entry.Value.enabled -ne $true) {
+      throw "OpenClaw config plugin entry must be enabled: $pluginId"
+    }
+    if ($openclawConfig.plugins.allow -and @($openclawConfig.plugins.allow) -notcontains $pluginId) {
+      throw "OpenClaw plugins.allow missing: $pluginId"
+    }
+  }
+
+  $configText = Get-Content -LiteralPath $openclawConfigPath -Raw -Encoding UTF8
+  if ($configText -match "C:\\tmp|C:/tmp|\\Desktop\\|/Desktop/|\\Downloads\\|/Downloads/|\\AppData\\|/AppData/|C:\\Users\\csys1\\Documents\\ecommerce-1\.0\.2-green-usb-from-1\.0\.1-4|C:\\Users\\csys1\\.openclaw") {
+    throw "OpenClaw config contains stale/non-portable desktop-control path."
+  }
+
+  $buildText = Get-Content -LiteralPath $buildPath -Raw -Encoding UTF8
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  foreach ($term in @("register-openclaw-tools.ps1", "Registering OpenClaw portable tools", "registerOpenClawTools")) {
+    if ($buildText -notmatch [regex]::Escape($term)) {
+      throw "$buildPath is missing OpenClaw tool registration term: $term"
+    }
+  }
+  foreach ($term in @(
+    '"superclaw-portable-local"',
+    'remote = [ordered]@{ token = "superclaw-portable-local" }',
+    'allow = @("browser", "desktop-control", "skill-manager")',
+    'alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")'
+  )) {
+    if ($buildText -notmatch [regex]::Escape($term)) {
+      throw "$buildPath is missing portable OpenClaw gateway/plugin allow term: $term"
+    }
+  }
+  if ($buildText -match "opencloud-portable-local") {
+    throw "$buildPath still contains the old OpenClaw gateway token."
+  }
+  foreach ($term in @("ensurePortableOpenClawTools", "desktop-control-agent.exe", "@qingchencloud")) {
+    if ($devApiText -notmatch [regex]::Escape($term)) {
+      throw "$devApiPath is missing OpenClaw portable tool sync term: $term"
+    }
+  }
+
+  Write-Host "OpenClaw desktop-control files: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw desktop-control registration: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw plugin paths portable: PASS" -ForegroundColor Green
+  Write-Host "No stale desktop-control path: PASS" -ForegroundColor Green
+}
+
 function Test-MiniMaxApiKeyEntry {
   $configPath = "src/lib/minimax-test-config.js"
   $modelsPath = "src/pages/models.js"
@@ -307,6 +530,99 @@ function Test-MiniMaxApiKeyEntry {
   Write-Host "MiniMax API key entry: PASS" -ForegroundColor Green
   Write-Host "Local config sync: PASS" -ForegroundColor Green
   Write-Host "Secret source scan: PASS" -ForegroundColor Green
+}
+
+function Test-NoUserSystemRemoval {
+  $removedFiles = @(
+    "src/pages/login.js",
+    "src/pages/register.js",
+    "src/pages/activate.js",
+    "src/pages/claim.js",
+    "src/pages/profile.js",
+    "src/lib/user-api.js",
+    "src/lib/license-binding.js",
+    "src/lib/yyapi-config.js"
+  )
+
+  foreach ($path in $removedFiles) {
+    if (Test-Path -LiteralPath $path) {
+      throw "Customer user-system file still exists: $path"
+    }
+  }
+
+  $mainText = Get-Content -LiteralPath "src/main.js" -Raw -Encoding UTF8
+  $sidebarText = Get-Content -LiteralPath "src/components/sidebar.js" -Raw -Encoding UTF8
+  $paymentText = Get-Content -LiteralPath "src/pages/payment.js" -Raw -Encoding UTF8
+
+  foreach ($term in @("pages/login.js", "pages/register.js", "pages/activate.js", "pages/claim.js", "pages/profile.js", "user-api.js", "license-binding.js", "yyapi-config.js")) {
+    if (($mainText + "`n" + $sidebarText + "`n" + $paymentText) -match [regex]::Escape($term)) {
+      throw "Customer user-system import/reference remains: $term"
+    }
+  }
+
+  foreach ($route in @("'/login'", "'/register'", "'/activate'", "'/claim'", "'/profile'")) {
+    if ($sidebarText -match [regex]::Escape($route)) {
+      throw "Sidebar still exposes customer user route: $route"
+    }
+  }
+
+  if ($paymentText -notmatch [regex]::Escape("../lib/payment-api.js")) {
+    throw "Payment page must use payment-api.js instead of customer user API."
+  }
+  if (-not (Test-Path -LiteralPath "src/lib/payment-api.js" -PathType Leaf)) {
+    throw "Payment API shim is missing."
+  }
+
+  Write-Host "Customer user pages removed: PASS" -ForegroundColor Green
+  Write-Host "Customer user libraries removed: PASS" -ForegroundColor Green
+  Write-Host "Payment decoupled from user system: PASS" -ForegroundColor Green
+}
+
+function Test-BackendLocalAuthIsolation {
+  $devApiPath = "scripts/dev-api.js"
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+
+  $requiredTerms = @(
+    "SUPERCLAW_TEST_BUILD",
+    "VITE_SUPERCLAW_TEST_BUILD",
+    "SUPERCLAW_TEST_CONFIG_HOME",
+    "SUPERCLAW_RESOURCES_DIR",
+    "isServerTestBuild",
+    "testConfigHomeDir",
+    "isLoopbackRequest",
+    "isLoopbackHostHeader",
+    "isLoopbackSocketAddress",
+    "req?.socket?.remoteAddress",
+    "req?.socket?.localAddress",
+    "req?.headers?.host",
+    "return isLoopbackRequest(req)"
+  )
+
+  foreach ($term in $requiredTerms) {
+    if ($devApiText -notmatch [regex]::Escape($term)) {
+      throw "$devApiPath is missing backend local auth isolation term: $term"
+    }
+  }
+
+  if ($devApiText -match "portableCfg && fs\.existsSync\(portableCfg\).*PANEL_CONFIG_PATH") {
+    throw "$devApiPath can still fall back to global clawpanel.json when portable config is missing."
+  }
+
+  foreach ($forbidden in @("SUPERCLAW_SKIP_LOCAL_AUTH", "VITE_SUPERCLAW_SKIP_AUTH", "shouldBypassLocalAccessPassword", "Test local auth bypass")) {
+    if ($devApiText -match [regex]::Escape($forbidden)) {
+      throw "$devApiPath must not retain legacy auth bypass term: $forbidden"
+    }
+  }
+
+  foreach ($line in ($devApiText -split "`r?`n")) {
+    if ($line -match "(req\.url|req\.headers|query)" -and $line -match "(SKIP_LOCAL_AUTH|TEST_BUILD|bypass)") {
+      throw "$devApiPath must not enable auth bypass from request query or headers."
+    }
+  }
+
+  Write-Host "Backend local auth isolation: PASS" -ForegroundColor Green
+  Write-Host "Worktree config isolation: PASS" -ForegroundColor Green
+  Write-Host "Loopback-only local API access: PASS" -ForegroundColor Green
 }
 
 function Test-ExecutableRuntimeCopyLine {
@@ -441,7 +757,7 @@ function Test-TrackedSourceRisks {
         Add-Issue $issues "fatal" $normalized $lineNo "Real-looking Bearer token." $match.Value
       }
 
-      foreach ($match in [regex]::Matches($line, "(?i)^\s*(?:export\s+)?(MINIMAX_API_KEY|OPENAI_API_KEY|YYAPI_KEY)\s*=\s*([^#\s]+)")) {
+      foreach ($match in [regex]::Matches($line, "(?i)^\s*(?:export\s+)?(MINIMAX_API_KEY|OPENAI_API_KEY)\s*=\s*([^#\s]+)")) {
         $value = $match.Groups[2].Value.Trim()
         if (-not (Test-AllowedPlaceholder $value)) {
           Add-Issue $issues "fatal" $normalized $lineNo "Real-looking API key assignment." $line.Trim()
@@ -515,11 +831,23 @@ Test-BuildScriptLogic
 Write-Section "MiniMax-only Test Build Logic"
 Test-MiniMaxOnlyTestBuildLogic
 
+Write-Section "MiniMax CN Gateway Defaults"
+Test-MiniMaxCNGatewayDefaults
+
+Write-Section "OpenClaw Desktop Control Registration"
+Test-OpenClawDesktopControlRegistration
+
 Write-Section "Ecommerce Assistant Build Flag"
 Test-EcommerceAssistantBuildFlag
 
 Write-Section "MiniMax API Key Entry"
 Test-MiniMaxApiKeyEntry
+
+Write-Section "No Customer User System"
+Test-NoUserSystemRemoval
+
+Write-Section "Backend Local Auth Isolation"
+Test-BackendLocalAuthIsolation
 
 Write-Section "Runtime Manifest"
 Invoke-RuntimeVerify -ProjectRoot $root -ManifestPath $manifestPath

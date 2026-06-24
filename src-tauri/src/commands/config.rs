@@ -6108,115 +6108,23 @@ pub fn write_panel_config(config: Value) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))
 }
 
-fn configured_env_url(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn strip_api_version(url: &str) -> String {
-    let trimmed = url.trim().trim_end_matches('/');
-    if let Some((prefix, last)) = trimmed.rsplit_once('/') {
-        if last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit())
-        {
-            return prefix.to_string();
-        }
-    }
-    trimmed.to_string()
-}
-
-fn configured_yyapi_auth_base_url() -> Option<String> {
-    configured_env_url("YYAPI_AUTH_BASE_URL")
-        .or_else(|| configured_env_url("YYAPI_BASE_URL").map(|url| strip_api_version(&url)))
-}
-
-/// 创建 YYApi 控制台登录会话
-#[tauri::command]
-pub async fn yyapi_create_session(username: String, password: String) -> Result<Value, String> {
-    let auth_base_url =
-        configured_yyapi_auth_base_url().ok_or_else(|| "YYAPI_AUTH_BASE_URL 未配置".to_string())?;
-    let login_url = format!("{auth_base_url}/api/user/login");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-
-    let login_resp = client
-        .post(login_url)
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({ "username": username, "password": password }))
-        .send()
-        .await
-        .map_err(|e| format!("YYApi 登录请求失败: {e}"))?;
-
-    let status = login_resp.status().as_u16();
-
-    let set_cookie = login_resp
-        .headers()
-        .get("set-cookie")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    // 先读取响应体（之后 login_resp 会被消费）
-    let body_text = login_resp.text().await.unwrap_or_default();
-
-    if status != 200 || set_cookie.is_empty() {
-        return Err(format!("YYApi 登录失败 ({}): {}", status, body_text));
-    }
-
-    // 尝试解析 Set-Cookie，提取关键信息
-    let cookie_parts: Vec<&str> = set_cookie.split(';').collect();
-    let session_val = cookie_parts.first().unwrap_or(&"").trim().to_string();
-
-    // 尝试解析响应体 JSON，提取 user / token 信息
-    // （用于桌面端注入 localStorage，使 YYApi 前端感知已登录状态）
-    let mut user_info = Value::Null;
-    let mut token_info = Value::Null;
-    if let Ok(body_json) = serde_json::from_str::<Value>(&body_text) {
-        user_info = body_json
-            .get("user")
-            .or_else(|| body_json.get("data").and_then(|d| d.get("user")))
-            .cloned()
-            .unwrap_or(Value::Null);
-        token_info = body_json
-            .get("token")
-            .or_else(|| body_json.get("data").and_then(|d| d.get("token")))
-            .cloned()
-            .unwrap_or(Value::Null);
-    }
-
-    Ok(json!({
-        "success": true,
-        "sessionCookie": set_cookie,
-        "sessionValue": session_val,
-        "user": user_info,
-        "token": token_info,
-    }))
-}
-
-/// 重启应用（用于设置变更后自动重启）
 #[tauri::command]
 pub async fn relaunch_app(app: tauri::AppHandle) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("获取可执行文件路径失败: {e}"))?;
     std::process::Command::new(&exe)
         .spawn()
         .map_err(|e| format!("重启失败: {e}"))?;
-    // 短暂延迟后退出当前进程
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     app.exit(0);
     Ok(())
 }
 
-/// 测试代理连通性：通过配置的代理访问指定 URL，返回状态码和耗时
 #[tauri::command]
 pub async fn test_proxy(url: Option<String>) -> Result<Value, String> {
     let proxy_url = crate::commands::configured_proxy_url()
         .ok_or("未配置代理地址，请先在面板设置中保存代理地址")?;
 
     let target = url.unwrap_or_else(|| "https://registry.npmjs.org/-/ping".to_string());
-
     let client =
         crate::commands::build_http_client(std::time::Duration::from_secs(10), Some("ClawPanel"))
             .map_err(|e| format!("创建代理客户端失败: {e}"))?;
@@ -6250,7 +6158,6 @@ pub fn set_npm_registry(registry: String) -> Result<(), String> {
     fs::write(&path, registry.trim()).map_err(|e| format!("保存失败: {e}"))
 }
 
-/// 检测 Git 是否已安装
 #[tauri::command]
 pub fn check_git() -> Result<Value, String> {
     let mut result = serde_json::Map::new();
@@ -6262,8 +6169,6 @@ pub fn check_git() -> Result<Value, String> {
     } else {
         find_git_path()
     };
-    // #Compat-4: 优先用 find_git_path 拿到的绝对路径执行 --version（避免依赖子进程 PATH），
-    // 回退到 "git" 时也把 enhanced_path 注入子进程 PATH，让刚装完 git 的场景立即可识别。
     let exec = git_path.as_deref().unwrap_or(&git);
     let mut cmd = Command::new(exec);
     cmd.arg("--version");
@@ -6291,7 +6196,6 @@ pub fn check_git() -> Result<Value, String> {
     Ok(Value::Object(result))
 }
 
-/// 扫描常见路径，返回所有找到的 Git 安装
 #[tauri::command]
 pub fn scan_git_paths() -> Result<Value, String> {
     let mut found: Vec<Value> = vec![];

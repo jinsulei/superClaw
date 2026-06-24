@@ -54,6 +54,13 @@ function Get-FileSha256 {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Test-SkipRuntimeTreePath {
+  param([string]$Path)
+
+  $normalized = $Path.Replace("/", "\")
+  return ($normalized -match '(?i)\\(node_modules|\.cache|cache|tmp|temp|logs|sessions)\\')
+}
+
 function Get-DirectoryFileEntries {
   param(
     [string]$RootPath,
@@ -69,11 +76,23 @@ function Get-DirectoryFileEntries {
   $entries = @()
 
   foreach ($file in $files) {
+    if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) {
+      continue
+    }
+    if (Test-SkipRuntimeTreePath $file.FullName) {
+      continue
+    }
     $relative = (Get-RelativePathSafe -BasePath $BasePath -FullPath $file.FullName).Replace("\", "/")
+    $hash = ""
+    try {
+      $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    } catch {
+      continue
+    }
     $entries += [ordered]@{
       path = $relative
       size = [int64]$file.Length
-      sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+      sha256 = $hash
       modifiedUtc = $file.LastWriteTimeUtc.ToString("o")
     }
   }
@@ -129,6 +148,12 @@ function Get-TextRiskHits {
   $textExts = @(".js", ".json", ".txt", ".md", ".yml", ".yaml", ".toml", ".ps1", ".cmd", ".bat", ".html", ".css", ".rs", ".env")
 
   foreach ($file in $files) {
+    if (-not (Test-Path -LiteralPath $file.FullName -PathType Leaf)) {
+      continue
+    }
+    if (Test-SkipRuntimeTreePath $file.FullName) {
+      continue
+    }
     if ($file.Length -gt 2MB) {
       continue
     }
@@ -139,7 +164,12 @@ function Get-TextRiskHits {
     }
 
     foreach ($pattern in $patterns) {
-      $matches = Select-String -LiteralPath $file.FullName -Pattern $pattern -CaseSensitive:$false -ErrorAction SilentlyContinue
+      $matches = @()
+      try {
+        $matches = Select-String -LiteralPath $file.FullName -Pattern $pattern -CaseSensitive:$false -ErrorAction Stop
+      } catch {
+        continue
+      }
       foreach ($match in $matches) {
         $hits += [ordered]@{
           path = (Get-RelativePathSafe -BasePath $BasePath -FullPath $file.FullName).Replace("\", "/")
@@ -166,6 +196,10 @@ $runtimeItems = @(
   [ordered]@{ id = "openclaw_launcher"; label = "OpenClaw launcher"; path = "src-tauri/resources/runtime/openclaw/openclaw.cmd"; type = "file"; required = $true },
   [ordered]@{ id = "openclaw_node"; label = "OpenClaw bundled node.exe"; path = "src-tauri/resources/runtime/openclaw/node.exe"; type = "file"; required = $true },
   [ordered]@{ id = "openclaw_runtime_dir"; label = "OpenClaw runtime directory"; path = "src-tauri/resources/runtime/openclaw"; type = "dir"; required = $true },
+  [ordered]@{ id = "openclaw_desktop_control_source"; label = "OpenClaw desktop-control source plugin"; path = "src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/openclaw.plugin.json"; type = "file"; required = $true },
+  [ordered]@{ id = "openclaw_desktop_control_registered"; label = "OpenClaw desktop-control registered plugin"; path = "src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/desktop-control/openclaw.plugin.json"; type = "file"; required = $true },
+  [ordered]@{ id = "openclaw_skill_manager_registered"; label = "OpenClaw skill-manager registered plugin"; path = "src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/skill-manager/openclaw.plugin.json"; type = "file"; required = $true },
+  [ordered]@{ id = "openclaw_desktop_control_sidecar"; label = "OpenClaw desktop-control sidecar"; path = "src-tauri/resources/runtime/openclaw/bin/desktop-control-agent.exe"; type = "file"; required = $true },
   [ordered]@{ id = "hermes_runtime"; label = "Hermes legacy runtime directory optional compatibility runtime"; path = "src-tauri/resources/runtime/hermes"; type = "dir"; required = $false },
   [ordered]@{ id = "hermes_agent"; label = "Hermes agent executable runtime directory"; path = "src-tauri/resources/runtime/hermes-agent"; type = "dir"; required = $true },
   [ordered]@{ id = "hermes_agent_cli"; label = "Hermes CLI executable"; path = "src-tauri/resources/runtime/hermes-agent/Scripts/hermes.exe"; type = "file"; required = $true },
@@ -214,6 +248,9 @@ foreach ($item in $runtimeItems) {
         $totalSize += [int64]$fileEntry.size
       }
       $directoryDigest = Get-DirectoryDigest $files
+      if ($files.Count -gt 500) {
+        $files = @()
+      }
     }
 
     foreach ($hit in (Get-TextRiskHits -Path $absolute -BasePath $ProjectRootResolved)) {

@@ -286,14 +286,12 @@ const PLATFORM_REGISTRY = {
 }
 
 const AVAILABLE_PLATFORM_PRIORITY = ['weixin', 'feishu', 'dingtalk', 'qqbot']
+const VISIBLE_MESSAGE_CHANNELS = new Set(AVAILABLE_PLATFORM_PRIORITY)
 
 function getAvailablePlatformEntries() {
-  const entries = Object.entries(PLATFORM_REGISTRY)
-  const byId = new Map(entries)
-  return [
-    ...AVAILABLE_PLATFORM_PRIORITY.filter(pid => byId.has(pid)).map(pid => [pid, byId.get(pid)]),
-    ...entries.filter(([pid]) => !AVAILABLE_PLATFORM_PRIORITY.includes(pid)),
-  ]
+  return AVAILABLE_PLATFORM_PRIORITY
+    .filter(pid => PLATFORM_REGISTRY[pid])
+    .map(pid => [pid, PLATFORM_REGISTRY[pid]])
 }
 
 function parseChannelsRouteIntent() {
@@ -374,7 +372,9 @@ export function cleanup() {}
 async function loadPlatforms(page, state) {
   try {
     const list = await api.listConfiguredPlatforms()
-    state.configured = Array.isArray(list) ? list : []
+    state.configured = Array.isArray(list)
+      ? list.filter(item => VISIBLE_MESSAGE_CHANNELS.has(item?.id))
+      : []
   } catch (e) {
     toast(t('channels.loadFailed') + ': ' + e, 'error')
     state.configured = []
