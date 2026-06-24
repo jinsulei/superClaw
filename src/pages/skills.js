@@ -410,6 +410,8 @@ function normalizePathForSkill(pathValue) {
 }
 
 function isOpenClawBuiltinSkill(skill) {
+  const source = String(skill?.source || '').toLowerCase()
+  if (skill?.bundled || source === 'openclaw-bundled' || source === 'openclaw-extra') return false
   const filePath = normalizePathForSkill(skill?.filePath || skill?.fullPath || '')
   return filePath.includes('/runtime/openclaw/skills/')
 }
@@ -423,6 +425,15 @@ function isCallableOpenClawSkill(skill) {
 
 function skillNameOf(skill) {
   return String(skill?.name || '').trim().toLowerCase()
+}
+
+function getSkillSourceLabel(skill) {
+  const source = String(skill?.source || '').trim()
+  const normalized = source.toLowerCase()
+  if (normalized === 'openclaw-bundled') return t('skills.bundled')
+  if (normalized === 'openclaw-extra') return 'OpenClaw 扩展'
+  if (skill?.bundled) return t('skills.bundled')
+  return source || t('skills.custom')
 }
 
 export async function render() {
@@ -630,7 +641,7 @@ function renderSkillCard(skill, status) {
   const name = skill.name || ''
   const desc = skill.description || ''
   const display = getSkillDisplay(skill)
-  const source = skill.bundled ? t('skills.bundled') : (skill.source || t('skills.custom'))
+  const source = getSkillSourceLabel(skill)
   const missingBins = skill.missing?.bins || []
   const missingEnv = skill.missing?.env || []
   const missingConfig = skill.missing?.config || []
@@ -684,7 +695,7 @@ function renderSkillCard(skill, status) {
       <div class="clawhub-item-actions">
         <button class="btn btn-secondary btn-sm" data-action="skill-info" data-name="${esc(name)}">${t('skills.detail')}</button>
         ${status === 'builtin' ? `<button class="btn btn-secondary btn-sm" data-action="skill-install-builtin" data-name="${esc(name)}">安装到 OpenClaw</button>` : ''}
-        ${!skill.bundled ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}">${t('skills.uninstall')}</button>` : ''}
+        ${!skill.bundled && !['openclaw-bundled', 'openclaw-extra'].includes(String(skill.source || '').toLowerCase()) ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}">${t('skills.uninstall')}</button>` : ''}
         ${statusBadge}
       </div>
     </div>

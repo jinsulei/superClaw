@@ -2360,6 +2360,41 @@ function resolveAgentSkillsDir(agentId) {
   }
 }
 
+function isExistingDirectory(dir) {
+  try {
+    return !!dir && fs.existsSync(dir) && fs.statSync(dir).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function openclawBundledSkillDirCandidates(openclawRoot) {
+  if (!openclawRoot) return []
+  return [
+    path.join(openclawRoot, 'skills'),
+    path.join(openclawRoot, 'node_modules', 'openclaw', 'skills'),
+    path.join(openclawRoot, 'node_modules', '@qingchencloud', 'openclaw-zh', 'skills'),
+  ]
+}
+
+function openclawExtensionSkillDirCandidates(openclawRoot) {
+  if (!openclawRoot) return []
+  const candidates = []
+  const extensionRoots = [
+    path.join(openclawRoot, 'dist', 'extensions'),
+    path.join(openclawRoot, 'node_modules', 'openclaw', 'dist', 'extensions'),
+    path.join(openclawRoot, 'node_modules', '@qingchencloud', 'openclaw-zh', 'dist', 'extensions'),
+  ]
+  for (const extensionRoot of extensionRoots) {
+    if (!isExistingDirectory(extensionRoot)) continue
+    for (const entry of fs.readdirSync(extensionRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      candidates.push(path.join(extensionRoot, entry.name, 'skills'))
+    }
+  }
+  return candidates
+}
+
 function collectLocalSkillRoots(agentSkillsDir) {
   const roots = []
   const seen = new Set()
@@ -2377,7 +2412,18 @@ function collectLocalSkillRoots(agentSkillsDir) {
   } else {
     pushRoot(path.join(OPENCLAW_DIR, 'skills'), 'OpenClaw 自定义', false)
   }
+  pushRoot(path.join(OPENCLAW_DIR, 'plugin-skills'), 'openclaw-extra', true)
   pushRoot(path.join(homedir(), '.claude', 'skills'), 'Claude 自定义', false)
+
+  const bundledRuntimeDir = bundledOpenclawBinDir()
+  if (bundledRuntimeDir) {
+    for (const bundledDir of openclawBundledSkillDirCandidates(bundledRuntimeDir)) {
+      if (isExistingDirectory(bundledDir)) pushRoot(bundledDir, 'openclaw-bundled', true)
+    }
+    for (const extraDir of openclawExtensionSkillDirCandidates(bundledRuntimeDir)) {
+      if (isExistingDirectory(extraDir)) pushRoot(extraDir, 'openclaw-extra', true)
+    }
+  }
 
   const cliPath = resolveOpenclawCliPath()
   if (cliPath) {
@@ -2385,10 +2431,11 @@ function collectLocalSkillRoots(agentSkillsDir) {
     const cliDir = path.dirname(resolvedCli)
     const pkgRoots = [cliDir, path.dirname(cliDir)]
     for (const pkgRoot of pkgRoots) {
-      const bundledDir = path.join(pkgRoot, 'skills')
-      if (fs.existsSync(bundledDir) && fs.statSync(bundledDir).isDirectory()) {
-        pushRoot(bundledDir, 'openclaw-bundled', true)
-        break
+      for (const bundledDir of openclawBundledSkillDirCandidates(pkgRoot)) {
+        if (isExistingDirectory(bundledDir)) pushRoot(bundledDir, 'openclaw-bundled', true)
+      }
+      for (const extraDir of openclawExtensionSkillDirCandidates(pkgRoot)) {
+        if (isExistingDirectory(extraDir)) pushRoot(extraDir, 'openclaw-extra', true)
       }
     }
   }
@@ -2397,7 +2444,7 @@ function collectLocalSkillRoots(agentSkillsDir) {
     const prefix = readWindowsNpmGlobalPrefix() || path.join(process.env.APPDATA || '', 'npm')
     for (const pkg of ['openclaw', path.join('@qingchencloud', 'openclaw-zh')]) {
       const bundledDir = path.join(prefix, 'node_modules', pkg, 'skills')
-      if (fs.existsSync(bundledDir) && fs.statSync(bundledDir).isDirectory()) {
+      if (isExistingDirectory(bundledDir)) {
         pushRoot(bundledDir, 'openclaw-bundled', true)
       }
     }

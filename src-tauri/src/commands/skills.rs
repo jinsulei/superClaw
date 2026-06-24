@@ -151,12 +151,8 @@ pub async fn skills_install_builtin(
     agent_id: Option<String>,
 ) -> Result<Value, String> {
     validate_skill_name(&name)?;
-    let runtime_dir = super::bundled_openclaw_bin_dir()
-        .ok_or_else(|| "未找到内置 OpenClaw runtime".to_string())?;
-    let source = runtime_dir.join("skills").join(&name);
-    if !source.is_dir() {
-        return Err(format!("内置 Skill 不存在: {name}"));
-    }
+    let source =
+        find_bundled_skill_dir(&name).ok_or_else(|| format!("内置 Skill 不存在: {name}"))?;
     let skills_dir = match resolve_agent_skills_dir(agent_id.as_deref()) {
         Some(dir) => dir,
         None => super::openclaw_dir().join("skills"),
@@ -545,38 +541,139 @@ fn resolve_agent_skills_dir(agent_id: Option<&str>) -> Option<std::path::PathBuf
     Some(expanded.join("skills"))
 }
 
-fn custom_skill_roots_for_agent(
-    agent_skills_dir: Option<&std::path::Path>,
-) -> Vec<(std::path::PathBuf, &'static str)> {
+struct SkillRoot {
+    dir: std::path::PathBuf,
+    source: &'static str,
+    bundled: bool,
+}
+
+fn push_skill_root(
+    roots: &mut Vec<SkillRoot>,
+    dir: std::path::PathBuf,
+    source: &'static str,
+    bundled: bool,
+) {
+    if roots.iter().any(|root| root.dir == dir) {
+        return;
+    }
+    roots.push(SkillRoot {
+        dir,
+        source,
+        bundled,
+    });
+}
+
+fn bundled_skill_dir_candidates(openclaw_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    vec![
+        openclaw_root.join("skills"),
+        openclaw_root.join("node_modules").join("openclaw").join("skills"),
+        openclaw_root
+            .join("node_modules")
+            .join("@qingchencloud")
+            .join("openclaw-zh")
+            .join("skills"),
+    ]
+}
+
+fn extension_skill_dir_candidates(openclaw_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    let extension_roots = vec![
+        openclaw_root.join("dist").join("extensions"),
+        openclaw_root
+            .join("node_modules")
+            .join("openclaw")
+            .join("dist")
+            .join("extensions"),
+        openclaw_root
+            .join("node_modules")
+            .join("@qingchencloud")
+            .join("openclaw-zh")
+            .join("dist")
+            .join("extensions"),
+    ];
+    for extension_root in extension_roots {
+        let Ok(entries) = std::fs::read_dir(&extension_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                candidates.push(entry.path().join("skills"));
+            }
+        }
+    }
+    candidates
+}
+
+fn push_bundled_skill_roots(roots: &mut Vec<SkillRoot>, openclaw_root: &std::path::Path) {
+    for dir in bundled_skill_dir_candidates(openclaw_root) {
+        if dir.is_dir() {
+            push_skill_root(roots, dir, "openclaw-bundled", true);
+        }
+    }
+    for dir in extension_skill_dir_candidates(openclaw_root) {
+        if dir.is_dir() {
+            push_skill_root(roots, dir, "openclaw-extra", true);
+        }
+    }
+}
+
+fn find_bundled_skill_dir(name: &str) -> Option<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(runtime_dir) = super::bundled_openclaw_bin_dir() {
+        push_bundled_skill_roots(&mut roots, &runtime_dir);
+    }
+    for root in roots {
+        let candidate = root.dir.join(name);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn custom_skill_roots_for_agent(agent_skills_dir: Option<&std::path::Path>) -> Vec<SkillRoot> {
     let mut roots = Vec::new();
 
     // 如果指定了 agent 的 skills 目录，优先放在第一位
     if let Some(agent_dir) = agent_skills_dir {
-        roots.push((agent_dir.to_path_buf(), "Agent 自定义"));
+        push_skill_root(&mut roots, agent_dir.to_path_buf(), "Agent 自定义", false);
     } else {
         // 默认 agent 使用全局 skills 目录
-        roots.push((super::openclaw_dir().join("skills"), "OpenClaw 自定义"));
+        push_skill_root(
+            &mut roots,
+            super::openclaw_dir().join("skills"),
+            "OpenClaw 自定义",
+            false,
+        );
     }
+    push_skill_root(
+        &mut roots,
+        super::openclaw_dir().join("plugin-skills"),
+        "openclaw-extra",
+        true,
+    );
 
     if let Some(home) = dirs::home_dir() {
         let claude_skills = home.join(".claude").join("skills");
-        if !roots.iter().any(|(dir, _)| dir == &claude_skills) {
-            roots.push((claude_skills, "Claude 自定义"));
-        }
+        push_skill_root(&mut roots, claude_skills, "Claude 自定义", false);
+    }
+    if let Some(runtime_dir) = super::bundled_openclaw_bin_dir() {
+        push_bundled_skill_roots(&mut roots, &runtime_dir);
     }
     // 从已解析的 CLI 路径推导 npm 包内的 bundled skills 目录
     if let Some(cli_path) = crate::utils::resolve_openclaw_cli_path() {
         let cli = std::path::PathBuf::from(&cli_path);
         let cli = std::fs::canonicalize(&cli).unwrap_or(cli);
-        for pkg_root in [cli.parent(), cli.parent().and_then(|p| p.parent())]
-            .into_iter()
-            .flatten()
-        {
-            let bundled = pkg_root.join("skills");
-            if bundled.is_dir() && !roots.iter().any(|(dir, _)| dir == &bundled) {
-                roots.push((bundled, "OpenClaw 内置"));
+        let mut current = cli.parent();
+        for _ in 0..6 {
+            let Some(pkg_root) = current else {
                 break;
-            }
+            };
+            push_bundled_skill_roots(&mut roots, pkg_root);
+            current = pkg_root.parent();
         }
     }
     #[cfg(target_os = "windows")]
@@ -586,8 +683,8 @@ fn custom_skill_roots_for_agent(
                 .join("node_modules")
                 .join(pkg)
                 .join("skills");
-            if bundled.is_dir() && !roots.iter().any(|(dir, _)| dir == &bundled) {
-                roots.push((bundled, "OpenClaw 内置"));
+            if bundled.is_dir() {
+                push_skill_root(&mut roots, bundled, "openclaw-bundled", true);
             }
         }
     }
@@ -600,7 +697,8 @@ fn resolve_custom_skill_dir_with_agent(
 ) -> Option<std::path::PathBuf> {
     custom_skill_roots_for_agent(agent_skills_dir)
         .into_iter()
-        .map(|(root, _)| root.join(name))
+        .filter(|root| !root.bundled)
+        .map(|root| root.dir.join(name))
         .find(|path| path.exists())
 }
 
@@ -608,8 +706,8 @@ fn scan_custom_skill_detail(
     name: &str,
     agent_skills_dir: Option<&std::path::Path>,
 ) -> Option<Value> {
-    for (root, source_label) in custom_skill_roots_for_agent(agent_skills_dir) {
-        let skill_path = root.join(name);
+    for root in custom_skill_roots_for_agent(agent_skills_dir) {
+        let skill_path = root.dir.join(name);
         if !skill_path.exists() {
             continue;
         }
@@ -629,8 +727,8 @@ fn scan_custom_skill_detail(
             "eligible": eligible,
             "disabled": false,
             "blockedByAllowlist": false,
-            "source": source_label,
-            "bundled": false,
+            "source": root.source,
+            "bundled": root.bundled,
             "filePath": skill_path.to_string_lossy().to_string(),
             "homepage": base.get("homepage").cloned().unwrap_or(Value::Null),
             "version": base.get("version").cloned().unwrap_or(Value::Null),
@@ -666,15 +764,15 @@ fn scan_local_skill_entries_for_agent(
 ) -> Result<Vec<Value>, String> {
     let mut skills = Vec::new();
 
-    for (skills_dir, source_label) in custom_skill_roots_for_agent(agent_skills_dir) {
-        if !skills_dir.exists() {
+    for root in custom_skill_roots_for_agent(agent_skills_dir) {
+        if !root.dir.exists() {
             continue;
         }
 
-        let entries = std::fs::read_dir(&skills_dir).map_err(|e| {
+        let entries = std::fs::read_dir(&root.dir).map_err(|e| {
             format!(
                 "读取 Skills 目录失败 ({}): {e}",
-                skills_dir.to_string_lossy()
+                root.dir.to_string_lossy()
             )
         })?;
 
@@ -696,8 +794,8 @@ fn scan_local_skill_entries_for_agent(
                 "eligible": eligible,
                 "disabled": false,
                 "blockedByAllowlist": false,
-                "source": source_label,
-                "bundled": false,
+                "source": root.source,
+                "bundled": root.bundled,
                 "filePath": entry.path().to_string_lossy().to_string(),
                 "homepage": base.get("homepage").cloned().unwrap_or(Value::Null),
                 "missing": {
@@ -740,7 +838,7 @@ fn scan_local_skills(
     let roots = custom_skill_roots_for_agent(agent_skills_dir);
     let scanned_roots: Vec<String> = roots
         .iter()
-        .map(|(dir, label)| format!("{}: {}", label, dir.to_string_lossy()))
+        .map(|root| format!("{}: {}", root.source, root.dir.to_string_lossy()))
         .collect();
     let skills = scan_local_skill_entries_for_agent(agent_skills_dir)?;
     let cli_available = cli_diagnostic
