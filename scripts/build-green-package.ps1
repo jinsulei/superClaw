@@ -162,6 +162,35 @@ function Test-GreenOcrRuntime([string]$OpenCloudDir, [string]$NodeExe) {
   }
 }
 
+function New-GreenPackageZip([string]$SourceRoot, [string]$DestinationZip) {
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if ($tar) {
+    $parent = Split-Path -Parent $SourceRoot
+    $leaf = Split-Path -Leaf $SourceRoot
+    & $tar.Source -a -cf $DestinationZip -C $parent $leaf
+    if ($LASTEXITCODE -ne 0) {
+      Fail "tar.exe failed to create zip: $DestinationZip"
+    }
+    return
+  }
+
+  Compress-Archive -Path $SourceRoot -DestinationPath $DestinationZip -Force
+}
+
+function Expand-GreenPackageZip([string]$SourceZip, [string]$DestinationDir) {
+  New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if ($tar) {
+    & $tar.Source -xf $SourceZip -C $DestinationDir
+    if ($LASTEXITCODE -ne 0) {
+      Fail "tar.exe failed to extract zip: $SourceZip"
+    }
+    return
+  }
+
+  Expand-Archive -LiteralPath $SourceZip -DestinationPath $DestinationDir -Force
+}
+
 function Write-Utf8File([string]$Path, [string]$Content) {
   New-Item -ItemType Directory -Path (Split-Path $Path -Parent) -Force | Out-Null
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
@@ -820,10 +849,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\hermes-agent-m
 
 if (-not $SkipZip) {
   Step "Creating zip"
-  Compress-Archive -Path $OutRoot -DestinationPath $ZipPath -Force
+  New-GreenPackageZip $OutRoot $ZipPath
 
   Step "Extracting zip for structure verification"
-  Expand-Archive -LiteralPath $ZipPath -DestinationPath $TestExtract -Force
+  Expand-GreenPackageZip $ZipPath $TestExtract
   $ExtractedRoot = Join-Path $TestExtract (Split-Path $OutRoot -Leaf)
   foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\uv-tools\uv.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $ExtractedRoot $must))) {
