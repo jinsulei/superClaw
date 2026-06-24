@@ -544,6 +544,17 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
   }
 
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "openclaw.json") ($config | ConvertTo-Json -Depth 20)
+  $agentModelDir = Join-Path $OpenClawDataDir "agents\main\agent"
+  New-Item -ItemType Directory -Path $agentModelDir -Force | Out-Null
+  $agentModels = [ordered]@{
+    providers = $providers
+    defaults = [ordered]@{
+      provider = "minimax"
+      model = $MiniMaxTestModel
+      modelRef = $defaultModelRef
+    }
+  }
+  Write-Utf8NoBom (Join-Path $agentModelDir "models.json") ($agentModels | ConvertTo-Json -Depth 20)
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
 }
 

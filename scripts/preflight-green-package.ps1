@@ -273,17 +273,19 @@ function Test-MiniMaxCNGatewayDefaults {
   $hermesEnvPath = "src-tauri/resources/data/hermes/.env"
   $relayPath = "src-tauri/resources/data/claude-panel/relay-config.json"
 
-  foreach ($path in @($openclawPath, $openclawAgentPath, $hermesConfigPath, $hermesEnvPath, $relayPath)) {
+  foreach ($path in @($openclawPath, $openclawAgentPath, $hermesConfigPath, $relayPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
       throw "Missing MiniMax local config for preflight: $path"
     }
+  }
+  if (Test-Path -LiteralPath $hermesEnvPath -PathType Leaf) {
+    throw "Hermes .env must not be required or packaged in sanitized test builds: $hermesEnvPath"
   }
 
   $openclaw = Get-Content -LiteralPath $openclawPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $agentModels = Get-Content -LiteralPath $openclawAgentPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $relay = Get-Content -LiteralPath $relayPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $hermesConfig = Get-Content -LiteralPath $hermesConfigPath -Raw -Encoding UTF8
-  $hermesEnv = Get-Content -LiteralPath $hermesEnvPath -Raw -Encoding UTF8
 
   if ($openclaw.models.providers.minimax.baseUrl -ne $cnBaseUrl) {
     throw "OpenClaw minimax baseUrl must be $cnBaseUrl"
@@ -293,10 +295,6 @@ function Test-MiniMaxCNGatewayDefaults {
   }
   if ($hermesConfig -notmatch "provider:\s*minimax" -or $hermesConfig -notmatch "base_url:\s*$([regex]::Escape($cnBaseUrl))" -or $hermesConfig -notmatch "default:\s*MiniMax-M3") {
     throw "Hermes config.yaml must use minimax MiniMax-M3 on $cnBaseUrl"
-  }
-  $hermesHasCnBaseUrl = $hermesEnv -match "(?m)^OPENAI_BASE_URL=$([regex]::Escape($cnBaseUrl))$" -or $hermesEnv -match "(?m)^MINIMAX_BASE_URL=$([regex]::Escape($cnBaseUrl))$"
-  if (-not $hermesHasCnBaseUrl -or $hermesEnv -notmatch "(?m)^OPENAI_MODEL=MiniMax-M3$" -or $hermesEnv -notmatch "(?m)^SUPERCLAW_FORCE_PROVIDER=minimax$") {
-    throw "Hermes .env must use MiniMax CN OpenAI-compatible settings."
   }
   if ($relay.baseUrl -ne $cnBaseUrl -or $relay.model -ne "MiniMax-M3") {
     throw "Claude Panel relay must use MiniMax-M3 on $cnBaseUrl"
@@ -308,6 +306,7 @@ function Test-MiniMaxCNGatewayDefaults {
   Write-Host "MiniMax CN test default: PASS" -ForegroundColor Green
   Write-Host "OpenClaw MiniMax CN config: PASS" -ForegroundColor Green
   Write-Host "Hermes MiniMax CN config: PASS" -ForegroundColor Green
+  Write-Host "Hermes .env omitted from sanitized package: PASS" -ForegroundColor Green
   Write-Host "Claude Panel MiniMax CN config: PASS" -ForegroundColor Green
   Write-Host "Hermes bundled runtime only: PASS" -ForegroundColor Green
   Write-Host "Claude Panel status route: PASS" -ForegroundColor Green
@@ -814,8 +813,8 @@ if (-not $root) {
 
 Set-Location $root
 $branch = git branch --show-current
-if ($branch -ne $ExpectedBranch) {
-  throw "Expected branch $ExpectedBranch, current branch is $branch."
+if ($branch -ne $ExpectedBranch -and $branch -notlike "release-regression-usb-exe-*") {
+  throw "Expected branch $ExpectedBranch or release-regression-usb-exe-*, current branch is $branch."
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
