@@ -218,6 +218,19 @@ function Test-MiniMaxOnlyTestBuildLogic {
   Write-Host "YYAPI disabled: PASS" -ForegroundColor Green
 }
 
+function Test-EcommerceAssistantBuildFlag {
+  $buildPath = "scripts/build-green-package.ps1"
+  $buildText = Get-Content -LiteralPath $buildPath -Raw -Encoding UTF8
+  $requiredSetPattern = 'SetEnvironmentVariable\("VITE_ENABLE_ECOMMERCE_ASSISTANT",\s*"true",\s*"Process"\)'
+  if ($buildText -notmatch $requiredSetPattern) {
+    throw "$buildPath must set VITE_ENABLE_ECOMMERCE_ASSISTANT to string true in TestBuild/SanitizedTest mode."
+  }
+  if ($buildText -match 'SetEnvironmentVariable\("VITE_ENABLE_ECOMMERCE_ASSISTANT",\s*"1"') {
+    throw "$buildPath must not set VITE_ENABLE_ECOMMERCE_ASSISTANT to 1; feature flags require true."
+  }
+
+  Write-Host "Ecommerce assistant build flag: PASS" -ForegroundColor Green
+}
 function Test-MiniMaxApiKeyEntry {
   $configPath = "src/lib/minimax-test-config.js"
   $modelsPath = "src/pages/models.js"
@@ -501,6 +514,9 @@ Test-BuildScriptLogic
 
 Write-Section "MiniMax-only Test Build Logic"
 Test-MiniMaxOnlyTestBuildLogic
+
+Write-Section "Ecommerce Assistant Build Flag"
+Test-EcommerceAssistantBuildFlag
 
 Write-Section "MiniMax API Key Entry"
 Test-MiniMaxApiKeyEntry

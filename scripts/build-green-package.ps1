@@ -184,6 +184,7 @@ function Get-ConfiguredYyapiBaseUrl {
 function Set-TestBuildViteEnv {
   if (-not $script:EffectiveSanitizedTest) { return @{} }
   $keys = @(
+    "VITE_ENABLE_ECOMMERCE_ASSISTANT",
     "VITE_SUPERCLAW_TEST_BUILD",
     "VITE_SUPERCLAW_SKIP_AUTH",
     "VITE_SUPERCLAW_SKIP_ACTIVATION",
@@ -196,6 +197,7 @@ function Set-TestBuildViteEnv {
   foreach ($key in $keys) {
     $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
   }
+  [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_AUTH", "1", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_SKIP_ACTIVATION", "1", "Process")
