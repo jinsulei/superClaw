@@ -20,6 +20,13 @@ function providerForBaseUrl(baseUrl) {
   return withTrailingBaseUrl(baseUrl).includes('api.minimaxi.com') ? 'minimax-cn' : PROVIDER_ID
 }
 
+function openAiBaseUrlForMiniMaxUrl(baseUrl) {
+  const value = withTrailingBaseUrl(baseUrl)
+  if (value.includes('api.minimaxi.com')) return CN_BASE_URL
+  if (value.includes('api.minimax.io')) return INTL_BASE_URL
+  return value
+}
+
 function isPlainNewKey(value) {
   const text = clean(value)
   return !!text && !MASKED_KEY_RE.test(text)
@@ -27,6 +34,18 @@ function isPlainNewKey(value) {
 
 function modelRef() {
   return `${PROVIDER_ID}/${MODEL_ID}`
+}
+
+function openClawModelDefinition() {
+  return {
+    id: MODEL_ID,
+    name: MODEL_ID,
+    api: 'openai-completions',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 204800,
+    maxTokens: 131072,
+  }
 }
 
 function cloneConfig(input) {
@@ -76,32 +95,19 @@ export function normalizeMiniMaxTestConfig(input = {}) {
 function ensureMiniMaxProvider(openclawConfig, config, apiKey) {
   const cfg = cloneConfig(openclawConfig)
   if (!cfg.models || typeof cfg.models !== 'object' || Array.isArray(cfg.models)) cfg.models = {}
+  cfg.models.mode = 'merge'
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
-  const existing = cfg.models.providers[PROVIDER_ID] && typeof cfg.models.providers[PROVIDER_ID] === 'object'
-    ? cfg.models.providers[PROVIDER_ID]
-    : {}
-  const models = Array.isArray(existing.models) ? existing.models.filter(Boolean) : []
-  if (!models.some(item => (typeof item === 'string' ? item : item?.id) === MODEL_ID)) {
-    models.unshift({
-      id: MODEL_ID,
-      name: MODEL_ID,
-      contextWindow: 1000000,
-      input: ['text', 'image'],
-    })
-  }
+  const models = [openClawModelDefinition()]
   cfg.models.providers[PROVIDER_ID] = {
-    ...existing,
-    type: 'openai-compatible',
-    api: existing.api || 'openai-completions',
+    api: 'openai-completions',
     baseUrl: config.baseUrl,
-    model: MODEL_ID,
     models,
   }
   if (apiKey) cfg.models.providers[PROVIDER_ID].apiKey = apiKey
-  cfg.models.defaultProvider = PROVIDER_ID
-  cfg.models.defaultModel = MODEL_ID
+  delete cfg.models.defaultProvider
+  delete cfg.models.defaultModel
 
   if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) cfg.agents = {}
   if (!cfg.agents.defaults || typeof cfg.agents.defaults !== 'object' || Array.isArray(cfg.agents.defaults)) {
@@ -142,7 +148,7 @@ function statusFromParts(config, apiKey, synced = {}) {
 
 function statusFromOpenClawConfig(openclawConfig = {}) {
   const provider = openclawConfig?.models?.providers?.[PROVIDER_ID] || {}
-  const baseUrl = withTrailingBaseUrl(provider.baseUrl) || getMiniMaxTestDefaults().baseUrl
+  const baseUrl = openAiBaseUrlForMiniMaxUrl(provider.baseUrl) || getMiniMaxTestDefaults().baseUrl
   const apiKey = clean(provider.apiKey)
   return statusFromParts({ baseUrl }, apiKey, {
     openclaw: !!provider.baseUrl,
@@ -187,7 +193,7 @@ async function configureHermesMiniMax(config, apiKey) {
   const provider = providerForBaseUrl(config.baseUrl)
   try {
     await api.configureHermes(provider, apiKey, MODEL_ID, config.baseUrl)
-    await setOptionalHermesEnv('HERMES_PROVIDER', PROVIDER_ID)
+    await setOptionalHermesEnv('HERMES_PROVIDER', provider)
     await setOptionalHermesEnv('OPENAI_MODEL', MODEL_ID)
     await setOptionalHermesEnv('SUPERCLAW_FORCE_PROVIDER', PROVIDER_ID)
     return true

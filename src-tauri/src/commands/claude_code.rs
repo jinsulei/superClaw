@@ -633,7 +633,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
     let managed = existing
         .get("managedBy")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "superclaw-yyapi" || v == "superclaw-minimax-test");
+        .is_some_and(|v| v == "superclaw-minimax-test");
     let has_existing_user_config = existing
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -686,7 +686,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("YYApi");
+        .unwrap_or("MiniMax");
     let relay_provider = config
         .get("provider")
         .and_then(|v| v.as_str())
@@ -698,13 +698,13 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("yyapi");
+        .unwrap_or("minimax");
     let managed_by = config
         .get("managedBy")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("superclaw-yyapi");
+        .unwrap_or("superclaw-minimax-test");
 
     let mut branch_models = config
         .get("branchModels")

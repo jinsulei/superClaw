@@ -5189,39 +5189,45 @@ function miniMaxProviderForBaseUrl(baseUrl) {
   return cleanMiniMaxBaseUrl(baseUrl).includes('api.minimaxi.com') ? 'minimax-cn' : 'minimax'
 }
 
+function miniMaxOpenAiBaseUrlForBaseUrl(baseUrl) {
+  const value = cleanMiniMaxBaseUrl(baseUrl)
+  if (value.includes('api.minimaxi.com')) return MINIMAX_TEST_DEFAULTS.cnBaseUrl
+  if (value.includes('api.minimax.io')) return MINIMAX_TEST_DEFAULTS.baseUrl
+  return value
+}
+
 function miniMaxModelRef() {
   return `${MINIMAX_TEST_DEFAULTS.providerId}/${MINIMAX_TEST_DEFAULTS.model}`
+}
+
+function miniMaxOpenClawModelDefinition() {
+  return {
+    id: MINIMAX_TEST_DEFAULTS.model,
+    name: MINIMAX_TEST_DEFAULTS.model,
+    api: 'openai-completions',
+    reasoning: true,
+    input: ['text'],
+    contextWindow: 204800,
+    maxTokens: 131072,
+  }
 }
 
 function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   const cfg = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
   if (!cfg.models || typeof cfg.models !== 'object' || Array.isArray(cfg.models)) cfg.models = {}
+  cfg.models.mode = 'merge'
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
-  const existing = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object'
-    ? cfg.models.providers.minimax
-    : {}
-  const models = Array.isArray(existing.models) ? existing.models.filter(Boolean) : []
-  if (!models.some(item => (typeof item === 'string' ? item : item?.id) === MINIMAX_TEST_DEFAULTS.model)) {
-    models.unshift({
-      id: MINIMAX_TEST_DEFAULTS.model,
-      name: MINIMAX_TEST_DEFAULTS.model,
-      contextWindow: 1000000,
-      input: ['text', 'image'],
-    })
-  }
+  const models = [miniMaxOpenClawModelDefinition()]
   cfg.models.providers.minimax = {
-    ...existing,
-    type: 'openai-compatible',
-    api: existing.api || 'openai-completions',
+    api: 'openai-completions',
     baseUrl: normalized.baseUrl,
-    model: MINIMAX_TEST_DEFAULTS.model,
     models,
   }
   if (apiKey) cfg.models.providers.minimax.apiKey = apiKey
-  cfg.models.defaultProvider = 'minimax'
-  cfg.models.defaultModel = MINIMAX_TEST_DEFAULTS.model
+  delete cfg.models.defaultProvider
+  delete cfg.models.defaultModel
 
   if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) cfg.agents = {}
   if (!cfg.agents.defaults || typeof cfg.agents.defaults !== 'object' || Array.isArray(cfg.agents.defaults)) {
@@ -5263,12 +5269,14 @@ function readMiniMaxPlainConfig() {
     || cleanMiniMaxValue(hermesEnv.MINIMAX_CN_API_KEY)
     || cleanMiniMaxValue(hermesEnv.OPENAI_API_KEY)
     || cleanMiniMaxValue(relay.apiKey)
-  const baseUrl = cleanMiniMaxBaseUrl(provider.baseUrl)
-    || cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_BASE_URL)
-    || cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_CN_BASE_URL)
-    || cleanMiniMaxBaseUrl(hermesEnv.OPENAI_BASE_URL)
-    || cleanMiniMaxBaseUrl(relay.baseUrl)
-    || MINIMAX_TEST_DEFAULTS.baseUrl
+  const baseUrl = miniMaxOpenAiBaseUrlForBaseUrl(
+    cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_BASE_URL)
+      || cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_CN_BASE_URL)
+      || cleanMiniMaxBaseUrl(hermesEnv.OPENAI_BASE_URL)
+      || cleanMiniMaxBaseUrl(relay.baseUrl)
+      || cleanMiniMaxBaseUrl(provider.baseUrl)
+      || MINIMAX_TEST_DEFAULTS.baseUrl
+  )
   return {
     cfg,
     provider,
@@ -5300,7 +5308,8 @@ function miniMaxStatusFromPlain(plain, overrides = {}) {
     hasApiKey: !!apiKey,
     maskedKey: apiKey ? maskMiniMaxApiKey(apiKey) : '',
     synced: {
-      openclaw: cleanMiniMaxValue(provider.baseUrl) === baseUrl || cleanMiniMaxValue(provider.model) === MINIMAX_TEST_DEFAULTS.model,
+      openclaw: miniMaxOpenAiBaseUrlForBaseUrl(provider.baseUrl) === baseUrl
+        && provider.api === 'openai-completions',
       openclawAgent: (plain.cfg?.agents?.defaults?.model?.primary || '') === miniMaxModelRef()
         || fs.existsSync(plain.paths?.openclawAgent || ''),
       hermes: env.HERMES_PROVIDER === 'minimax'
@@ -5317,21 +5326,20 @@ function miniMaxStatusFromPlain(plain, overrides = {}) {
 function writeMiniMaxAgentModels(normalized, apiKey) {
   const target = miniMaxDataPath('.openclaw', 'agents', 'main', 'agent', 'models.json')
   const current = readJsonFileRelaxed(target) || {}
+  current.mode = 'merge'
   if (!current.providers || typeof current.providers !== 'object' || Array.isArray(current.providers)) {
     current.providers = {}
   }
   current.providers.minimax = {
-    ...(current.providers.minimax || {}),
-    type: 'openai-compatible',
+    api: 'openai-completions',
     baseUrl: normalized.baseUrl,
     apiKey: apiKey || current.providers.minimax?.apiKey || '',
-    model: MINIMAX_TEST_DEFAULTS.model,
-    models: [MINIMAX_TEST_DEFAULTS.model],
+    models: [miniMaxOpenClawModelDefinition()],
   }
   if (!apiKey && !current.providers.minimax.apiKey) delete current.providers.minimax.apiKey
-  current.defaultProvider = 'minimax'
-  current.defaultModel = MINIMAX_TEST_DEFAULTS.model
-  current.primary = miniMaxModelRef()
+  delete current.defaultProvider
+  delete current.defaultModel
+  delete current.primary
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, `${JSON.stringify(current, null, 2)}\n`, 'utf8')
   return target
@@ -5354,7 +5362,7 @@ function writeMiniMaxHermesEnv(normalized, apiKey) {
     'API_SERVER_KEY',
   ]
   const pairs = [
-    ['HERMES_PROVIDER', 'minimax'],
+    ['HERMES_PROVIDER', providerId],
     ['OPENAI_BASE_URL', normalized.baseUrl],
     ['OPENAI_MODEL', MINIMAX_TEST_DEFAULTS.model],
     ['SUPERCLAW_FORCE_PROVIDER', 'minimax'],
@@ -5372,6 +5380,29 @@ function writeMiniMaxHermesEnv(normalized, apiKey) {
   const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : ''
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, _mergeEnvFile(current, managed, pairs), 'utf8')
+  return target
+}
+
+function writeMiniMaxHermesConfig(normalized) {
+  const target = miniMaxDataPath('hermes', 'config.yaml')
+  const providerId = miniMaxProviderForBaseUrl(normalized.baseUrl)
+  const content = `# Hermes Agent configuration (managed by ClawPanel)
+model:
+  default: ${MINIMAX_TEST_DEFAULTS.model}
+  provider: ${providerId}
+  api_mode: chat_completions
+  base_url: ${normalized.baseUrl}
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+terminal:
+  backend: local
+platforms:
+  api_server:
+    enabled: true
+`
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, content, 'utf8')
   return target
 }
 
@@ -5407,9 +5438,10 @@ function saveMiniMaxTestConfigLocal(input = {}) {
   const plain = readMiniMaxPlainConfig()
   const apiKey = normalized.apiKey || plain.apiKey
   const nextConfig = ensureMiniMaxOpenClawConfig(plain.cfg, normalized, apiKey)
-  writeOpenclawConfigFile(nextConfig)
+  writeOpenclawConfigFile(nextConfig, { preserveExisting: false })
   const agentPath = writeMiniMaxAgentModels(normalized, apiKey)
   const hermesPath = writeMiniMaxHermesEnv(normalized, apiKey)
+  const hermesConfigPath = writeMiniMaxHermesConfig(normalized)
   const relayResult = writeMiniMaxClaudeRelay({
     ...normalized,
     apiKey,
@@ -5421,6 +5453,7 @@ function saveMiniMaxTestConfigLocal(input = {}) {
       openclaw: CONFIG_PATH,
       openclawAgent: agentPath,
       hermes: hermesPath,
+      hermesConfig: hermesConfigPath,
       claudePanel: relayResult.path,
     },
   }
