@@ -5028,6 +5028,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
   'read_minimax_test_config', 'save_minimax_test_config', 'configure_claude_code_relay',
+  'payment_request',
 ])
 
 // === 工具函数 ===
@@ -5699,7 +5700,40 @@ async function fetchReadableUrlContent(rawUrl) {
 
 // === API Handlers ===
 
+function paymentApiBaseUrl() {
+  return String(process.env.PAYMENT_API_BASE_URL || process.env.VITE_PAYMENT_API_BASE_URL || '').trim().replace(/\/+$/, '')
+}
+
+async function forwardPaymentRequest(action, payload = {}) {
+  const baseUrl = paymentApiBaseUrl()
+  if (!baseUrl) {
+    const err = new Error('PAYMENT_API_NOT_CONFIGURED')
+    err.statusCode = 503
+    err.code = 'PAYMENT_API_NOT_CONFIGURED'
+    throw err
+  }
+  const url = baseUrl + '/payment/' + encodeURIComponent(action || '')
+  const resp = await globalThis.fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'SuperClaw-TestBuild' },
+    body: JSON.stringify(payload || {}),
+    signal: AbortSignal.timeout(30000),
+  })
+  const text = await resp.text()
+  let json
+  try { json = JSON.parse(text || '{}') } catch { json = { raw: text } }
+  if (!resp.ok) {
+    const err = new Error(json?.error || json?.message || text || ('Payment API HTTP ' + resp.status))
+    err.statusCode = resp.status
+    err.payload = json
+    throw err
+  }
+  return json
+}
 const handlers = {
+  async payment_request({ action, payload } = {}) {
+    return forwardPaymentRequest(action, payload || {})
+  },
   // 配置读写
   read_openclaw_config() {
     const cfg = readOpenclawConfigRequired()
@@ -12515,6 +12549,19 @@ if(typeof yyUser!=='undefined'){localStorage.setItem('user',yyUser);}
     return
   }
 
+  if (cmd === 'payment_request') {
+    try {
+      const args = await readBody(req)
+      const result = await forwardPaymentRequest(args?.action, args?.payload || {})
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(result))
+    } catch (e) {
+      res.statusCode = Number(e.statusCode || e.status || 500) || 500
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: e.message || String(e), code: e.code || undefined }))
+    }
+    return
+  }
   // --- 认证特殊处理 ---
   if (cmd === 'auth_check') {
     const cfg = readPanelConfig()

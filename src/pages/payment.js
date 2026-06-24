@@ -1,9 +1,9 @@
 /**
  * 充值页面
- * 对接好收米支付 + YYAPI V2 后端
+ * 对接好收米支付
  * 展示折扣金额 + 支付方式 + 二维码扫码支付
  */
-import { getTopupInfo, createPaymentOrder, getUserQuota, getPaymentOrderStatus } from '../lib/user-api.js'
+import { getTopupInfo, createPaymentOrder, getUserQuota, getPaymentOrderStatus, PAYMENT_NOT_CONFIGURED } from '../lib/payment-api.js'
 import { icon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { toast } from '../components/toast.js'
@@ -71,16 +71,16 @@ function escapeHtml(value) {
 
 function getPaymentLoadErrorMessage(err) {
   const message = String(err?.message || '')
-  if (/USER_API_BASE_URL|base\s*url|未配置/i.test(message)) {
-    return '充值服务未配置：请先配置 VITE_USER_API_BASE_URL 或在面板设置中配置用户 API 地址。'
+  if (err?.code === PAYMENT_NOT_CONFIGURED || /PAYMENT_API_NOT_CONFIGURED|PAYMENT_API_BASE_URL|base\s*url/i.test(message)) {
+    return 'Payment service is not configured. Set PAYMENT_API_BASE_URL or VITE_PAYMENT_API_BASE_URL.'
   }
-  if (/未登录|令牌|unauthorized|forbidden|invalid\s*token|HTTP\s*401|401/i.test(message)) {
-    return '登录状态失效或未登录，请先完成登录后再打开充值与套餐。'
+  if (/unauthorized|forbidden|invalid\s*token|HTTP\s*401|401|403/i.test(message)) {
+    return 'Payment service rejected the request. This test build will not redirect to login or activation.'
   }
   if (/Failed to fetch|NetworkError|abort|timeout|timed?\s*out|超时/i.test(message)) {
-    return '充值服务暂时无法连接，请检查网络或用户 API 服务后重试。'
+    return 'Payment service is unreachable. Check the independent payment API service and retry.'
   }
-  return escapeHtml(t('payment.loadError') || '加载充值配置失败')
+  return escapeHtml(t('payment.loadError') || 'Failed to load payment configuration')
 }
 
 async function loadTopupConfig(page) {
@@ -128,12 +128,12 @@ function renderPaymentPage(page, quota) {
     ${quota ? `
     <div class="card">
       <div class="card-header">
-        <span class="card-header-title">${t('profile.tokenInfo')}</span>
+        <span class="card-header-title">额度信息</span>
       </div>
       <div class="card-body" style="padding:16px">
         <div class="profile-token-grid">
           <div class="profile-token-item profile-token-remaining">
-            <div class="profile-token-label">${t('auth.remainingTokens')}</div>
+            <div class="profile-token-label">剩余额度</div>
             <div class="profile-token-value">${quota.quota ?? '-'}</div>
           </div>
           <div class="profile-token-item">
@@ -421,7 +421,7 @@ async function startPolling(page, overlay) {
   const timerEl = overlay.querySelector('#pay-qrcode-timer')
   const orderNo = _orderState?.orderId
 
-  // 额度接口依赖 YYApi 用户同步。老用户未同步时会 400，所以只作为兜底。
+  // 额度轮询只是辅助展示，支付订单状态仍是最终依据。
   const initialQuota = await getUserQuota({ suppressAuthRedirect: true }).catch(() => null)
   const initialBalance = initialQuota?.balance ?? initialQuota?.remaining_tokens ?? null
   let quotaPollingDisabled = initialBalance == null
