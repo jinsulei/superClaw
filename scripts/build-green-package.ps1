@@ -437,6 +437,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
+const crypto = require('crypto');
 
 const root = path.resolve(__dirname, '..');
 const app = path.join(root, 'OpenCloud');
@@ -450,6 +451,98 @@ function log(msg) { console.log(`[Launcher] ${msg}`); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function exists(p) { return fs.existsSync(p); }
 function fail(msg) { console.error(`\n[ERROR] ${msg}\n`); process.exit(1); }
+
+function isPlaceholderApiKey(value) {
+  const key = String(value || '').trim();
+  const lower = key.toLowerCase();
+  return !key
+    || key.includes('*')
+    || key.includes('鈥')
+    || key.startsWith('${')
+    || key.startsWith('%')
+    || key.startsWith('<')
+    || lower === 'maskedkey'
+    || lower === 'your_api_key'
+    || lower === 'replace_me'
+    || lower === 'superclaw-login-required'
+    || lower === 'test-minimax-placeholder-key-not-real'
+    || lower.includes('placeholder')
+    || lower.includes('minimax_api_key')
+    || lower.includes('openai_api_key');
+}
+
+function normalizeApiKey(value) {
+  if (value == null || typeof value === 'object') return '';
+  let key = String(value || '').trim();
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1).trim();
+  }
+  return isPlaceholderApiKey(key) ? '' : key;
+}
+
+function pickOpenClawMiniMaxApiKey(...values) {
+  for (const value of values) {
+    const key = normalizeApiKey(value);
+    if (key) return key;
+  }
+  return '';
+}
+
+function readJsonFileRelaxed(file) {
+  try {
+    if (!exists(file)) return {};
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
+  const openclawPath = path.join(dataRoot, '.openclaw', 'openclaw.json');
+  const agentModelsPath = path.join(dataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json');
+  const openclaw = readJsonFileRelaxed(openclawPath);
+  const agentModels = readJsonFileRelaxed(agentModelsPath);
+  const apiKey = pickOpenClawMiniMaxApiKey(
+    openclaw.providers?.minimax?.apiKey,
+    openclaw.models?.providers?.minimax?.apiKey,
+    openclaw.modelProviders?.minimax?.apiKey,
+    openclaw.providerConfigs?.minimax?.apiKey,
+    openclaw.env?.MINIMAX_API_KEY,
+    openclaw.env?.OPENAI_API_KEY,
+    agentModels.providers?.minimax?.apiKey,
+    agentModels.minimax?.apiKey,
+    agentModels.models?.providers?.minimax?.apiKey
+  );
+  return {
+    provider: 'minimax',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    model: 'MiniMax-M3',
+    apiKey,
+    paths: { openclaw: openclawPath, openclawAgent: agentModelsPath },
+  };
+}
+
+function keyFingerprint(apiKey) {
+  const key = normalizeApiKey(apiKey);
+  return key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 8) : '';
+}
+
+function openclawMiniMaxGatewayEnv(resourcesRoot, dataRoot) {
+  const config = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot);
+  if (!config.apiKey) return { config, env: {} };
+  return {
+    config,
+    env: {
+      MINIMAX_API_KEY: config.apiKey,
+      OPENAI_API_KEY: config.apiKey,
+      OPENAI_BASE_URL: config.baseUrl,
+      OPENAI_MODEL: config.model,
+      SUPERCLAW_FORCE_PROVIDER: 'minimax',
+      SUPERCLAW_MINIMAX_BASE_URL: config.baseUrl,
+      SUPERCLAW_MINIMAX_MODEL: config.model,
+    },
+  };
+}
 
 function registerOpenClawTools() {
   const script = path.join(app, 'scripts', 'register-openclaw-tools.ps1');
@@ -577,9 +670,16 @@ async function startPanel() {
 async function startOpenClaw() {
   const openclaw = path.join(app, 'resources', 'runtime', 'openclaw', 'openclaw.cmd');
   const home = path.join(app, 'resources', 'data', '.openclaw');
+  const resources = path.join(app, 'resources');
+  const data = path.join(resources, 'data');
   if (!exists(openclaw)) fail('Missing OpenClaw runtime. Please extract the full package again.');
   registerOpenClawTools();
   if (!(await tcpOpen(18789))) {
+    const minimax = openclawMiniMaxGatewayEnv(resources, data);
+    if (!minimax.config.apiKey) {
+      fail('OpenClaw MiniMax API Key is not configured. Save your MiniMax API Key in the local Models page before starting OpenClaw.');
+    }
+    log(`OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${keyFingerprint(minimax.config.apiKey)} baseUrl=${minimax.config.baseUrl} model=${minimax.config.model}`);
     log('Starting OpenCloud/OpenClaw Gateway: http://127.0.0.1:18789');
     spawnManaged(openclaw, ['gateway', 'run'], {
       cwd: path.dirname(openclaw),
@@ -589,6 +689,7 @@ async function startOpenClaw() {
         OPENCLAW_STATE_DIR: home,
         OPENCLAW_CONFIG: path.join(home, 'openclaw.json'),
         OPENCLAW_CONFIG_PATH: path.join(home, 'openclaw.json'),
+        ...minimax.env,
         PATH: `${path.dirname(openclaw)};${process.env.PATH || ''}`,
       },
     });

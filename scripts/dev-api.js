@@ -1952,6 +1952,109 @@ function readDotEnvVars(envPath) {
   return vars
 }
 
+function isPlaceholderApiKey(value) {
+  const key = String(value || '').trim()
+  const lower = key.toLowerCase()
+  return !key
+    || key.includes('*')
+    || key.includes('鈥')
+    || key.startsWith('${')
+    || key.startsWith('%')
+    || key.startsWith('<')
+    || lower === 'maskedkey'
+    || lower === 'your_api_key'
+    || lower === 'replace_me'
+    || lower === 'superclaw-login-required'
+    || lower === 'test-minimax-placeholder-key-not-real'
+    || lower.includes('placeholder')
+    || lower.includes('minimax_api_key')
+    || lower.includes('openai_api_key')
+}
+
+function normalizeApiKey(value) {
+  if (value == null || typeof value === 'object') return ''
+  let key = String(value || '').trim()
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1).trim()
+  }
+  return isPlaceholderApiKey(key) ? '' : key
+}
+
+function pickOpenClawMiniMaxApiKey(...values) {
+  for (const value of values) {
+    const key = normalizeApiKey(value)
+    if (key) return key
+  }
+  return ''
+}
+
+function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
+  const safeResourcesRoot = resourcesRoot ? path.resolve(resourcesRoot) : null
+  const safeDataRoot = dataRoot ? path.resolve(dataRoot) : null
+  if (!safeResourcesRoot || !safeDataRoot || !isPathInside(safeResourcesRoot, safeDataRoot)) {
+    return { provider: 'minimax', baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl, model: MINIMAX_TEST_DEFAULTS.model, apiKey: '' }
+  }
+
+  const openclawPath = path.join(safeDataRoot, '.openclaw', 'openclaw.json')
+  const agentModelsPath = path.join(safeDataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json')
+  const openclaw = readJsonFileRelaxed(openclawPath) || {}
+  const agentModels = readJsonFileRelaxed(agentModelsPath) || {}
+  const apiKey = pickOpenClawMiniMaxApiKey(
+    openclaw.providers?.minimax?.apiKey,
+    openclaw.models?.providers?.minimax?.apiKey,
+    openclaw.modelProviders?.minimax?.apiKey,
+    openclaw.providerConfigs?.minimax?.apiKey,
+    openclaw.env?.MINIMAX_API_KEY,
+    openclaw.env?.OPENAI_API_KEY,
+    agentModels.providers?.minimax?.apiKey,
+    agentModels.minimax?.apiKey,
+    agentModels.models?.providers?.minimax?.apiKey
+  )
+
+  return {
+    provider: 'minimax',
+    baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl,
+    model: MINIMAX_TEST_DEFAULTS.model,
+    apiKey,
+    paths: { openclaw: openclawPath, openclawAgent: agentModelsPath },
+  }
+}
+
+function openclawMiniMaxKeyFingerprint(apiKey) {
+  const key = normalizeApiKey(apiKey)
+  return key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 8) : ''
+}
+
+function openclawMiniMaxGatewayConfig() {
+  const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+  const dataRoot = path.join(resourcesRoot, 'data')
+  return resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+}
+
+function openclawMiniMaxGatewayEnv() {
+  const minimaxConfig = openclawMiniMaxGatewayConfig()
+  if (!minimaxConfig.apiKey) return {}
+  return {
+    MINIMAX_API_KEY: minimaxConfig.apiKey,
+    OPENAI_API_KEY: minimaxConfig.apiKey,
+    OPENAI_BASE_URL: minimaxConfig.baseUrl,
+    OPENAI_MODEL: minimaxConfig.model,
+    SUPERCLAW_FORCE_PROVIDER: 'minimax',
+    SUPERCLAW_MINIMAX_BASE_URL: minimaxConfig.baseUrl,
+    SUPERCLAW_MINIMAX_MODEL: minimaxConfig.model,
+  }
+}
+
+function requireOpenClawMiniMaxGatewayConfig() {
+  const minimaxConfig = openclawMiniMaxGatewayConfig()
+  if (!minimaxConfig.apiKey) {
+    const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
+    error.code = 'OPENCLAW_MINIMAX_API_KEY_REQUIRED'
+    throw error
+  }
+  return minimaxConfig
+}
+
 function openclawRuntimeEnv(extra = {}) {
   return {
     ...process.env,
@@ -1959,6 +2062,7 @@ function openclawRuntimeEnv(extra = {}) {
     OPENCLAW_STATE_DIR: OPENCLAW_DIR,
     OPENCLAW_CONFIG_PATH: CONFIG_PATH,
     ...readDotEnvVars(path.join(OPENCLAW_DIR, '.env')),
+    ...openclawMiniMaxGatewayEnv(),
     ...(extra || {}),
   }
 }
@@ -4515,6 +4619,8 @@ function winStartGateway() {
   // 写入启动标记到日志
   const timestamp = new Date().toISOString()
   fs.appendFileSync(logPath, `\n[${timestamp}] [ClawPanel] Starting Gateway on Windows...\n`)
+  const minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
+  fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
 
   // 用 cmd.exe /c 启动，不用 shell: true（避免额外 cmd.exe 进程链导致终端闪烁）
   const child = spawnOpenclaw(['gateway', 'run'], {
@@ -4522,6 +4628,7 @@ function winStartGateway() {
     stdio: ['ignore', out, err],
     windowsHide: true,
     cwd: homedir(),
+    env: openclawMiniMaxGatewayEnv(),
   })
   child.unref()
 }
@@ -4885,12 +4992,15 @@ function linuxStartGateway() {
 
   const timestamp = new Date().toISOString()
   fs.appendFileSync(logPath, `\n[${timestamp}] [ClawPanel] Starting Gateway on Linux...\n`)
+  const minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
+  fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
 
   const child = spawnOpenclaw(['gateway', 'run'], {
     detached: true,
     stdio: ['ignore', out, err],
     shell: false,
     cwd: homedir(),
+    env: openclawMiniMaxGatewayEnv(),
   })
   child.unref()
 }

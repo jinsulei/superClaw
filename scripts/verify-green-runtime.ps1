@@ -291,14 +291,29 @@ $manifest = [ordered]@{
     requireSha256ForFiles = $true
     requireDirectoryDigestForDirectories = $true
     failIfRequiredMissing = [bool]$RequireComplete
+    openclawGatewayEnvInjection = "scripts/dev-api.js"
+    requireRealMiniMaxApiKeyAtBuildTime = $false
   }
   runtime = $entries
   missingRequired = $missingRequired
   riskHits = $riskHits
 }
 
+$devApiPath = Join-Path $ProjectRootResolved "scripts/dev-api.js"
+if (Test-Path -LiteralPath $devApiPath -PathType Leaf) {
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  $manifest.openclawGateway = [ordered]@{
+    runtimeExists = [bool](Test-Path -LiteralPath (Join-Path $ProjectRootResolved "src-tauri/resources/runtime/openclaw/openclaw.cmd") -PathType Leaf)
+    envInjectionByDevApi = [bool]($devApiText -match "openclawMiniMaxGatewayEnv" -and $devApiText -match "resolveOpenClawMiniMaxConfig")
+    keySource = "resources/data/.openclaw"
+    requiresSystemMiniMaxApiKey = $false
+    requiresRealKeyAtBuildTime = $false
+  }
+}
+
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $OutputManifest -Encoding UTF8
 Write-Info "Manifest written: $OutputManifest"
+Write-Info "OpenClaw Gateway env injection is handled by scripts/dev-api.js; this runtime verification does not require a real MINIMAX_API_KEY at build time."
 
 if ($riskHits.Count -gt 0) {
   Write-Info "Risk hits found: $($riskHits.Count)"

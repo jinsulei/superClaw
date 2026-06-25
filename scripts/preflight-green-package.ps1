@@ -342,6 +342,45 @@ function Test-MiniMaxCNGatewayDefaults {
   Write-Host "Native Claude CLI not required for relay mode: PASS" -ForegroundColor Green
 }
 
+function Test-OpenClawMiniMaxGatewayEnvInjection {
+  $devApiPath = "scripts/dev-api.js"
+  $greenPath = "scripts/build-green-package.ps1"
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  $greenText = Get-Content -LiteralPath $greenPath -Raw -Encoding UTF8
+  $combined = $devApiText + "`n" + $greenText
+
+  foreach ($term in @(
+    "resolveOpenClawMiniMaxConfig",
+    "openclawMiniMaxGatewayEnv",
+    "requireOpenClawMiniMaxGatewayConfig",
+    "OPENCLAW_MINIMAX_API_KEY_REQUIRED",
+    "resourcesRoot, dataRoot",
+    "path.join(safeDataRoot, '.openclaw', 'openclaw.json')",
+    "path.join(safeDataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json')",
+    "MINIMAX_API_KEY: minimaxConfig.apiKey",
+    "OPENAI_API_KEY: minimaxConfig.apiKey",
+    "OPENAI_BASE_URL: minimaxConfig.baseUrl",
+    "OPENAI_MODEL: minimaxConfig.model",
+    "https://api.minimaxi.com/v1",
+    "MiniMax-M3"
+  )) {
+    if ($combined -notmatch [regex]::Escape($term)) {
+      throw "OpenClaw MiniMax env injection is missing term: $term"
+    }
+  }
+
+  if ($devApiText -match "process\.env\.MINIMAX_API_KEY\s*\|\|" -or $devApiText -match "process\.env\.OPENAI_API_KEY\s*\|\|") {
+    throw "$devApiPath must not require system MINIMAX_API_KEY/OPENAI_API_KEY fallback for OpenClaw gateway startup."
+  }
+  if ($combined -match "(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}") {
+    throw "OpenClaw MiniMax env injection source contains a real-looking sk- key."
+  }
+
+  Write-Host "OpenClaw gateway MiniMax env injection: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw MiniMax key source local data: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw no global env dependency: PASS" -ForegroundColor Green
+}
+
 function Test-HermesPackagedRuntimeLayout {
   $requiredPaths = @(
     "src-tauri/resources/runtime/hermes-agent/Scripts/hermes.exe",
@@ -969,6 +1008,9 @@ Test-MiniMaxOnlyTestBuildLogic
 
 Write-Section "MiniMax CN Gateway Defaults"
 Test-MiniMaxCNGatewayDefaults
+
+Write-Section "OpenClaw MiniMax Gateway Env"
+Test-OpenClawMiniMaxGatewayEnvInjection
 
 Write-Section "Hermes Packaged Runtime Layout"
 Test-HermesPackagedRuntimeLayout
