@@ -22,6 +22,7 @@
  *   - Full tmux-like run resume (Tauri events are in-process and reliable).
  */
 import { api, isTauriRuntime } from '../../../lib/tauri-api.js'
+import { selectStableActiveSession } from '../../../lib/agent-session-persistence.js'
 
 // ---------- constants ----------
 
@@ -90,11 +91,23 @@ function withHermesReplyStyleInstruction(instructions) {
 function loadJson(key) {
   try {
     const raw = safeGet(key)
-    return raw ? JSON.parse(raw) : null
+    if (!raw) return null
+    try {
+      return JSON.parse(raw)
+    } catch {
+      backupCorruptJson(key, raw)
+      return null
+    }
   } catch { return null }
 }
 function saveJson(key, value) {
   try { safeSet(key, JSON.stringify(value)) } catch {}
+}
+
+function backupCorruptJson(key, raw) {
+  if (!key || !raw) return
+  const backupKey = `${key}.corrupt.${Date.now()}`
+  safeSet(backupKey, String(raw).slice(0, 500000))
 }
 
 function profileKey(profile) {
@@ -540,11 +553,16 @@ function createStore() {
     if (Array.isArray(cached) && cached.length) {
       state.sessions = cached
       const savedActive = safeGet(activeKey())
-      const target = savedActive && cached.find(s => s.id === savedActive)
+      const target = selectStableActiveSession({
+        sessions: cached,
+        savedActiveId: savedActive,
+        currentActiveId: state.activeSessionId,
+      })
       if (target) {
         const msgs = loadJson(messagesKey(target.id))
         if (Array.isArray(msgs)) target.messages = msgs
         state.activeSessionId = target.id
+        safeSet(activeKey(), target.id)
       }
     }
   }
@@ -654,8 +672,13 @@ function createStore() {
       persistSessions()
 
       if (!state.activeSessionId || !state.sessions.some(s => s.id === state.activeSessionId)) {
-        if (state.sessions.length) {
-          await switchSession(state.sessions[0].id)
+        const target = selectStableActiveSession({
+          sessions: state.sessions,
+          savedActiveId: safeGet(activeKey()),
+          currentActiveId: state.activeSessionId,
+        })
+        if (target) {
+          await switchSession(target.id)
         } else {
           state.activeSessionId = null
           safeRemove(activeKey())

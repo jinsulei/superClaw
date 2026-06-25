@@ -6132,6 +6132,11 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   box-shadow: 0 0 0 2px rgba(202, 138, 4, 0.12);
 }
 
+[data-engine="hermes"] .hm-chat-input-area.is-drag-over .hm-chat-input-wrap {
+  border-color: var(--hm-accent);
+  box-shadow: 0 0 0 3px rgba(202, 138, 4, 0.16);
+}
+
 [data-engine="hermes"] .hm-chat-input {
   flex: 1;
   resize: none;

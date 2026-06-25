@@ -1003,6 +1003,8 @@ export function render() {
   let linkError = ''
   let pendingAttachmentInstructions = ''
   let pendingAttachments = []
+  let attachmentDragActive = false
+  let attachmentDragDepth = 0
   let gwOnline = false
   let currentModel = ''
   let statusRefreshInFlight = false
@@ -1215,9 +1217,50 @@ export function render() {
     event.preventDefault()
     event.stopImmediatePropagation?.()
     const files = await getUniqueClipboardImageFiles(event)
-    for (const file of files) await handlePickAttachment(file)
+    await handlePickAttachments(files)
   }
   document.addEventListener('paste', onPasteImage, true)
+
+  function dragEventHasFiles(event) {
+    const transfer = event?.dataTransfer
+    if (!transfer) return false
+    if (transfer.files?.length) return true
+    return Array.from(transfer.types || []).includes('Files')
+  }
+
+  function setAttachmentDragActive(active) {
+    attachmentDragActive = !!active
+    el.classList.toggle('is-attachment-drag-over', attachmentDragActive)
+    el.querySelector('.hm-chat-input-area')?.classList.toggle('is-drag-over', attachmentDragActive)
+  }
+
+  async function handleDroppedAttachments(event) {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    attachmentDragDepth = 0
+    setAttachmentDragActive(false)
+    await handlePickAttachments(Array.from(event.dataTransfer?.files || []))
+  }
+
+  el.addEventListener('dragenter', (event) => {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    attachmentDragDepth += 1
+    setAttachmentDragActive(true)
+  })
+  el.addEventListener('dragover', (event) => {
+    if (!dragEventHasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+    setAttachmentDragActive(true)
+  })
+  el.addEventListener('dragleave', (event) => {
+    if (!dragEventHasFiles(event)) return
+    attachmentDragDepth = Math.max(0, attachmentDragDepth - 1)
+    if (attachmentDragDepth === 0) setAttachmentDragActive(false)
+  })
+  el.addEventListener('drop', handleDroppedAttachments)
 
   function scheduleDraw(mode = 'full') {
     if (mode === 'full') drawMode = 'full'
@@ -1598,22 +1641,23 @@ export function render() {
     const compact = compactChatMessage(rawText)
     const previewHtml = compact.preview ? mdToHtml(compact.preview) : ''
     const fullHtml = compact.content ? mdToHtml(compact.content) : ''
+    const canToggle = !!compact.collapsed
     const toolHtml = compact.toolLines.length ? `
       <details class="tool-log-summary">
         <summary>${escHtml(compact.toolSummary)}</summary>
         <pre>${escHtml(compact.toolLines.join('\n'))}</pre>
       </details>
     ` : ''
-    const toggleHtml = compact.collapsed ? `
+    const toggleHtml = canToggle ? `
       <button type="button" class="assistant-compact-message__toggle" data-compact-toggle>
-        展开详情
+        收起详情
       </button>
     ` : ''
 
     return `
-      <div class="assistant-compact-message ${compact.collapsed ? 'is-collapsed' : ''}">
-        ${previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview">${previewHtml}</div>` : ''}
-        ${compact.collapsed ? `<div class="assistant-compact-message__content assistant-compact-message__full" hidden>${fullHtml}</div>` : ''}
+      <div class="assistant-compact-message ${canToggle ? 'is-expanded' : ''}">
+        ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview" hidden>${previewHtml}</div>` : ''}
+        <div class="assistant-compact-message__content assistant-compact-message__full">${fullHtml}</div>
         ${toggleHtml}
         ${toolHtml}
       </div>
@@ -1849,7 +1893,7 @@ export function render() {
     const cost = active?.estimatedCostUsd
     const showUsage = !!active && (totalIn + totalOut + totalCache) > 0
     return `
-      <div class="hm-chat-input-area">
+      <div class="hm-chat-input-area ${attachmentDragActive ? 'is-drag-over' : ''}">
         ${renderSlashMenu()}
         ${renderLinkMenu()}
         ${renderPendingAttachments()}
@@ -1900,7 +1944,7 @@ export function render() {
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
-            <input id="hm-chat-file-input" type="file" hidden>
+            <input id="hm-chat-file-input" type="file" multiple hidden>
           </div>
         </div>
       </div>
@@ -2463,9 +2507,9 @@ export function render() {
     el.querySelector('#hm-chat-link-read')?.addEventListener('click', handleReadLink)
     const fileInput = el.querySelector('#hm-chat-file-input')
     fileInput?.addEventListener('change', async () => {
-      const file = fileInput.files?.[0]
+      const files = Array.from(fileInput.files || [])
       fileInput.value = ''
-      if (file) await handlePickAttachment(file)
+      await handlePickAttachments(files)
     })
 
     el.querySelectorAll('[data-remove-attachment]').forEach(btn => {
@@ -2640,6 +2684,14 @@ export function render() {
     } finally {
       linkBusy = false
       draw()
+    }
+  }
+
+  async function handlePickAttachments(files) {
+    const list = Array.from(files || []).filter(Boolean)
+    if (!list.length) return
+    for (const file of list) {
+      await handlePickAttachment(file)
     }
   }
 
