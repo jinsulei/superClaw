@@ -854,9 +854,22 @@ async function handleOpenAiRelayRun(req, res, context) {
   const payload = context.payload || {};
   const apiModel = normalizeRelayApiModel(context.model, relayConfig.model);
   const maxTokens = Number(payload.max_tokens || payload.maxTokens || 2048);
+  const userPrompt = String(context.prompt || "").trim();
+  const messages = Array.isArray(context.messages) && context.messages.length > 0
+    ? context.messages
+    : Array.isArray(payload.messages) && payload.messages.length > 0
+      ? payload.messages
+      : [{ role: "user", content: userPrompt }];
+  const hasSystem = messages.some((message) => message && message.role === "system");
+  const relayMessages = hasSystem
+    ? messages
+    : [
+        { role: "system", content: buildClaudeCodeSystemPrompt() },
+        ...messages,
+      ];
   const requestBody = {
     model: apiModel,
-    messages: [{ role: "user", content: context.prompt }],
+    messages: relayMessages,
     max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 2048,
     stream: payload.stream === true,
   };
@@ -944,6 +957,18 @@ async function handleOpenAiRelayRun(req, res, context) {
   writeEvent(res, "done", { runtimeMode: "OPENAI_RELAY", model: apiModel });
   res.end();
   return true;
+}
+
+function buildClaudeCodeSystemPrompt() {
+  return [
+    "You are Claude Code inside SuperClaw.",
+    "Your identity is Claude Code, a coding and project automation agent.",
+    "You help the user read projects, modify code, run safe terminal commands, inspect files, explain errors, create scripts, and cooperate with Hermes and OpenClaw.",
+    "When the user asks who you are, answer as Claude Code and describe your coding, terminal, project analysis, debugging, and collaboration capabilities.",
+    "Do not describe yourself as only the underlying model provider.",
+    "Do not claim to be Hermes or OpenClaw.",
+    "Use available tools when the task requires code, files, terminal commands, or project inspection.",
+  ].join("\n");
 }
 
 function readModelBranches(settings) {

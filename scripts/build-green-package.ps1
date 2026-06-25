@@ -196,6 +196,29 @@ function Write-Utf8File([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Copy-FileIfMissingOrEmpty([string]$Source, [string]$Target) {
+  if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+    Fail "Missing OpenClaw identity template: $Source"
+  }
+  New-Item -ItemType Directory -Path (Split-Path $Target -Parent) -Force | Out-Null
+  if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) {
+    Copy-Item -LiteralPath $Source -Destination $Target -Force
+    return
+  }
+  $current = Get-Content -LiteralPath $Target -Raw -Encoding UTF8
+  if ([string]::IsNullOrWhiteSpace($current)) {
+    Copy-Item -LiteralPath $Source -Destination $Target -Force
+  }
+}
+
+function Copy-OpenClawWorkspaceIdentity([string]$ResourcesRoot, [string]$DataRoot) {
+  $templateDir = Join-Path $ResourcesRoot "templates\openclaw-workspace"
+  $workspaceDir = Join-Path $DataRoot ".openclaw\workspace"
+  foreach ($name in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+    Copy-FileIfMissingOrEmpty (Join-Path $templateDir $name) (Join-Path $workspaceDir $name)
+  }
+}
+
 function Set-TestBuildViteEnv {
   if (-not $script:EffectiveSanitizedTest) { return @{} }
   $keys = @(
@@ -705,6 +728,7 @@ foreach ($runtimeName in @("claude-code", "claude-panel")) {
 }
 
 Copy-Dir (Join-Path $Root "src-tauri\resources\bin") (Join-Path $OpenCloud "resources\bin")
+Copy-Dir (Join-Path $Root "src-tauri\resources\templates\openclaw-workspace") (Join-Path $OpenCloud "resources\templates\openclaw-workspace")
 Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-tools") (Join-Path $OpenCloud "resources\runtime\uv-tools")
 Copy-Dir (Join-Path $Root "src-tauri\resources\runtime\uv-python") (Join-Path $OpenCloud "resources\runtime\uv-python")
 foreach ($file in @("src-tauri\resources\cpython-3.11.13-windows-x86_64-none.tar.gz", "src-tauri\resources\hermes-agent-main.zip", "src-tauri\resources\uv-x86_64-pc-windows-msvc.zip")) {
@@ -720,6 +744,7 @@ if (Test-Path -LiteralPath (Join-Path $Root "docs")) {
 
 Step "Writing clean configs and templates"
 Write-OpenClawConfig (Join-Path $OpenCloud "resources\data\.openclaw")
+Copy-OpenClawWorkspaceIdentity (Join-Path $OpenCloud "resources") (Join-Path $OpenCloud "resources\data")
 Write-HermesConfig (Join-Path $OpenCloud "resources\data\hermes")
 Copy-Dir (Join-Path $Root "src-tauri\resources\data\ocr") (Join-Path $OpenCloud "resources\data\ocr") -XD @(".cache", "cache", "tmp", "temp") -XF @("*.log", "*.tmp")
 $skillsSrc = Join-Path $Root "src-tauri\resources\data\hermes\skills"
@@ -831,6 +856,10 @@ $BundledNode = Join-Path $Runtime "node-win\node.exe"
 if ($LASTEXITCODE -ne 0) { Fail "Bundled Node is not usable" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "scripts\serve.js"))) { Fail "Missing serve.js" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\openclaw.cmd"))) { Fail "Missing openclaw.cmd" }
+foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+  if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\templates\openclaw-workspace\$identityFile"))) { Fail "Missing OpenClaw identity template: $identityFile" }
+  if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\data\.openclaw\workspace\$identityFile"))) { Fail "Missing OpenClaw workspace identity: $identityFile" }
+}
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json"))) { Fail "Missing registered OpenClaw desktop-control plugin" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json"))) { Fail "Missing registered OpenClaw skill-manager plugin" }
 if (-not (Test-Path -LiteralPath (Join-Path $OpenCloud "resources\runtime\openclaw\bin\desktop-control-agent.exe"))) { Fail "Missing registered OpenClaw desktop-control sidecar" }
@@ -854,7 +883,7 @@ if (-not $SkipZip) {
   Step "Extracting zip for structure verification"
   Expand-GreenPackageZip $ZipPath $TestExtract
   $ExtractedRoot = Join-Path $TestExtract (Split-Path $OutRoot -Leaf)
-  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\uv-tools\uv.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
+  foreach ($must in @("Start-OpenCloud.bat", "Start-Hermes.bat", "Start-All.bat", "runtime\node-win\node.exe", "OpenCloud\scripts\serve.js", "OpenCloud\resources\runtime\openclaw\openclaw.cmd", "OpenCloud\resources\templates\openclaw-workspace\IDENTITY.md", "OpenCloud\resources\templates\openclaw-workspace\SOUL.md", "OpenCloud\resources\templates\openclaw-workspace\AGENTS.md", "OpenCloud\resources\data\.openclaw\workspace\IDENTITY.md", "OpenCloud\resources\data\.openclaw\workspace\SOUL.md", "OpenCloud\resources\data\.openclaw\workspace\AGENTS.md", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes.exe", "OpenCloud\resources\runtime\hermes-agent\Scripts\hermes-agent.exe", "OpenCloud\resources\runtime\uv-tools\uv.exe", "OpenCloud\resources\runtime\ocr\ocr-runner.cjs", "OpenCloud\resources\runtime\ocr\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js\package.json", "OpenCloud\resources\runtime\ocr\node_modules\tesseract.js-core\package.json", "OpenCloud\resources\runtime\ocr\tessdata\eng.traineddata.gz", "OpenCloud\resources\runtime\ocr\tessdata\chi_sim.traineddata.gz", "OpenCloud\resources\data\ocr\ocr-config.json")) {
     if (-not (Test-Path -LiteralPath (Join-Path $ExtractedRoot $must))) {
       Fail "Extract test missing: $must"
     }

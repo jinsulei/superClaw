@@ -156,6 +156,29 @@ function Write-Utf8NoBom([string]$Path, [string]$Value) {
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }
 
+function Copy-FileIfMissingOrEmpty([string]$Source, [string]$Target) {
+  if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+    Fail "Missing OpenClaw identity template: $Source"
+  }
+  New-Item -ItemType Directory -Path (Split-Path $Target -Parent) -Force | Out-Null
+  if (-not (Test-Path -LiteralPath $Target -PathType Leaf)) {
+    Copy-Item -LiteralPath $Source -Destination $Target -Force
+    return
+  }
+  $current = Get-Content -LiteralPath $Target -Raw -Encoding UTF8
+  if ([string]::IsNullOrWhiteSpace($current)) {
+    Copy-Item -LiteralPath $Source -Destination $Target -Force
+  }
+}
+
+function Copy-OpenClawWorkspaceIdentity([string]$ResourcesRoot, [string]$DataRoot) {
+  $templateDir = Join-Path $ResourcesRoot "templates\openclaw-workspace"
+  $workspaceDir = Join-Path $DataRoot ".openclaw\workspace"
+  foreach ($name in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+    Copy-FileIfMissingOrEmpty (Join-Path $templateDir $name) (Join-Path $workspaceDir $name)
+  }
+}
+
 function Scrub-SanitizedTextExamples([string]$Root) {
   if (-not (Test-Path $Root)) {
     return
@@ -734,6 +757,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   }
 
   Write-PortableOpenClawConfig $DotOpenClaw $SanitizedTestMode
+  Copy-OpenClawWorkspaceIdentity $ResourcesDir $DataRoot
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
   Write-PortableClaudePanelRelayConfig $ClaudePanelData $SanitizedTestMode
   Repair-HermesConfig $HermesData $SanitizedTestMode
@@ -1033,6 +1057,9 @@ Assert-File (Join-Path $ResourcesDir "runtime\hermes-agent\Scripts\hermes.exe") 
 Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
+foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+  Assert-File (Join-Path $ResourcesDir "templates\openclaw-workspace\$identityFile") "OpenClaw identity template $identityFile"
+}
 Sync-SuperClawOpenClawPlugins
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-panel") "Claude UI panel runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\server.js") "Claude UI panel server"
@@ -1218,6 +1245,10 @@ Ok "Removed logs, locks, and pid files created during package verification"
 Step "Verifying package"
 Assert-File $ExeDest "Packaged superclaw.exe"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\openclaw.cmd") "Packaged OpenClaw launcher"
+foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+  Assert-File (Join-Path $PackagedResources "templates\openclaw-workspace\$identityFile") "Packaged OpenClaw identity template $identityFile"
+  Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\$identityFile") "Packaged OpenClaw workspace identity $identityFile"
+}
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json") "Packaged OpenClaw skill-manager plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"

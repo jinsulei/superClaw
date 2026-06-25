@@ -729,6 +729,38 @@ function portableOpenclawDataDir() {
   return null
 }
 
+function ensureOpenClawWorkspaceIdentity(resourcesRoot, dataRoot) {
+  const templateDir = path.join(resourcesRoot, 'templates', 'openclaw-workspace')
+  const workspaceDir = path.join(dataRoot, '.openclaw', 'workspace')
+  const files = ['IDENTITY.md', 'SOUL.md', 'AGENTS.md']
+
+  for (const file of files) {
+    const source = path.join(templateDir, file)
+    const target = path.join(workspaceDir, file)
+    if (!fs.existsSync(source)) continue
+
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    if (!fs.existsSync(target)) {
+      fs.copyFileSync(source, target)
+      continue
+    }
+
+    const current = fs.readFileSync(target, 'utf8')
+    if (!current.trim()) {
+      fs.copyFileSync(source, target)
+    }
+  }
+}
+
+function ensurePortableOpenClawWorkspaceIdentity() {
+  const portableDir = portableOpenclawDataDir()
+  if (!portableDir || path.resolve(OPENCLAW_DIR) !== path.resolve(portableDir)) return
+
+  const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+  const dataRoot = path.dirname(portableDir)
+  ensureOpenClawWorkspaceIdentity(resourcesRoot, dataRoot)
+}
+
 // ---------------------------------------------------------------------------
 
 /** 内置 uv 包路径（Dev: src-tauri/resources/，便携: 根目录 resources/） */
@@ -1500,6 +1532,11 @@ function applyOpenclawPathConfig(panelConfig) {
   process.env.OPENCLAW_HOME = OPENCLAW_DIR
   process.env.OPENCLAW_STATE_DIR = OPENCLAW_DIR
   process.env.OPENCLAW_CONFIG_PATH = CONFIG_PATH
+  try {
+    ensurePortableOpenClawWorkspaceIdentity()
+  } catch (error) {
+    console.warn(`[OpenClaw] workspace identity template sync skipped: ${error?.message || error}`)
+  }
   return { path: OPENCLAW_DIR, isCustom: !!customDir }
 }
 

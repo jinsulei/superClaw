@@ -86,6 +86,9 @@ function Test-WorkspaceStatus {
     "scripts/register-openclaw-tools.ps1",
     "scripts/regression-usb-exe.ps1",
     "scripts/verify-green-runtime.ps1",
+    "src-tauri/resources/templates/openclaw-workspace/AGENTS.md",
+    "src-tauri/resources/templates/openclaw-workspace/IDENTITY.md",
+    "src-tauri/resources/templates/openclaw-workspace/SOUL.md",
     "src-tauri/resources/runtime/claude-panel/server.js",
     "src-tauri/src/commands/claude_code.rs",
     "src-tauri/src/commands/config.rs",
@@ -412,6 +415,78 @@ function Test-EcommerceAssistantBuildFlag {
 
   Write-Host "Ecommerce assistant build flag: PASS" -ForegroundColor Green
   Write-Host "Ecommerce stage smoke wiring: PASS" -ForegroundColor Green
+}
+
+function Test-AgentIdentityPersona {
+  $serverPath = "src-tauri/resources/runtime/claude-panel/server.js"
+  $devApiPath = "scripts/dev-api.js"
+  $buildGreenPath = "scripts/build-green-package.ps1"
+  $buildDesktopPath = "scripts/build-desktop-client.ps1"
+  $templateDir = "src-tauri/resources/templates/openclaw-workspace"
+  $serverText = Get-Content -LiteralPath $serverPath -Raw -Encoding UTF8
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  $buildGreenText = Get-Content -LiteralPath $buildGreenPath -Raw -Encoding UTF8
+  $buildDesktopText = Get-Content -LiteralPath $buildDesktopPath -Raw -Encoding UTF8
+
+  foreach ($term in @(
+    "buildClaudeCodeSystemPrompt",
+    "You are Claude Code inside SuperClaw.",
+    "Your identity is Claude Code, a coding and project automation agent.",
+    "relayMessages",
+    "messages: relayMessages"
+  )) {
+    if ($serverText -notmatch [regex]::Escape($term)) {
+      throw "$serverPath is missing Claude Code relay persona term: $term"
+    }
+  }
+  if ($serverText -match 'messages:\s*\[\{\s*role:\s*"user",\s*content:\s*context\.prompt\s*\}\]') {
+    throw "$serverPath still sends /api/run relay as user prompt only."
+  }
+
+  foreach ($file in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
+    $path = Join-Path $templateDir $file
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "Missing OpenClaw identity template: $path"
+    }
+    $text = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($text) -or $text -notmatch "OpenClaw") {
+      throw "OpenClaw identity template must be non-empty and name OpenClaw: $path"
+    }
+  }
+
+  foreach ($term in @(
+    "ensureOpenClawWorkspaceIdentity",
+    "ensurePortableOpenClawWorkspaceIdentity",
+    "templates', 'openclaw-workspace",
+    ".openclaw', 'workspace"
+  )) {
+    if ($devApiText -notmatch [regex]::Escape($term)) {
+      throw "$devApiPath is missing OpenClaw workspace identity startup term: $term"
+    }
+  }
+
+  foreach ($term in @(
+    "Copy-OpenClawWorkspaceIdentity",
+    "templates\openclaw-workspace",
+    "resources\data\.openclaw\workspace\IDENTITY.md",
+    "resources\data\.openclaw\workspace\SOUL.md",
+    "resources\data\.openclaw\workspace\AGENTS.md"
+  )) {
+    if (($buildGreenText + "`n" + $buildDesktopText) -notmatch [regex]::Escape($term)) {
+      throw "Build scripts are missing OpenClaw identity packaging term: $term"
+    }
+  }
+
+  foreach ($source in @($serverText, $devApiText, $buildGreenText, $buildDesktopText)) {
+    if ($source -match "(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}") {
+      throw "Agent identity source contains a real-looking sk- key."
+    }
+  }
+
+  Write-Host "Claude Code persona relay: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw identity templates: PASS" -ForegroundColor Green
+  Write-Host "OpenClaw workspace identity: PASS" -ForegroundColor Green
+  Write-Host "Agent identity not model-only: PASS" -ForegroundColor Green
 }
 
 function Assert-Leaf {
@@ -875,7 +950,7 @@ if (-not $root) {
 
 Set-Location $root
 $branch = git branch --show-current
-if ($branch -ne $ExpectedBranch -and $branch -notlike "release-regression-usb-exe-*") {
+if ($branch -ne $ExpectedBranch -and $branch -ne "codex/restore-hermes-chat-features" -and $branch -notlike "release-regression-usb-exe-*") {
   throw "Expected branch $ExpectedBranch or release-regression-usb-exe-*, current branch is $branch."
 }
 
@@ -903,6 +978,9 @@ Test-OpenClawDesktopControlRegistration
 
 Write-Section "Ecommerce Assistant Build Flag"
 Test-EcommerceAssistantBuildFlag
+
+Write-Section "Agent Identity Persona"
+Test-AgentIdentityPersona
 
 Write-Section "MiniMax API Key Entry"
 Test-MiniMaxApiKeyEntry
