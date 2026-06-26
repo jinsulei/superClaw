@@ -1378,6 +1378,7 @@ function saveCustomProject(projectPath) {
 
 function removeCustomProject(projectPath) {
   const resolved = path.resolve(String(projectPath || ""));
+  const before = readCustomProjects();
   const projects = readCustomProjects().filter(
     (item) => path.resolve(item).toLowerCase() !== resolved.toLowerCase()
   );
@@ -1386,6 +1387,7 @@ function removeCustomProject(projectPath) {
     encoding: "utf8",
     mode: 0o600,
   });
+  return projects.length !== before.length;
 }
 
 function getManagedProjectsRoot() {
@@ -1466,6 +1468,125 @@ function createManagedProjectFolder(inputName) {
   return { path: resolved, name: displayName, createdAt: nextFolders[0].createdAt };
 }
 
+function removeClaudeProjectRecord(projectPath) {
+  if (typeof projectPath !== "string" || !projectPath.trim()) {
+    throw new Error("工程路径不能为空");
+  }
+  const requested = path.resolve(projectPath.trim());
+  const folders = readManagedProjectFolders();
+  const record = folders.find((item) => path.resolve(item.path).toLowerCase() === requested.toLowerCase());
+  const nextFolders = folders.filter((item) => path.resolve(item.path).toLowerCase() !== requested.toLowerCase());
+  const removedManaged = nextFolders.length !== folders.length;
+  if (removedManaged) writeManagedProjectFolders(nextFolders);
+  const removedCustom = removeCustomProject(requested);
+  let removedClaudeJson = false;
+
+  const claudeJson = readJson(CLAUDE_PROJECTS_JSON_PATH);
+  if (claudeJson?.projects && typeof claudeJson.projects === "object" && !Array.isArray(claudeJson.projects)) {
+    for (const key of Object.keys(claudeJson.projects)) {
+      if (path.resolve(key).toLowerCase() === requested.toLowerCase()) {
+        delete claudeJson.projects[key];
+        removedClaudeJson = true;
+      }
+    }
+    if (removedClaudeJson) {
+      fs.mkdirSync(path.dirname(CLAUDE_PROJECTS_JSON_PATH), { recursive: true });
+      fs.writeFileSync(CLAUDE_PROJECTS_JSON_PATH, JSON.stringify(claudeJson, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
+  }
+
+  return {
+    path: record?.path || requested,
+    name: record?.name || path.basename(requested) || requested,
+    removed: removedManaged || removedCustom || removedClaudeJson,
+    removedManaged,
+    removedCustom,
+    removedClaudeJson,
+    diskTouched: false,
+    message: "已从工程列表移除，不会删除电脑里的实际文件。",
+  };
+}
+
+function isDangerousPath(projectPath) {
+  const raw = String(projectPath || "").trim();
+  if (!raw || raw.includes("..") || !path.isAbsolute(raw)) return true;
+  const resolved = path.resolve(raw);
+  const normalized = resolved.toLowerCase();
+  const root = path.parse(resolved).root.toLowerCase();
+  const repoRoot = path.resolve(__dirname, "..", "..", "..", "..").toLowerCase();
+  const managedRoot = path.resolve(getManagedProjectsRoot()).toLowerCase();
+  const tempRoot = path.resolve(os.tmpdir()).toLowerCase();
+  const cTmpRoot = path.resolve("C:\\tmp").toLowerCase();
+  const blocked = [
+    root,
+    HOME,
+    path.join(HOME, "Desktop"),
+    path.join(HOME, "Documents"),
+    path.join(HOME, "Downloads"),
+    process.env.WINDIR || "C:\\Windows",
+    path.join(process.env.WINDIR || "C:\\Windows", "System32"),
+    process.env.ProgramFiles,
+    process.env["ProgramFiles(x86)"],
+    repoRoot,
+  ]
+    .filter(Boolean)
+    .map((item) => path.resolve(item).toLowerCase());
+
+  if (blocked.some((item) => normalized === item || isSameOrInside(normalized, item))) {
+    if (managedRoot && normalized !== managedRoot && isSameOrInside(normalized, managedRoot)) return false;
+    if (tempRoot && normalized !== tempRoot && isSameOrInside(normalized, tempRoot)) return false;
+    if (cTmpRoot && normalized !== cTmpRoot && isSameOrInside(normalized, cTmpRoot)) return false;
+    return true;
+  }
+  return false;
+}
+
+function moveLocalProjectToQuarantine(projectPath) {
+  const target = fs.existsSync(projectPath) ? realPath(projectPath) : path.resolve(projectPath);
+  if (!fs.existsSync(target)) {
+    return { missing: true, quarantinePath: "" };
+  }
+  const quarantineRoot = path.join(
+    "C:\\tmp",
+    `claude-project-delete-quarantine-${new Date().toISOString().replace(/[:.]/g, "-")}`
+  );
+  fs.mkdirSync(quarantineRoot, { recursive: true });
+  const targetName = path.basename(target) || "project";
+  let quarantinePath = path.join(quarantineRoot, targetName);
+  let index = 2;
+  while (fs.existsSync(quarantinePath)) {
+    quarantinePath = path.join(quarantineRoot, `${targetName}-${index}`);
+    index += 1;
+  }
+  fs.renameSync(target, quarantinePath);
+  return { missing: false, quarantinePath };
+}
+
+function dangerousDeleteLocalProject(projectPath, confirmation) {
+  if (String(confirmation || "").trim() !== "确认删除本地文件") {
+    const error = new Error("删除本地文件属于危险操作，必须输入：确认删除本地文件");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (isDangerousPath(projectPath)) {
+    const error = new Error("目标路径不安全，已拒绝删除本地文件");
+    error.statusCode = 403;
+    throw error;
+  }
+  const moved = moveLocalProjectToQuarantine(projectPath);
+  const record = removeClaudeProjectRecord(projectPath);
+  return {
+    ...record,
+    diskTouched: !moved.missing,
+    missing: moved.missing,
+    quarantinePath: moved.quarantinePath,
+    message: moved.missing ? "本地路径已不存在，仅移除了工程记录。" : "本地文件已移动到隔离区，未执行永久删除。",
+  };
+}
+
 function deleteManagedProjectFolder(projectPath, confirmName) {
   if (typeof projectPath !== "string" || !projectPath.trim()) {
     throw new Error("工程文件路径不能为空");
@@ -1497,7 +1618,7 @@ function deleteManagedProjectFolder(projectPath, confirmName) {
   }
 
   if (fs.existsSync(target)) {
-    fs.rmSync(target, { recursive: true, force: false });
+    moveLocalProjectToQuarantine(target);
   }
   removeCustomProject(record.path);
   const nextFolders = folders.filter((item) => path.resolve(item.path).toLowerCase() !== requested.toLowerCase());
@@ -4062,10 +4183,12 @@ async function handleProjectFolders(req, res) {
   if (req.method === "DELETE") {
     try {
       const payload = await readRequestBody(req);
-      const project = deleteManagedProjectFolder(payload.path, payload.confirmName);
+      const project = payload.deleteLocalFiles === true
+        ? dangerousDeleteLocalProject(payload.path, payload.confirmation)
+        : removeClaudeProjectRecord(payload.path);
       appendAuditLog({
         feature: "工程文件",
-        action: "delete-project-folder",
+        action: project.diskTouched ? "quarantine-project-folder" : "remove-project-record",
         projectPath: project.path,
         result: "success",
         source: req.socket.remoteAddress,

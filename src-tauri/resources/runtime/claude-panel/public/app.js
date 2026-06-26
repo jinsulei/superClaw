@@ -705,12 +705,12 @@ const permissionGuideSections = [
   ["专家命令模式", ["AI 可能执行命令、安装依赖或进行高级操作。该模式风险较高，普通客户默认锁定。", "后端参数：toolProfile=command，默认安全锁定。"]],
 ];
 
-const dangerousConversationActions = new Set(["delete"]);
+const dangerousConversationActions = new Set([]);
 const conversationActionLabels = {
   pin: "置顶聊天",
   archive: "归档",
   rename: "重命名",
-  delete: "删除",
+  delete: "从列表移除",
 };
 
 let activeMode = "safe";
@@ -2926,7 +2926,7 @@ function createConversationMenu(conversation) {
     ["folder", "移至项目", () => handleConversationAction(conversation.id, "move"), false, true],
     ["pin", conversation.pinned ? "取消置顶" : "置顶聊天", () => handleConversationAction(conversation.id, "pin")],
     ["archive", conversation.archived ? "取消归档" : "归档", () => handleConversationAction(conversation.id, "archive")],
-    ["delete", "删除", () => handleConversationAction(conversation.id, "delete"), true],
+    ["delete", "从列表移除", () => handleConversationAction(conversation.id, "delete"), false],
   ];
 
   for (const [icon, label, action, danger, arrow] of items) {
@@ -3027,6 +3027,34 @@ function removeConversationRecord(id) {
   saveConversations();
 }
 
+async function removeProjectConversationRecordOnly(conversation) {
+  const displayTitle = conversationDisplayTitle(conversation);
+  const confirmed = window.confirm(
+    `只会从 ClaudeCode 工程列表移除「${displayTitle}」，不会删除电脑里的实际文件。是否继续？`
+  );
+  if (!confirmed) return;
+
+  if (conversation.projectPath) {
+    const res = await fetch("/api/project-folders", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        path: conversation.projectPath,
+        mode: "record",
+      }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(result.error || "工程记录移除失败");
+    }
+    managedProjectFolders = result.folders || [];
+    renderProjectOptions(result.projects || []);
+  }
+
+  removeConversationRecord(conversation.id);
+  addMessage("system", "工程文件", "已从工程列表移除，电脑里的文件没有被删除。");
+}
+
 async function deleteProjectConversation(conversation) {
   const displayTitle = conversationDisplayTitle(conversation);
   if (!conversation.projectPath || !isManagedProjectPath(conversation.projectPath)) {
@@ -3106,7 +3134,7 @@ async function handleConversationAction(id, action) {
 
   if (action === "delete") {
     try {
-      await deleteProjectConversation(conversation);
+      await removeProjectConversationRecordOnly(conversation);
     } catch (error) {
       addMessage("error", "工程文件删除失败", error.message || "工程文件删除失败");
     }
