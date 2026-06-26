@@ -2170,6 +2170,8 @@ function spawnOpenclaw(args, options = {}) {
   const spec = openclawProcessSpec(args)
   const { env, ...rest } = options
   return spawn(spec.command, spec.args, {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
     ...rest,
     env: openclawRuntimeEnv(env),
   })
@@ -2179,6 +2181,8 @@ function spawnOpenclawSync(args, options = {}) {
   const spec = openclawProcessSpec(args)
   const { env, ...rest } = options
   return spawnSync(spec.command, spec.args, {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
     ...rest,
     env: openclawRuntimeEnv(env),
   })
@@ -6290,6 +6294,40 @@ async function forwardPaymentRequest(action, payload = {}) {
   return json
 }
 
+function redactAgentToolText(value) {
+  return String(value || '')
+    .replace(/sk-[A-Za-z0-9_-]{20,}/g, 'sk-***')
+    .replace(/Bearer\s+[A-Za-z0-9._-]{20,}/gi, 'Bearer ***')
+    .replace(/(MINIMAX_API_KEY|OPENAI_API_KEY|IMAGE_API_KEY)\s*=\s*["']?[^"'\s]+/gi, '$1=***')
+}
+
+function writeAgentToolLog({ agent = 'assistant', title = 'tool', command = '', cwd = '', stdout = '', stderr = '', exitCode = 0 } = {}) {
+  const now = new Date()
+  const jobId = `${now.toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`
+  const dir = path.join(appRootDir(), 'logs', 'agent-tools')
+  fs.mkdirSync(dir, { recursive: true })
+  const logPath = path.join(dir, `${jobId}.log`)
+  fs.writeFileSync(logPath, [
+    `jobId=${jobId}`,
+    `agent=${agent}`,
+    `title=${title}`,
+    `cwd=${cwd || ''}`,
+    `startedAt=${now.toISOString()}`,
+    `finishedAt=${new Date().toISOString()}`,
+    `exitCode=${exitCode}`,
+    '',
+    '[command]',
+    redactAgentToolText(command),
+    '',
+    '[stdout]',
+    redactAgentToolText(stdout),
+    '',
+    '[stderr]',
+    redactAgentToolText(stderr),
+  ].join('\n'), 'utf8')
+  return { jobId, logPath }
+}
+
 const handlers = {
   health() {
     return { ok: true, mode: 'dev-api', noUserSystem: true, provider: 'minimax' }
@@ -9362,10 +9400,12 @@ const handlers = {
     if (cwd) opts.cwd = cwd
     try {
       const output = execSync(command, opts).toString()
+      writeAgentToolLog({ agent: 'assistant', title: 'assistant_exec', command, cwd: opts.cwd || appRootDir(), stdout: output, stderr: '', exitCode: 0 })
       return output || '（命令已执行，无输出）'
     } catch (e) {
       const stderr = e.stderr?.toString() || ''
       const stdout = e.stdout?.toString() || ''
+      writeAgentToolLog({ agent: 'assistant', title: 'assistant_exec', command, cwd: opts.cwd || appRootDir(), stdout, stderr, exitCode: e.status || 1 })
       return `退出码: ${e.status || 1}\n${stdout}${stderr ? '\n[stderr] ' + stderr : ''}`
     }
   },
@@ -11971,6 +12011,7 @@ function claudeCodePaths() {
 }
 
 let _claudePanelChild = null
+let _nativeClaudeChild = null
 const NATIVE_CLAUDE_WINDOW_TITLE = 'SuperClaw Claude Code Native'
 
 function claudePanelPaths(paths = claudeCodePaths()) {
@@ -12127,29 +12168,39 @@ async function startNativeClaudeTerminal(cwd) {
     return { ok: true, started: true, mode: 'native', cwd: runCwd, command: paths.claude }
   }
 
-  const launcherPath = writeNativeClaudeLauncher({ paths, runCwd })
-  const child = spawn('cmd.exe', ['/d', '/c', 'start', '', 'cmd.exe', '/k', launcherPath], {
+  const child = spawn(paths.claude, [], {
     cwd: runCwd,
     env,
     detached: true,
     stdio: 'ignore',
-    windowsHide: false,
+    windowsHide: true,
   })
+  _nativeClaudeChild = child
   if (typeof child.unref === 'function') child.unref()
   return {
     ok: true,
     started: true,
     mode: 'native',
-    message: 'Claude Code 原生终端已启动。',
     cwd: runCwd,
     command: paths.claude,
-    launcher: launcherPath,
-    windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+    message: 'Claude Code native CLI is running in the background.',
+    pid: child.pid || null,
+    background: true,
     status,
   }
 }
 
 function stopNativeClaudeTerminal() {
+  if (_nativeClaudeChild?.pid) {
+    const pid = _nativeClaudeChild.pid
+    _nativeClaudeChild = null
+    const result = spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(pid)], {
+      encoding: 'utf8',
+      windowsHide: true,
+    })
+    const output = `${result.stdout || ''}${result.stderr || ''}`.trim()
+    if (result.status === 0) return { ok: true, stopped: true, message: 'Claude Code native background process stopped.', output, pid }
+  }
   if (!isWindows) {
     return { ok: true, stopped: false, message: '当前平台未绑定 Claude Code 原生终端关闭动作。' }
   }

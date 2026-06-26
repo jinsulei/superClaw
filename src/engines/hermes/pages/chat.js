@@ -1654,14 +1654,14 @@ export function render() {
     ` : ''
     const toggleHtml = canToggle ? `
       <button type="button" class="assistant-compact-message__toggle" data-compact-toggle>
-        收起详情
+        展开详情
       </button>
     ` : ''
 
     return `
-      <div class="assistant-compact-message ${canToggle ? 'is-expanded' : ''}">
-        ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview" hidden>${previewHtml}</div>` : ''}
-        <div class="assistant-compact-message__content assistant-compact-message__full">${fullHtml}</div>
+      <div class="assistant-compact-message ${canToggle ? 'is-collapsed' : ''}">
+        ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview">${previewHtml}</div>` : ''}
+        <div class="assistant-compact-message__content assistant-compact-message__full" ${canToggle ? 'hidden' : ''}>${fullHtml}</div>
         ${toggleHtml}
         ${toolHtml}
       </div>
