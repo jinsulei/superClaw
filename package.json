@@ -15,6 +15,7 @@
     "smoke:ecommerce-stage4": "node scripts/smoke-ecommerce-stage4.mjs",
     "smoke:ecommerce-stage56": "node scripts/smoke-ecommerce-stage56.mjs",
     "smoke:compact-chat": "node scripts/smoke-compact-chat.mjs",
+    "test:media": "node scripts/test-media-service.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",

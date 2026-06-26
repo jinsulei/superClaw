@@ -122,6 +122,7 @@ export default {
       items: [
         { route: '/h/dashboard', label: t('sidebar.dashboard'), icon: 'dashboard' },
         { route: '/h/chat', label: t('sidebar.chat'), icon: 'chat' },
+        { route: '/h/image', label: 'AI 生图', icon: 'models' },
         { route: '/h/sessions', label: t('sidebar.sessions'), icon: 'inbox' },
         { route: '/h/logs', label: t('sidebar.logs'), icon: 'logs' },
         // HIDDEN: { route: '/h/usage', label: t('sidebar.usage'), icon: 'bar-chart' },
@@ -151,6 +152,7 @@ export default {
       { path: '/h/setup', loader: () => import('./pages/setup.js') },
       { path: '/h/dashboard', loader: () => import('./pages/dashboard.js') },
       { path: '/h/chat', loader: () => import('./pages/chat.js') },
+      { path: '/h/image', loader: () => import('./pages/image.js') },
       { path: '/h/bridge', loader: () => import('./pages/bridge.js') },
       { path: '/h/claude-code', loader: () => import('./pages/claude-code.js') },
       { path: '/h/sessions', loader: () => import('./pages/sessions.js') },

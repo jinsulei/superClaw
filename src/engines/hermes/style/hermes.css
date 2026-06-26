@@ -8834,3 +8834,260 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
     margin-top: 8px !important;
   }
 }
+
+.hm-media-page {
+  min-height: 100%;
+  padding: 24px;
+  color: var(--text, #172033);
+  background: var(--bg, #f7f8fb);
+}
+
+.hm-media-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  gap: 18px;
+}
+
+.hm-media-hero,
+.hm-media-panel {
+  background: var(--panel, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+}
+
+.hm-media-hero {
+  padding: 24px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.hm-media-eyebrow {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--muted, #64748b);
+  text-transform: uppercase;
+}
+
+.hm-media-hero h1 {
+  margin: 8px 0 8px;
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.hm-media-hero p {
+  margin: 0;
+  color: var(--muted, #64748b);
+  max-width: 640px;
+}
+
+.hm-media-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+.hm-media-panel {
+  padding: 18px;
+}
+
+.hm-media-panel h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.hm-media-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.hm-media-cap.is-ready {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.hm-media-cap.is-missing {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+.hm-media-kv {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.hm-media-kv div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.hm-media-kv dt {
+  color: var(--muted, #64748b);
+}
+
+.hm-media-kv dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.hm-media-drop {
+  border: 1px dashed var(--border, #cbd5e1);
+  border-radius: 8px;
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.hm-media-drop.is-drag-over {
+  border-color: var(--primary, #2563eb);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.hm-media-primary,
+.hm-media-secondary,
+.hm-media-upload-btn,
+.hm-media-link-btn {
+  border: 1px solid var(--border, #d7dce5);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  padding: 9px 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hm-media-primary {
+  color: #fff;
+  background: var(--primary, #2563eb);
+  border-color: var(--primary, #2563eb);
+}
+
+.hm-media-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.hm-media-link-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary, #2563eb);
+}
+
+.hm-media-upload-card {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.hm-media-upload-card img {
+  width: 92px;
+  height: 92px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+}
+
+.hm-media-upload-card div {
+  display: grid;
+  gap: 6px;
+}
+
+.hm-media-upload-card span,
+.hm-media-empty,
+.hm-media-actions span {
+  color: var(--muted, #64748b);
+}
+
+.hm-media-compose {
+  display: grid;
+  gap: 10px;
+}
+
+.hm-media-compose label {
+  font-weight: 700;
+}
+
+.hm-media-compose textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  border: 1px solid var(--border, #d7dce5);
+  border-radius: 8px;
+  padding: 12px;
+  font: inherit;
+  background: #fff;
+  color: inherit;
+}
+
+.hm-media-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hm-media-status {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.hm-media-status.is-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.hm-media-status.is-error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.hm-media-result {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.hm-media-result img {
+  width: min(100%, 720px);
+  max-height: 720px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  background: #fff;
+}
+
+.hm-media-result figcaption {
+  color: var(--muted, #64748b);
+}
+
+@media (max-width: 860px) {
+  .hm-media-page {
+    padding: 14px;
+  }
+
+  .hm-media-hero,
+  .hm-media-grid,
+  .hm-media-actions {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

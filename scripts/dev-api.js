@@ -14,6 +14,7 @@ import http from 'http'
 import https from 'https'
 import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
+import { handleHermesMediaApi } from './hermes-media/media-routes.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 // ---------------------------------------------------------------------------
@@ -12854,6 +12855,16 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
 }
 
 async function _apiMiddleware(req, res, next) {
+  try {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    if (await handleHermesMediaApi(req, res, url, { rootDir: appRootDir(), env: process.env })) return
+  } catch (e) {
+    res.statusCode = Number(e.statusCode || e.status || 500) || 500
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ error: e.message || String(e), code: e.code || undefined }))
+    return
+  }
+
   if (!req.url?.startsWith('/__api/')) return next()
 
   const rawPath = req.url.slice('/__api/'.length).split(/[?#]/)[0]

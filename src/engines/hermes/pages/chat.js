@@ -778,6 +778,20 @@ function parseImageDataUrl(dataUrl, fallbackMime = 'image/png') {
   return { mimeType: match[1] || fallbackMime || 'image/png', content: match[2] || '' }
 }
 
+async function uploadHermesMediaAttachment(file) {
+  if (!file || !String(file.type || '').startsWith('image/')) return null
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch('/api/hermes/media/upload', { method: 'POST', body: form })
+  const text = await response.text()
+  let payload = null
+  try { payload = text ? JSON.parse(text) : null } catch {}
+  if (!response.ok || !payload?.success) {
+    throw new Error(payload?.message || payload?.error || text || `HTTP ${response.status}`)
+  }
+  return payload.file || payload.attachment || null
+}
+
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -2664,6 +2678,12 @@ export function render() {
         const parsed = parseImageDataUrl(dataUrl, file?.type || 'image/png')
         const imageId = `hermes-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
         const savedPath = await api.saveImage(imageId, dataUrl)
+        let mediaFile = null
+        try {
+          mediaFile = await uploadHermesMediaAttachment(file)
+        } catch (err) {
+          console.warn('[hermes media] upload failed:', err?.message || err)
+        }
         pendingAttachments.push({
           category: 'image',
           type: 'image',
@@ -2672,6 +2692,8 @@ export function render() {
           content: parsed.content,
           dataUrl,
           savedPath,
+          mediaId: mediaFile?.id || null,
+          url: mediaFile?.url || null,
         })
         block = ''
         nextInstructions = [
