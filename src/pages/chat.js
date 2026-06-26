@@ -166,7 +166,8 @@ let _collabDispatchStorageHandler = null
 
 export async function render() {
   const page = document.createElement('div')
-  page.className = 'page chat-page'
+  page.className = 'page chat-page openclaw-chat'
+  page.dataset.agent = 'openclaw'
   _pageActive = true
   _page = page
 
@@ -3532,11 +3533,24 @@ function createStreamBubble(meta = {}) {
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
   bubble.innerHTML = '<span class="stream-cursor"></span>'
+  group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
   wrap.appendChild(group)
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()
   return bubble
+}
+
+function createOpenClawRoleLine(role = 'assistant') {
+  const line = document.createElement('div')
+  line.className = `openclaw-role-line ${role}`
+  const badge = document.createElement('span')
+  badge.className = `openclaw-role-badge ${role}`
+  const iconName = role === 'tool' ? 'wrench' : 'terminal'
+  const label = role === 'tool' ? 'Tool' : 'OpenClaw'
+  badge.innerHTML = `<span class="openclaw-role-icon">${svgIcon(iconName, 13)}</span><span>${label}</span>`
+  line.appendChild(badge)
+  return line
 }
 
 function renderCompactAssistantContent(rawText, container) {
@@ -4214,6 +4228,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   const canSpeak = !!(text || '').trim()
   meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
 
+  group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
   group.appendChild(meta)
   wrap.appendChild(group)
@@ -4398,9 +4413,11 @@ function appendToolsToEl(el, tools) {
     details.className = 'msg-tool-item'
     const summary = document.createElement('summary')
     const status = tool.status === 'error' ? t('chat.toolFailed') : t('chat.toolSuccess')
+    const statusClass = tool.status === 'error' ? 'is-error' : 'is-success'
     const timeValue = getToolTime(tool) || resolveToolTime(tool.id || tool.tool_call_id, tool.messageTimestamp)
     const timeText = timeValue ? formatTime(new Date(timeValue)) : ''
-    summary.innerHTML = `${escapeHtml(tool.name || 'tool')} · ${status}${timeText ? ' · ' + timeText : ''}`
+    summary.className = 'openclaw-tool-summary'
+    summary.innerHTML = `<span class="openclaw-tool-badge"><span class="openclaw-tool-icon">${svgIcon('wrench', 12)}</span><span>Tool</span></span><span class="openclaw-tool-name">${escapeHtml(tool.name || 'tool')}</span><span class="openclaw-tool-status ${statusClass}">${escapeHtml(status)}</span>${timeText ? `<span class="openclaw-tool-time">${escapeHtml(timeText)}</span>` : ''}`
     const body = document.createElement('div')
     body.className = 'msg-tool-body'
     const inputJson = stripAnsi(safeStringify(tool.input))
