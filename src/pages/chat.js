@@ -37,6 +37,7 @@ const STORAGE_LOCAL_SESSIONS_KEY = 'superclaw-chat-local-sessions'
 const STORAGE_WORKSPACE_PANEL_KEY = 'superclaw-chat-workspace-open'
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
+const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
@@ -1693,6 +1694,54 @@ async function connectGateway() {
 
 // ── 会话管理 ──
 
+function waitForOpenClawGatewayReady(timeoutMs = OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS) {
+  if (wsClient.gatewayReady && _sessionKey) return Promise.resolve(true)
+  return new Promise((resolve, reject) => {
+    let done = false
+    let unsubscribe = null
+    let timer = null
+    const finish = (err = null) => {
+      if (done) return
+      done = true
+      if (timer) clearTimeout(timer)
+      if (unsubscribe) unsubscribe()
+      if (err) reject(err)
+      else resolve(true)
+    }
+    timer = setTimeout(() => {
+      finish(new Error('OpenClaw Gateway 启动超时，请点击重新连接'))
+    }, timeoutMs)
+    unsubscribe = wsClient.onReady((hello, sessionKey, err) => {
+      if (err?.error) {
+        finish(new Error(err.message || 'OpenClaw Gateway 连接失败'))
+        return
+      }
+      if (sessionKey && !_sessionKey) _sessionKey = resolveGatewaySessionKey(sessionKey)
+      if (wsClient.gatewayReady && _sessionKey) finish()
+    })
+    if (wsClient.gatewayReady && _sessionKey) finish()
+  })
+}
+
+async function ensureOpenClawGatewayReadyForSend() {
+  ensureReadySessionKey()
+  if (wsClient.gatewayReady && _sessionKey) return true
+  toast('OpenClaw Gateway 正在启动，请稍候...', 'warning')
+  showTyping(true)
+  try {
+    await connectGateway()
+    await waitForOpenClawGatewayReady()
+    showTyping(false)
+    return true
+  } catch (error) {
+    showTyping(false)
+    const message = error?.message || 'OpenClaw Gateway 启动超时，请点击重新连接'
+    appendSystemMessage(message)
+    toast(message, 'error')
+    return false
+  }
+}
+
 async function refreshSessionList() {
   if (!_sessionListEl || !wsClient.gatewayReady) return
   try {
@@ -2567,11 +2616,7 @@ async function sendMessage(event) {
   }, 350)
   let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
-  ensureReadySessionKey()
-  if (!wsClient.gatewayReady || !_sessionKey) {
-    toast(t('chat.gatewayNotReadySend'), 'warning')
-    return
-  }
+  if (!(await ensureOpenClawGatewayReadyForSend())) return
   hideCmdPanel()
   const attachments = [..._attachments]
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
@@ -2646,11 +2691,7 @@ async function sendMessage(event) {
 }
 
 async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
-  ensureReadySessionKey()
-  if (!wsClient.gatewayReady || !_sessionKey) {
-    toast(t('chat.gatewayNotReadySend'), 'warning')
-    return
-  }
+  if (!(await ensureOpenClawGatewayReadyForSend())) return
   if (_inFlightRequestIds.has(clientRequestId)) return
   _inFlightRequestIds.add(clientRequestId)
   _activeClientRequestId = clientRequestId

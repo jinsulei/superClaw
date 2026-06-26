@@ -5,6 +5,8 @@
 import { api } from './tauri-api.js'
 
 const isTauri = !!window.__TAURI_INTERNALS__
+const OPENCLAW_GATEWAY_HEALTH_URL = 'http://127.0.0.1:18789/health'
+const OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS = 2500
 
 let _openclawReady = false
 let _gatewayRunning = false
@@ -106,6 +108,45 @@ export function onGatewayChange(fn) {
 }
 
 /** 检测 openclaw 安装状态 */
+function isOpenclawGatewayHealthReady(body) {
+  if (!body || typeof body !== 'object') return false
+  const status = String(body.status || '').toLowerCase()
+  return body.ok === true || body.ready === true || status === 'live' || status === 'ready'
+}
+
+export async function probeOpenclawGatewayHealth(timeoutMs = OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const resp = await fetch(OPENCLAW_GATEWAY_HEALTH_URL, {
+      signal: controller.signal,
+      cache: 'no-store',
+    })
+    let body = null
+    try {
+      body = await resp.json()
+    } catch {
+      body = { text: await resp.text().catch(() => '') }
+    }
+    const ready = resp.ok && isOpenclawGatewayHealthReady(body)
+    return {
+      ready,
+      httpOk: resp.ok,
+      status: typeof body?.status === 'string' ? body.status : ready ? 'ready' : 'not_ready',
+      body,
+    }
+  } catch (error) {
+    return {
+      ready: false,
+      httpOk: false,
+      status: 'error',
+      error: error?.message || String(error),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function detectOpenclawStatus() {
   try {
     const [installation, services] = await Promise.allSettled([
@@ -129,7 +170,10 @@ export async function detectOpenclawStatus() {
     if (services.status === 'fulfilled' && services.value?.length > 0) {
       const gw = services.value.find?.(s => s.label === 'ai.openclaw.gateway') || services.value[0]
       const foreign = gw?.running === true && gw?.owned_by_current_instance === false
-      _setGatewayRunning(gw?.running === true && !foreign, foreign)
+      const health = gw?.running === true && !foreign
+        ? await probeOpenclawGatewayHealth()
+        : { ready: false }
+      _setGatewayRunning(gw?.running === true && !foreign && health.ready, foreign)
     }
   } catch {
     _openclawReady = false
@@ -168,7 +212,8 @@ export async function refreshGatewayStatus() {
       const gw = services.find?.(s => s.label === 'ai.openclaw.gateway') || services[0]
       const ownedRunning = gw?.running === true && gw?.owned_by_current_instance !== false
       const foreignRunning = gw?.running === true && gw?.owned_by_current_instance === false
-      const nowRunning = ownedRunning
+      const health = ownedRunning ? await probeOpenclawGatewayHealth() : { ready: false }
+      const nowRunning = ownedRunning && health.ready
       if (nowRunning) {
         _gwStopCount = 0
         if (!_gatewayRunning) {

@@ -4835,6 +4835,43 @@ function readGatewayPort() {
   }
 }
 
+function isOpenclawGatewayHealthReady(body) {
+  if (!body || typeof body !== 'object') return false
+  const status = String(body.status || '').toLowerCase()
+  return body.ok === true || body.ready === true || status === 'live' || status === 'ready'
+}
+
+async function probeOpenclawGatewayHealth(port = readGatewayPort(), timeoutMs = 2500) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const url = `http://127.0.0.1:${port}/health`
+  try {
+    const resp = await fetch(url, { signal: controller.signal, cache: 'no-store' })
+    let body = null
+    try {
+      body = await resp.json()
+    } catch {
+      body = { text: await resp.text().catch(() => '') }
+    }
+    const ready = resp.ok && isOpenclawGatewayHealthReady(body)
+    return {
+      ready,
+      httpOk: resp.ok,
+      status: typeof body?.status === 'string' ? body.status : ready ? 'ready' : 'not_ready',
+      body,
+    }
+  } catch (error) {
+    return {
+      ready: false,
+      httpOk: false,
+      status: 'error',
+      error: error?.message || String(error),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function gatewayOwnerFilePath() {
   return path.join(OPENCLAW_DIR, 'gateway-owner.json')
 }
@@ -4962,7 +4999,9 @@ function windowsGatewayPidBelongsToCurrentProject(pid) {
 
 function shouldAutoClaimGateway(owner, pid = null) {
   const current = currentGatewayOwnerSignature()
-  if (!owner) return true // 无 owner 文件 → 自动认领
+  if (!owner) {
+    return !isWindows || windowsGatewayPidBelongsToCurrentProject(pid)
+  }
   // owner 文件存在但签名不完全匹配 → 仅按 port + openclaw_dir 判断
   if (Number(owner.port || 0) === current.port && pathsMatchForCompare(owner.openclawDir, current.openclawDir)) {
     return true
@@ -5001,17 +5040,27 @@ async function getLocalGatewayRuntime(label = 'ai.openclaw.gateway') {
   return winCheckGateway()
 }
 
-async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 30000) {
+async function waitForGatewayReady(label = 'ai.openclaw.gateway', timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs
+  let lastHealth = null
   while (Date.now() < deadline) {
     const status = await getLocalGatewayRuntime(label)
     if (status?.running) {
-      writeGatewayOwner(status.pid || null)
-      return status
+      ensureOwnedGatewayOrThrow(status.pid || null)
+      lastHealth = await probeOpenclawGatewayHealth()
+      if (lastHealth.ready) {
+        writeGatewayOwner(status.pid || null)
+        return { ...status, health_ready: true, health_status: lastHealth.status }
+      }
     }
-    await new Promise(resolve => setTimeout(resolve, 300))
+    await new Promise(resolve => setTimeout(resolve, 500))
   }
-  throw new Error(`Gateway 启动超时，请查看 ${path.join(LOGS_DIR, 'gateway.err.log')}`)
+  const detail = lastHealth?.status ? ` health=${lastHealth.status}` : ''
+  throw new Error(`OpenClaw Gateway 启动超时，请点击重新连接。${detail} 日志：${path.join(LOGS_DIR, 'gateway.err.log')}`)
+}
+
+async function waitForGatewayRunning(label = 'ai.openclaw.gateway', timeoutMs = 30000) {
+  return waitForGatewayReady(label, timeoutMs)
 }
 
 async function waitForGatewayStopped(label = 'ai.openclaw.gateway', timeoutMs = 10000) {
@@ -6448,20 +6497,38 @@ const handlers = {
         if (portOpen) { running = true }
       }
 
+      const processRunning = !!running
+      const health = processRunning
+        ? await probeOpenclawGatewayHealth(readGatewayPort(), 1800)
+        : { ready: false, httpOk: false, status: 'stopped' }
+      running = processRunning && health.ready
+
       const cliInstalled = !!resolveOpenclawCliPath()
       const owner = readGatewayOwner()
-      let ownedByCurrentInstance = !!running && isCurrentGatewayOwner(owner, pid || null)
+      let ownedByCurrentInstance = processRunning && isCurrentGatewayOwner(owner, pid || null)
       if (ownedByCurrentInstance && gatewayOwnerPidNeedsRefresh(owner, pid || null)) {
         writeGatewayOwner(pid || null)
       }
       // 自动认领：Gateway 在运行但无有效 owner，且端口 + 数据目录匹配
-      if (running && !ownedByCurrentInstance && shouldAutoClaimGateway(owner)) {
+      if (processRunning && !ownedByCurrentInstance && shouldAutoClaimGateway(owner, pid || null)) {
         writeGatewayOwner(pid || null)
         ownedByCurrentInstance = true
       }
-      const ownership = !running ? 'stopped' : ownedByCurrentInstance ? 'owned' : 'foreign'
+      const ownership = !processRunning ? 'stopped' : ownedByCurrentInstance ? 'owned' : 'foreign'
 
-      return [{ label, running, pid, description: 'OpenClaw Gateway', cli_installed: cliInstalled, ownership, owned_by_current_instance: ownedByCurrentInstance }]
+      return [{
+        label,
+        running,
+        process_running: processRunning,
+        pid,
+        description: 'OpenClaw Gateway',
+        cli_installed: cliInstalled,
+        ownership,
+        owned_by_current_instance: ownedByCurrentInstance,
+        health_ready: health.ready,
+        health_http_ok: health.httpOk,
+        health_status: health.status,
+      }]
     })
   },
 
@@ -6477,20 +6544,21 @@ const handlers = {
       }
       ensureOwnedGatewayOrThrow(status.pid || null)
       writeGatewayOwner(status.pid || null)
+      await waitForGatewayReady(label)
       return true
     }
     if (isMac) {
       macStartService(label)
-      await waitForGatewayRunning(label)
+      await waitForGatewayReady(label)
       return true
     }
     if (isLinux) {
       linuxStartGateway()
-      await waitForGatewayRunning(label)
+      await waitForGatewayReady(label)
       return true
     }
     winStartGateway()
-    await waitForGatewayRunning(label)
+    await waitForGatewayReady(label)
     return true
   },
 

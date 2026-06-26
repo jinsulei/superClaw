@@ -6134,7 +6134,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   align-items: flex-end;
   gap: 10px;
   width: 100%;
-  max-width: 760px;
+  max-width: 1180px;
   margin: 0 auto;
   background: var(--hm-surface-1);
   border: 1px solid var(--hm-border);
@@ -6214,7 +6214,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   right: 48px;
   bottom: calc(100% - 4px);
   transform: translateY(-6px);
-  max-width: 760px;
+  max-width: 1180px;
   margin: 0 auto;
   background: var(--hm-surface-0);
   border: 1px solid var(--hm-border);
@@ -6280,7 +6280,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-pending-attachments {
-  max-width: 760px;
+  max-width: 1180px;
   margin: 0 auto 8px;
 }
 
@@ -6372,7 +6372,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  max-width: 760px;
+  max-width: 1180px;
   margin-left: auto;
   margin-right: auto;
   padding: 0 2px;
@@ -6380,7 +6380,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 [data-engine="hermes"] .hm-chat-shell.is-sidebar-collapsed .hm-chat-input-wrap,
 [data-engine="hermes"] .hm-chat-shell.is-sidebar-collapsed .hm-chat-usage-bar {
-  max-width: 820px;
+  max-width: 1180px;
 }
 [data-engine="hermes"] .hm-chat-usage-pill {
   display: inline-flex;
@@ -8775,6 +8775,16 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-trigger::after,
 body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
 [data-hermes-dashboard-theme] body[data-active-engine="hermes"] .sidebar-footer .lang-switcher {
   margin-top: 2px !important;
+}
+
+[data-engine="hermes"] .hm-chat-messages.sc-chat-stage {
+  width: min(1180px, calc(100% - 48px)) !important;
+  max-width: 1180px !important;
+  margin-right: auto !important;
+  margin-left: auto !important;
+  padding-right: 24px !important;
+  padding-left: 24px !important;
+  box-sizing: border-box !important;
 }
 
 /* Restore Hermes pre-full-width chat bubbles. Global chat polish can briefly

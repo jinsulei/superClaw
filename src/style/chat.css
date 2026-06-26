@@ -2366,8 +2366,14 @@
 }
 
 /* OpenClaw chat visual parity with Hermes. Scoped to OpenClaw only. */
+.chat-page.openclaw-chat {
+  --agent-chat-column-max: 1180px;
+  --agent-chat-column-gutter: 48px;
+}
+
 .openclaw-chat .chat-messages.sc-chat-stage {
-  width: min(1600px, calc(100% - 48px));
+  width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)));
+  max-width: var(--agent-chat-column-max);
   gap: 18px;
   padding: var(--space-md, 16px) 24px;
   background: var(--chat-page-bg, var(--bg-primary));
@@ -2527,8 +2533,8 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: min(760px, calc(100% - 48px));
-  max-width: 760px;
+  width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)));
+  max-width: var(--agent-chat-column-max);
   margin-inline: auto;
   box-sizing: border-box;
 }

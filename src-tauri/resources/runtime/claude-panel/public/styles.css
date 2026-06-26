@@ -7396,7 +7396,7 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 :root {
-  --sc-chat-stage-max: 1600px;
+  --sc-chat-stage-max: 1180px;
   --sc-chat-stage-gutter: 40px;
 }
 
@@ -7562,13 +7562,13 @@ body.dark .conversation-mode .transcript .message.user {
 .conversation-mode .transcript .message.user,
 .conversation-mode .transcript .message.system,
 .conversation-mode .transcript .message.error {
-  max-width: min(760px, 100%) !important;
+  max-width: min(980px, 100%) !important;
 }
 
 .composer,
 .home-mode .composer,
 .conversation-mode .composer {
-  width: min(920px, calc(100% - 32px)) !important;
+  width: min(1180px, calc(100% - 32px)) !important;
   max-width: calc(100% - 32px) !important;
   min-width: 0 !important;
 }

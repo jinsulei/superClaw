@@ -30,22 +30,23 @@ const scoped = openclawCss.slice(markerIndex)
 assertPass(
   'OPENCLAW_HERMES_CHAT_COLUMN_PARITY',
   scoped.includes('.openclaw-chat .chat-messages.sc-chat-stage') &&
-    scoped.includes('width: min(1600px, calc(100% - 48px))') &&
+    scoped.includes('--agent-chat-column-max: 1180px') &&
+    scoped.includes('width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)))') &&
     scoped.includes('padding: var(--space-md, 16px) 24px') &&
     scoped.includes('margin-inline: auto') &&
     scoped.includes('box-sizing: border-box'),
-  'OpenClaw message column must be centered with Hermes-like side gutters.',
+  'OpenClaw message column must be centered with the shared 1180px chat column.',
 )
 
 assertPass(
   'OPENCLAW_COMPOSER_CENTERED_LIKE_HERMES',
   chat.includes('openclaw-composer-row') &&
     scoped.includes('.openclaw-chat .openclaw-composer-row') &&
-    scoped.includes('width: min(760px, calc(100% - 48px))') &&
-    scoped.includes('max-width: 760px') &&
+    scoped.includes('width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)))') &&
+    scoped.includes('max-width: var(--agent-chat-column-max)') &&
     scoped.includes('margin-inline: auto') &&
-    hermesCss.includes('max-width: 760px'),
-  'OpenClaw composer should share Hermes 760px centered composer width.',
+    hermesCss.includes('max-width: 1180px'),
+  'OpenClaw composer should share the widened Hermes 1180px centered composer width.',
 )
 
 assertPass(
@@ -79,9 +80,10 @@ const diffFiles = execSync('git diff --name-only', {
 }).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 
 assertPass(
-  'HERMES_STYLE_UNCHANGED',
-  !diffFiles.includes('src/engines/hermes/style/hermes.css'),
-  'Hermes CSS should remain unchanged for this OpenClaw spacing fix.',
+  'HERMES_STYLE_ALIGNED',
+  diffFiles.includes('src/engines/hermes/style/hermes.css') &&
+    hermesCss.includes('width: min(1180px, calc(100% - 48px))'),
+  'Hermes CSS should be aligned with the shared 1180px chat column in this spacing fix.',
 )
 
 console.log('smoke-openclaw-hermes-spacing-parity passed')
