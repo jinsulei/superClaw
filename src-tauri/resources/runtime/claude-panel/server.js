@@ -102,6 +102,15 @@ const CHINESE_OUTPUT_SYSTEM_PROMPT = [
   "如果用户回复“是”“允许”“同意”“确认”，应理解为允许继续上一步明确询问的操作。",
   "执行结果、错误、下一步建议都要用中文说明。",
 ].join("\n");
+const CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT = [
+  "You are speaking with the user through the SuperClaw Claude Code panel.",
+  "Default response language is Simplified Chinese.",
+  "Always answer user-facing content in Simplified Chinese unless the user explicitly asks for another language or asks for one exact literal token such as OK.",
+  "If tool output, web pages, errors, model metadata, or upstream responses are in English, Japanese, or another language, summarize and explain them in Simplified Chinese.",
+  "If user consent is needed, use Chinese labels such as: 本次允许, 始终允许, 拒绝. Do not show only English Yes/No choices.",
+  "If the user replies 是, 允许, 同意, or 确认, treat it as consent for the immediately previous clearly stated action.",
+  "Execution results, errors, limitations, and next steps must be explained in Simplified Chinese.",
+].join("\n");
 const BROWSER_AUTOMATION_SYSTEM_PROMPT = [
   "本次已获得用户对浏览器自动化的授权。",
   "你可以使用 Playwright MCP 浏览器工具打开网页、点击、输入、搜索、查看页面内容和截图。",
@@ -846,6 +855,7 @@ async function handleOpenAiRelayRun(req, res, context) {
     sendJson(res, 400, {
       error: "Claude Relay is not configured with a usable API key.",
       code: "MISSING_API_KEY",
+      runtimeMode: "CLAUDE_PANEL_RELAY",
       runtimeMode: "OPENAI_RELAY",
     });
     return true;
@@ -864,7 +874,7 @@ async function handleOpenAiRelayRun(req, res, context) {
   const relayMessages = hasSystem
     ? messages
     : [
-        { role: "system", content: buildClaudeCodeSystemPrompt() },
+        { role: "system", content: `${CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT}\n\n${buildClaudeCodeSystemPrompt("CLAUDE_PANEL_RELAY")}` },
         ...messages,
       ];
   const requestBody = {
@@ -959,7 +969,18 @@ async function handleOpenAiRelayRun(req, res, context) {
   return true;
 }
 
-function buildClaudeCodeSystemPrompt() {
+function buildClaudeCodeSystemPrompt(runtimeMode = "CLAUDE_PANEL_RELAY") {
+  if (runtimeMode === "CLAUDE_PANEL_RELAY") {
+    return [
+      "You are Claude Panel Relay inside SuperClaw.",
+      "You are a code collaboration assistant running through Claude Panel with an OpenAI-compatible relay.",
+      "You are not the full native Claude Code CLI in this mode.",
+      "Do not claim that native Claude Code CLI tool execution is enabled.",
+      "You may help the user reason about code, projects, debugging, and collaboration, but do not output fake tool_call XML or [TOOL_CALL] text.",
+      "When the user asks who you are, answer that you are Claude Panel Relay, a code collaboration assistant, and explain that native Claude Code CLI is a separate mode when available.",
+      "Do not claim to be Hermes or OpenClaw.",
+    ].join("\n");
+  }
   return [
     "You are Claude Code inside SuperClaw.",
     "Your identity is Claude Code, a coding and project automation agent.",
@@ -968,6 +989,27 @@ function buildClaudeCodeSystemPrompt() {
     "Do not describe yourself as only the underlying model provider.",
     "Do not claim to be Hermes or OpenClaw.",
     "Use available tools when the task requires code, files, terminal commands, or project inspection.",
+  ].join("\n");
+}
+
+function isExactLiteralResponseRequest(prompt) {
+  const text = String(prompt || "").trim();
+  return /^(?:only\s+reply|reply\s+only|just\s+reply|respond\s+only)\s+["'`]?[\w.-]{1,40}["'`]?[.!?]?\s*$/i.test(text)
+    || /^(?:只|仅|只需|仅需)(?:回复|输出|回答)[：:\s"'`]*[\w.-]{1,40}["'`]?[。.!?]?\s*$/.test(text);
+}
+
+function buildClaudeUserPrompt(prompt) {
+  const text = String(prompt || "");
+  if (isExactLiteralResponseRequest(text)) {
+    return text;
+  }
+  return [
+    "Run instruction: Reply to the user in Simplified Chinese by default.",
+    "If the user explicitly asks for another language, follow that language request.",
+    "If the user asks for an exact literal output, output that literal exactly.",
+    "",
+    "User request:",
+    text,
   ].join("\n");
 }
 
@@ -1007,14 +1049,7 @@ function claudeSessionExists(sessionId) {
 }
 
 function getClaudeVersion() {
-  const result = spawnSync(resolveClaudeCommand(), ["--version"], {
-    encoding: "utf8",
-    windowsHide: true,
-    env: buildPortableEnv(),
-    timeout: 5000,
-  });
-  if (result.error) return "";
-  return (result.stdout || result.stderr || "").trim();
+  return detectNativeClaudeCli().version || "";
 }
 
 function resolveClaudeCommand() {
@@ -1026,6 +1061,9 @@ function resolveClaudeCommand() {
   ].filter(Boolean);
   for (const candidate of localCandidates) {
     if (fs.existsSync(candidate)) return candidate;
+  }
+  if (["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE || "").toLowerCase())) {
+    return "";
   }
   if (process.platform !== "win32") return "claude";
 
@@ -1062,8 +1100,104 @@ function resolveClaudeCommand() {
   return "claude";
 }
 
+function detectNativeClaudeCli() {
+  const command = resolveClaudeCommand();
+  const info = {
+    available: false,
+    usable: false,
+    path: command,
+    version: "",
+    reason: "",
+    source: "unknown",
+  };
+
+  if (!command) {
+    info.reason = "claude command was not resolved";
+    return info;
+  }
+
+  if (path.isAbsolute(command)) {
+    info.source = command.includes(`${path.sep}runtime${path.sep}`) ? "portable-runtime" : "local-machine";
+    if (!fs.existsSync(command)) {
+      info.reason = "resolved claude command path does not exist";
+      return info;
+    }
+  } else {
+    info.source = "path";
+  }
+
+  const result = spawnClaudeSync(command, ["--version"], {
+    encoding: "utf8",
+    windowsHide: true,
+    env: buildPortableEnv(),
+    timeout: 5000,
+  });
+  const version = (result.stdout || result.stderr || "").trim();
+  if (result.error) {
+    info.reason = result.error.message || "claude --version failed";
+    return info;
+  }
+  if (result.status !== 0) {
+    info.reason = version || `claude --version exited ${result.status}`;
+    return info;
+  }
+  info.available = true;
+  info.usable = true;
+  info.version = version;
+  info.reason = "claude --version succeeded";
+  return info;
+}
+
+function isRelayAvailable(settings = readClaudeSettings(), relay = publicRelayConfig()) {
+  return Boolean(relay.baseUrl && relay.model && relay.apiKeyConfigured && settings.authConfigured);
+}
+
+function isNativeModeDisabled() {
+  return ["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_FORCE_RELAY || "").toLowerCase());
+}
+
+function getClaudeRunMode(settings = readClaudeSettings()) {
+  const relay = publicRelayConfig();
+  const nativeClaude = detectNativeClaudeCli();
+  const relayAvailable = isRelayAvailable(settings, relay);
+  const nativeAllowed = nativeClaude.usable && !isNativeModeDisabled();
+  const effectiveMode = nativeAllowed ? "NATIVE_CLAUDE_CODE" : "CLAUDE_PANEL_RELAY";
+  const reason = nativeAllowed
+    ? "Native Claude CLI is available and selected."
+    : relayAvailable
+      ? "Native Claude CLI is unavailable or disabled; using Claude Panel Relay."
+      : nativeClaude.usable
+        ? "Native Claude CLI is disabled by CLAUDE_PANEL_FORCE_RELAY."
+        : "Native Claude CLI is unavailable; relay configuration may be required.";
+  return {
+    effectiveMode,
+    reason,
+    nativeClaude,
+    relay,
+    relayAvailable,
+  };
+}
+
 function quoteCmd(value) {
   return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
+function isWindowsCommandScript(command) {
+  return process.platform === "win32" && /\.(cmd|bat)$/i.test(String(command || ""));
+}
+
+function spawnClaudeSync(command, args, options = {}) {
+  if (isWindowsCommandScript(command)) {
+    return spawnSync("cmd.exe", ["/d", "/c", "call", command, ...args], options);
+  }
+  return spawnSync(command, args, options);
+}
+
+function spawnClaude(command, args, options = {}) {
+  if (isWindowsCommandScript(command)) {
+    return spawn("cmd.exe", ["/d", "/c", "call", command, ...args], options);
+  }
+  return spawn(command, args, options);
 }
 
 function writeNativeClaudeLauncher({ cwd, claudeCommand }) {
@@ -1116,7 +1250,18 @@ async function handleNativeClaudeStart(req, res) {
     cwd = process.cwd();
   }
 
-  const claudeCommand = resolveClaudeCommand();
+  const nativeClaude = detectNativeClaudeCli();
+  if (!nativeClaude.usable) {
+    sendJson(res, 404, {
+      ok: false,
+      error: "Native Claude Code CLI is not available on this machine.",
+      runtimeMode: "CLAUDE_PANEL_RELAY",
+      nativeClaude,
+    });
+    return;
+  }
+
+  const claudeCommand = nativeClaude.path;
   const { launcherPath, env } = writeNativeClaudeLauncher({ cwd, claudeCommand });
 
   try {
@@ -2048,6 +2193,8 @@ function buildClaudeCodeWorkbenchSelfCheckPrompt(req) {
 const CLAUDE_SELFCHECK_TRIGGER_PATTERNS = [
   /Claude\s*Code\s*\u5168\u9762\u81ea\u68c0/i,
   /ClaudeCode\s*\u5168\u9762\u81ea\u68c0/i,
+  /Claude\s*Code.{0,24}(?:\u5b8c\u6574\u81ea\u68c0|\u7528\u6237\u53ef\u89c1|\u5de5\u4f5c\u53f0)/i,
+  /ClaudeCode.{0,24}(?:\u5b8c\u6574\u81ea\u68c0|\u7528\u6237\u53ef\u89c1|\u5de5\u4f5c\u53f0)/i,
   /Claude\s*Panel\s*\u81ea\u68c0/i,
   /Claude\s*Relay\s*\u81ea\u68c0/i,
   /\u5b89\u5168\u5bf9\u8bdd/,
@@ -2751,6 +2898,7 @@ async function handleRun(req, res) {
     });
     return;
   }
+  const runMode = getClaudeRunMode(settings);
 
   if (containsSensitiveFileName(prompt) && toolProfile !== "none" && !payload.sensitiveFileAccepted) {
     appendAuditLog({
@@ -2791,7 +2939,7 @@ async function handleRun(req, res) {
     return;
   }
 
-  if (!settings.authConfigured) {
+  if (runMode.effectiveMode === "CLAUDE_PANEL_RELAY" && !settings.authConfigured) {
     sendJson(res, 400, {
       error: "当前还没有配置 API Key，暂时不能调用模型，请先在设置中填写 API Key 和接口地址",
       code: "MISSING_API_KEY",
@@ -2799,7 +2947,7 @@ async function handleRun(req, res) {
     return;
   }
 
-  if (await handleOpenAiRelayRun(req, res, {
+  if (runMode.effectiveMode === "CLAUDE_PANEL_RELAY" && await handleOpenAiRelayRun(req, res, {
     payload,
     prompt,
     cwd,
@@ -2822,9 +2970,10 @@ async function handleRun(req, res) {
     return;
   }
 
+  const claudeUserPrompt = buildClaudeUserPrompt(prompt);
   const args = [
     "-p",
-    prompt,
+    claudeUserPrompt,
     "--output-format",
     "stream-json",
     "--verbose",
@@ -2864,8 +3013,9 @@ async function handleRun(req, res) {
   if (allowBrowserAutomation && extraTools.length) {
     args.push("--allowedTools", extraTools.join(","));
   }
-  args.push("--append-system-prompt", CHINESE_OUTPUT_SYSTEM_PROMPT);
+  args.push("--append-system-prompt", CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT);
   args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
+  args.push("--append-system-prompt", buildClaudeCodeSystemPrompt("NATIVE_CLAUDE_CODE"));
   if (isClaudeCodeUserVisibleSelfCheck(prompt).allow) {
     args.push("--append-system-prompt", CLAUDECODE_SELF_CHECK_SYSTEM_PROMPT);
     args.push("--append-system-prompt", buildClaudeCodeWorkbenchSelfCheckPrompt(req));
@@ -2920,7 +3070,7 @@ async function handleRun(req, res) {
   });
   const runtimeSettingsPath = ensureClaudeRuntimeSettings(runtimeEnv);
 
-  const child = spawn(resolveClaudeCommand(), args, {
+  const child = spawnClaude(runMode.nativeClaude.path || resolveClaudeCommand(), args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     env: runtimeEnv,
@@ -2933,6 +3083,7 @@ async function handleRun(req, res) {
   let assistantTextSeen = false;
 
   writeEvent(res, "meta", {
+    runtimeMode: "NATIVE_CLAUDE_CODE",
     cwd,
     model: model || "default",
     mode,
@@ -2945,6 +3096,12 @@ async function handleRun(req, res) {
     ignoredResumeSessionId,
     claudeConfigDir: runtimeEnv.CLAUDE_CONFIG_DIR,
     runtimeSettingsPath,
+    nativeClaude: {
+      available: runMode.nativeClaude.available,
+      path: runMode.nativeClaude.path,
+      version: runMode.nativeClaude.version,
+      source: runMode.nativeClaude.source,
+    },
   });
 
   appendAuditLog({
@@ -3047,6 +3204,8 @@ function handleStatus(res) {
   const settings = readClaudeSettings();
   const relay = publicRelayConfig();
   const relayReady = Boolean(relay.baseUrl && relay.model && relay.apiKeyConfigured);
+  const runMode = getClaudeRunMode(settings);
+  const selfcheckScript = resolveClaudeSelfcheckScript(process.cwd());
   const displayBaseUrl = relay.baseUrl || settings.baseUrl || "";
   let baseHost = "";
   let runtimeBaseHost = "";
@@ -3062,6 +3221,31 @@ function handleStatus(res) {
   }
 
   sendJson(res, 200, {
+    ok: true,
+    panel: "Claude Panel",
+    effectiveMode: runMode.effectiveMode,
+    runtimeMode: runMode.effectiveMode,
+    modeReason: runMode.reason,
+    nativeClaude: {
+      available: runMode.nativeClaude.available,
+      usable: runMode.nativeClaude.usable,
+      path: runMode.nativeClaude.path,
+      version: runMode.nativeClaude.version,
+      reason: runMode.nativeClaude.reason,
+      source: runMode.nativeClaude.source,
+    },
+    relay: {
+      available: relayReady,
+      mode: "OPENAI_RELAY",
+      model: relay.model || "",
+      baseUrlPresent: Boolean(relay.baseUrl),
+      apiKeyConfigured: Boolean(relay.apiKeyConfigured),
+    },
+    selfcheckExecutor: {
+      available: Boolean(selfcheckScript.scriptPath),
+      mode: "SAFE_SELFCHECK_EXECUTOR",
+      path: selfcheckScript.scriptPath || "",
+    },
     claudeVersion: getClaudeVersion(),
     model: settings.model,
     modelBranches: readModelBranches(settings),

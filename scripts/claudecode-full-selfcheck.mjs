@@ -121,7 +121,7 @@ function httpRequest(method, targetUrl, body = null, timeoutMs = 10000) {
             ok: res.statusCode >= 200 && res.statusCode < 300,
             status: res.statusCode,
             headers: res.headers,
-            text: redact(text).slice(0, 5000),
+            text: redact(text).slice(0, 100000),
           });
         });
       }
@@ -250,14 +250,21 @@ async function main() {
   const ports = getPortSnapshot();
   const tools = getToolSnapshot();
 
-  const runtimeMode = statusJson?.relayConfig?.interfaceType
-    ? "Claude Panel OPENAI_RELAY"
-    : "Claude Panel";
-  const relayMode = statusJson?.relayConfig?.configured ? "configured" : "not configured";
-  const model = statusJson?.relayConfig?.model || statusJson?.model || relayConfig.model || "";
-  const baseUrl = statusJson?.relayConfig?.baseUrl || relayConfig.baseUrl || "";
+  const effectiveMode = statusJson?.effectiveMode || statusJson?.runtimeMode || "";
+  const runtimeMode = effectiveMode === "NATIVE_CLAUDE_CODE"
+    ? "Native Claude Code CLI"
+    : effectiveMode === "CLAUDE_PANEL_RELAY"
+      ? "Claude Panel OPENAI_RELAY"
+      : "Claude Panel";
+  const relayMode = statusJson?.relay?.available || statusJson?.relayConfig?.configured ? "configured" : "not configured";
+  const model = statusJson?.relay?.model || statusJson?.relayConfig?.model || statusJson?.model || relayConfig.model || "";
+  const baseUrl = statusJson?.relay?.baseUrlPresent
+    ? (statusJson?.relayConfig?.baseUrl || relayConfig.baseUrl || statusJson?.baseHost || "")
+    : (statusJson?.relayConfig?.baseUrl || relayConfig.baseUrl || "");
   const apiOk = apiRunResp.skipped ? "SKIPPED" : apiRunResp.ok && /OK/i.test(apiRunText) ? "PASS" : "CHECK";
-  const shellToolSupport = "NO_NATIVE_TOOL_BRIDGE_IN_RELAY";
+  const shellToolSupport = effectiveMode === "NATIVE_CLAUDE_CODE"
+    ? "NATIVE_CLAUDE_CLI_AVAILABLE"
+    : "NO_NATIVE_TOOL_BRIDGE_IN_RELAY";
 
   const summaryItems = [
     `1. Module: ${runtimeMode}.`,
@@ -269,7 +276,7 @@ async function main() {
     `7. Provider/model: ${relayConfig.provider || statusJson?.relayConfig?.provider || "unknown"} / ${model || "unknown"}.`,
     `8. Base URL: ${baseUrl || "not configured"}.`,
     `9. API key visible state: ${statusJson?.relayConfig?.apiKeyConfigured || relayConfig.hasApiKey ? "configured" : "missing"}.`,
-    `10. Native Claude CLI: ${statusJson?.claudeVersion || tools.claude.ok ? "detected" : "not detected"}.`,
+    `10. Native Claude CLI: ${statusJson?.nativeClaude?.available || statusJson?.claudeVersion || tools.claude.ok ? "detected" : "not detected"}.`,
     `11. Real shell tool-call bridge: ${shellToolSupport}.`,
     `12. Browser/desktop/OCR bridge: not directly exposed through Claude Panel relay.`,
     `13. /api/run low-flow OK test: ${apiOk}.`,
