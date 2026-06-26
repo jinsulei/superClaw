@@ -269,6 +269,7 @@ export async function render() {
       <div class="chat-cmd-panel" id="chat-cmd-panel" style="display:none"></div>
       <div class="chat-attachments-preview" id="chat-attachments-preview" style="display:none"></div>
       <div class="chat-input-area">
+        <div class="openclaw-composer-row">
         <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none">
         <button class="chat-attach-btn" id="chat-attach-btn" title="${t('chat.uploadImage')}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -287,6 +288,7 @@ export async function render() {
           <span class="chat-hosted-badge idle" id="chat-hosted-badge">${t('chat.hostedBadge')}</span>
         </button>
       </div>
+        </div>
       <div class="hosted-agent-panel" id="hosted-agent-panel" style="display:none">
         <div class="hosted-agent-header">
           <strong>${t('chat.hostedAgent')}</strong>

@@ -2489,13 +2489,31 @@
 }
 
 .openclaw-chat .chat-input-area {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
   padding: 16px 48px 18px;
+  box-sizing: border-box;
   background: var(--bg-primary);
   border-top: 1px solid var(--border);
 }
 
+.openclaw-chat .openclaw-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  width: min(980px, calc(100% - 48px));
+  max-width: 980px;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+
 .openclaw-chat .chat-input-wrapper {
-  max-width: 760px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
 }
 
 .openclaw-chat .chat-input-wrapper textarea {
@@ -2543,5 +2561,10 @@
 
   .openclaw-chat .chat-input-area {
     padding: 12px 14px 14px;
+  }
+
+  .openclaw-chat .openclaw-composer-row {
+    width: 100%;
+    gap: 8px;
   }
 }

@@ -66,6 +66,37 @@ assert(
   leakedSelectors.map(({ line, index }) => `line ${index + 1}: ${line}`).join('\n'),
 )
 
+assert(
+  'OPENCLAW_COMPOSER_CENTERED',
+  chat.includes('openclaw-composer-row') &&
+    css.includes('.openclaw-chat .chat-input-area') &&
+    css.includes('justify-content: center') &&
+    css.includes('margin-inline: auto'),
+  'OpenClaw composer row is not explicitly centered inside the OpenClaw scope.',
+)
+
+assert(
+  'OPENCLAW_COMPOSER_WIDTH_ALIGNED',
+  css.includes('.openclaw-chat .openclaw-composer-row') &&
+    css.includes('width: min(980px, calc(100% - 48px))') &&
+    css.includes('max-width: 980px') &&
+    css.includes('box-sizing: border-box'),
+  'OpenClaw composer width is not aligned with the Hermes-like chat column.',
+)
+
+assert(
+  'OPENCLAW_COMPOSER_NO_100VW',
+  !openclawBlock.includes('100vw'),
+  'OpenClaw composer should not use 100vw because sidebar width can shift visual centering.',
+)
+
+assert(
+  'OPENCLAW_COMPOSER_NO_GLOBAL_POLLUTION',
+  !css.includes('.chat-input-area .openclaw-composer-row') &&
+    css.includes('.openclaw-chat .openclaw-composer-row'),
+  'OpenClaw composer styles must stay under .openclaw-chat.',
+)
+
 const diffNameOutput = execSync('git diff --name-only', {
   cwd: root,
   encoding: 'utf8',
