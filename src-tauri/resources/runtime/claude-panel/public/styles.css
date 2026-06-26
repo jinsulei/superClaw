@@ -7396,12 +7396,19 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 :root {
-  --sc-chat-stage-max: 1180px;
-  --sc-chat-stage-gutter: 40px;
+  --sc-chat-stage-max: 1480px;
+  --sc-chat-stage-reserved: 320px;
+  --sc-chat-stage-gutter: 48px;
+  --sc-chat-assistant-readable-max: 980px;
+  --sc-chat-user-readable-max: 620px;
 }
 
 .sc-chat-stage {
-  width: min(var(--sc-chat-stage-max), calc(100% - var(--sc-chat-stage-gutter)));
+  width: min(
+    var(--sc-chat-stage-max),
+    calc(100vw - var(--sc-chat-stage-reserved)),
+    calc(100% - var(--sc-chat-stage-gutter))
+  );
   max-width: var(--sc-chat-stage-max);
   margin-left: auto;
   margin-right: auto;
@@ -7440,7 +7447,7 @@ body.dark .conversation-mode .transcript .message.user {
 .sc-chat-stage .sc-msg-bubble {
   display: inline-block;
   width: fit-content;
-  max-width: min(700px, 64vw);
+  max-width: min(var(--sc-chat-assistant-readable-max), 72%);
   min-width: 0;
   min-height: 0;
   height: auto;
@@ -7456,7 +7463,7 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 .sc-chat-stage .sc-msg-bubble.user {
-  max-width: min(520px, 46vw);
+  max-width: min(var(--sc-chat-user-readable-max), 46%);
   background: #39d68f;
   color: #082018;
   border: none;
@@ -7471,7 +7478,7 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 .sc-chat-stage .sc-msg-bubble.system {
-  max-width: min(520px, 70vw);
+  max-width: min(620px, 70%);
   background: transparent;
   color: #8a98aa;
   border: none;
@@ -7549,27 +7556,38 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 .sc-chat-stage {
-  width: min(var(--sc-chat-stage-max), 100%) !important;
-  max-width: 100% !important;
-  padding-right: calc(var(--sc-chat-stage-gutter) / 2) !important;
-  padding-left: calc(var(--sc-chat-stage-gutter) / 2) !important;
+  width: min(
+    var(--sc-chat-stage-max),
+    calc(100vw - var(--sc-chat-stage-reserved)),
+    calc(100% - var(--sc-chat-stage-gutter))
+  ) !important;
+  max-width: var(--sc-chat-stage-max) !important;
+  padding-right: 24px !important;
+  padding-left: 24px !important;
   margin-right: auto !important;
   margin-left: auto !important;
 }
 
 .sc-chat-stage .sc-msg-bubble,
 .conversation-mode .transcript .message.assistant,
-.conversation-mode .transcript .message.user,
 .conversation-mode .transcript .message.system,
 .conversation-mode .transcript .message.error {
-  max-width: min(980px, 100%) !important;
+  max-width: min(var(--sc-chat-assistant-readable-max), 72%) !important;
+}
+
+.conversation-mode .transcript .message.user {
+  max-width: min(var(--sc-chat-user-readable-max), 46%) !important;
 }
 
 .composer,
 .home-mode .composer,
 .conversation-mode .composer {
-  width: min(1180px, calc(100% - 32px)) !important;
-  max-width: calc(100% - 32px) !important;
+  width: min(
+    var(--sc-chat-stage-max),
+    calc(100vw - var(--sc-chat-stage-reserved)),
+    calc(100% - var(--sc-chat-stage-gutter))
+  ) !important;
+  max-width: var(--sc-chat-stage-max) !important;
   min-width: 0 !important;
 }
 

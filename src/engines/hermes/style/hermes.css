@@ -1917,7 +1917,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hermes-chat-bubble {
   display: inline-block;
   width: fit-content;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
   min-width: 0;
   min-height: 0;
   height: auto;
@@ -5172,6 +5172,14 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 /* ---- Messages area ---- */
+[data-engine="hermes"] {
+  --superclaw-chat-stage-max: 1480px;
+  --superclaw-chat-stage-reserved: 320px;
+  --superclaw-chat-stage-gutter: 48px;
+  --superclaw-chat-assistant-readable-max: 980px;
+  --superclaw-chat-user-readable-max: 620px;
+}
+
 [data-engine="hermes"] .hm-chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -5246,12 +5254,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   display: flex;
   gap: 10px;
   width: fit-content;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
   min-width: 0;
   align-items: flex-start;
 }
 [data-engine="hermes"] .hm-chat-shell.is-sidebar-collapsed .hm-chat-msg-body {
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
 }
 [data-engine="hermes"] .hm-chat-msg--user .hm-chat-msg-body { flex-direction: row-reverse; }
 
@@ -5283,7 +5291,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hm-chat-msg-bubble {
   display: inline-block;
   width: fit-content;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
   min-width: 0;
   padding: 10px 14px;
   font-size: 14px;
@@ -5346,11 +5354,11 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 
 [data-engine="hermes"] .sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-body {
   width: auto;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
 }
 
 [data-engine="hermes"] .sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-body {
-  max-width: min(520px, 46vw);
+  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%);
 }
 
 [data-engine="hermes"] .sc-chat-stage .hm-chat-msg-avatar {
@@ -5367,22 +5375,22 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .sc-chat-stage .hm-chat-msg.sc-msg-row.assistant .hm-chat-msg-bubble.sc-msg-bubble {
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--assistant .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-expanded) {
   width: fit-content;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--assistant .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-collapsed) {
   width: fit-content;
-  max-width: min(860px, 72vw);
+  max-width: min(860px, 72%);
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--assistant .hm-chat-msg-bubble.sc-msg-bubble:has(table) {
   min-width: 0;
-  max-width: min(980px, 72vw);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
 }
 
 [data-engine="hermes"] .hm-chat-msg-bubble .message-content,
@@ -5570,7 +5578,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 
 [data-engine="hermes"] .hm-chat-attachment-image {
   margin: 0;
-  max-width: min(260px, 72vw);
+  max-width: min(260px, 72%);
 }
 
 [data-engine="hermes"] .hm-chat-attachment-image img {
@@ -6133,8 +6141,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: 100%;
-  max-width: 1180px;
+  width: min(
+    var(--superclaw-chat-stage-max, 1480px),
+    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
+    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
+  );
+  max-width: var(--superclaw-chat-stage-max, 1480px);
   margin: 0 auto;
   background: var(--hm-surface-1);
   border: 1px solid var(--hm-border);
@@ -6214,7 +6226,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   right: 48px;
   bottom: calc(100% - 4px);
   transform: translateY(-6px);
-  max-width: 1180px;
+  max-width: var(--superclaw-chat-stage-max, 1480px);
   margin: 0 auto;
   background: var(--hm-surface-0);
   border: 1px solid var(--hm-border);
@@ -6280,7 +6292,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-pending-attachments {
-  max-width: 1180px;
+  width: min(
+    var(--superclaw-chat-stage-max, 1480px),
+    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
+    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
+  );
+  max-width: var(--superclaw-chat-stage-max, 1480px);
   margin: 0 auto 8px;
 }
 
@@ -6372,7 +6389,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  max-width: 1180px;
+  width: min(
+    var(--superclaw-chat-stage-max, 1480px),
+    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
+    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
+  );
+  max-width: var(--superclaw-chat-stage-max, 1480px);
   margin-left: auto;
   margin-right: auto;
   padding: 0 2px;
@@ -6380,7 +6402,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 [data-engine="hermes"] .hm-chat-shell.is-sidebar-collapsed .hm-chat-input-wrap,
 [data-engine="hermes"] .hm-chat-shell.is-sidebar-collapsed .hm-chat-usage-bar {
-  max-width: 1180px;
+  max-width: var(--superclaw-chat-stage-max, 1480px);
 }
 [data-engine="hermes"] .hm-chat-usage-pill {
   display: inline-flex;
@@ -8778,8 +8800,12 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage {
-  width: min(1180px, calc(100% - 48px)) !important;
-  max-width: 1180px !important;
+  width: min(
+    var(--superclaw-chat-stage-max, 1480px),
+    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
+    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
+  ) !important;
+  max-width: var(--superclaw-chat-stage-max, 1480px) !important;
   margin-right: auto !important;
   margin-left: auto !important;
   padding-right: 24px !important;
@@ -8792,25 +8818,25 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-body,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-content-wrap {
   width: fit-content !important;
-  max-width: min(980px, 72vw) !important;
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%) !important;
   flex: 0 1 auto !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-body,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-content-wrap {
-  max-width: min(520px, 46vw) !important;
+  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%) !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-expanded),
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-collapsed) {
   width: fit-content !important;
-  max-width: min(980px, 72vw) !important;
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%) !important;
   flex: 0 1 auto !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--user .hm-chat-msg-bubble.sc-msg-bubble {
-  max-width: min(520px, 46vw) !important;
+  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%) !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message,
