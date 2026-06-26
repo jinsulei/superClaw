@@ -1465,6 +1465,27 @@
   background: var(--bg-tertiary);
 }
 
+.openclaw-chat .msg-voice-btn {
+  gap: 4px;
+  opacity: 1;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.openclaw-chat .msg-voice-label {
+  font-size: 12px;
+}
+
+.openclaw-chat .openclaw-read-rate {
+  height: 22px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
 /* 消息内图片 */
 .msg-img {
   max-width: 200px;

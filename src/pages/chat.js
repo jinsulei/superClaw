@@ -11,7 +11,7 @@ import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
-import { createSpeechPlaybackController, createVoiceInputController } from '../lib/voice.js'
+import { createSpeechPlaybackController, createVoiceInputController, sanitizeSpeechPlaybackText } from '../lib/voice.js'
 import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
@@ -93,6 +93,8 @@ let _sessionListEl = null, _cmdPanelEl = null, _attachPreviewEl = null, _fileInp
 let _modelSelectEl = null
 let _voiceBtn = null, _voiceInputController = null, _voicePlaybackController = null
 let _modelVoiceConfig = null
+let _voicePlaybackKey = null
+let _voiceRate = Number(localStorage.getItem('superclaw-hermes-voice-rate') || '1') || 1
 let _currentAiBubble = null, _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
 let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _lastHistoryHash = ''
@@ -446,6 +448,28 @@ function syncVoiceDraft(text) {
   _textarea.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
+function syncMessageVoiceButtons(activeKey = _voicePlaybackKey) {
+  _voicePlaybackKey = activeKey || null
+  _messagesEl?.querySelectorAll('.msg-voice-btn').forEach((btn) => {
+    const active = !!_voicePlaybackKey && btn.dataset.voiceKey === _voicePlaybackKey
+    btn.classList.toggle('is-speaking', active)
+    const label = btn.querySelector('.msg-voice-label')
+    if (label) label.textContent = active ? '停止' : '朗读'
+    btn.title = active ? t('chat.voiceStopSpeak') : t('chat.voiceSpeak')
+    btn.setAttribute('aria-label', btn.title)
+  })
+}
+
+function persistOpenClawVoiceRate(nextRate) {
+  const parsed = Number(nextRate)
+  _voiceRate = Number.isFinite(parsed) ? Math.min(2, Math.max(0.75, parsed)) : 1
+  localStorage.setItem('superclaw-hermes-voice-rate', String(_voiceRate))
+  _voicePlaybackController?.setRate(_voiceRate)
+  _messagesEl?.querySelectorAll('.openclaw-read-rate').forEach((select) => {
+    if (Math.abs(Number(select.value) - _voiceRate) > 0.001) select.value = String(_voiceRate)
+  })
+}
+
 function setupVoiceControls() {
   _voiceInputController?.destroy()
   _voicePlaybackController?.destroy()
@@ -484,11 +508,7 @@ function setupVoiceControls() {
       })
     },
     onStateChange: (activeKey) => {
-      _messagesEl?.querySelectorAll('.msg-voice-btn').forEach((btn) => {
-        const active = !!activeKey && btn.dataset.voiceKey === activeKey
-        btn.classList.toggle('is-speaking', active)
-        btn.title = active ? t('chat.voiceStopSpeak') : t('chat.voiceSpeak')
-      })
+      syncMessageVoiceButtons(activeKey)
     },
   })
   applyVoiceButtonState('idle')
@@ -667,9 +687,15 @@ function bindEvents(page) {
       const bubble = msgWrap?.querySelector('.msg-bubble .msg-text')
       const text = bubble?.innerText || bubble?.textContent || ''
       if (!text.trim()) return
-      const status = await _voicePlaybackController?.toggleAsync({ key: voiceBtn.dataset.voiceKey, text })
+      const status = await _voicePlaybackController?.toggleAsync({ key: voiceBtn.dataset.voiceKey, text, lang: 'zh-CN', rate: _voiceRate })
       if (status === 'started') toast(t('chat.voiceFallbackTts'), 'info')
-      else if (status === 'unsupported') toast(t('chat.voicePlaybackUnsupported'), 'warning')
+      else if (status === 'unsupported') toast('当前环境不支持文本朗读。', 'warning')
+      return
+    }
+    const rateSelect = e.target.closest('.openclaw-read-rate')
+    if (rateSelect) {
+      e.stopPropagation()
+      persistOpenClawVoiceRate(rateSelect.value)
       return
     }
     const copyBtn = e.target.closest('.msg-copy-btn')
@@ -688,6 +714,12 @@ function bindEvents(page) {
       return
     }
     hideCmdPanel()
+  })
+  _messagesEl.addEventListener('change', (e) => {
+    const rateSelect = e.target.closest('.openclaw-read-rate')
+    if (!rateSelect) return
+    e.stopPropagation()
+    persistOpenClawVoiceRate(rateSelect.value)
   })
 }
 
@@ -1873,6 +1905,8 @@ function parseSessionLabel(key) {
 async function switchSession(newKey, options = {}) {
   const { forceWorkspace = false } = options
   if (newKey === _sessionKey) return false
+  _voicePlaybackController?.stop()
+  syncMessageVoiceButtons(null)
   const nextAgentId = parseSessionAgent(newKey) || 'main'
   if (!forceWorkspace && _workspaceDirty && nextAgentId !== _workspaceCurrentAgentId) {
     const yes = await confirmWorkspaceDiscardIfNeeded()
@@ -4241,8 +4275,11 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
 
   const meta = document.createElement('div')
   meta.className = 'msg-meta sc-msg-meta'
-  const canSpeak = !!(text || '').trim()
-  meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
+  const canSpeak = !!sanitizeSpeechPlaybackText(text || '')
+  const voiceKey = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const voiceRates = [0.75, 1, 1.25, 1.5, 2]
+  const voiceOptions = voiceRates.map(rate => `<option value="${rate}" ${Math.abs(_voiceRate - rate) < 0.001 ? 'selected' : ''}>${rate}x</option>`).join('')
+  meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="${escapeAttr(voiceKey)}" title="${t('chat.voiceSpeak')}" aria-label="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg><span class="msg-voice-label">朗读</span></button><select class="openclaw-read-rate" aria-label="朗读速度">${voiceOptions}</select>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
 
   group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
