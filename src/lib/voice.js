@@ -12,6 +12,50 @@ export function isSpeechPlaybackSupported() {
     && typeof window.SpeechSynthesisUtterance === 'function'
 }
 
+export const DEFAULT_SPEECH_LANG = 'zh-CN'
+export const DEFAULT_SPEECH_RATE = 1
+
+export function normalizeSpeechLang(lang) {
+  const value = String(lang || '').trim()
+  if (!value) return DEFAULT_SPEECH_LANG
+  if (/^zh/i.test(value)) return 'zh-CN'
+  return value
+}
+
+export function pickChineseVoice(voices = null) {
+  if (!isSpeechPlaybackSupported()) return null
+  const list = Array.isArray(voices) ? voices : (window.speechSynthesis.getVoices?.() || [])
+  if (!list.length) return null
+  return list.find(voice => /^zh[-_]?CN$/i.test(voice.lang || ''))
+    || list.find(voice => /^zh/i.test(voice.lang || ''))
+    || list.find(voice => /Chinese|Mandarin|普通话|中文|中国/i.test(`${voice.name || ''} ${voice.lang || ''}`))
+    || null
+}
+
+export function sanitizeSpeechPlaybackText(text) {
+  const source = String(text || '').replace(/\r\n/g, '\n')
+  if (!source.trim()) return ''
+  const out = []
+  let inFence = false
+  for (const rawLine of source.split('\n')) {
+    const line = rawLine.trim()
+    if (/^```/.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+    if (!line) {
+      if (out.length && out[out.length - 1] !== '') out.push('')
+      continue
+    }
+    if (/^(the user is asking me|let me think|i need to|we need to|tool_call|tool call|stdout|stderr|traceback|debug:|system:|assistant:)/i.test(line)) continue
+    if (/^\[?TOOL_CALL\]?/i.test(line)) continue
+    if (/^(powershell|cmd|bash|sh|node|python)\s+/i.test(line)) continue
+    out.push(rawLine)
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 async function requestMicrophoneAccess() {
   if (!navigator.mediaDevices?.getUserMedia) return null
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -289,7 +333,7 @@ export function createVoiceInputController(options = {}) {
   }
 }
 
-export function createSpeechPlaybackController({ onStateChange, onProgress, synthesizeAudio, rate = 1 } = {}) {
+export function createSpeechPlaybackController({ onStateChange, onProgress, synthesizeAudio, rate = DEFAULT_SPEECH_RATE } = {}) {
   let activeKey = null
   let activeText = ''
   let activeLang = ''
@@ -371,7 +415,7 @@ export function createSpeechPlaybackController({ onStateChange, onProgress, synt
 
   function speakBrowser({ key, text, lang, offset = 0 }) {
     if (!isSpeechPlaybackSupported()) return false
-    const content = String(text || '').trim()
+    const content = sanitizeSpeechPlaybackText(text)
     if (!content) return false
     const safeOffset = Math.max(0, Math.min(offset, content.length - 1))
     const segment = content.slice(safeOffset).trim()
@@ -379,12 +423,16 @@ export function createSpeechPlaybackController({ onStateChange, onProgress, synt
     speechToken += 1
     const token = speechToken
     activeText = content
-    activeLang = lang || navigator.language || 'zh-CN'
+    activeLang = normalizeSpeechLang(lang)
     activeCharIndex = safeOffset
     activeSpeechOffset = safeOffset
     const utterance = new SpeechSynthesisUtterance(segment)
-    utterance.lang = lang || navigator.language || 'zh-CN'
+    utterance.lang = activeLang
+    const voice = pickChineseVoice()
+    if (voice) utterance.voice = voice
     utterance.rate = speechRate
+    utterance.pitch = 1
+    utterance.volume = 1
     utterance.onboundary = (event) => {
       if (token !== speechToken) return
       if (typeof event.charIndex === 'number') {
@@ -414,7 +462,7 @@ export function createSpeechPlaybackController({ onStateChange, onProgress, synt
 
   async function speakWithModel({ key, text, lang }) {
     if (typeof synthesizeAudio !== 'function') return false
-    const content = String(text || '').trim()
+    const content = sanitizeSpeechPlaybackText(text)
     if (!content) return false
     const audio = await synthesizeAudio({ text: content, lang })
     const mimeType = audio?.mimeType || audio?.mime_type || 'audio/mpeg'

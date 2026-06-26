@@ -2166,13 +2166,25 @@ function openclawRuntimeEnv(extra = {}) {
   }
 }
 
+function normalizeBackgroundStdio(stdio) {
+  if (!stdio || stdio === 'inherit') return ['ignore', 'pipe', 'pipe']
+  return stdio
+}
+
+function automaticAgentSpawnOptions(options = {}) {
+  return {
+    ...options,
+    windowsHide: true,
+    detached: false,
+    stdio: normalizeBackgroundStdio(options.stdio),
+  }
+}
+
 function spawnOpenclaw(args, options = {}) {
   const spec = openclawProcessSpec(args)
   const { env, ...rest } = options
   return spawn(spec.command, spec.args, {
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    ...rest,
+    ...automaticAgentSpawnOptions(rest),
     env: openclawRuntimeEnv(env),
   })
 }
@@ -2181,9 +2193,7 @@ function spawnOpenclawSync(args, options = {}) {
   const spec = openclawProcessSpec(args)
   const { env, ...rest } = options
   return spawnSync(spec.command, spec.args, {
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    ...rest,
+    ...automaticAgentSpawnOptions(rest),
     env: openclawRuntimeEnv(env),
   })
 }
@@ -4763,7 +4773,6 @@ function winStartGateway() {
 
   // 用 cmd.exe /c 启动，不用 shell: true（避免额外 cmd.exe 进程链导致终端闪烁）
   const child = spawnOpenclaw(['gateway', 'run'], {
-    detached: true,
     stdio: ['ignore', out, err],
     windowsHide: true,
     cwd: homedir(),
@@ -5135,7 +5144,6 @@ function linuxStartGateway() {
   fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
 
   const child = spawnOpenclaw(['gateway', 'run'], {
-    detached: true,
     stdio: ['ignore', out, err],
     shell: false,
     cwd: homedir(),
@@ -10222,7 +10230,7 @@ const handlers = {
           VIRTUAL_ENV: gatewaySpec.env.VIRTUAL_ENV || envVars.VIRTUAL_ENV,
         },
         stdio: ['ignore', logFd, logFd],
-        detached: true, windowsHide: true,
+        windowsHide: true,
       })
       child.unref()
       _hermesGwProcess = child
@@ -10855,7 +10863,6 @@ const handlers = {
         VIRTUAL_ENV: dashboardSpec.env.VIRTUAL_ENV || envVars.VIRTUAL_ENV,
       },
       stdio: ['ignore', out, err],
-      detached: true,
       windowsHide: true,
     })
     child.unref()
