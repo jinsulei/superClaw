@@ -18,6 +18,7 @@ import { api, invalidate, isTauriRuntime } from '../../../lib/tauri-api.js'
 import { toast } from '../../../components/toast.js'
 import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
+import { classifyHermesEcommerceWorkflowIntent } from '../lib/ecommerce-workflow-guard.js'
 import {
   COLLAB_TARGETS,
   buildTaskContext,
@@ -1023,6 +1024,7 @@ export function render() {
   let drawFrame = null
   let suppressTextareaCaptureUntil = 0
   let hermesSendInFlight = false
+  let activeEcommerceWorkflowRunId = null
   let drawMode = 'full'
   const renderedInboxMessages = new Set(JSON.parse(localStorage.getItem('superclaw-hermes-rendered-task-messages-v1') || '[]'))
   let voiceInputState = 'idle'
@@ -2929,6 +2931,14 @@ export function render() {
 
   function appendEcommerceEvent(event) {
     if (!event) return
+    if (event.channel === 'ecommerce-workflow' && event.runId && event.runId !== activeEcommerceWorkflowRunId) {
+      console.warn('HERMES_STALE_WORKFLOW_OUTPUT_DROPPED', {
+        eventRunId: event.runId,
+        activeRunId: activeEcommerceWorkflowRunId,
+        type: event.type,
+      })
+      return
+    }
     const type = event.type
     if (type === Stage1MessageType.SCREENSHOT_CARD) {
       pushEcommerceAssistantMessage({
@@ -2962,6 +2972,8 @@ export function render() {
   }
 
   async function executeEcommerceRunner(stageLabel, userText, runner, input = {}, context = {}) {
+    const runId = `ecommerce-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    activeEcommerceWorkflowRunId = runId
     store.pushLocalUser(userText)
     resetInput()
     forceScrollBottom = true
@@ -2970,7 +2982,11 @@ export function render() {
       await runner(
         { query: userText, userText, ...input },
         {
-          emit: appendEcommerceEvent,
+          emit: (event) => appendEcommerceEvent({
+            ...event,
+            runId,
+            channel: 'ecommerce-workflow',
+          }),
           browser: createEcommerceBrowserContext(stageLabel),
           ...context,
         },
@@ -2982,6 +2998,7 @@ export function render() {
         createdAt: Date.now(),
       })
     } finally {
+      if (activeEcommerceWorkflowRunId === runId) activeEcommerceWorkflowRunId = null
       forceScrollBottom = true
       draw()
     }
@@ -2989,6 +3006,14 @@ export function render() {
   }
 
   async function maybeRunEcommerceStage(userText) {
+    const workflowDecision = classifyHermesEcommerceWorkflowIntent(userText)
+    if (!workflowDecision.allowed) {
+      if (workflowDecision.pendingRequiresConfirmation) {
+        store.pushLocalAssistant('检测到未完成电商任务，但不会自动继续。请明确回复“继续电商任务”后再恢复。')
+      }
+      return false
+    }
+
     if (isStage2LowRiskEnabled()) {
       const detected = detectStage2Intent(userText)
       if (detected.matched) {
