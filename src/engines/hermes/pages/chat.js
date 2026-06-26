@@ -1022,6 +1022,7 @@ export function render() {
   let lastRenderedStreaming = store.state.streaming
   let drawFrame = null
   let suppressTextareaCaptureUntil = 0
+  let hermesSendInFlight = false
   let drawMode = 'full'
   const renderedInboxMessages = new Set(JSON.parse(localStorage.getItem('superclaw-hermes-rendered-task-messages-v1') || '[]'))
   let voiceInputState = 'idle'
@@ -1937,11 +1938,11 @@ export function render() {
                     rows="1">${escHtml(inputValue)}</textarea>
           <div class="hm-chat-input-actions">
             ${streaming
-              ? `<button class="hm-chat-stop-btn" id="hm-chat-stop" title="${escHtml(t('engine.chatStop'))}">
+              ? `<button class="hm-chat-stop-btn" id="hm-chat-stop" type="button" title="${escHtml(t('engine.chatStop'))}">
                    ${ICONS.stop}
                  </button>`
-              : `<button class="hm-chat-send-btn" id="hm-chat-send"
-                         ${!active || (!inputValue.trim() && !pendingAttachments.length) ? 'disabled' : ''}
+              : `<button class="hm-chat-send-btn" id="hm-chat-send" type="button"
+                         ${hermesSendInFlight || (!inputValue.trim() && !pendingAttachments.length) ? 'disabled' : ''}
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
@@ -2019,7 +2020,7 @@ export function render() {
     const activeInput = document.activeElement?.id === 'hm-chat-input' && el.contains(document.activeElement)
       ? document.activeElement
       : null
-    const suppressTextareaCapture = Date.now() < suppressTextareaCaptureUntil
+    const suppressTextareaCapture = hermesSendInFlight || Date.now() < suppressTextareaCaptureUntil
     if (activeInput && !suppressTextareaCapture) {
       inputFocused = true
       inputValue = activeInput.value
@@ -2443,7 +2444,7 @@ export function render() {
         if (e.isComposing || e.keyCode === 229) return
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault()
-          handleSend()
+          handleSend(e)
           return
         }
         if (e.key === 'Escape' && showSlash) {
@@ -2456,7 +2457,7 @@ export function render() {
         inputValue = input.value
         inputCaret = input.selectionStart || inputValue.length
         const sendBtn = el.querySelector('#hm-chat-send')
-        if (sendBtn) sendBtn.disabled = !inputValue.trim() || !!store.state.streaming
+        if (sendBtn) sendBtn.disabled = !inputValue.trim() || !!store.state.streaming || hermesSendInFlight
         const wasShowing = showSlash
         if (inputValue.startsWith('/') && !inputValue.includes(' ')) {
           showSlash = true
@@ -3268,10 +3269,12 @@ export function render() {
     })
   }
 
-  async function handleSend() {
+  async function handleSend(event) {
+    event?.preventDefault?.()
+    event?.stopPropagation?.()
     const attachments = pendingAttachments.slice()
     let text = inputValue.trim()
-    if ((!text && !attachments.length) || store.state.streaming) return
+    if ((!text && !attachments.length) || store.state.streaming || hermesSendInFlight) return
     if (!text && attachments.length) text = '请分析我刚刚上传或粘贴的图片。'
 
     // Local slash commands short-circuit before going to the agent.
@@ -3328,19 +3331,56 @@ export function render() {
       resetInput(); draw(); return
     }
 
+    hermesSendInFlight = true
+    const clientRequestId = createClientRequestId()
+    const restoreText = inputValue
+    const restoreCaret = inputCaret
+    const restoreAttachments = pendingAttachments.slice()
+    const restoreInstructions = pendingAttachmentInstructions
+    let draftCleared = false
+    const clearDraftForSend = () => {
+      if (draftCleared) return
+      forceScrollBottom = true
+      resetInput()
+      inputFocused = true
+      inputCaret = 0
+      suppressTextareaCaptureUntil = Date.now() + 10000
+      clearLiveTextareaDomValue()
+      draftCleared = true
+      console.debug('[HermesChat] draft cleared', {
+        sessionId: store.state.activeSessionId || 'pending-new-session',
+        clientRequestId,
+        length: restoreText.length,
+      })
+      draw()
+    }
+
     if (isCollaborationTaskRequest(text)) {
+      clearDraftForSend()
       dispatchCollaborationTask({ goal: text })
+      hermesSendInFlight = false
       return
     }
 
-    if (await maybeRunEcommerceStage(text)) {
+    let ecommerceHandled = false
+    try {
+      ecommerceHandled = await maybeRunEcommerceStage(text)
+    } catch (err) {
+      hermesSendInFlight = false
+      throw err
+    }
+    if (ecommerceHandled) {
+      clearDraftForSend()
+      hermesSendInFlight = false
       return
     }
 
     let sendInstructions = [
-      pendingAttachmentInstructions,
+      restoreInstructions,
       buildIntentTriggeredToolInstructions(text),
     ].filter(Boolean).join('\n\n')
+    try {
+      clearDraftForSend()
 
     // Normal user message → start agent run.
     if (attachments.length && isOcrIntent(text)) {
@@ -3355,24 +3395,6 @@ export function render() {
         store.pushLocalAssistant(ocrBlock)
       }
     }
-    forceScrollBottom = true
-    const clientRequestId = createClientRequestId()
-    const restoreText = inputValue
-    const restoreCaret = inputCaret
-    const restoreAttachments = pendingAttachments.slice()
-    const restoreInstructions = pendingAttachmentInstructions
-    resetInput()
-    inputFocused = true
-    inputCaret = 0
-    suppressTextareaCaptureUntil = Date.now() + 1500
-    clearLiveTextareaDomValue()
-    console.debug('[HermesChat] draft cleared', {
-      sessionId: store.state.activeSessionId || 'pending-new-session',
-      clientRequestId,
-      length: restoreText.length,
-    })
-    draw()
-    try {
       await store.sendMessage(text, {
         clientRequestId,
         instructions: sendInstructions || null,
@@ -3388,6 +3410,8 @@ export function render() {
       toast(err?.message || String(err), 'error')
       throw err
     } finally {
+      hermesSendInFlight = false
+      suppressTextareaCaptureUntil = Date.now() + 250
       inputFocused = true
       inputCaret = inputValue.length
       draw()

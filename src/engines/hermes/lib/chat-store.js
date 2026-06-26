@@ -1207,6 +1207,7 @@ function createStore() {
     const u1 = await tauriListen('hermes-run-delta', (e) => {
       const delta = e?.payload?.delta || ''
       if (!delta) return
+      if (!state.streaming || !state.runningClientRequestId) return
       const s = runSession()
       if (!s) return
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
@@ -1215,6 +1216,7 @@ function createStore() {
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
       const evt = e?.payload || {}
+      if (!state.streaming || !state.runningClientRequestId) return
       const evtType = evt.event || ''
       const toolName = evt.tool || evt.tool_name || evt.name || 'tool'
       const preview = evt.preview || evt.detail || evt.message || ''
@@ -1262,6 +1264,7 @@ function createStore() {
     })
     const u3 = await tauriListen('hermes-run-done', (e) => {
       adoptEventSession(e?.payload || {})
+      if (!state.streaming || !state.runningClientRequestId) return
       const s = runSession()
       if (!s) { cleanupAfterRun(); return }
       const runTools = [...state.liveTools]
@@ -1302,6 +1305,7 @@ function createStore() {
     const u4 = await tauriListen('hermes-run-error', (e) => {
       const err = e?.payload?.error || 'unknown error'
       adoptEventSession(e?.payload || {})
+      if (!state.streaming || !state.runningClientRequestId) return
       const s = runSession()
       if (s) {
         s.messages.push({
@@ -1439,10 +1443,19 @@ function createStore() {
     cleanupAfterRun()
   }
 
+  function shouldAcceptStreamEvent(runSessionId) {
+    if (!state.streaming || !state.runningClientRequestId) return false
+    if (!state.runningSessionId) return true
+    return runSessionId === state.runningSessionId
+  }
+
   function handleStreamEvent(runSessionId, evt) {
     const eventType = evt?.event || ''
     const effectiveSessionId = adoptBackendSessionId(runSessionId, evt?.session_id || evt?.sessionId || '')
     if (eventType === 'run.started') {
+      return
+    }
+    if (!shouldAcceptStreamEvent(effectiveSessionId)) {
       return
     }
     if (eventType === 'message.delta') {
