@@ -905,15 +905,21 @@ function hermesGitBashPath() {
 }
 
 function hermesRuntimeEnv(extra = {}) {
+  const localEnv = readDotEnvVars(path.join(hermesHome(), '.env'))
+  const minimaxBaseUrl = localEnv.MINIMAX_BASE_URL || process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1'
+  const minimaxApiKey = localEnv.MINIMAX_API_KEY || process.env.MINIMAX_API_KEY || localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
   const env = {
     ...process.env,
+    ...localEnv,
     PATH: hermesEnhancedPath(),
-    HERMES_PROVIDER: 'minimax',
-    OPENAI_BASE_URL: 'https://api.minimaxi.com/v1',
-    OPENAI_MODEL: 'MiniMax-M3',
-    SUPERCLAW_FORCE_PROVIDER: 'minimax',
-    MINIMAX_BASE_URL: 'https://api.minimaxi.com/v1',
-    MINIMAX_CN_BASE_URL: 'https://api.minimaxi.com/v1',
+    HERMES_PROVIDER: localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || 'minimax',
+    OPENAI_BASE_URL: localEnv.OPENAI_BASE_URL || minimaxBaseUrl,
+    OPENAI_MODEL: localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || 'MiniMax-M3',
+    OPENAI_API_KEY: localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || minimaxApiKey,
+    SUPERCLAW_FORCE_PROVIDER: localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || 'minimax',
+    MINIMAX_API_KEY: minimaxApiKey,
+    MINIMAX_BASE_URL: minimaxBaseUrl,
+    MINIMAX_CN_BASE_URL: localEnv.MINIMAX_CN_BASE_URL || process.env.MINIMAX_CN_BASE_URL || minimaxBaseUrl,
     ...extra,
   }
   const bash = hermesGitBashPath()
