@@ -1954,11 +1954,18 @@ function clearCurrentTranscript() {
 
 function showStatusSummary() {
   const status = latestStatus || {};
+  const effectiveMode = status.effectiveMode || status.runtimeMode || "CLAUDE_PANEL_RELAY";
+  const modeLabel = effectiveMode === "NATIVE_CLAUDE_CODE"
+    ? "Claude Code · Native CLI"
+    : effectiveMode === "SAFE_SELFCHECK_EXECUTOR"
+      ? "Claude Panel · Safe Selfcheck"
+      : "Claude Panel · Relay 模式";
   addMessage(
     "system",
     "状态",
     [
-      `Claude Code：${status.claudeVersion || "未检测到版本"}`,
+      `当前模式：${modeLabel}`,
+      `Claude CLI：${status.nativeClaude?.available ? status.nativeClaude.version || "已检测到" : "未检测到"}`,
       `模型：${modelInput.value || status.model || "未配置"}`,
       `接口：${status.baseHost || "本地配置"}`,
       `认证：${status.authConfigured ? "已连接" : "未检测到认证"}`,
@@ -3423,16 +3430,24 @@ async function loadStatus() {
 
   const model = status.model || "默认模型";
   const host = status.baseHost || "本地配置";
+  const effectiveMode = status.effectiveMode || status.runtimeMode || "CLAUDE_PANEL_RELAY";
+  const modeLabel = effectiveMode === "NATIVE_CLAUDE_CODE"
+    ? "Claude Code · Native CLI"
+    : effectiveMode === "SAFE_SELFCHECK_EXECUTOR"
+      ? "Claude Panel · Safe Selfcheck"
+      : "Claude Panel · Relay 模式";
   const storedModel = window.localStorage.getItem(modelStorageKey) || model;
   currentMainModel = model;
   currentBranchModels = uniqueModels([...(Array.isArray(status.modelBranches) ? status.modelBranches : []), storedModel]);
 
-  providerLine.textContent = `${model} · ${host}`;
+  providerLine.textContent = `${modeLabel} · ${model} · ${host}`;
   modelInput.value = storedModel;
   updateModelSwitchLabels();
   renderBranchModelOptions();
-  versionLine.textContent = status.claudeVersion || "未检测到版本";
-  hostLine.textContent = host;
+  versionLine.textContent = effectiveMode === "NATIVE_CLAUDE_CODE"
+    ? `${status.nativeClaude?.version || status.claudeVersion || "未检测到版本"} · Native CLI`
+    : `${status.claudeVersion || "未检测到版本"} · Relay`;
+  hostLine.textContent = `${host} · ${modeLabel}`;
   pluginSummary.textContent = status.plugins?.summary || "未检测到插件信息";
   skillsSummary.textContent = Array.isArray(status.skills)
     ? `${status.skills.length} 个：${status.skills.slice(0, 3).join("、")}${status.skills.length > 3 ? "..." : ""}`
@@ -3440,7 +3455,7 @@ async function loadStatus() {
 
   authDot.className = `dot ${status.authConfigured ? "ok" : "bad"}`;
   authText.textContent = status.authConfigured
-    ? `已连接 · ${status.claudeVersion || "Claude Code"}`
+    ? `已连接 · ${modeLabel}`
     : "未检测到认证";
 
   const versionLocked = status.reservedFeatures?.versionUpdate?.locked !== false;
