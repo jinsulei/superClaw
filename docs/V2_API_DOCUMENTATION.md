@@ -1,6 +1,6 @@
 # V2 支付 API 文档
 
-Base URL: `http://124.222.21.44:3001/api/v2/payment`
+Base URL: `<PAYMENT_BACKEND_URL>/api/v2/payment`
 
 ---
 
