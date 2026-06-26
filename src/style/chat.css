@@ -2367,10 +2367,12 @@
 
 /* OpenClaw chat visual parity with Hermes. Scoped to OpenClaw only. */
 .openclaw-chat .chat-messages.sc-chat-stage {
-  width: min(1600px, calc(100% - 24px));
+  width: min(1600px, calc(100% - 48px));
   gap: 18px;
-  padding: var(--space-md, 16px) 32px;
+  padding: var(--space-md, 16px) 24px;
   background: var(--chat-page-bg, var(--bg-primary));
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 
 .openclaw-chat .chat-messages.sc-chat-stage .sc-msg-row + .sc-msg-row {
@@ -2525,8 +2527,8 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: min(980px, calc(100% - 48px));
-  max-width: 980px;
+  width: min(760px, calc(100% - 48px));
+  max-width: 760px;
   margin-inline: auto;
   box-sizing: border-box;
 }

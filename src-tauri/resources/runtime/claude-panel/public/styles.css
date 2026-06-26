@@ -3435,6 +3435,37 @@ h3 {
   color: #ff6b6b;
 }
 
+.conversation-danger-zone {
+  display: grid;
+  gap: 6px;
+}
+
+.conversation-danger-zone summary {
+  min-height: 34px;
+  border-radius: 8px;
+  color: #ffb4b4;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 760;
+  padding: 8px 10px;
+}
+
+.conversation-danger-zone summary:hover,
+.conversation-danger-zone[open] summary {
+  background: #454545;
+}
+
+.conversation-danger-path {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f5dddd;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+
 .conversation-menu-divider {
   height: 1px;
   margin: 7px 22px;

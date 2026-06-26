@@ -78,10 +78,10 @@ assert(
 assert(
   'OPENCLAW_COMPOSER_WIDTH_ALIGNED',
   css.includes('.openclaw-chat .openclaw-composer-row') &&
-    css.includes('width: min(980px, calc(100% - 48px))') &&
-    css.includes('max-width: 980px') &&
+    css.includes('width: min(760px, calc(100% - 48px))') &&
+    css.includes('max-width: 760px') &&
     css.includes('box-sizing: border-box'),
-  'OpenClaw composer width is not aligned with the Hermes-like chat column.',
+  'OpenClaw composer width is not aligned with the Hermes 760px composer column.',
 )
 
 assert(
@@ -107,6 +107,8 @@ const diffFiles = diffNameOutput.split(/\r?\n/).map(line => line.trim()).filter(
 const allowedLanguageGuardFiles = new Set([
   'src/engines/hermes/lib/chat-store.js',
   'src-tauri/resources/runtime/claude-panel/server.js',
+  'src-tauri/resources/runtime/claude-panel/public/app.js',
+  'src-tauri/resources/runtime/claude-panel/public/styles.css',
   'scripts/dev-api.js',
 ])
 const crossAgentDiffs = diffFiles.filter(file =>

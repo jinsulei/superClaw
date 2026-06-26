@@ -705,12 +705,14 @@ const permissionGuideSections = [
   ["专家命令模式", ["AI 可能执行命令、安装依赖或进行高级操作。该模式风险较高，普通客户默认锁定。", "后端参数：toolProfile=command，默认安全锁定。"]],
 ];
 
-const dangerousConversationActions = new Set(["delete"]);
+const LOCAL_FILE_DELETE_CONFIRM_TEXT = "确认删除本地文件";
+const dangerousConversationActions = new Set(["delete-local-files"]);
 const conversationActionLabels = {
   pin: "置顶聊天",
   archive: "归档",
   rename: "重命名",
-  delete: "删除",
+  delete: "从列表移除",
+  "delete-local-files": "删除本地文件",
 };
 
 let activeMode = "safe";
@@ -2926,7 +2928,7 @@ function createConversationMenu(conversation) {
     ["folder", "移至项目", () => handleConversationAction(conversation.id, "move"), false, true],
     ["pin", conversation.pinned ? "取消置顶" : "置顶聊天", () => handleConversationAction(conversation.id, "pin")],
     ["archive", conversation.archived ? "取消归档" : "归档", () => handleConversationAction(conversation.id, "archive")],
-    ["delete", "删除", () => handleConversationAction(conversation.id, "delete"), true],
+    ["delete", "从列表移除", () => handleConversationAction(conversation.id, "delete")],
   ];
 
   for (const [icon, label, action, danger, arrow] of items) {
@@ -2939,7 +2941,35 @@ function createConversationMenu(conversation) {
     menu.append(button);
   }
 
+  if (conversation.projectPath) {
+    menu.append(createMenuDivider());
+    menu.append(createConversationDangerZone(conversation));
+  }
+
   return menu;
+}
+
+function createConversationDangerZone(conversation) {
+  const details = document.createElement("details");
+  details.className = "conversation-danger-zone";
+
+  const summary = document.createElement("summary");
+  summary.textContent = "危险操作";
+  details.append(summary);
+
+  const pathText = document.createElement("div");
+  pathText.className = "conversation-danger-path";
+  pathText.textContent = conversation.projectPath;
+  details.append(pathText);
+
+  const button = document.createElement("button");
+  button.className = "conversation-menu-item danger";
+  button.type = "button";
+  button.innerHTML = `${menuIcon("delete")}<span>删除本地文件</span>`;
+  button.addEventListener("click", () => handleConversationAction(conversation.id, "delete-local-files"));
+  details.append(button);
+
+  return details;
 }
 
 function createMenuDivider() {
@@ -3027,30 +3057,36 @@ function removeConversationRecord(id) {
   saveConversations();
 }
 
-async function deleteProjectConversation(conversation) {
+function removeProjectConversationFromList(conversation) {
   const displayTitle = conversationDisplayTitle(conversation);
-  if (!conversation.projectPath || !isManagedProjectPath(conversation.projectPath)) {
-    const confirmed = window.confirm(
-      `「${displayTitle}」不是本面板新建的工程文件夹。为了保护客户文件，本次只从左侧移除记录，不删除磁盘文件。是否继续？`
-    );
-    if (confirmed) {
-      removeConversationRecord(conversation.id);
-      addMessage("system", "工程文件", "已从左侧移除记录；原始项目文件夹没有被删除。");
-    }
-    return;
+  removeConversationRecord(conversation.id);
+  addMessage("system", "工程文件", `已从列表移除「${displayTitle}」；磁盘文件没有被删除。`);
+}
+
+async function deleteLocalProjectFiles(conversation) {
+  const displayTitle = conversationDisplayTitle(conversation);
+  if (!conversation.projectPath) {
+    throw new Error("当前记录没有本地项目路径，不能删除本地文件");
   }
 
-  const confirmed = window.confirm(
-    `确认删除「${displayTitle}」吗？这会同时删除这个工程文件对应的文件夹，删除后不可恢复。`
+  const confirmText = window.prompt(
+    [
+      "危险操作：将把本地项目文件夹移动到隔离区。",
+      `完整路径：${conversation.projectPath}`,
+      `请输入：${LOCAL_FILE_DELETE_CONFIRM_TEXT}`,
+    ].join("\n")
   );
-  if (!confirmed) return;
+  if (confirmText !== LOCAL_FILE_DELETE_CONFIRM_TEXT) {
+    addMessage("system", "工程文件", "未输入确认文本，已取消删除本地文件。");
+    return;
+  }
 
   const res = await fetch("/api/project-folders", {
     method: "DELETE",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       path: conversation.projectPath,
-      confirmName: conversation.projectPath.split(/[\\/]/).filter(Boolean).pop() || displayTitle,
+      confirmText,
     }),
   });
   const result = await res.json().catch(() => ({}));
@@ -3060,7 +3096,11 @@ async function deleteProjectConversation(conversation) {
   managedProjectFolders = result.folders || [];
   renderProjectOptions(result.projects || []);
   removeConversationRecord(conversation.id);
-  addMessage("system", "工程文件", `已删除工程文件夹：${result.project?.name || displayTitle}`);
+  addMessage(
+    "system",
+    "工程文件",
+    `已移动到隔离区，原路径已移除。${result.project?.quarantinePath ? `隔离区：${result.project.quarantinePath}` : ""}`
+  );
 }
 
 async function handleConversationAction(id, action) {
@@ -3105,23 +3145,19 @@ async function handleConversationAction(id, action) {
   }
 
   if (action === "delete") {
+    removeProjectConversationFromList(conversation);
+    renderConversations();
+    return;
+  }
+
+  if (action === "delete-local-files") {
     try {
-      await deleteProjectConversation(conversation);
+      await deleteLocalProjectFiles(conversation);
     } catch (error) {
       addMessage("error", "工程文件删除失败", error.message || "工程文件删除失败");
     }
     renderConversations();
     return;
-    const confirmed = window.confirm(`确认删除「${conversation.title}」吗？此操作会移除本地会话记录。`);
-    if (confirmed) {
-      conversations = conversations.filter((item) => item.id !== id);
-      if (currentConversationId === id) {
-        currentConversationId = null;
-        setEmptyState();
-        setRunState("idle", "准备就绪");
-      }
-      saveConversations();
-    }
   }
 
   renderConversations();

@@ -26,6 +26,7 @@ const CLAUDE_RUNTIME_PROJECTS_DIR = process.env.CLAUDE_CODE_PROJECTS_DIR
   : path.join(APP_CONFIG_DIR, "claude-projects");
 const CUSTOM_PROJECTS_PATH = path.join(APP_CONFIG_DIR, "projects.json");
 const PROJECT_FOLDERS_PATH = path.join(APP_CONFIG_DIR, "project-folders.json");
+const LOCAL_FILE_DELETE_CONFIRM_TEXT = "确认删除本地文件";
 const CONTACT_CARD_PATH =
   process.env.CLEAN_PANEL_CONTACT_CARD_FILE || path.join(APP_CONFIG_DIR, "contact-card.json");
 const DEFAULT_CONTACT_CARD_PATH = path.join(PUBLIC_DIR, "contact-card.json");
@@ -1207,18 +1208,29 @@ function isWindowsCommandScript(command) {
   return process.platform === "win32" && /\.(cmd|bat)$/i.test(String(command || ""));
 }
 
+function hiddenClaudeSpawnOptions(options = {}) {
+  return {
+    ...options,
+    windowsHide: true,
+    detached: false,
+    stdio: !options.stdio || options.stdio === "inherit" ? ["ignore", "pipe", "pipe"] : options.stdio,
+  };
+}
+
 function spawnClaudeSync(command, args, options = {}) {
+  const safeOptions = hiddenClaudeSpawnOptions(options);
   if (isWindowsCommandScript(command)) {
-    return spawnSync("cmd.exe", ["/d", "/c", "call", command, ...args], options);
+    return spawnSync("cmd.exe", ["/d", "/c", "call", command, ...args], safeOptions);
   }
-  return spawnSync(command, args, options);
+  return spawnSync(command, args, safeOptions);
 }
 
 function spawnClaude(command, args, options = {}) {
+  const safeOptions = hiddenClaudeSpawnOptions(options);
   if (isWindowsCommandScript(command)) {
-    return spawn("cmd.exe", ["/d", "/c", "call", command, ...args], options);
+    return spawn("cmd.exe", ["/d", "/c", "call", command, ...args], safeOptions);
   }
-  return spawn(command, args, options);
+  return spawn(command, args, safeOptions);
 }
 
 function writeNativeClaudeLauncher({ cwd, claudeCommand }) {
@@ -1466,7 +1478,53 @@ function createManagedProjectFolder(inputName) {
   return { path: resolved, name: displayName, createdAt: nextFolders[0].createdAt };
 }
 
-function deleteManagedProjectFolder(projectPath, confirmName) {
+function quarantineTimestamp() {
+  return new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+}
+
+function safeQuarantineFolderName(projectPath) {
+  const base = path.basename(path.resolve(projectPath)) || "project";
+  return base.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/[. ]+$/g, "").slice(0, 80) || "project";
+}
+
+function addProtectedPath(list, value, mode = "tree") {
+  if (!value) return;
+  try {
+    list.push({ path: path.resolve(value), mode });
+  } catch {
+    // Ignore invalid environment-derived paths.
+  }
+}
+
+function protectedLocalDeletePaths() {
+  const systemDrive = process.env.SystemDrive || "C:";
+  const userProfile = process.env.USERPROFILE || os.homedir();
+  const list = [];
+  addProtectedPath(list, path.parse(systemDrive + "\\").root, "exact");
+  addProtectedPath(list, path.join(systemDrive + "\\", "Users"), "exact");
+  addProtectedPath(list, userProfile, "exact");
+  addProtectedPath(list, path.join(userProfile, "Desktop"), "exact");
+  addProtectedPath(list, path.join(userProfile, "Documents"), "exact");
+  addProtectedPath(list, path.join(userProfile, "Downloads"), "exact");
+  addProtectedPath(list, process.env.WINDIR || path.join(systemDrive + "\\", "Windows"), "tree");
+  addProtectedPath(list, path.join(process.env.WINDIR || path.join(systemDrive + "\\", "Windows"), "System32"), "tree");
+  addProtectedPath(list, process.env.ProgramFiles, "tree");
+  addProtectedPath(list, process.env["ProgramFiles(x86)"], "tree");
+  addProtectedPath(list, process.cwd(), "tree");
+  addProtectedPath(list, path.resolve(__dirname, "..", "..", "..", ".."), "tree");
+  return list;
+}
+
+function isProtectedLocalDeletePath(target) {
+  const normalized = path.resolve(target).toLowerCase();
+  return protectedLocalDeletePaths().some((entry) => {
+    const blocked = path.resolve(entry.path).toLowerCase();
+    if (entry.mode === "exact") return normalized === blocked;
+    return normalized === blocked || isSameOrInside(normalized, blocked);
+  });
+}
+
+function quarantineManagedProjectFolder(projectPath, confirmText) {
   if (typeof projectPath !== "string" || !projectPath.trim()) {
     throw new Error("工程文件路径不能为空");
   }
@@ -1488,21 +1546,38 @@ function deleteManagedProjectFolder(projectPath, confirmName) {
     throw error;
   }
 
-  const typed = String(confirmName || "").trim();
-  const accepted = new Set([record.name, path.basename(record.path), "删除工程文件"]);
-  if (!accepted.has(typed)) {
-    const error = new Error("请二次确认工程文件名后再删除");
+  const typed = String(confirmText || "").trim();
+  if (typed !== LOCAL_FILE_DELETE_CONFIRM_TEXT) {
+    const error = new Error(`请输入：${LOCAL_FILE_DELETE_CONFIRM_TEXT}`);
     error.statusCode = 400;
     throw error;
   }
 
-  if (fs.existsSync(target)) {
-    fs.rmSync(target, { recursive: true, force: false });
+  if (isProtectedLocalDeletePath(target)) {
+    const error = new Error("该路径属于受保护目录，已拒绝删除本地文件");
+    error.statusCode = 403;
+    throw error;
   }
+
+  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+    const error = new Error("工程文件夹不存在或不是文件夹，已拒绝删除");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const quarantineRoot = path.join("C:\\tmp", `claude-project-delete-quarantine-${quarantineTimestamp()}`);
+  fs.mkdirSync(quarantineRoot, { recursive: true });
+  let destination = path.join(quarantineRoot, safeQuarantineFolderName(target));
+  let index = 2;
+  while (fs.existsSync(destination)) {
+    destination = path.join(quarantineRoot, `${safeQuarantineFolderName(target)}-${index}`);
+    index += 1;
+  }
+  fs.renameSync(target, destination);
   removeCustomProject(record.path);
   const nextFolders = folders.filter((item) => path.resolve(item.path).toLowerCase() !== requested.toLowerCase());
   writeManagedProjectFolders(nextFolders);
-  return { path: record.path, name: record.name };
+  return { path: record.path, name: record.name, quarantinePath: destination };
 }
 
 function getKnownProjects() {
@@ -4062,10 +4137,10 @@ async function handleProjectFolders(req, res) {
   if (req.method === "DELETE") {
     try {
       const payload = await readRequestBody(req);
-      const project = deleteManagedProjectFolder(payload.path, payload.confirmName);
+      const project = quarantineManagedProjectFolder(payload.path, payload.confirmText);
       appendAuditLog({
         feature: "工程文件",
-        action: "delete-project-folder",
+        action: "quarantine-project-folder",
         projectPath: project.path,
         result: "success",
         source: req.socket.remoteAddress,
