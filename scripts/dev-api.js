@@ -3341,6 +3341,40 @@ function getUid() {
   return execSync('id -u').toString().trim()
 }
 
+function isInvalidOpenClawProviderModel(modelId) {
+  const raw = String(modelId || '').trim()
+  const lower = raw.toLowerCase()
+  return !raw
+    || raw === '默认模型'
+    || raw === '默认'
+    || lower === 'default model'
+    || lower === 'undefined'
+    || lower === 'null'
+}
+
+function normalizeOpenClawLegacyConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return
+
+  config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins)
+    ? config.plugins
+    : {}
+  delete config.plugins.allow
+  config.plugins.bundledDiscovery = 'compat'
+
+  const provider = config?.models?.providers?.minimax
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return
+
+  const normalized = {
+    api: provider.api || 'openai-completions',
+    baseUrl: provider.baseUrl,
+    model: isInvalidOpenClawProviderModel(provider.model) ? 'MiniMax-M3' : String(provider.model).trim(),
+  }
+  if (Object.prototype.hasOwnProperty.call(provider, 'apiKey')) {
+    normalized.apiKey = provider.apiKey
+  }
+  config.models.providers.minimax = normalized
+}
+
 function stripUiFields(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return config
   // 清理根层级 ClawPanel 内部字段（version info 等），避免污染 openclaw.json
@@ -3378,6 +3412,7 @@ function stripUiFields(config) {
     }
     config.models.providers = normalizedProviders
   }
+  normalizeOpenClawLegacyConfig(config)
   if (config?.models?.primary?.provider) config.models.primary.provider = String(config.models.primary.provider).toLowerCase()
   if (config?.models?.default?.provider) config.models.default.provider = String(config.models.default.provider).toLowerCase()
   if (config?.agents?.defaults?.models && typeof config.agents.defaults.models === 'object' && !Array.isArray(config.agents.defaults.models)) {
@@ -3590,14 +3625,14 @@ function ensurePortableOpenClawTools() {
         configChanged = true
       }
     }
-    const allow = Array.isArray(cfg.plugins.allow) ? [...cfg.plugins.allow] : []
-    for (const pluginId of ['browser', ...OPENCLAW_PORTABLE_TOOL_PLUGINS]) {
-      if (!allow.includes(pluginId)) {
-        allow.push(pluginId)
-        configChanged = true
-      }
+    if (Object.prototype.hasOwnProperty.call(cfg.plugins, 'allow')) {
+      delete cfg.plugins.allow
+      configChanged = true
     }
-    cfg.plugins.allow = allow
+    if (cfg.plugins.bundledDiscovery !== 'compat') {
+      cfg.plugins.bundledDiscovery = 'compat'
+      configChanged = true
+    }
     if (configChanged) fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
   }
 
@@ -4065,6 +4100,7 @@ function writeOpenclawConfigFile(config, options = {}) {
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(decodeJsonFileContent(CONFIG_PATH)), config)
     : config
+  normalizeOpenClawMiniMaxModel(base)
   const cleaned = stripUiFields(base)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
@@ -5670,6 +5706,17 @@ function normalizeOpenClawModelRef(modelRef, fallback = miniMaxModelRef()) {
   return isInvalidOpenClawModelId(modelRef) ? fallback : String(modelRef).trim()
 }
 
+function normalizeOpenClawMiniMaxModel(config) {
+  const provider = config?.models?.providers?.minimax
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
+  if (isInvalidOpenClawModelId(provider.model)) {
+    provider.model = MINIMAX_TEST_DEFAULTS.model
+    return true
+  }
+  provider.model = String(provider.model).trim()
+  return false
+}
+
 function miniMaxOpenClawModelDefinition() {
   return {
     id: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
@@ -5689,12 +5736,15 @@ function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
-  const models = [miniMaxOpenClawModelDefinition()]
+  const previousMiniMaxProvider = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object' && !Array.isArray(cfg.models.providers.minimax)
+    ? cfg.models.providers.minimax
+    : {}
   cfg.models.providers.minimax = {
     api: 'openai-completions',
     baseUrl: normalized.baseUrl,
-    models,
+    model: normalizeOpenClawModelId(previousMiniMaxProvider.model),
   }
+  normalizeOpenClawMiniMaxModel(cfg)
   if (apiKey) cfg.models.providers.minimax.apiKey = apiKey
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
@@ -6248,6 +6298,7 @@ const handlers = {
     const cfg = readOpenclawConfigRequired()
     let changed = ensureOpenClawWorkspaceConfig(cfg)
     changed = ensureOpenClawStatusPluginDefaults(cfg) || changed
+    changed = normalizeOpenClawMiniMaxModel(cfg) || changed
     ensureOpenClawWorkspaceDir(resolveDefaultWorkspace(cfg))
     ensureOpenClawMemoryFiles()
     if (changed) writeOpenclawConfigFile(cfg)
@@ -6735,8 +6786,8 @@ const handlers = {
         if (!hasMarker) continue
         seen.add(name)
         const entryCfg = entries[name]
-        const enabled = !!entryCfg?.enabled
-        const allowed = allowArr.includes(name)
+        const enabled = !!entryCfg?.enabled || allowArr.includes(name)
+        const allowed = enabled
         let version = null, description = null
         try {
           const pkg = JSON.parse(fs.readFileSync(path.join(p, 'package.json'), 'utf8'))
@@ -6751,7 +6802,8 @@ const handlers = {
     for (const [pid, val] of Object.entries(entries)) {
       if (seen.has(pid)) continue
       seen.add(pid)
-      plugins.push({ id: pid, installed: false, builtin: false, enabled: !!val?.enabled, allowed: allowArr.includes(pid), version: null, description: null, config: val?.config || null })
+      const enabled = !!val?.enabled || allowArr.includes(pid)
+      plugins.push({ id: pid, installed: false, builtin: false, enabled, allowed: enabled, version: null, description: null, config: val?.config || null })
     }
 
     plugins.sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0) || a.id.localeCompare(b.id))
@@ -6764,16 +6816,15 @@ const handlers = {
     const cfg = readOpenclawConfigOptional()
     if (!cfg.plugins) cfg.plugins = {}
     if (!cfg.plugins.entries) cfg.plugins.entries = {}
-    if (!cfg.plugins.allow) cfg.plugins.allow = []
+    cfg.plugins.bundledDiscovery = 'compat'
 
     if (enabled) {
-      if (!cfg.plugins.allow.includes(pid)) cfg.plugins.allow.push(pid)
       if (!cfg.plugins.entries[pid]) cfg.plugins.entries[pid] = {}
       cfg.plugins.entries[pid].enabled = true
     } else {
-      cfg.plugins.allow = cfg.plugins.allow.filter(v => v !== pid)
       if (cfg.plugins.entries[pid]) cfg.plugins.entries[pid].enabled = false
     }
+    delete cfg.plugins.allow
 
     writeOpenclawConfigFile(cfg)
     return { ok: true, enabled, pluginId: pid }
@@ -6804,8 +6855,8 @@ const handlers = {
     } catch {}
     const cfg = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) : {}
     const allowArr = cfg.plugins?.allow || []
-    const allowed = allowArr.includes(pid)
-    const enabled = !!cfg.plugins?.entries?.[pid]?.enabled
+    const enabled = !!cfg.plugins?.entries?.[pid]?.enabled || allowArr.includes(pid)
+    const allowed = enabled
     const backupDir = path.join(OPENCLAW_DIR, 'plugin-backups', pid)
     const legacyBackup = path.join(OPENCLAW_DIR, 'plugins', 'node_modules', `${pid}.bak`)
     return {

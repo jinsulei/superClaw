@@ -36,6 +36,17 @@ const STORAGE_LOCAL_SESSIONS_KEY = 'superclaw-chat-local-sessions'
 const STORAGE_WORKSPACE_PANEL_KEY = 'superclaw-chat-workspace-open'
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
+const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
+const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
+const OPENCLAW_IDENTITY_PRELUDE = [
+  'You are OpenClaw inside SuperClaw.',
+  'Your identity is OpenClaw, the execution agent for browser automation, desktop control, file operations, screenshots, OCR-assisted operation, workflow execution, and tool-based task completion.',
+  'When the user asks who you are, answer as OpenClaw first. You may briefly mention that you use an underlying model as a reasoning engine, but do not describe yourself as only MiniMax-M3 or only a model provider.',
+  'Do not claim to be Hermes or Claude Code.',
+  'Default to Simplified Chinese for replies unless the user explicitly asks for another language.',
+  'Use registered tools and skills for real operations instead of pretending in text.',
+].join('\n')
+const OPENCLAW_LOCAL_IDENTITY_ANSWER = '我是 OpenClaw，SuperClaw 里的执行智能体，负责浏览器、桌面、文件、截图/OCR 和自动化工具调用；需要真实操作时我会使用已注册工具，并在高风险动作前等待你的确认。'
 
 const COMMANDS = [
   { title: 'chat.cmdSession', commands: [
@@ -89,6 +100,16 @@ let _isLoadingHistory = false
 let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
 let _seenRunIds = new Set()
 let _pageActive = false
+let _sendInputLocked = false
+let _activeClientRequestId = null
+let _lastSendFingerprint = ''
+let _lastSendAt = 0
+const _inFlightRequestIds = new Set()
+const _seenChatEventKeys = new Set()
+const _recentAssistantFinals = new Map()
+const _renderedMessageKeysBySession = new Map()
+const OPENCLAW_SEND_DEDUPE_WINDOW_MS = 1200
+const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
@@ -145,7 +166,8 @@ let _collabDispatchStorageHandler = null
 
 export async function render() {
   const page = document.createElement('div')
-  page.className = 'page chat-page'
+  page.className = 'page chat-page openclaw-chat'
+  page.dataset.agent = 'openclaw'
   _pageActive = true
   _page = page
 
@@ -247,6 +269,7 @@ export async function render() {
       <div class="chat-cmd-panel" id="chat-cmd-panel" style="display:none"></div>
       <div class="chat-attachments-preview" id="chat-attachments-preview" style="display:none"></div>
       <div class="chat-input-area">
+        <div class="openclaw-composer-row">
         <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none">
         <button class="chat-attach-btn" id="chat-attach-btn" title="${t('chat.uploadImage')}">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
@@ -265,6 +288,7 @@ export async function render() {
           <span class="chat-hosted-badge idle" id="chat-hosted-badge">${t('chat.hostedBadge')}</span>
         </button>
       </div>
+        </div>
       <div class="hosted-agent-panel" id="hosted-agent-panel" style="display:none">
         <div class="hosted-agent-header">
           <strong>${t('chat.hostedAgent')}</strong>
@@ -488,13 +512,15 @@ function bindEvents(page) {
   })
 
   _textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendMessage() }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) sendMessage(e)
     if (e.key === 'Escape') hideCmdPanel()
   })
 
-  _sendBtn.addEventListener('click', () => {
+  _sendBtn.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
     if (_isStreaming) stopGeneration()
-    else sendMessage()
+    else sendMessage(e)
   })
 
   if (_hostedBtn) _hostedBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleHostedPanel() })
@@ -2231,14 +2257,52 @@ function toggleCmdPanel() {
 
 // ── 消息发送 ──
 
-function isHermesDelegationQuestion(text) {
-  const raw = String(text || '').trim()
-  if (!raw) return false
-  const lower = raw.toLowerCase()
-  const asksCapability = /(能不能|可以吗|可不可以|能否|有没有|怎么|如何|是否|行不行|支持|把工作|分配|委派|派发|交给|汇报)/.test(raw)
-  const mentionsHermes = /\bhermes\b|Hermes|赫尔墨斯/i.test(raw)
-  const mentionsDelegation = /(工作|任务|分配|委派|派发|交给|汇报|协作|收件箱|delegate)/i.test(raw)
-  return asksCapability && mentionsHermes && mentionsDelegation && !/^\/(?:hermes|delegate-hermes)\s+/i.test(lower)
+function parseOpenClawSlashCommand(input) {
+  const raw = String(input || '')
+  const trimmed = raw.trimStart()
+  const lower = trimmed.toLowerCase()
+  if (lower === '/hermes' || lower.startsWith('/hermes ')) {
+    return {
+      type: 'delegate-hermes',
+      payload: trimmed.slice('/hermes'.length).trim(),
+    }
+  }
+  if (lower === '/delegate-hermes' || lower.startsWith('/delegate-hermes ')) {
+    return {
+      type: 'delegate-hermes',
+      payload: trimmed.slice('/delegate-hermes'.length).trim(),
+    }
+  }
+  return null
+}
+
+function isOpenClawIdentityQuestion(input) {
+  const raw = String(input || '').trim()
+  const text = raw.replace(/\s+/g, ' ')
+  if (!text || text.length > 160) return false
+  if (/```|执行包|当前仓库|禁止|报告|步骤|检查|目标[:：]|OpenClaw 全面自检指令/i.test(text)) return false
+  return /你是谁|你是誰|你是什么|你是什麼|你的身份|身份定位|who are you|what are you/i.test(text)
+}
+
+function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
+  const now = Date.now()
+  appendUserMessage(text, attachments)
+  saveMessage({
+    id: `openclaw-user-${clientRequestId}`,
+    sessionKey: _sessionKey,
+    role: 'user',
+    content: text,
+    timestamp: now,
+    attachments: attachments?.length ? attachments.map(a => ({ category: a.category || 'image', mimeType: a.mimeType || '', content: a.content || '', url: a.url || '' })) : undefined,
+  })
+  appendAiMessage(OPENCLAW_LOCAL_IDENTITY_ANSWER)
+  saveMessage({
+    id: `openclaw-local-identity-${clientRequestId}`,
+    sessionKey: _sessionKey,
+    role: 'assistant',
+    content: OPENCLAW_LOCAL_IDENTITY_ANSWER,
+    timestamp: now + 1,
+  })
 }
 
 function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
@@ -2255,7 +2319,212 @@ function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
   ].join('\n'))
 }
 
-async function sendMessage() {
+function createOpenClawClientRequestId() {
+  return `openclaw-${uuid()}`
+}
+
+function withOpenClawIdentityPrelude(prompt) {
+  const body = String(prompt || '').trim()
+  if (!body || body.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return body
+  return [
+    OPENCLAW_IDENTITY_CONTEXT_START,
+    OPENCLAW_IDENTITY_PRELUDE,
+    OPENCLAW_IDENTITY_CONTEXT_END,
+    '',
+    'User:',
+    body,
+  ].join('\n')
+}
+
+function stripOpenClawIdentityPrelude(text) {
+  const raw = String(text || '')
+  if (!raw.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return raw
+  const escapedStart = OPENCLAW_IDENTITY_CONTEXT_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escapedEnd = OPENCLAW_IDENTITY_CONTEXT_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return raw
+    .replace(new RegExp(`${escapedStart}[\\s\\S]*?${escapedEnd}\\s*`, 'g'), '')
+    .replace(/^User:\s*/i, '')
+    .trim()
+}
+
+function getOpenClawSendFingerprint(text, attachments = []) {
+  const attSig = (attachments || []).map(a => [
+    a.category || a.type || '',
+    a.mimeType || a.mime || '',
+    a.fileName || a.name || '',
+    a.content ? String(a.content).length : '',
+    a.url || '',
+  ].join(':')).join('|')
+  return `${String(text || '').trim()}::${attSig}`
+}
+
+function rememberBounded(set, key, limit = 400) {
+  if (!key) return
+  set.add(key)
+  if (set.size > limit) {
+    const first = set.values().next().value
+    set.delete(first)
+  }
+}
+
+function normalizeOpenClawMessageText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function hashOpenClawMessageText(value) {
+  const text = normalizeOpenClawMessageText(value)
+  let hash = 5381
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ text.charCodeAt(i)
+  }
+  return `${text.length}:${(hash >>> 0).toString(36)}`
+}
+
+function getOpenClawToolDisplayText(tools = []) {
+  return (Array.isArray(tools) ? tools : [])
+    .map(tool => normalizeOpenClawMessageText(tool?.output ?? tool?.result ?? tool?.content ?? tool?.name ?? tool?.id ?? ''))
+    .filter(Boolean)
+    .join('|')
+}
+
+function getOpenClawDisplayFingerprint(message = {}) {
+  const text = normalizeOpenClawMessageText(message.text ?? message.content ?? '')
+  const toolText = getOpenClawToolDisplayText(message.tools)
+  const mediaSig = [
+    message.images?.length || 0,
+    message.videos?.length || 0,
+    message.audios?.length || 0,
+    message.files?.length || 0,
+    message.screenshotCards?.length || 0,
+    message.confirmations?.length || 0,
+  ].join(':')
+  const hasMedia = mediaSig !== '0:0:0:0:0:0'
+  const body = text || toolText || (hasMedia ? mediaSig : '')
+  return body ? hashOpenClawMessageText(body) : ''
+}
+
+function getOpenClawMessageDedupeKey(message = {}, sessionKey = _sessionKey) {
+  const session = message.sessionKey || sessionKey || ''
+  const role = (message.role === 'tool' || message.role === 'toolResult') ? 'assistant' : (message.role || '')
+  const display = getOpenClawDisplayFingerprint(message)
+  const runId = message.runId || message.run_id || ''
+  if (role === 'assistant' && runId && display) return `${session}|run:${runId}|display:${display}`
+  const stableId = message.id || message.messageId || message.message_id || ''
+  if (stableId) return `${session}|id:${stableId}`
+  const eventId = message.eventId || message.event_id || ''
+  if (eventId) return `${session}|event:${eventId}`
+  const requestId = message.idempotencyKey || message.clientRequestId || message.requestId || ''
+  if (requestId) return `${session}|request:${requestId}:${role}`
+  if (runId && display) return `${session}|run:${runId}:${role}:${display}`
+  const ts = normalizeTime(message.timestamp || message.createdAt || message.created_at || 0)
+  if (display && ts) return `${session}|display:${role}:${display}:${Math.floor(ts / 1000)}`
+  return display ? `${session}|display:${role}:${display}` : ''
+}
+
+function getOpenClawHistoryDisplayDedupeKey(message = {}, sessionKey = _sessionKey) {
+  const session = message.sessionKey || sessionKey || ''
+  const role = (message.role === 'tool' || message.role === 'toolResult') ? 'assistant' : (message.role || '')
+  const display = getOpenClawDisplayFingerprint(message)
+  if (!session || !role || !display) return ''
+  const ts = normalizeTime(message.timestamp || message.createdAt || message.created_at || 0)
+  const bucket = ts ? Math.floor(ts / 60000) : 'no-ts'
+  return `${session}|history-display:${role}:${display}:${bucket}`
+}
+
+function getRenderedMessageSet(sessionKey = _sessionKey) {
+  const key = sessionKey || ''
+  if (!_renderedMessageKeysBySession.has(key)) _renderedMessageKeysBySession.set(key, new Set())
+  return _renderedMessageKeysBySession.get(key)
+}
+
+function hasRenderedOpenClawMessage(sessionKey, dedupeKey) {
+  if (!dedupeKey) return false
+  const set = _renderedMessageKeysBySession.get(sessionKey || '')
+  if (set?.has(dedupeKey)) return true
+  if (!_messagesEl) return false
+  return Array.from(_messagesEl.querySelectorAll('[data-openclaw-message-key]')).some(node => (
+    node.dataset.openclawSessionKey === (sessionKey || '') &&
+    node.dataset.openclawMessageKey === dedupeKey
+  ))
+}
+
+function markRenderedOpenClawMessage(wrap, sessionKey, dedupeKey) {
+  if (!dedupeKey) return
+  const set = getRenderedMessageSet(sessionKey)
+  rememberBounded(set, dedupeKey, 600)
+  if (wrap?.dataset) {
+    wrap.dataset.openclawSessionKey = sessionKey || ''
+    wrap.dataset.openclawMessageKey = dedupeKey
+  }
+}
+
+function clearRenderedOpenClawMessages(sessionKey = _sessionKey) {
+  _renderedMessageKeysBySession.delete(sessionKey || '')
+}
+
+function getChatEventText(payload) {
+  const c = extractChatContent(payload?.message)
+  return String(c?.text || '')
+}
+
+function getChatEventDedupeKey(payload, eventId = '') {
+  if (!payload) return ''
+  const messageId = payload.message?.id || payload.messageId || payload.id || ''
+  if (eventId) return `event:${eventId}`
+  if (messageId) return `message:${payload.state || ''}:${payload.runId || ''}:${messageId}`
+  const text = getChatEventText(payload)
+  if (!text && payload.state !== 'complete' && payload.state !== 'aborted') return ''
+  return [
+    payload.sessionKey || _sessionKey || '',
+    payload.state || '',
+    payload.runId || '',
+    text.length,
+    text.slice(0, 80),
+    text.slice(-80),
+  ].join('|')
+}
+
+function getAssistantFinalFingerprint(payload, text, tools = []) {
+  const toolSig = (tools || []).map(t => t.id || t.name || '').join(',')
+  return [
+    payload?.sessionKey || _sessionKey || '',
+    String(text || '').trim(),
+    payload?.message?.id || '',
+    toolSig,
+  ].join('|')
+}
+
+function isDuplicateRecentAssistantFinal(fingerprint) {
+  if (!fingerprint) return false
+  const now = Date.now()
+  for (const [key, ts] of _recentAssistantFinals) {
+    if (now - ts > OPENCLAW_FINAL_DEDUPE_WINDOW_MS) _recentAssistantFinals.delete(key)
+  }
+  return _recentAssistantFinals.has(fingerprint)
+}
+
+function rememberAssistantFinal(fingerprint) {
+  if (!fingerprint) return
+  _recentAssistantFinals.set(fingerprint, Date.now())
+  if (_recentAssistantFinals.size > 80) {
+    const first = _recentAssistantFinals.keys().next().value
+    _recentAssistantFinals.delete(first)
+  }
+}
+
+async function sendMessage(event) {
+  if (event) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  if (_sendInputLocked) return
+  _sendInputLocked = true
+  setTimeout(() => {
+    _sendInputLocked = false
+    updateSendState()
+  }, 350)
   let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
   ensureReadySessionKey()
@@ -2264,10 +2533,18 @@ async function sendMessage() {
     return
   }
   hideCmdPanel()
+  const attachments = [..._attachments]
+  const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
+  const now = Date.now()
+  if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
+    return
+  }
+  _lastSendFingerprint = sendFingerprint
+  _lastSendAt = now
+  const clientRequestId = createOpenClawClientRequestId()
   _textarea.value = ''
   _textarea.style.height = 'auto'
   updateSendState()
-  const attachments = [..._attachments]
   _attachments = []
   renderAttachments()
   if (attachments.length && isOcrIntentText(text)) {
@@ -2278,13 +2555,9 @@ async function sendMessage() {
       appendSystemMessage(formatOcrResult(result))
     }
   }
-  if (isHermesDelegationQuestion(text)) {
-    appendHermesDelegationCapabilityAnswer(text, attachments)
-    return
-  }
-  const hermesDelegateMatch = /^\/(?:hermes|delegate-hermes)\s+([\s\S]+)/i.exec(text)
-  if (hermesDelegateMatch) {
-    const content = hermesDelegateMatch[1].trim()
+  const slashCommand = parseOpenClawSlashCommand(text)
+  if (slashCommand?.type === 'delegate-hermes') {
+    const content = slashCommand.payload
     if (content) {
       const task = currentCollaborationTask()
       const taskId = task?.taskId || `openclaw-${Date.now().toString(36)}`
@@ -2320,21 +2593,31 @@ async function sendMessage() {
       toast('已委派给 Hermes 执行队列', 'success')
       return
     }
+    appendHermesDelegationCapabilityAnswer(text, attachments)
+    appendSystemMessage('请在 `/hermes` 或 `/delegate-hermes` 后写清楚要交给 Hermes 的任务内容。')
+    return
   }
-  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments }); return }
-  doSend(text, attachments)
+  if (!attachments.length && isOpenClawIdentityQuestion(text)) {
+    appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)
+    return
+  }
+  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments, clientRequestId }); return }
+  doSend(text, attachments, clientRequestId)
 }
 
-async function doSend(text, attachments = []) {
+async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
   ensureReadySessionKey()
   if (!wsClient.gatewayReady || !_sessionKey) {
     toast(t('chat.gatewayNotReadySend'), 'warning')
     return
   }
-  const sendText = buildAttachmentTriggeredPrompt(text, attachments)
+  if (_inFlightRequestIds.has(clientRequestId)) return
+  _inFlightRequestIds.add(clientRequestId)
+  _activeClientRequestId = clientRequestId
+  const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
   appendUserMessage(text, attachments)
   saveMessage({
-    id: uuid(), sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
+    id: `openclaw-user-${clientRequestId}`, sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
     attachments: attachments?.length ? attachments.map(a => ({ category: a.category || 'image', mimeType: a.mimeType || '', content: a.content || '', url: a.url || '' })) : undefined
   })
   showTyping(true)
@@ -2342,12 +2625,26 @@ async function doSend(text, attachments = []) {
   _startResponseWatchdog()
   startGenerationTimeoutManager()
   try {
-    await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined)
+    await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined, {
+      idempotencyKey: clientRequestId,
+      clientRequestId,
+    })
   } catch (err) {
     showTyping(false)
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     _sendTimestamp = 0
+    if (_textarea && !_textarea.value.trim()) {
+      _textarea.value = text
+      _textarea.style.height = 'auto'
+      _textarea.style.height = Math.min(_textarea.scrollHeight, 150) + 'px'
+    }
+    if (attachments?.length) {
+      _attachments = [...attachments, ..._attachments]
+      renderAttachments()
+    }
+    _inFlightRequestIds.delete(clientRequestId)
+    if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
     appendSystemMessage(`${t('chat.sendFailed')}${err.message}`)
   } finally {
     _isSending = false
@@ -2442,7 +2739,7 @@ function processMessageQueue() {
   if (_messageQueue.length === 0 || _isSending || _isStreaming) return
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
-  else doSend(msg.text, msg.attachments || [])
+  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId())
 }
 
 function currentCollaborationTask() {
@@ -2451,12 +2748,20 @@ function currentCollaborationTask() {
   return { stage: match[1], taskId: match[2] }
 }
 
+function getOpenClawRecentMessagesForContext(limit = 50) {
+  try {
+    const messages = getLocalMessages(_sessionKey, limit)
+    if (Array.isArray(messages)) return messages.slice(-limit)
+  } catch {}
+  return []
+}
+
 function buildOpenClawCollaborationContext(task, content = '', artifacts = []) {
   return buildTaskContext({
     sessionId: _sessionKey,
     taskId: task?.taskId,
     summary: content,
-    recent_messages: getLocalMessages(_sessionKey).slice(-50).map(item => ({
+    recent_messages: getOpenClawRecentMessagesForContext(50).map(item => ({
       role: item.role,
       content: item.content,
       timestamp: item.timestamp,
@@ -2734,7 +3039,7 @@ function handleEvent(msg) {
     }
   }
 
-  if (event === 'chat') handleChatEvent(payload)
+  if (event === 'chat') handleChatEvent(payload, msg.id)
 
   // Compaction 状态指示：上游 2026.3.12 新增 status_reaction 事件
   if (event === 'chat.status_reaction' || event === 'status_reaction') {
@@ -2747,13 +3052,19 @@ function handleEvent(msg) {
   }
 }
 
-function handleChatEvent(payload) {
+function handleChatEvent(payload, eventId = '') {
   const hostedSessionKey = getHostedBoundSessionKey()
   const isCurrentSession = !payload.sessionKey || !_sessionKey || payload.sessionKey === _sessionKey
   const isHostedSession = !!payload.sessionKey && !!hostedSessionKey && payload.sessionKey === hostedSessionKey
 
   // sessionKey 过滤：当前会话照常渲染；托管绑定会话在后台继续驱动循环
   if (!isCurrentSession && !isHostedSession) return
+  const eventKey = getChatEventDedupeKey(payload, eventId)
+  if (eventKey && _seenChatEventKeys.has(eventKey)) {
+    console.log('[chat] skipped duplicate chat event:', eventKey)
+    return
+  }
+  rememberBounded(_seenChatEventKeys, eventKey, 600)
 
   if (!isCurrentSession && isHostedSession) {
     if (payload.state === 'final' && shouldCaptureHostedTarget(payload)) {
@@ -2844,6 +3155,33 @@ function handleChatEvent(payload) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
     }
     const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length || finalScreenshotCards.length || finalConfirmations.length
+    const assistantFingerprint = getAssistantFinalFingerprint(payload, finalText || _currentAiText, finalTools.length ? finalTools : _currentAiTools)
+    const assistantDedupeKey = getOpenClawMessageDedupeKey({
+      id: payload.message?.id,
+      messageId: payload.messageId,
+      eventId: payload.eventId,
+      runId,
+      sessionKey: payload.sessionKey || _sessionKey,
+      state,
+      role: 'assistant',
+      text: finalText || _currentAiText,
+      images: finalImages.length ? finalImages : _currentAiImages,
+      videos: finalVideos.length ? finalVideos : _currentAiVideos,
+      audios: finalAudios.length ? finalAudios : _currentAiAudios,
+      files: finalFiles.length ? finalFiles : _currentAiFiles,
+      tools: finalTools.length ? finalTools : _currentAiTools,
+      screenshotCards: finalScreenshotCards,
+      confirmations: finalConfirmations,
+      timestamp: payload.timestamp || Date.now(),
+    })
+    if (!_currentAiBubble && assistantDedupeKey && hasRenderedOpenClawMessage(_sessionKey, assistantDedupeKey)) {
+      console.log('[chat] skipped duplicate rendered assistant final:', assistantDedupeKey)
+      return
+    }
+    if (!_currentAiBubble && isDuplicateRecentAssistantFinal(assistantFingerprint)) {
+      console.log('[chat] skipped duplicate assistant final')
+      return
+    }
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
     if (!_currentAiBubble && !hasContent) return
     // 标记 runId 为已处理，防止重复
@@ -2857,8 +3195,10 @@ function handleChatEvent(payload) {
     showTyping(false)
     // 如果流式阶段没有创建 bubble，从 final message 中提取
     if (!_currentAiBubble && hasContent) {
-      _currentAiBubble = createStreamBubble()
+      _currentAiBubble = createStreamBubble({ dedupeKey: assistantDedupeKey, sessionKey: _sessionKey })
       _currentAiText = finalText || _currentAiText
+    } else if (_currentAiBubble && assistantDedupeKey) {
+      markRenderedOpenClawMessage(_currentAiBubble.closest('.msg'), _sessionKey, assistantDedupeKey)
     }
     if (_currentAiBubble) {
       if (_currentAiText && _currentAiText !== _lastRenderedAiText) {
@@ -2904,6 +3244,7 @@ function handleChatEvent(payload) {
       group.appendChild(meta)
     }
     if (_currentAiText || _currentAiImages.length) {
+      rememberAssistantFinal(assistantFingerprint)
       saveMessage({
         id: payload.runId || uuid(), sessionKey: _sessionKey, role: 'assistant',
         content: _currentAiText, timestamp: Date.now(),
@@ -3019,7 +3360,7 @@ function extractChatContent(message) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
   }
   const content = message.content
-  if (typeof content === 'string') return { text: stripThinkingTags(content), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
+  if (typeof content === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(content)), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
   if (Array.isArray(content)) {
     const texts = [], images = [], videos = [], audios = [], files = []
     for (const block of content) {
@@ -3086,13 +3427,13 @@ function extractChatContent(message) {
       else if (/\.(jpe?g|png|gif|webp|heic|svg)(\?|$)/i.test(url)) images.push({ url, mediaType: 'image/png' })
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
-    const text = texts.length ? stripThinkingTags(texts.join('\n')) : ''
+    const text = texts.length ? stripOpenClawIdentityPrelude(stripThinkingTags(texts.join('\n'))) : ''
     return { text, images, videos, audios, files, tools, screenshotCards, confirmations }
   }
   if (screenshotCards.length || confirmations.length) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   }
-  if (typeof message.text === 'string') return { text: stripThinkingTags(message.text), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
+  if (typeof message.text === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(message.text)), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   return null
 }
 
@@ -3180,22 +3521,38 @@ function formatFileSize(bytes) {
 }
 
 /** 创建流式 AI 气泡 */
-function createStreamBubble() {
+function createStreamBubble(meta = {}) {
   if (!_messagesEl || !_typingEl) return null
+  const sessionKey = meta.sessionKey || _sessionKey || ''
+  if (meta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, meta.dedupeKey)) return null
   showTyping(false)
   _lastRenderedAiText = ''
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-ai sc-msg-row assistant'
+  markRenderedOpenClawMessage(wrap, sessionKey, meta.dedupeKey)
   const group = document.createElement('div')
   group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
   bubble.innerHTML = '<span class="stream-cursor"></span>'
+  group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
   wrap.appendChild(group)
   _messagesEl.insertBefore(wrap, _typingEl)
   scrollToBottom()
   return bubble
+}
+
+function createOpenClawRoleLine(role = 'assistant') {
+  const line = document.createElement('div')
+  line.className = `openclaw-role-line ${role}`
+  const badge = document.createElement('span')
+  badge.className = `openclaw-role-badge ${role}`
+  const iconName = role === 'tool' ? 'wrench' : 'terminal'
+  const label = role === 'tool' ? 'Tool' : 'OpenClaw'
+  badge.innerHTML = `<span class="openclaw-role-icon">${svgIcon(iconName, 13)}</span><span>${label}</span>`
+  line.appendChild(badge)
+  return line
 }
 
 function renderCompactAssistantContent(rawText, container) {
@@ -3378,6 +3735,8 @@ function resetStreamState() {
   _currentAiAudios = []
   _currentAiFiles = []
   _currentAiTools = []
+  if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
+  _activeClientRequestId = null
   _currentRunId = null
   _isStreaming = false
   _streamStartTime = 0
@@ -3399,13 +3758,26 @@ async function loadHistory() {
     if (!_messagesEl) return
     if (local.length) {
       clearMessages()
-      local.forEach(msg => {
-        if (!msg.content && !msg.attachments?.length) return
+      dedupeHistoryStable(local).forEach(msg => {
+        if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return
         const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
-        if (msg.role === 'user') appendUserMessage(msg.content || '', msg.attachments || null, msgTime)
+        if (msg.role === 'user') {
+          const userAttachments = [
+            ...(msg.images || []).map(img => ({ category: 'image', mimeType: img.mediaType || img.media_type || '', content: img.data || img.source?.data || '', url: img.url || img.image_url?.url || '' })),
+            ...(msg.videos || []).map(video => ({ ...video, category: 'video' })),
+            ...(msg.audios || []).map(audio => ({ ...audio, category: 'audio' })),
+            ...(msg.files || []).map(file => ({ ...file, category: file.category || 'file' })),
+          ]
+          appendUserMessage(msg.text || '', userAttachments.length ? userAttachments : null, msgTime, {
+            dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
+            sessionKey: msg.sessionKey || _sessionKey,
+          })
+        }
         else if (msg.role === 'assistant') {
-          const images = (msg.attachments || []).filter(a => a.category === 'image').map(a => ({ mediaType: a.mimeType, data: a.content, url: a.url }))
-          appendAiMessage(msg.content || '', msgTime, images, [], [], [], [])
+          appendAiMessage(msg.text || '', msgTime, msg.images || [], msg.videos || [], msg.audios || [], msg.files || [], msg.tools || [], msg.screenshotCards || [], msg.confirmations || [], {
+            dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
+            sessionKey: msg.sessionKey || _sessionKey,
+          })
         }
       })
       scrollToBottom()
@@ -3418,7 +3790,7 @@ async function loadHistory() {
       if (_messagesEl && !_messagesEl.querySelector('.msg')) appendSystemMessage(t('chat.noMessages'))
       return
     }
-    const deduped = dedupeHistory(result.messages)
+    const deduped = dedupeHistoryStable(result.messages)
     const displayedCount = countDisplayedChatMessages()
     const refreshIsSparse = hasExisting
       && !_isSending
@@ -3460,9 +3832,15 @@ async function loadHistory() {
           category: 'image',
         })).filter(a => a.content) : []
         if (msg.images?.length && !userAtts.length) hasOmittedImages = true
-        appendUserMessage(msg.text, userAtts, msgTime)
+        appendUserMessage(msg.text, userAtts, msgTime, {
+          dedupeKey: msg.dedupeKey,
+          sessionKey: msg.sessionKey || _sessionKey,
+        })
       } else if (msg.role === 'assistant') {
-        appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations)
+        appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations, {
+          dedupeKey: msg.dedupeKey,
+          sessionKey: msg.sessionKey || _sessionKey,
+        })
       }
     })
     if (hasOmittedImages) {
@@ -3515,6 +3893,120 @@ function dedupeHistory(messages) {
     deduped.push({ role, text: c.text, images: c.images, videos: c.videos, audios: c.audios, files: c.files, tools, screenshotCards: c.screenshotCards, confirmations: c.confirmations, timestamp: msg.timestamp })
   }
   return deduped
+}
+
+function dedupeHistoryStable(messages) {
+  const deduped = []
+  const indexByKey = new Map()
+  const indexByDisplayKey = new Map()
+  for (const msg of messages || []) {
+    const role = (msg.role === 'tool' || msg.role === 'toolResult') ? 'assistant' : msg.role
+    const c = extractContent(msg)
+    if (!c.text && !c.images.length && !c.videos.length && !c.audios.length && !c.files.length && !c.tools.length && !c.screenshotCards.length && !c.confirmations.length) continue
+    const tools = (c.tools || []).map(t => {
+      const id = t.id || t.tool_call_id
+      const time = t.time || resolveToolTime(id, msg.timestamp)
+      return { ...t, time, messageTimestamp: msg.timestamp }
+    })
+    const item = {
+      id: msg.id,
+      messageId: msg.messageId,
+      eventId: msg.eventId,
+      runId: msg.runId,
+      idempotencyKey: msg.idempotencyKey,
+      clientRequestId: msg.clientRequestId,
+      sessionKey: msg.sessionKey || _sessionKey,
+      type: msg.type,
+      state: msg.state,
+      role,
+      text: c.text,
+      images: c.images,
+      videos: c.videos,
+      audios: c.audios,
+      files: c.files,
+      tools,
+      screenshotCards: c.screenshotCards,
+      confirmations: c.confirmations,
+      timestamp: msg.timestamp,
+    }
+    item.dedupeKey = getOpenClawMessageDedupeKey(item)
+    item.displayDedupeKey = getOpenClawHistoryDisplayDedupeKey(item)
+    if (item.displayDedupeKey && indexByDisplayKey.has(item.displayDedupeKey)) {
+      const idx = indexByDisplayKey.get(item.displayDedupeKey)
+      deduped[idx] = mergeOpenClawHistoryMessage(deduped[idx], item)
+      if (item.dedupeKey) indexByKey.set(item.dedupeKey, idx)
+      continue
+    }
+    if (item.dedupeKey && indexByKey.has(item.dedupeKey)) {
+      const idx = indexByKey.get(item.dedupeKey)
+      deduped[idx] = mergeOpenClawHistoryMessage(deduped[idx], item)
+      if (item.displayDedupeKey) indexByDisplayKey.set(item.displayDedupeKey, idx)
+      continue
+    }
+    const last = deduped[deduped.length - 1]
+    if (last && last.role === role) {
+      if (role === 'user' && last.text === c.text) continue
+      if (role === 'assistant') {
+        if (shouldMergeAdjacentOpenClawAssistant(last, item)) {
+          deduped[deduped.length - 1] = mergeOpenClawHistoryMessage(last, item)
+          if (item.dedupeKey) indexByKey.set(item.dedupeKey, deduped.length - 1)
+          if (item.displayDedupeKey) indexByDisplayKey.set(item.displayDedupeKey, deduped.length - 1)
+          continue
+        }
+        if (c.text && last.text === c.text) continue
+      }
+    }
+    deduped.push(item)
+    if (item.dedupeKey) indexByKey.set(item.dedupeKey, deduped.length - 1)
+    if (item.displayDedupeKey) indexByDisplayKey.set(item.displayDedupeKey, deduped.length - 1)
+  }
+  return deduped
+}
+
+function shouldMergeAdjacentOpenClawAssistant(prev, next) {
+  if (!prev || !next || prev.role !== 'assistant' || next.role !== 'assistant') return false
+  if (prev.runId && next.runId && prev.runId === next.runId) return true
+  if ((prev.tools?.length || 0) > 0 || (next.tools?.length || 0) > 0) return true
+  if (prev.text && next.text && prev.text === next.text) return true
+  return false
+}
+
+function mergeOpenClawUniqueMedia(a = [], b = []) {
+  const result = []
+  const seen = new Set()
+  for (const item of [...(a || []), ...(b || [])]) {
+    const key = item?.url || item?.data || item?.source?.data || JSON.stringify(item || {})
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(item)
+  }
+  return result
+}
+
+function mergeOpenClawHistoryMessage(prev, next) {
+  if (!prev) return next
+  if (!next) return prev
+  const sameText = normalizeOpenClawMessageText(prev.text) === normalizeOpenClawMessageText(next.text)
+  const text = sameText
+    ? (prev.text || next.text || '')
+    : [prev.text, next.text].filter(Boolean).join('\n')
+  const tools = [...(prev.tools || [])]
+  ;(next.tools || []).forEach(t => upsertTool(tools, t))
+  return {
+    ...prev,
+    ...next,
+    role: prev.role || next.role,
+    text,
+    images: mergeOpenClawUniqueMedia(prev.images, next.images),
+    videos: mergeOpenClawUniqueMedia(prev.videos, next.videos),
+    audios: mergeOpenClawUniqueMedia(prev.audios, next.audios),
+    files: mergeOpenClawUniqueMedia(prev.files, next.files),
+    screenshotCards: mergeOpenClawUniqueMedia(prev.screenshotCards, next.screenshotCards),
+    confirmations: mergeOpenClawUniqueMedia(prev.confirmations, next.confirmations),
+    tools,
+    timestamp: prev.timestamp || next.timestamp,
+    dedupeKey: prev.dedupeKey || next.dedupeKey,
+  }
 }
 
 function cachedHistoryMessage(m) {
@@ -3640,10 +4132,14 @@ function extractContent(msg) {
 
 // ── DOM 操作 ──
 
-function appendUserMessage(text, attachments = [], msgTime) {
+function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
+  const sessionKey = renderMeta.sessionKey || _sessionKey || ''
+  if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
+  const displayText = stripOpenClawIdentityPrelude(text)
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-user sc-msg-row user'
+  markRenderedOpenClawMessage(wrap, sessionKey, renderMeta.dedupeKey)
   const group = document.createElement('div')
   group.className = 'sc-msg-group user'
   const bubble = document.createElement('div')
@@ -3688,9 +4184,9 @@ function appendUserMessage(text, attachments = [], msgTime) {
     if (mediaContainer.children.length) bubble.appendChild(mediaContainer)
   }
 
-  if (text) {
+  if (displayText) {
     const textNode = document.createElement('div')
-    textNode.textContent = text
+    textNode.textContent = displayText
     bubble.appendChild(textNode)
   }
 
@@ -3705,10 +4201,13 @@ function appendUserMessage(text, attachments = [], msgTime) {
   scrollToBottom()
 }
 
-function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = []) {
+function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
+  const sessionKey = renderMeta.sessionKey || _sessionKey || ''
+  if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-ai sc-msg-row assistant'
+  markRenderedOpenClawMessage(wrap, sessionKey, renderMeta.dedupeKey)
   const group = document.createElement('div')
   group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
@@ -3731,6 +4230,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   const canSpeak = !!(text || '').trim()
   meta.innerHTML = `<span class="msg-time">${formatTime(msgTime || new Date())}</span>${canSpeak ? `<button class="msg-voice-btn" data-voice-key="chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}" title="${t('chat.voiceSpeak')}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 1 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M19 10a7 7 0 0 1-14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg></button>` : ''}<button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
 
+  group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
   group.appendChild(meta)
   wrap.appendChild(group)
@@ -3915,9 +4415,11 @@ function appendToolsToEl(el, tools) {
     details.className = 'msg-tool-item'
     const summary = document.createElement('summary')
     const status = tool.status === 'error' ? t('chat.toolFailed') : t('chat.toolSuccess')
+    const statusClass = tool.status === 'error' ? 'is-error' : 'is-success'
     const timeValue = getToolTime(tool) || resolveToolTime(tool.id || tool.tool_call_id, tool.messageTimestamp)
     const timeText = timeValue ? formatTime(new Date(timeValue)) : ''
-    summary.innerHTML = `${escapeHtml(tool.name || 'tool')} · ${status}${timeText ? ' · ' + timeText : ''}`
+    summary.className = 'openclaw-tool-summary'
+    summary.innerHTML = `<span class="openclaw-tool-badge"><span class="openclaw-tool-icon">${svgIcon('wrench', 12)}</span><span>Tool</span></span><span class="openclaw-tool-name">${escapeHtml(tool.name || 'tool')}</span><span class="openclaw-tool-status ${statusClass}">${escapeHtml(status)}</span>${timeText ? `<span class="openclaw-tool-time">${escapeHtml(timeText)}</span>` : ''}`
     const body = document.createElement('div')
     body.className = 'msg-tool-body'
     const inputJson = stripAnsi(safeStringify(tool.input))
@@ -3958,6 +4460,7 @@ function appendSystemMessage(text) {
 function clearMessages() {
   if (!_messagesEl) return
   _messagesEl.querySelectorAll('.msg').forEach(m => m.remove())
+  clearRenderedOpenClawMessages(_sessionKey)
   _autoScrollEnabled = true
   _lastScrollTop = 0
 }
@@ -4036,7 +4539,7 @@ function updateSendState() {
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
     _sendBtn.title = t('chat.cmdStopGen')
   } else {
-    _sendBtn.disabled = !_textarea.value.trim() && !_attachments.length
+    _sendBtn.disabled = _sendInputLocked || _isSending || (!_textarea.value.trim() && !_attachments.length)
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
     _sendBtn.title = t('chat.send')
   }
@@ -4548,6 +5051,14 @@ export function cleanup() {
   _currentAiAudios = []
   _currentAiFiles = []
   _currentAiTools = []
+  _activeClientRequestId = null
+  _inFlightRequestIds.clear()
+  _seenChatEventKeys.clear()
+  _recentAssistantFinals.clear()
+  _renderedMessageKeysBySession.clear()
+  _sendInputLocked = false
+  _lastSendFingerprint = ''
+  _lastSendAt = 0
   _currentRunId = null
   _isStreaming = false
   _isSending = false
