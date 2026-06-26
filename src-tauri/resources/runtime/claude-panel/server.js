@@ -2045,6 +2045,256 @@ function buildClaudeCodeWorkbenchSelfCheckPrompt(req) {
   ].join("\n");
 }
 
+const CLAUDE_SELFCHECK_TRIGGER_PATTERNS = [
+  /Claude\s*Code\s*\u5168\u9762\u81ea\u68c0/i,
+  /ClaudeCode\s*\u5168\u9762\u81ea\u68c0/i,
+  /Claude\s*Panel\s*\u81ea\u68c0/i,
+  /Claude\s*Relay\s*\u81ea\u68c0/i,
+  /\u5b89\u5168\u5bf9\u8bdd/,
+  /\u6d4f\u89c8\u5668\u81ea\u52a8\u5316/,
+  /\u63a5\u7ba1\u6a21\u5f0f/,
+  /\u751f\u6210\u62a5\u544a/,
+  /\u53ea\u8bfb\u68c0\u67e5/,
+  /\u81ea\u68c0/,
+  /self[\s_-]*check/i,
+];
+
+const CLAUDE_PSEUDO_TOOL_CALL_PATTERN =
+  /(?:\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]|<tool_call[\s\S]*?<\/tool_call>|```(?:tool|tool_call|json)?\s*\n?\s*\[TOOL_CALL\][\s\S]*?```)/gi;
+
+function detectClaudeSelfcheckIntent(input) {
+  const text = String(input || "");
+  if (!text.trim()) return false;
+  const compact = text.replace(/\s+/g, "");
+  const hasDirectClaudeSelfcheck =
+    compact.includes("ClaudeCode\u5168\u9762\u81ea\u68c0")
+    || compact.includes("ClaudePanel\u81ea\u68c0")
+    || compact.includes("ClaudeRelay\u81ea\u68c0")
+    || (/Claude/i.test(text) && /(?:\u5168\u9762\u81ea\u68c0|\u81ea\u68c0|self[\s_-]*check)/i.test(text));
+  if (hasDirectClaudeSelfcheck) return true;
+
+  const hits = CLAUDE_SELFCHECK_TRIGGER_PATTERNS.filter((pattern) => pattern.test(text)).length;
+  const hasClaudeScope = /Claude\s*(?:Code|Panel|Relay)?|ClaudeCode/i.test(text);
+  const hasSelfcheckScope = /\u5168\u9762\u81ea\u68c0|\u81ea\u68c0|\u53ea\u8bfb\u68c0\u67e5|self[\s_-]*check/i.test(text);
+  const hasReportProbeScope =
+    text.includes("\u5b89\u5168\u5bf9\u8bdd")
+    && text.includes("\u751f\u6210\u62a5\u544a")
+    && (hasClaudeScope || text.includes("\u53ea\u8bfb\u68c0\u67e5"));
+  return (hasClaudeScope && hits > 0) || (hasSelfcheckScope && hits > 1) || hasReportProbeScope;
+}
+
+function convertSelfcheckPromptToExecutor(prompt) {
+  if (!detectClaudeSelfcheckIntent(prompt)) {
+    return { handled: false, reason: "not_selfcheck" };
+  }
+  return {
+    handled: true,
+    reason: "claude_selfcheck_executor",
+    mode: "CLAUDE_PANEL_SAFE_SELFCHECK",
+  };
+}
+
+function detectPseudoToolCallText(text) {
+  CLAUDE_PSEUDO_TOOL_CALL_PATTERN.lastIndex = 0;
+  return CLAUDE_PSEUDO_TOOL_CALL_PATTERN.test(String(text || ""));
+}
+
+function stripUnsupportedToolCallText(text) {
+  const value = String(text || "");
+  if (!detectPseudoToolCallText(value)) return value;
+  CLAUDE_PSEUDO_TOOL_CALL_PATTERN.lastIndex = 0;
+  return value
+    .replace(
+      CLAUDE_PSEUDO_TOOL_CALL_PATTERN,
+      "\n\n[Claude Panel blocked pseudo tool-call text. This panel does not execute model-generated tool text as commands.]\n\n"
+    )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function safeSelfcheckTimestamp() {
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+}
+
+function selfcheckTempRoot() {
+  if (process.platform === "win32") return "C:\\tmp";
+  return os.tmpdir();
+}
+
+function resolveRepoRootForSelfcheck(cwd) {
+  const candidates = [
+    cwd,
+    process.cwd(),
+    path.resolve(__dirname, "..", "..", "..", ".."),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      const root = path.resolve(candidate);
+      if (fs.existsSync(path.join(root, "package.json")) && fs.existsSync(path.join(root, "scripts"))) {
+        return root;
+      }
+    } catch {}
+  }
+  return path.resolve(__dirname, "..", "..", "..", "..");
+}
+
+function resolveClaudeSelfcheckScript(cwd) {
+  const root = resolveRepoRootForSelfcheck(cwd);
+  const candidates = [
+    path.join(root, "scripts", "claudecode-full-selfcheck.mjs"),
+    path.resolve(process.cwd(), "scripts", "claudecode-full-selfcheck.mjs"),
+    path.resolve(__dirname, "..", "..", "..", "..", "scripts", "claudecode-full-selfcheck.mjs"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return { scriptPath: candidate, repoRoot: root };
+    }
+  }
+  return { scriptPath: "", repoRoot: root };
+}
+
+function writeSelfcheckFailureReport(error, cwd) {
+  const root = selfcheckTempRoot();
+  const dir = path.join(root, `claudecode-full-selfcheck-${safeSelfcheckTimestamp()}`);
+  fs.mkdirSync(dir, { recursive: true });
+  const reportPath = path.join(dir, "claudecode-full-selfcheck-report.md");
+  const safeError = redact(String(error?.message || error || "Unknown selfcheck error"));
+  const body = [
+    "# Claude Code full selfcheck",
+    "",
+    "Status: failed before the selfcheck script could complete.",
+    "",
+    `Working directory: ${cwd || ""}`,
+    `Error: ${safeError}`,
+    "",
+    "Existing runtime preserved. No model-generated pseudo tool-call text was executed.",
+  ].join("\n");
+  fs.writeFileSync(reportPath, body, "utf8");
+  return {
+    ok: false,
+    reportPath,
+    summaryItems: [
+      "1. Module: Claude Panel.",
+      "2. Runtime mode: selfcheck fallback.",
+      "3. Selfcheck script: failed to run.",
+      `4. Report: ${reportPath}`,
+      "5. Safety: pseudo tool-call text was not executed.",
+    ],
+    error: safeError,
+  };
+}
+
+function runClaudeSelfcheckExecutor(context) {
+  const { scriptPath, repoRoot } = resolveClaudeSelfcheckScript(context.cwd);
+  if (!scriptPath) {
+    return Promise.resolve(writeSelfcheckFailureReport(new Error("scripts/claudecode-full-selfcheck.mjs not found"), context.cwd));
+  }
+
+  return new Promise((resolve) => {
+    const args = [
+      scriptPath,
+      "--json",
+      "--cwd",
+      repoRoot,
+      "--panel-url",
+      `http://127.0.0.1:${PORT}`,
+      "--source",
+      "claude-panel",
+    ];
+    const child = spawn(process.execPath, args, {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: { ...process.env },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        if (!child.killed) child.kill("SIGTERM");
+        resolve(writeSelfcheckFailureReport(new Error("Claude selfcheck timed out"), context.cwd));
+      }
+    }, 30000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(writeSelfcheckFailureReport(error, context.cwd));
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        const parsed = JSON.parse(stdout.trim());
+        resolve({
+          ...parsed,
+          exitCode: code,
+          stderr: redact(stderr.trim()),
+        });
+      } catch (error) {
+        resolve(writeSelfcheckFailureReport(new Error(`Invalid selfcheck JSON output: ${redact(stderr || error.message)}`), context.cwd));
+      }
+    });
+  });
+}
+
+function formatSelfcheckSummary(result) {
+  const items = Array.isArray(result?.summaryItems) ? result.summaryItems : [];
+  const body = items.length ? items.join("\n") : "Claude Panel selfcheck completed without detailed summary.";
+  const status = result?.ok ? "PASS" : "CHECK_FAILED";
+  return [
+    `Claude Panel safe selfcheck: ${status}`,
+    "",
+    body,
+    "",
+    `Report: ${result?.reportPath || ""}`,
+  ].join("\n").trim();
+}
+
+async function handleClaudeSelfcheckRun(req, res, context) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  writeEvent(res, "meta", {
+    runtimeMode: "CLAUDE_PANEL_SAFE_SELFCHECK",
+    cwd: context.cwd,
+    permissionProfile: context.permissionProfile,
+    toolProfile: context.toolProfile,
+    browserAccess: context.browserAccess,
+  });
+  const result = await runClaudeSelfcheckExecutor(context);
+  writeEvent(res, "text", { text: sanitizeModelOutput(formatSelfcheckSummary(result)) });
+  writeEvent(res, "done", {
+    runtimeMode: "CLAUDE_PANEL_SAFE_SELFCHECK",
+    ok: Boolean(result?.ok),
+    reportPath: result?.reportPath || "",
+  });
+  appendAuditLog({
+    feature: "/api/run",
+    action: "claude-safe-selfcheck",
+    permissionMode: context.permissionProfile || "default",
+    toolProfile: context.toolProfile || "none",
+    projectPath: context.cwd || "",
+    result: result?.ok ? "pass" : "failed",
+    source: req.socket.remoteAddress,
+  });
+  res.end();
+}
+
 function stripExplicitSafetyScope(text) {
   return String(text || "")
     .replace(/(?:不|不要|禁止|无需|只检查|只看).{0,40}(?:源码|源代码|私有实现|私有架构|内部实现|内部逻辑|系统提示词|密钥|token|凭证|安全锁实现)/gi, " ")
@@ -2092,7 +2342,8 @@ function looksLikeProtectedSourceOutput(text) {
 
 function sanitizeModelOutput(text) {
   const redacted = redact(text);
-  return looksLikeProtectedSourceOutput(redacted) ? SOURCE_GUARD_BLOCK_MESSAGE : redacted;
+  const withoutPseudoToolCalls = stripUnsupportedToolCallText(redacted);
+  return looksLikeProtectedSourceOutput(withoutPseudoToolCalls) ? SOURCE_GUARD_BLOCK_MESSAGE : withoutPseudoToolCalls;
 }
 
 function resolveCwd(input) {
@@ -2484,6 +2735,22 @@ async function handleRun(req, res) {
   const browserAccess = normalizeBrowserAccess(payload.browserAccess);
   const allowBrowserAutomation = browserAutomationAllowed(payload, toolProfile);
   const highRiskToolProfile = isHighRiskToolProfile(toolProfile);
+  const selfcheckPlan = convertSelfcheckPromptToExecutor(prompt);
+
+  if (selfcheckPlan.handled) {
+    await handleClaudeSelfcheckRun(req, res, {
+      payload,
+      prompt,
+      cwd,
+      model,
+      mode: selfcheckPlan.mode,
+      permissionProfile: payload.permissionProfile || mode,
+      toolProfile,
+      browserAccess,
+      attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
+    });
+    return;
+  }
 
   if (containsSensitiveFileName(prompt) && toolProfile !== "none" && !payload.sensitiveFileAccepted) {
     appendAuditLog({
