@@ -4065,6 +4065,7 @@ function writeOpenclawConfigFile(config, options = {}) {
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(decodeJsonFileContent(CONFIG_PATH)), config)
     : config
+  normalizeOpenClawMiniMaxModel(base)
   const cleaned = stripUiFields(base)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
@@ -5670,6 +5671,17 @@ function normalizeOpenClawModelRef(modelRef, fallback = miniMaxModelRef()) {
   return isInvalidOpenClawModelId(modelRef) ? fallback : String(modelRef).trim()
 }
 
+function normalizeOpenClawMiniMaxModel(config) {
+  const provider = config?.models?.providers?.minimax
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
+  if (isInvalidOpenClawModelId(provider.model)) {
+    provider.model = MINIMAX_TEST_DEFAULTS.model
+    return true
+  }
+  provider.model = String(provider.model).trim()
+  return false
+}
+
 function miniMaxOpenClawModelDefinition() {
   return {
     id: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
@@ -5690,11 +5702,16 @@ function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
     cfg.models.providers = {}
   }
   const models = [miniMaxOpenClawModelDefinition()]
+  const previousMiniMaxProvider = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object' && !Array.isArray(cfg.models.providers.minimax)
+    ? cfg.models.providers.minimax
+    : {}
   cfg.models.providers.minimax = {
     api: 'openai-completions',
     baseUrl: normalized.baseUrl,
+    model: normalizeOpenClawModelId(previousMiniMaxProvider.model),
     models,
   }
+  normalizeOpenClawMiniMaxModel(cfg)
   if (apiKey) cfg.models.providers.minimax.apiKey = apiKey
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
@@ -6248,6 +6265,7 @@ const handlers = {
     const cfg = readOpenclawConfigRequired()
     let changed = ensureOpenClawWorkspaceConfig(cfg)
     changed = ensureOpenClawStatusPluginDefaults(cfg) || changed
+    changed = normalizeOpenClawMiniMaxModel(cfg) || changed
     ensureOpenClawWorkspaceDir(resolveDefaultWorkspace(cfg))
     ensureOpenClawMemoryFiles()
     if (changed) writeOpenclawConfigFile(cfg)
