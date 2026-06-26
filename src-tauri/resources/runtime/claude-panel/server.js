@@ -913,6 +913,10 @@ async function handleOpenAiRelayRun(req, res, context) {
   });
   writeEvent(res, "meta", {
     runtimeMode: "OPENAI_RELAY",
+    effectiveMode: "CLAUDE_PANEL_RELAY",
+    executionBackend: "openai-relay",
+    spawnedProcess: false,
+    relayCalled: true,
     model: apiModel,
     cwd: context.cwd,
     permissionProfile: context.permissionProfile,
@@ -964,7 +968,14 @@ async function handleOpenAiRelayRun(req, res, context) {
       code: "CLAUDE_RELAY_RESPONSE_MAPPING_ERROR",
     });
   }
-  writeEvent(res, "done", { runtimeMode: "OPENAI_RELAY", model: apiModel });
+  writeEvent(res, "done", {
+    runtimeMode: "OPENAI_RELAY",
+    effectiveMode: "CLAUDE_PANEL_RELAY",
+    executionBackend: "openai-relay",
+    spawnedProcess: false,
+    relayCalled: true,
+    model: apiModel,
+  });
   res.end();
   return true;
 }
@@ -1156,18 +1167,28 @@ function isNativeModeDisabled() {
   return ["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_FORCE_RELAY || "").toLowerCase());
 }
 
+function isNativeRunWired() {
+  return !["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_DISABLE_NATIVE_RUN || "").toLowerCase());
+}
+
 function getClaudeRunMode(settings = readClaudeSettings()) {
   const relay = publicRelayConfig();
   const nativeClaude = detectNativeClaudeCli();
   const relayAvailable = isRelayAvailable(settings, relay);
-  const nativeAllowed = nativeClaude.usable && !isNativeModeDisabled();
+  const nativeRunWired = isNativeRunWired();
+  nativeClaude.runWired = nativeRunWired;
+  const nativeAllowed = nativeClaude.usable && nativeRunWired && !isNativeModeDisabled();
   const effectiveMode = nativeAllowed ? "NATIVE_CLAUDE_CODE" : "CLAUDE_PANEL_RELAY";
   const reason = nativeAllowed
-    ? "Native Claude CLI is available and selected."
+    ? "Native Claude CLI is available, /api/run is wired to spawn it, and native mode is selected."
     : relayAvailable
-      ? "Native Claude CLI is unavailable or disabled; using Claude Panel Relay."
+      ? nativeClaude.usable && !nativeRunWired
+        ? "Claude CLI detected but /api/run native bridge is disabled; using Claude Panel Relay."
+        : "Native Claude CLI is unavailable or disabled; using Claude Panel Relay."
       : nativeClaude.usable
-        ? "Native Claude CLI is disabled by CLAUDE_PANEL_FORCE_RELAY."
+        ? nativeRunWired
+          ? "Native Claude CLI is disabled by CLAUDE_PANEL_FORCE_RELAY."
+          : "Claude CLI detected but /api/run is not wired to native CLI."
         : "Native Claude CLI is unavailable; relay configuration may be required.";
   return {
     effectiveMode,
@@ -3084,6 +3105,10 @@ async function handleRun(req, res) {
 
   writeEvent(res, "meta", {
     runtimeMode: "NATIVE_CLAUDE_CODE",
+    executionBackend: "native-claude-cli",
+    spawnedProcess: true,
+    relayCalled: false,
+    nativeCliPath: runMode.nativeClaude.path,
     cwd,
     model: model || "default",
     mode,
@@ -3098,6 +3123,8 @@ async function handleRun(req, res) {
     runtimeSettingsPath,
     nativeClaude: {
       available: runMode.nativeClaude.available,
+      usable: runMode.nativeClaude.usable,
+      runWired: runMode.nativeClaude.runWired,
       path: runMode.nativeClaude.path,
       version: runMode.nativeClaude.version,
       source: runMode.nativeClaude.source,
@@ -3229,11 +3256,15 @@ function handleStatus(res) {
     nativeClaude: {
       available: runMode.nativeClaude.available,
       usable: runMode.nativeClaude.usable,
+      runWired: runMode.nativeClaude.runWired,
       path: runMode.nativeClaude.path,
       version: runMode.nativeClaude.version,
       reason: runMode.nativeClaude.reason,
       source: runMode.nativeClaude.source,
     },
+    executionBackend: runMode.effectiveMode === "NATIVE_CLAUDE_CODE" ? "native-claude-cli" : "openai-relay",
+    spawnedProcess: runMode.effectiveMode === "NATIVE_CLAUDE_CODE",
+    relayCalled: runMode.effectiveMode !== "NATIVE_CLAUDE_CODE",
     relay: {
       available: relayReady,
       mode: "OPENAI_RELAY",
