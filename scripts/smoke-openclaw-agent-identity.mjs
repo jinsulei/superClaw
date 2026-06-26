@@ -28,19 +28,35 @@ includesAll(chat, [
   'desktop control',
   'OCR-assisted',
   'Do not claim to be Hermes or Claude Code.',
+  'Default to Simplified Chinese',
   'MiniMax-M3',
 ], 'identity prelude')
 
 includesAll(chat, [
+  'OPENCLAW_LOCAL_IDENTITY_ANSWER',
+  'function isOpenClawIdentityQuestion(input)',
+  'function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId())',
   'function withOpenClawIdentityPrelude(prompt)',
   'function stripOpenClawIdentityPrelude(text)',
   'const displayText = stripOpenClawIdentityPrelude(text)',
   'body.includes(OPENCLAW_IDENTITY_CONTEXT_START)',
+  'isOpenClawIdentityQuestion(text)',
+  'appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)',
   'withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))',
   'stripOpenClawIdentityPrelude(stripThinkingTags(content))',
   'stripOpenClawIdentityPrelude(stripThinkingTags(texts.join(\'\\n\')))',
   'stripOpenClawIdentityPrelude(stripThinkingTags(message.text))',
 ], 'identity injection path')
+
+includesAll(chat, [
+  '我是 OpenClaw',
+  'SuperClaw 里的执行智能体',
+  '浏览器、桌面、文件、截图/OCR',
+  '高风险动作前等待你的确认',
+], 'local identity answer')
+
+assert(chat.includes('text.length > 160'), 'local identity fallback must not swallow long prompts')
+assert(chat.includes('OpenClaw 全面自检指令'), 'local identity fallback must exclude long audit prompts')
 
 assert(
   chat.includes('appendUserMessage(text, attachments)'),
@@ -83,3 +99,5 @@ console.log('OPENCLAW_NO_ILLEGAL_SYSTEM_FIELD: PASS')
 console.log('OPENCLAW_USER_BUBBLE_NOT_POLLUTED: PASS')
 console.log('OPENCLAW_IDENTITY_DEDUPED: PASS')
 console.log('OPENCLAW_IDEMPOTENCY_PRESERVED: PASS')
+console.log('OPENCLAW_DEFAULT_CHINESE: PASS')
+console.log('OPENCLAW_LOCAL_IDENTITY_FALLBACK: PASS')
