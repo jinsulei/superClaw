@@ -4713,7 +4713,11 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-sidebar-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 8px 18px;
 }
@@ -4729,6 +4733,10 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
   margin: 2px 0 4px;
 }
 [data-engine="hermes"] .hm-chat-group-head {
@@ -4793,6 +4801,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   align-items: center;
   gap: 8px;
   width: 100%;
+  min-height: 58px;
   padding: 8px 10px 8px 14px;
   border: none;
   background: transparent;
@@ -4803,6 +4812,7 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   border-radius: 0 var(--hm-radius-sm) var(--hm-radius-sm) 0;
   transition: background 0.12s ease;
   position: relative;
+  flex-shrink: 0;
 }
 [data-engine="hermes"] .hm-chat-session-item:hover {
   background: var(--hm-surface-2);
@@ -4823,14 +4833,19 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 }
 
 [data-engine="hermes"] .hm-chat-session-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 [data-engine="hermes"] .hm-chat-session-title-row {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  width: 100%;
 }
 [data-engine="hermes"] .hm-chat-session-title {
   flex: 1;

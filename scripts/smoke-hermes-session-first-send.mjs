@@ -41,6 +41,8 @@ api.hermesAgentRunStream = async (input, sessionId, _history, _instructions, _at
   onEvent({ event: 'message.delta', session_id: backendId, delta: 'K' })
   onEvent({ event: 'message.final', session_id: backendId, output: 'OK' })
   onEvent({ event: 'run.completed', session_id: backendId, output: 'OK' })
+  onEvent({ event: 'message.final', session_id: backendId, output: 'LATE DUPLICATE' })
+  onEvent({ event: 'run.completed', session_id: backendId, output: 'LATE DUPLICATE' })
   return { ok: true }
 }
 
@@ -70,7 +72,8 @@ function assertChatPageDraftFlow() {
   const block = chat.slice(start, end)
   assert.match(block, /const restoreText = inputValue/)
   assert.match(block, /const restoreAttachments = pendingAttachments\.slice\(\)/)
-  assert.match(block, /suppressTextareaCaptureUntil = Date\.now\(\) \+ 1500/)
+  assert.match(block, /hermesSendInFlight = true/)
+  assert.match(block, /suppressTextareaCaptureUntil = Date\.now\(\) \+ 10000/)
   assert.match(block, /clearLiveTextareaDomValue\(\)/)
   assert.ok(block.indexOf('resetInput()') < block.indexOf('await store.sendMessage'), 'draft clears before send awaits')
   assert.ok(block.indexOf('clearLiveTextareaDomValue()') < block.indexOf('await store.sendMessage'), 'DOM textarea clears before send awaits')
@@ -78,6 +81,7 @@ function assertChatPageDraftFlow() {
   assert.match(block, /restoreLiveTextareaDomValue\(restoreText, restoreCaret\)/)
   assert.match(block, /pendingAttachments = restoreAttachments/)
   assert.match(block, /pendingAttachmentInstructions = restoreInstructions/)
+  assert.match(block, /hermesSendInFlight = false/)
 }
 
 const store = getChatStore()
