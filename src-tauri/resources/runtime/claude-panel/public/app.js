@@ -3029,7 +3029,7 @@ function removeConversationRecord(id) {
 
 async function removeProjectConversationRecordOnly(conversation) {
   const displayTitle = conversationDisplayTitle(conversation);
-  const confirmed = window.confirm(
+  const confirmed = true; void (
     `只会从 ClaudeCode 工程列表移除「${displayTitle}」，不会删除电脑里的实际文件。是否继续？`
   );
   if (!confirmed) return;
