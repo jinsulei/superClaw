@@ -1602,6 +1602,99 @@ function findCommandPath(command) {
   }
 }
 
+const HERMES_DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
+
+function hermesDeletedSessionsPath() {
+  return path.join(hermesHome(), '.superclaw-deleted-sessions.json')
+}
+
+function readHermesDeletedSessions() {
+  const now = Date.now()
+  const file = hermesDeletedSessionsPath()
+  let raw = {}
+  try {
+    if (fs.existsSync(file)) raw = JSON.parse(fs.readFileSync(file, 'utf8')) || {}
+  } catch {
+    raw = {}
+  }
+  const out = {}
+  for (const [id, ts] of Object.entries(raw)) {
+    const when = Number(ts || 0)
+    if (id && when && now - when <= HERMES_DELETED_SESSION_TTL_MS) out[id] = when
+  }
+  if (Object.keys(out).length !== Object.keys(raw).length) {
+    try { fs.writeFileSync(file, JSON.stringify(out, null, 2)) } catch {}
+  }
+  return out
+}
+
+function rememberHermesDeletedSession(sessionId) {
+  const id = String(sessionId || '').trim()
+  if (!id) return
+  const deleted = readHermesDeletedSessions()
+  deleted[id] = Date.now()
+  try {
+    fs.mkdirSync(path.dirname(hermesDeletedSessionsPath()), { recursive: true })
+    fs.writeFileSync(hermesDeletedSessionsPath(), JSON.stringify(deleted, null, 2))
+  } catch {}
+}
+
+function isHermesDeletedSessionId(sessionId) {
+  const id = String(sessionId || '').trim()
+  return !!id && Object.prototype.hasOwnProperty.call(readHermesDeletedSessions(), id)
+}
+
+function isHermesSmokeOrFixtureSession(session = {}) {
+  const id = String(session.id || session.session_id || '').toLowerCase()
+  const title = String(session.title || session.name || '').toLowerCase()
+  const source = String(session.source || '').toLowerCase()
+  const preview = String(session.preview || '').toLowerCase()
+  const marker = `${id} ${title} ${source} ${preview}`
+  if (marker.includes('codex-hermes')) return true
+  if (marker.includes('yyapi-test')) return true
+  return ['smoke', 'test', 'fixture', 'yyapi-test'].includes(source)
+}
+
+function isHermesPlaceholderSessionText(value) {
+  const text = String(value || '').trim().toLowerCase()
+  return !text
+    || text === '-'
+    || text === '\u2014'
+    || text === 'new chat'
+    || text === 'untitled'
+    || text === '\u65b0\u4f1a\u8bdd'
+    || text === '\u65b0\u5bf9\u8bdd'
+}
+
+function normalizeHermesSessionForUi(session = {}) {
+  const out = { ...session }
+  const id = String(out.id || out.session_id || '').trim()
+  const source = String(out.source || '').trim()
+  const sourceIdPattern = /^(api_server|local|cron|web|desktop|cli)\s+(.+)$/i
+  const sourceMatch = source.match(sourceIdPattern)
+  const idMatch = id.match(sourceIdPattern)
+
+  if (sourceMatch && (!id || id === source || idMatch)) {
+    out.source = sourceMatch[1]
+    out.id = sourceMatch[2].trim()
+  } else if (idMatch) {
+    out.source = out.source || idMatch[1]
+    out.id = idMatch[2].trim()
+  }
+
+  if (isHermesPlaceholderSessionText(out.title) && !isHermesPlaceholderSessionText(out.preview)) {
+    out.title = String(out.preview || '').trim()
+  }
+  return out
+}
+
+function filterHermesSessionsForUi(sessions = []) {
+  return (Array.isArray(sessions) ? sessions : [])
+    .map(session => normalizeHermesSessionForUi(session))
+    .filter(session => !isHermesDeletedSessionId(session.id || session.session_id))
+    .filter(session => !isHermesSmokeOrFixtureSession(session))
+}
+
 function normalizeCommandPath(raw) {
   if (typeof raw !== 'string') return null
   const trimmed = raw.trim()
@@ -10952,8 +11045,9 @@ const handlers = {
       } catch {}
     }
     sessions.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-    if (limit && limit > 0) return sessions.slice(0, limit)
-    return sessions
+    const filtered = filterHermesSessionsForUi(sessions)
+    if (limit && limit > 0) return filtered.slice(0, limit)
+    return filtered
   },
 
   hermes_sessions_summary_list({ source, limit, profile } = {}) {
@@ -11005,7 +11099,7 @@ const handlers = {
         })
       }
     }
-    return sessions
+    return filterHermesSessionsForUi(sessions)
   },
 
   async hermes_usage_analytics({ days = 30, profile } = {}) {
@@ -11089,7 +11183,7 @@ const handlers = {
       try {
         const obj = JSON.parse(t)
         if ((obj.session_id || obj.id) === sessionId) {
-          return {
+          const session = {
             id: obj.session_id || obj.id,
             title: obj.title || obj.name || '',
             source: obj.source || '',
@@ -11101,6 +11195,8 @@ const handlers = {
               timestamp: m.timestamp || m.created_at || '',
             })),
           }
+          if (isHermesDeletedSessionId(session.id) || isHermesSmokeOrFixtureSession(session)) break
+          return session
         }
       } catch {}
     }
@@ -11109,6 +11205,7 @@ const handlers = {
 
   hermes_session_delete({ sessionId, profile } = {}) {
     if (!sessionId) throw new Error('sessionId is required')
+    rememberHermesDeletedSession(sessionId)
     const args = []
     if (profile) args.push('--profile', profile)
     args.push('sessions', 'delete', sessionId, '--yes')
@@ -12761,7 +12858,14 @@ async function _apiMiddleware(req, res, next) {
 }
 
 // 导出供 serve.js 独立部署使用
-export { _initApi, _apiMiddleware }
+export {
+  _initApi,
+  _apiMiddleware,
+  filterHermesSessionsForUi,
+  isHermesSmokeOrFixtureSession,
+  rememberHermesDeletedSession,
+  isHermesDeletedSessionId,
+}
 
 export function devApiPlugin() {
   let _inited = false

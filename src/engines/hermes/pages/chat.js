@@ -1021,6 +1021,7 @@ export function render() {
   let forceScrollBottom = true
   let lastRenderedStreaming = store.state.streaming
   let drawFrame = null
+  let suppressTextareaCaptureUntil = 0
   let drawMode = 'full'
   const renderedInboxMessages = new Set(JSON.parse(localStorage.getItem('superclaw-hermes-rendered-task-messages-v1') || '[]'))
   let voiceInputState = 'idle'
@@ -2015,6 +2016,19 @@ export function render() {
       forceScrollBottom = true
     }
 
+    const activeInput = document.activeElement?.id === 'hm-chat-input' && el.contains(document.activeElement)
+      ? document.activeElement
+      : null
+    const suppressTextareaCapture = Date.now() < suppressTextareaCaptureUntil
+    if (activeInput && !suppressTextareaCapture) {
+      inputFocused = true
+      inputValue = activeInput.value
+      inputCaret = activeInput.selectionStart || inputValue.length
+    } else if (activeInput && suppressTextareaCapture) {
+      activeInput.value = inputValue
+      try { activeInput.setSelectionRange(inputCaret, inputCaret) } catch {}
+    }
+
     el.innerHTML = `
       <div class="hm-chat-shell ${sidebarOpen ? '' : 'is-sidebar-collapsed'}">
         <div class="hm-chat-sidebar-backdrop" id="hm-chat-sidebar-backdrop"></div>
@@ -2782,6 +2796,30 @@ export function render() {
     pendingAttachments = []
   }
 
+  function createClientRequestId() {
+    try {
+      if (crypto?.randomUUID) return crypto.randomUUID()
+    } catch {}
+    return `hm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
+  function clearLiveTextareaDomValue() {
+    const input = el.querySelector('#hm-chat-input')
+    if (!input) return
+    input.value = ''
+    try { input.setSelectionRange(0, 0) } catch {}
+    autoResize(input)
+  }
+
+  function restoreLiveTextareaDomValue(value, caret = 0) {
+    const input = el.querySelector('#hm-chat-input')
+    if (!input) return
+    input.value = value || ''
+    const pos = Math.max(0, Math.min(caret || input.value.length, input.value.length))
+    try { input.setSelectionRange(pos, pos) } catch {}
+    autoResize(input)
+  }
+
   async function handleNewWorkFileSession() {
     if (store.state.streaming) return
     const rawName = await showWorkFileModal()
@@ -3318,15 +3356,37 @@ export function render() {
       }
     }
     forceScrollBottom = true
+    const clientRequestId = createClientRequestId()
+    const restoreText = inputValue
+    const restoreCaret = inputCaret
+    const restoreAttachments = pendingAttachments.slice()
+    const restoreInstructions = pendingAttachmentInstructions
     resetInput()
     inputFocused = true
     inputCaret = 0
+    suppressTextareaCaptureUntil = Date.now() + 1500
+    clearLiveTextareaDomValue()
+    console.debug('[HermesChat] draft cleared', {
+      sessionId: store.state.activeSessionId || 'pending-new-session',
+      clientRequestId,
+      length: restoreText.length,
+    })
     draw()
     try {
       await store.sendMessage(text, {
+        clientRequestId,
         instructions: sendInstructions || null,
         attachments,
       })
+    } catch (err) {
+      suppressTextareaCaptureUntil = 0
+      inputValue = restoreText
+      inputCaret = restoreCaret
+      pendingAttachments = restoreAttachments
+      pendingAttachmentInstructions = restoreInstructions
+      restoreLiveTextareaDomValue(restoreText, restoreCaret)
+      toast(err?.message || String(err), 'error')
+      throw err
     } finally {
       inputFocused = true
       inputCaret = inputValue.length

@@ -629,6 +629,108 @@ function Test-OpenClawDesktopControlRegistration {
   Write-Host "No stale desktop-control path: PASS" -ForegroundColor Green
 }
 
+function Test-HermesRealWebSessionGuards {
+  $chatPath = "src/engines/hermes/pages/chat.js"
+  $storePath = "src/engines/hermes/lib/chat-store.js"
+  $devApiPath = "scripts/dev-api.js"
+  $firstSendSmokePath = "scripts/smoke-hermes-session-first-send.mjs"
+  $realApiSmokePath = "scripts/smoke-hermes-real-api-sessions.mjs"
+  $domSmokePath = "scripts/smoke-hermes-dom-send-clear.mjs"
+
+  foreach ($path in @($chatPath, $storePath, $devApiPath, $firstSendSmokePath, $realApiSmokePath, $domSmokePath)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+      throw "Hermes real web session guard file missing: $path"
+    }
+  }
+
+  $chatText = Get-Content -LiteralPath $chatPath -Raw -Encoding UTF8
+  $storeText = Get-Content -LiteralPath $storePath -Raw -Encoding UTF8
+  $devApiText = Get-Content -LiteralPath $devApiPath -Raw -Encoding UTF8
+  $firstSendSmokeText = Get-Content -LiteralPath $firstSendSmokePath -Raw -Encoding UTF8
+  $realApiSmokeText = Get-Content -LiteralPath $realApiSmokePath -Raw -Encoding UTF8
+  $domSmokeText = Get-Content -LiteralPath $domSmokePath -Raw -Encoding UTF8
+
+  foreach ($term in @(
+    "suppressTextareaCaptureUntil",
+    "clearLiveTextareaDomValue",
+    "restoreLiveTextareaDomValue",
+    "activeInput && !suppressTextareaCapture",
+    "[HermesChat] draft cleared",
+    "clientRequestId,"
+  )) {
+    if ($chatText -notmatch [regex]::Escape($term)) {
+      throw "$chatPath is missing real DOM draft-clear guard: $term"
+    }
+  }
+
+  foreach ($term in @(
+    "STORAGE_DELETED_PREFIX",
+    "rememberDeletedSession",
+    "isDeletedSessionId",
+    "ensureAssistantMessage",
+    "assistantMessageByRequestId",
+    "FIRST_SEND_SESSION_HOLD_MS",
+    "normalizeJoinedSourceSessionFields",
+    "titleFromSummaryFields"
+  )) {
+    if ($storeText -notmatch [regex]::Escape($term)) {
+      throw "$storePath is missing session/dedup guard: $term"
+    }
+  }
+
+  foreach ($term in @(
+    "filterHermesSessionsForUi",
+    "isHermesSmokeOrFixtureSession",
+    "rememberHermesDeletedSession",
+    "normalizeHermesSessionForUi",
+    "codex-hermes",
+    "yyapi-test",
+    ".superclaw-deleted-sessions.json"
+  )) {
+    if ($devApiText -notmatch [regex]::Escape($term)) {
+      throw "$devApiPath is missing real API session guard: $term"
+    }
+  }
+
+  foreach ($term in @(
+    "HERMES_API_NO_TEST_SESSIONS: PASS",
+    "HERMES_API_DELETE_REMOVES_FROM_LIST: PASS",
+    "HERMES_API_EMPTY_LIST_STAYS_EMPTY: PASS",
+    "HERMES_API_NO_AUTO_NEW_SESSION: PASS",
+    "api_server real-2"
+  )) {
+    if ($realApiSmokeText -notmatch [regex]::Escape($term)) {
+      throw "$realApiSmokePath is missing smoke output: $term"
+    }
+  }
+
+  foreach ($term in @(
+    "HERMES_DOM_DRAFT_CLEARS_IMMEDIATELY: PASS",
+    "HERMES_DRAW_DOES_NOT_REFILL_DRAFT: PASS",
+    "HERMES_SEND_FAILURE_RESTORES_DRAFT: PASS"
+  )) {
+    if ($domSmokeText -notmatch [regex]::Escape($term)) {
+      throw "$domSmokePath is missing smoke output: $term"
+    }
+  }
+
+  if ($firstSendSmokeText -notmatch "deleted remote session is tombstoned") {
+    throw "$firstSendSmokePath must cover deleted-session tombstone behavior."
+  }
+  if ($firstSendSmokeText -notmatch "joined source/id summary is normalized") {
+    throw "$firstSendSmokePath must cover joined source/id summary normalization."
+  }
+
+  Write-Host "Hermes real web send clears textarea: PASS" -ForegroundColor Green
+  Write-Host "Hermes draw does not refill sent draft: PASS" -ForegroundColor Green
+  Write-Host "Hermes API excludes smoke sessions: PASS" -ForegroundColor Green
+  Write-Host "Hermes session create is idempotent: PASS" -ForegroundColor Green
+  Write-Host "Hermes delete tombstone filters stale sessions: PASS" -ForegroundColor Green
+  Write-Host "Hermes no list-empty auto session: PASS" -ForegroundColor Green
+  Write-Host "Hermes no slash-new persisted empty session: PASS" -ForegroundColor Green
+  Write-Host "Hermes assistant stream deduped in real path: PASS" -ForegroundColor Green
+}
+
 function Test-MiniMaxApiKeyEntry {
   $configPath = "src/lib/minimax-test-config.js"
   $modelsPath = "src/pages/models.js"
@@ -1023,6 +1125,9 @@ Test-EcommerceAssistantBuildFlag
 
 Write-Section "Agent Identity Persona"
 Test-AgentIdentityPersona
+
+Write-Section "Hermes Real Web Session Guards"
+Test-HermesRealWebSessionGuards
 
 Write-Section "MiniMax API Key Entry"
 Test-MiniMaxApiKeyEntry

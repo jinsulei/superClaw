@@ -32,9 +32,12 @@ const STORAGE_ACTIVE_PREFIX = 'hermes_chat_active_v2_'
 const STORAGE_PINNED_PREFIX = 'hermes_chat_pinned_'
 const STORAGE_COLLAPSED_PREFIX = 'hermes_chat_collapsed_groups_'
 const STORAGE_MSGS_PREFIX = 'hermes_chat_msgs_v2_'
+const STORAGE_DELETED_PREFIX = 'hermes_chat_deleted_sessions_v1_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
 const HISTORY_MAX_MESSAGES = 18
 const HISTORY_MAX_CHARS = 14000
+const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
+const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 const HERMES_REPLY_STYLE_INSTRUCTION = [
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
   '\u4fdd\u6301\u81ea\u7136\u3001\u514b\u5236\u3001\u53ef\u8bfb\uff1a\u4e0d\u8981\u6bcf\u53e5\u90fd\u52a0\u8868\u60c5\uff0c\u4e0d\u8981\u5806\u780c\u56fe\u6807\uff0c\u4e0d\u8981\u5f71\u54cd\u4e13\u4e1a\u6027\u548c\u4fe1\u606f\u51c6\u786e\u6027\u3002',
@@ -321,17 +324,46 @@ function shouldPreferFinalOutput(current, finalOutput) {
   return false
 }
 
+function normalizeJoinedSourceSessionFields(raw = {}) {
+  const session = raw || {}
+  const out = { ...session }
+  const id = String(out.id || out.session_id || '').trim()
+  const source = String(out.source || '').trim()
+  const sourceIdMatch = /^(api_server|local|cron|web|desktop|cli)\s+(.+)$/i
+  const sourceMatch = source.match(sourceIdMatch)
+  const idMatch = id.match(sourceIdMatch)
+
+  if (sourceMatch && (!id || id === source || idMatch)) {
+    out.source = sourceMatch[1]
+    out.id = sourceMatch[2].trim()
+  } else if (idMatch) {
+    out.source = out.source || idMatch[1]
+    out.id = idMatch[2].trim()
+  }
+  return out
+}
+
+function titleFromSummaryFields(s) {
+  const title = String(s.title || '').trim()
+  const preview = String(s.preview || '').trim()
+  if (title && !isPlaceholderSessionTitle(title)) return title
+  if (preview && !isPlaceholderSessionTitle(preview)) return preview
+  return title
+}
+
 /** Convert a backend session summary into the store's canonical shape. */
-function mapSessionSummary(s) {
+function mapSessionSummary(raw) {
+  const s = normalizeJoinedSourceSessionFields(raw)
   const localCached = s || {}
   return {
     id: s.id || s.session_id || '',
-    title: s.title || '',
+    title: titleFromSummaryFields(s),
     source: s.source || '',
     model: s.model || '',
     messageCount: s.message_count || 0,
     createdAt: parseEpochMs(s.created_at || s.started_at),
     updatedAt: parseEpochMs(s.updated_at || s.last_active || s.ended_at || s.created_at || s.started_at),
+    preview: s.preview || '',
     endedAt: s.ended_at != null ? parseEpochMs(s.ended_at) : null,
     lastActiveAt: s.last_active != null ? parseEpochMs(s.last_active) : undefined,
     // Usage analytics — surfaced from `hermes sessions export` JSONL
@@ -357,6 +389,21 @@ function compactSessionText(value) {
     .slice(0, 80)
 }
 
+function isPlaceholderSessionTitle(title) {
+  const value = String(title || '').trim().toLowerCase()
+  if (!value) return true
+  return value === 'new chat'
+    || value === 'untitled'
+    || value === '\u65b0\u4f1a\u8bdd'
+    || value === '\u65b0\u5bf9\u8bdd'
+}
+
+function deriveSessionTitleFromText(text) {
+  const raw = String(text || '').replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!raw) return ''
+  return raw.slice(0, 40) + (raw.length > 40 ? '...' : '')
+}
+
 function firstUserText(session) {
   const msg = (session?.messages || []).find(m => m?.role === 'user' && String(m.content || '').trim())
   return compactSessionText(msg?.content)
@@ -379,13 +426,16 @@ function mergeLocalSessionIntoBackend(local, backend) {
   const backendIds = new Set((backend.messages || []).map(m => m.id).filter(Boolean))
   const moved = (local.messages || []).filter(m => !m.id || !backendIds.has(m.id))
   if (moved.length) backend.messages = [...moved, ...(backend.messages || [])]
-  backend.title = backend.title || local.title
+  if (isPlaceholderSessionTitle(backend.title) && !isPlaceholderSessionTitle(local.title)) backend.title = local.title
   backend.workFileName = backend.workFileName || local.workFileName
   backend.workFilePath = backend.workFilePath || local.workFilePath
   backend.workFileDir = backend.workFileDir || local.workFileDir
   backend.workFileDisplayPath = backend.workFileDisplayPath || local.workFileDisplayPath
   backend.updatedAt = Math.max(backend.updatedAt || 0, local.updatedAt || 0, Date.now())
   backend.lastActiveAt = Math.max(backend.lastActiveAt || 0, local.lastActiveAt || 0, Date.now())
+  backend.clientRequestId = backend.clientRequestId || local.clientRequestId || ''
+  backend.optimistic = false
+  backend.pendingBackendIndexUntil = 0
 }
 
 function messageMergeKey(message) {
@@ -450,6 +500,7 @@ function createStore() {
     loadingMessages: false,
     streaming: false,
     runningSessionId: null,
+    runningClientRequestId: null,
     pendingAssistantId: null,  // id of the currently streaming assistant message
     error: null,
     profiles: [],
@@ -463,6 +514,10 @@ function createStore() {
     pinned: new Set(loadJson(STORAGE_PINNED_PREFIX + profileKey(safeGet(STORAGE_PROFILE) || 'default')) || []),
     collapsed: new Set(loadJson(STORAGE_COLLAPSED_PREFIX + profileKey(safeGet(STORAGE_PROFILE) || 'default')) || []),
   }
+
+  const inFlightSendByRequestId = new Map()
+  const userMessageByRequestId = new Map()
+  const assistantMessageByRequestId = new Map()
 
   // --- subscription ---
   //
@@ -529,15 +584,107 @@ function createStore() {
     flushNotify()
   }
 
+  function shouldKeepPendingSession(session, freshIds) {
+    if (!session || freshIds.has(session.id)) return false
+    if (!session.clientRequestId) return false
+    if (!Array.isArray(session.messages) || !session.messages.length) return false
+    const holdUntil = Number(session.pendingBackendIndexUntil || 0)
+    return state.streaming
+      || state.runningSessionId === session.id
+      || state.activeSessionId === session.id
+      || holdUntil > Date.now()
+  }
+
+  function needsImmediateSession(meta = {}) {
+    return !!(
+      meta.forceCreate
+      || meta.title
+      || meta.workFileName
+      || meta.workFilePath
+      || meta.workFileDir
+      || meta.workFileDisplayPath
+    )
+  }
+
+  function touchPendingSession(session, clientRequestId) {
+    if (!session || !clientRequestId) return
+    session.clientRequestId = session.clientRequestId || clientRequestId
+    session.optimistic = true
+    session.pendingBackendIndexUntil = Math.max(
+      Number(session.pendingBackendIndexUntil || 0),
+      Date.now() + FIRST_SEND_SESSION_HOLD_MS,
+    )
+  }
+
+  function findAssistantMessage(session, clientRequestId) {
+    if (!session) return null
+    const mappedId = clientRequestId ? assistantMessageByRequestId.get(clientRequestId) : ''
+    if (mappedId) {
+      const mapped = session.messages.find(m => m.id === mappedId)
+      if (mapped) return mapped
+    }
+    if (state.pendingAssistantId) {
+      const pending = session.messages.find(m => m.id === state.pendingAssistantId)
+      if (pending) return pending
+    }
+    if (clientRequestId) {
+      return session.messages.find(m => m.role === 'assistant' && m.clientRequestId === clientRequestId) || null
+    }
+    return null
+  }
+
+  function ensureAssistantMessage(session, clientRequestId) {
+    let msg = findAssistantMessage(session, clientRequestId)
+    if (!msg) {
+      msg = {
+        id: clientRequestId ? `assistant-${clientRequestId}` : uid(),
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        isStreaming: true,
+      }
+      if (clientRequestId) msg.clientRequestId = clientRequestId
+      session.messages.push(msg)
+    }
+    state.pendingAssistantId = msg.id
+    if (clientRequestId) assistantMessageByRequestId.set(clientRequestId, msg.id)
+    return msg
+  }
+
   // --- persistence ---
   const sessionsKey = () => STORAGE_SESSIONS_PREFIX + profileKey(state.activeProfile)
   const activeKey = () => STORAGE_ACTIVE_PREFIX + profileKey(state.activeProfile)
   const pinnedKey = () => STORAGE_PINNED_PREFIX + profileKey(state.activeProfile)
   const collapsedKey = () => STORAGE_COLLAPSED_PREFIX + profileKey(state.activeProfile)
   const messagesKey = (sid) => STORAGE_MSGS_PREFIX + profileKey(state.activeProfile) + '_' + sid
+  const deletedKey = () => STORAGE_DELETED_PREFIX + profileKey(state.activeProfile)
 
   function persistSessions() {
     saveJson(sessionsKey(), state.sessions.map(s => ({ ...s, messages: [] })))
+  }
+
+  function loadDeletedSessionMap() {
+    const now = Date.now()
+    const raw = loadJson(deletedKey()) || {}
+    const out = {}
+    for (const [id, ts] of Object.entries(raw)) {
+      const when = Number(ts || 0)
+      if (id && when && now - when <= DELETED_SESSION_TTL_MS) out[id] = when
+    }
+    if (Object.keys(out).length !== Object.keys(raw).length) saveJson(deletedKey(), out)
+    return out
+  }
+
+  function isDeletedSessionId(sessionId) {
+    if (!sessionId) return false
+    return Object.prototype.hasOwnProperty.call(loadDeletedSessionMap(), sessionId)
+  }
+
+  function rememberDeletedSession(sessionId) {
+    if (!sessionId) return
+    const deleted = loadDeletedSessionMap()
+    deleted[sessionId] = Date.now()
+    saveJson(deletedKey(), deleted)
   }
   function persistActiveMessages() {
     persistSessionMessages(state.activeSessionId)
@@ -639,36 +786,64 @@ function createStore() {
       // Use the lightweight summary endpoint for sidebar hydration; full
       // message bodies still load lazily via `hermesSessionDetail`.
       const list = await api.hermesSessionsSummaryList(null, 80, state.activeProfile)
-      const fresh = (Array.isArray(list) ? list : []).map(mapSessionSummary)
+      const fresh = (Array.isArray(list) ? list : [])
+        .map(mapSessionSummary)
+        .filter(s => !isDeletedSessionId(s.id))
       const freshIds = new Set(fresh.map(s => s.id))
 
-      // Preserve cached messages for sessions still present on the server.
-      const prevMsgs = new Map(state.sessions.map(s => [s.id, s.messages]))
+      // Preserve local metadata for sessions still present on the server. The
+      // Hermes summary export may lag or omit titles, while the UI already
+      // generated a stable local title from the first user message.
+      const prevSessions = new Map(state.sessions.map(s => [s.id, s]))
       for (const s of fresh) {
-        const prev = prevMsgs.get(s.id)
-        if (prev?.length) s.messages = prev
+        const prev = prevSessions.get(s.id)
+        if (prev?.messages?.length) s.messages = prev.messages
+        if (prev?.title && !isPlaceholderSessionTitle(prev.title) && isPlaceholderSessionTitle(s.title)) {
+          s.title = prev.title
+        }
+        if (!s.workFileName && prev?.workFileName) s.workFileName = prev.workFileName
+        if (!s.workFilePath && prev?.workFilePath) s.workFilePath = prev.workFilePath
+        if (!s.workFileDir && prev?.workFileDir) s.workFileDir = prev.workFileDir
+        if (!s.workFileDisplayPath && prev?.workFileDisplayPath) s.workFileDisplayPath = prev.workFileDisplayPath
+        if (!s.lastActiveAt && prev?.lastActiveAt) s.lastActiveAt = prev.lastActiveAt
+        if (prev?.clientRequestId) s.clientRequestId = prev.clientRequestId
+        s.optimistic = false
+        s.pendingBackendIndexUntil = 0
       }
 
       // Keep local-only sessions that the backend still does not know about.
       // Hermes may create the real backend session with a different id after
       // the first run; merge the temporary local row into the matching backend
       // row so the sidebar does not show duplicate conversations.
-      const localOnly = []
-      for (const local of state.sessions.filter(s => s.source === '__local__' && !freshIds.has(s.id))) {
-        const match = fresh.find(s => sessionLooksLikeBackendMatch(local, s, state.activeSessionId, state.runningSessionId))
+      const retained = []
+      for (const local of state.sessions.filter(s => !freshIds.has(s.id))) {
+        const isLocal = local.source === '__local__'
+        const match = isLocal
+          ? fresh.find(s => sessionLooksLikeBackendMatch(local, s, state.activeSessionId, state.runningSessionId))
+          : null
         if (match) {
+          const previousId = local.id
           mergeLocalSessionIntoBackend(local, match)
-          if (state.activeSessionId === local.id) {
+          if (state.activeSessionId === previousId) {
             state.activeSessionId = match.id
             safeSet(activeKey(), match.id)
           }
-          if (state.runningSessionId === local.id) state.runningSessionId = match.id
-          safeRemove(messagesKey(local.id))
+          if (state.runningSessionId === previousId) state.runningSessionId = match.id
+          safeRemove(messagesKey(previousId))
         } else {
-          localOnly.push(local)
+          if (isLocal || shouldKeepPendingSession(local, freshIds)) {
+            retained.push(local)
+          }
         }
       }
-      state.sessions = [...localOnly, ...fresh]
+      const retainedIds = new Set()
+      const kept = []
+      for (const session of retained) {
+        if (!session?.id || retainedIds.has(session.id) || freshIds.has(session.id)) continue
+        retainedIds.add(session.id)
+        kept.push(session)
+      }
+      state.sessions = [...kept, ...fresh]
       persistSessions()
 
       if (!state.activeSessionId || !state.sessions.some(s => s.id === state.activeSessionId)) {
@@ -764,7 +939,11 @@ function createStore() {
         // seen so history cannot disappear after a post-run refresh.
         target.messages = mergeHermesMessages(local, mapped)
         if (target.source === '__local__') target.source = detail.source || 'api_server'
-        if (detail.title && !target.workFileName) target.title = detail.title
+        if (detail.title && !target.workFileName && !isPlaceholderSessionTitle(detail.title)) {
+          target.title = detail.title
+        } else {
+          updateSessionTitleFromFirstUser(target)
+        }
         persistActiveMessages()
       }
       forceRemoteRefreshIds.delete(sid)
@@ -774,16 +953,20 @@ function createStore() {
   }
 
   function createLocalSession(meta = {}) {
+    const now = Date.now()
     const s = {
       id: uid(),
       title: meta.title || meta.workFileName || '',
       source: '__local__',
       model: '',
       messageCount: 0,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
       endedAt: null,
       lastActiveAt: undefined,
+      optimistic: Boolean(meta.optimistic || meta.clientRequestId),
+      clientRequestId: meta.clientRequestId || '',
+      pendingBackendIndexUntil: meta.clientRequestId ? now + FIRST_SEND_SESSION_HOLD_MS : 0,
       workFileName: meta.workFileName || '',
       workFilePath: meta.workFilePath || '',
       workFileDir: meta.workFileDir || '',
@@ -810,18 +993,30 @@ function createStore() {
       const existingMessageIds = new Set((existing.messages || []).map(m => m.id).filter(Boolean))
       const movedMessages = (current.messages || []).filter(m => !m.id || !existingMessageIds.has(m.id))
       existing.messages = [...(existing.messages || []), ...movedMessages]
-      existing.title = existing.title || current.title
+      if (isPlaceholderSessionTitle(existing.title) && !isPlaceholderSessionTitle(current.title)) existing.title = current.title
       existing.workFileName = existing.workFileName || current.workFileName
       existing.workFilePath = existing.workFilePath || current.workFilePath
       existing.workFileDir = existing.workFileDir || current.workFileDir
       existing.workFileDisplayPath = existing.workFileDisplayPath || current.workFileDisplayPath
       existing.updatedAt = Math.max(existing.updatedAt || 0, current.updatedAt || 0, Date.now())
       existing.lastActiveAt = Math.max(existing.lastActiveAt || 0, current.lastActiveAt || 0, Date.now())
+      existing.optimistic = current.optimistic || existing.optimistic || false
+      existing.clientRequestId = existing.clientRequestId || current.clientRequestId || ''
+      existing.pendingBackendIndexUntil = Math.max(
+        Number(existing.pendingBackendIndexUntil || 0),
+        Number(current.pendingBackendIndexUntil || 0),
+        Date.now() + FIRST_SEND_SESSION_HOLD_MS,
+      )
       state.sessions = state.sessions.filter(s => s !== current)
       target = existing
     } else {
       current.id = nextId
       current.source = current.source === '__local__' ? 'api_server' : (current.source || 'api_server')
+      current.optimistic = true
+      current.pendingBackendIndexUntil = Math.max(
+        Number(current.pendingBackendIndexUntil || 0),
+        Date.now() + FIRST_SEND_SESSION_HOLD_MS,
+      )
       target = current
     }
 
@@ -864,13 +1059,20 @@ function createStore() {
 
   function newChat(meta = {}) {
     if (state.streaming) return
-    createLocalSession(meta)
+    if (needsImmediateSession(meta)) {
+      createLocalSession(meta)
+      return
+    }
+    state.activeSessionId = null
+    safeRemove(activeKey())
+    notify()
   }
 
   async function deleteSession(sessionId) {
     if (state.streaming && sessionId === state.runningSessionId) {
       throw new Error('RUNNING_SESSION')
     }
+    rememberDeletedSession(sessionId)
     const target = state.sessions.find(s => s.id === sessionId)
     if (target && target.source !== '__local__') {
       await api.hermesSessionDelete(sessionId)
@@ -913,6 +1115,7 @@ function createStore() {
         skipped.push(sid)
         continue
       }
+      rememberDeletedSession(sid)
       const target = state.sessions.find(s => s.id === sid)
       if (!target) {
         skipped.push(sid)
@@ -1006,12 +1209,7 @@ function createStore() {
       if (!delta) return
       const s = runSession()
       if (!s) return
-      let msg = s.messages.find(m => m.id === state.pendingAssistantId)
-      if (!msg) {
-        msg = { id: uid(), role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true }
-        s.messages.push(msg)
-        state.pendingAssistantId = msg.id
-      }
+      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
       msg.content += delta
       notify()
     })
@@ -1086,11 +1284,7 @@ function createStore() {
       }
 
       // Finalize the streaming assistant message.
-      let msg = s.messages.find(m => m.id === state.pendingAssistantId)
-      if (!msg && runTools.length) {
-        msg = { id: uid(), role: 'assistant', content: '', timestamp: Date.now() }
-        s.messages.push(msg)
-      }
+      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
       if (msg) {
         delete msg.isStreaming
         if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
@@ -1134,12 +1328,7 @@ function createStore() {
     if (!delta) return
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
-    let msg = s.messages.find(m => m.id === state.pendingAssistantId)
-    if (!msg) {
-      msg = { id: uid(), role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true }
-      s.messages.push(msg)
-      state.pendingAssistantId = msg.id
-    }
+    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
     msg.content += delta
     notify()
   }
@@ -1211,13 +1400,8 @@ function createStore() {
         })
       }
     }
-    let msg = s.messages.find(m => m.id === state.pendingAssistantId)
     const finalOutput = typeof output === 'string' ? output : ''
-    if (!msg && (finalOutput.trim() || runTools.length)) {
-      msg = { id: uid(), role: 'assistant', content: finalOutput, timestamp: Date.now(), isStreaming: true }
-      s.messages.push(msg)
-      state.pendingAssistantId = msg.id
-    }
+    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
     if (msg) {
       delete msg.isStreaming
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
@@ -1236,12 +1420,7 @@ function createStore() {
     if (!finalOutput.trim()) return
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
-    let msg = s.messages.find(m => m.id === state.pendingAssistantId)
-    if (!msg) {
-      msg = { id: uid(), role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true }
-      s.messages.push(msg)
-      state.pendingAssistantId = msg.id
-    }
+    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
     msg.content = finalOutput
     notify()
   }
@@ -1284,6 +1463,7 @@ function createStore() {
     if (completedSessionId) forceRemoteRefreshIds.add(completedSessionId)
     state.streaming = false
     state.runningSessionId = null
+    state.runningClientRequestId = null
     state.pendingAssistantId = null
     state.liveTools = []
     streamAbortController = null
@@ -1360,7 +1540,7 @@ function createStore() {
       s.title = s.workFileName
       return
     }
-    if (s.title) return
+    if (s.title && !isPlaceholderSessionTitle(s.title)) return
     const firstUser = s.messages.find(m => m.role === 'user')
     if (firstUser?.content) {
       const raw = firstUser.content.replace(/\n+/g, ' ').trim()
@@ -1439,22 +1619,40 @@ function createStore() {
     const runText = (opts.modelContent || text).trim()
     const displayText = (opts.displayContent || text).trim()
     if ((!runText && !attachments.length) || state.streaming) return
+    const clientRequestId = String(opts.clientRequestId || uid())
+    if (inFlightSendByRequestId.has(clientRequestId)) {
+      return inFlightSendByRequestId.get(clientRequestId)
+    }
     let s = activeSession()
     if (!s) {
-      s = createLocalSession()
+      s = createLocalSession({
+        title: deriveSessionTitleFromText(displayText || runText),
+        optimistic: true,
+        clientRequestId,
+      })
+    } else {
+      touchPendingSession(s, clientRequestId)
+      if (isPlaceholderSessionTitle(s.title)) {
+        s.title = deriveSessionTitleFromText(displayText || runText)
+      }
     }
 
     const userMessage = {
-      id: uid(),
+      id: `user-${clientRequestId}`,
       role: 'user',
       content: displayText || text,
       timestamp: Date.now(),
+      clientRequestId,
     }
     if (runText !== userMessage.content) userMessage.modelContent = runText
     if (attachments.length) userMessage.attachments = attachments
 
     // Append user-visible message. modelContent is used only for future context.
-    s.messages.push(userMessage)
+    if (!s.messages.some(m => m.id === userMessage.id)) {
+      s.messages.push(userMessage)
+      userMessageByRequestId.set(clientRequestId, userMessage.id)
+    }
+    const assistantMessage = ensureAssistantMessage(s, clientRequestId)
     updateSessionTitleFromFirstUser(s)
     s.updatedAt = Date.now()
     s.lastActiveAt = Date.now()
@@ -1463,10 +1661,12 @@ function createStore() {
 
     state.streaming = true
     state.runningSessionId = s.id
+    state.runningClientRequestId = clientRequestId
     state.liveTools = []
-    state.pendingAssistantId = null
+    state.pendingAssistantId = assistantMessage.id
     notify()
 
+    const runPromise = Promise.resolve().then(async () => {
     try {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? opts.conversationHistory
@@ -1490,7 +1690,11 @@ function createStore() {
       }
     } catch (e) {
       if (e?.name === 'AbortError') return
-      s.messages.push({
+      userMessage.status = 'error'
+      assistantMessage.error = e?.message || String(e)
+      delete assistantMessage.isStreaming
+      if (!assistantMessage.content.trim()) assistantMessage.content = `Agent run failed: ${e?.message || e}`
+      if (!assistantMessage.content.trim()) s.messages.push({
         id: uid(),
         role: 'system',
         content: `⚠️ ${e?.message || e}`,
@@ -1498,7 +1702,13 @@ function createStore() {
       })
       persistSessionMessages(s.id)
       cleanupAfterRun()
+      throw e
+    } finally {
+      inFlightSendByRequestId.delete(clientRequestId)
     }
+    })
+    inFlightSendByRequestId.set(clientRequestId, runPromise)
+    return runPromise
   }
 
   /** Utility: push an inline assistant message (used by /slash local replies). */
