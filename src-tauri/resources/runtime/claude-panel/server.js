@@ -931,7 +931,7 @@ async function handleOpenAiRelayRun(req, res, context) {
     const text = extractRelayText(data);
     if (text) {
       textSeen = true;
-      writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+      writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
     }
   } else {
     const reader = upstreamResp.body?.getReader?.();
@@ -954,7 +954,7 @@ async function handleOpenAiRelayRun(req, res, context) {
             const text = extractRelayText(chunk);
             if (text) {
               textSeen = true;
-              writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+              writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
             }
           } catch {}
         }
@@ -2508,10 +2508,71 @@ function looksLikeProtectedSourceOutput(text) {
     || /(?:src-tauri|runtime[\\/]+claude-panel|scripts[\\/]+dev-api|openclaw\.json|hermes-source|私有源码|内核源码)/i.test(value);
 }
 
-function sanitizeModelOutput(text) {
+function userExplicitlyRequestsEnglish(text) {
+  const value = String(text || "");
+  return /\b(?:answer|reply|respond)\s+in\s+English\b/i.test(value)
+    || /\bEnglish\s+only\b/i.test(value)
+    || /用英文(?:回答|回复|说明|输出)?|英文(?:回答|回复|说明|输出)/.test(value);
+}
+
+function userRequestsExactLiteral(text) {
+  const value = String(text || "").trim();
+  return /^(?:only\s+reply|reply\s+only|just\s+reply|respond\s+only)\s+["'`]?[\w.-]{1,40}["'`]?[.!?]?\s*$/i.test(value)
+    || /^(?:只|仅|只需|仅需)(?:回复|输出|回答)[：:\s"'`]*[\w.-]{1,40}["'`]?[。.!?]?\s*$/.test(value);
+}
+
+function countChineseChars(text) {
+  return (String(text || "").match(/[\u3400-\u9fff]/g) || []).length;
+}
+
+function countLatinWords(text) {
+  return (String(text || "").match(/\b[A-Za-z][A-Za-z'-]{2,}\b/g) || []).length;
+}
+
+function containsReasoningLeakText(text) {
+  return /\bThe user is asking me\b|\bThe user is asking\b|\bLet me think\b|\bI need to think\b|\bHUGE red flag\b|\bred flag\b|\bsocial engineering\b|\bscam attempt\b|\binternal reasoning\b|\bscratchpad\b|\bpolicy analysis\b|^\s*analysis\s*:|^\s*\[reasoning\]/im.test(String(text || ""));
+}
+
+function isMostlyEnglishVisibleText(text) {
+  const value = String(text || "");
+  const latinWords = countLatinWords(value);
+  if (latinWords < 18) return false;
+  if (/```|^\s*(?:npm|node|git|powershell|curl|GET|POST|HTTP)\b/im.test(value)) return false;
+  return countChineseChars(value) < Math.max(4, Math.floor(latinWords / 3));
+}
+
+function isClaudeIdentityQuestion(text) {
+  return /(你是谁|你是什么|说明你的身份|who are you|what are you)/i.test(String(text || ""));
+}
+
+function isPaymentCodeRequest(prompt, reply) {
+  return /(付款码|支付码|收款码|payment\s*code|qr\s*code|screenshot\s*payment)/i.test(`${prompt || ""}\n${reply || ""}`);
+}
+
+function sanitizeVisibleReplyLanguage(text, prompt = "") {
+  const value = String(text || "");
+  if (!value) return value;
+  if (userExplicitlyRequestsEnglish(prompt) || userRequestsExactLiteral(prompt)) return value;
+  if (isPaymentCodeRequest(prompt, value)) {
+    return "可以帮你打开外卖平台、浏览店铺、选择商品、填写备注和配送信息，并停在支付确认前。但我不能截图、展示、保存或转发你的付款码，也不能替你完成最终支付。到支付环节需要你本人确认付款。";
+  }
+  if (isClaudeIdentityQuestion(prompt) && (isMostlyEnglishVisibleText(value) || !countChineseChars(value))) {
+    return "我是 SuperClaw UI 中通过 Claude Panel 调用的原生 Claude Code CLI，用于代码、项目分析和开发协作。";
+  }
+  if (containsReasoningLeakText(value)) {
+    return "我会用中文直接给结论：内部推理和风险分析过程已隐藏。请以当前任务的最终结论、必要步骤和安全边界为准；涉及高风险操作时，我会停在确认前等待你本人决定。";
+  }
+  if (isMostlyEnglishVisibleText(value)) {
+    return "我会用中文继续说明：上游返回了较长英文内容，已避免原样展示。请重新发送一次，或明确让我把该英文结果整理成中文结论。";
+  }
+  return value;
+}
+
+function sanitizeModelOutput(text, options = {}) {
   const redacted = redact(text);
   const withoutPseudoToolCalls = stripUnsupportedToolCallText(redacted);
-  return looksLikeProtectedSourceOutput(withoutPseudoToolCalls) ? SOURCE_GUARD_BLOCK_MESSAGE : withoutPseudoToolCalls;
+  const safeText = looksLikeProtectedSourceOutput(withoutPseudoToolCalls) ? SOURCE_GUARD_BLOCK_MESSAGE : withoutPseudoToolCalls;
+  return sanitizeVisibleReplyLanguage(safeText, options.prompt || "");
 }
 
 function resolveCwd(input) {
@@ -3156,7 +3217,7 @@ async function handleRun(req, res) {
     try {
       parsed = JSON.parse(line);
     } catch {
-      writeEvent(res, "log", { text: sanitizeModelOutput(line) });
+      writeEvent(res, "log", { text: sanitizeModelOutput(line, { prompt }) });
       return;
     }
 
@@ -3173,14 +3234,14 @@ async function handleRun(req, res) {
       const text = extractText(parsed.message);
       if (text) {
         assistantTextSeen = true;
-        writeEvent(res, "text", { text: sanitizeModelOutput(text) });
+        writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt }) });
       }
       return;
     }
 
     if (parsed.type === "result") {
       if (!assistantTextSeen && parsed.result) {
-        writeEvent(res, "text", { text: sanitizeModelOutput(parsed.result) });
+        writeEvent(res, "text", { text: sanitizeModelOutput(parsed.result, { prompt }) });
       }
       writeEvent(res, "done", {
         subtype: parsed.subtype,
@@ -3191,7 +3252,7 @@ async function handleRun(req, res) {
     }
 
     if (parsed.type === "error") {
-      writeEvent(res, "error", { text: sanitizeModelOutput(parsed.error || "Claude 执行失败") });
+      writeEvent(res, "error", { text: sanitizeModelOutput(parsed.error || "Claude 执行失败", { prompt }) });
     }
   }
 
@@ -3209,17 +3270,17 @@ async function handleRun(req, res) {
     const lines = stderrBuffer.split(/\r?\n/);
     stderrBuffer = lines.pop() || "";
     for (const line of lines) {
-      if (line.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(line.trim()) });
+      if (line.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(line.trim(), { prompt }) });
     }
   });
 
   child.on("error", (error) => {
-    if (!closed) writeEvent(res, "error", { text: error.message });
+    if (!closed) writeEvent(res, "error", { text: sanitizeModelOutput(error.message, { prompt }) });
   });
 
   child.on("close", (code) => {
     if (stdoutBuffer.trim()) handleJsonLine(stdoutBuffer.trim());
-    if (stderrBuffer.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(stderrBuffer.trim()) });
+    if (stderrBuffer.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(stderrBuffer.trim(), { prompt }) });
     if (!closed) {
       writeEvent(res, "exit", { code });
       res.end();

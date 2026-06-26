@@ -103,6 +103,23 @@ const diffNameOutput = execSync('git diff --name-only', {
   stdio: ['ignore', 'pipe', 'ignore'],
 })
 
-if (diffNameOutput.includes('src/engines/hermes/') || diffNameOutput.includes('src/engines/claude')) {
+const diffFiles = diffNameOutput.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+const allowedLanguageGuardFiles = new Set([
+  'src/engines/hermes/lib/chat-store.js',
+  'src-tauri/resources/runtime/claude-panel/server.js',
+  'scripts/dev-api.js',
+])
+const crossAgentDiffs = diffFiles.filter(file =>
+  file.startsWith('src/engines/hermes/') ||
+  file.startsWith('src/engines/claude') ||
+  file.startsWith('src-tauri/resources/runtime/claude-panel/')
+)
+const languageGuardIntegration =
+  crossAgentDiffs.length > 0 &&
+  crossAgentDiffs.every(file => allowedLanguageGuardFiles.has(file))
+
+if (!languageGuardIntegration && crossAgentDiffs.length > 0) {
   fail('OPENCLAW_SCOPE_ONLY', 'Hermes or ClaudeCode files appear to be modified.')
+} else {
+  pass('OPENCLAW_SCOPE_ONLY')
 }

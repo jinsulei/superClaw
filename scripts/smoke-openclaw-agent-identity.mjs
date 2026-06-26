@@ -22,13 +22,14 @@ includesAll(chat, [
   'OPENCLAW_IDENTITY_CONTEXT_START',
   'OPENCLAW_IDENTITY_CONTEXT_END',
   'OPENCLAW_IDENTITY_PRELUDE',
-  'You are OpenClaw inside SuperClaw.',
-  'execution agent',
-  'browser automation',
-  'desktop control',
-  'OCR-assisted',
-  'Do not claim to be Hermes or Claude Code.',
-  'Default to Simplified Chinese',
+  '你是 SuperClaw 里的 OpenClaw。',
+  '执行 Agent',
+  '浏览器自动化',
+  '桌面控制',
+  'OCR 辅助操作',
+  '不要自称 Hermes 或 Claude Code。',
+  'SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE',
+  'sanitizeOpenClawVisibleReply',
   'MiniMax-M3',
 ], 'identity prelude')
 
@@ -82,7 +83,7 @@ function withOpenClawIdentityPreludeForSmoke(prompt) {
   if (!body || body.includes('[OPENCLAW_IDENTITY_CONTEXT]')) return body
   return [
     '[OPENCLAW_IDENTITY_CONTEXT]',
-    'You are OpenClaw inside SuperClaw.',
+    '你是 SuperClaw 里的 OpenClaw。',
     '[/OPENCLAW_IDENTITY_CONTEXT]',
     '',
     'User:',

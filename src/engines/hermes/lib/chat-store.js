@@ -23,6 +23,7 @@
  */
 import { api, isTauriRuntime } from '../../../lib/tauri-api.js'
 import { selectStableActiveSession } from '../../../lib/agent-session-persistence.js'
+import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 
 // ---------- constants ----------
 
@@ -39,6 +40,7 @@ const HISTORY_MAX_CHARS = 14000
 const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
 const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 const HERMES_REPLY_STYLE_INSTRUCTION = [
+  SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
   '\u4fdd\u6301\u81ea\u7136\u3001\u514b\u5236\u3001\u53ef\u8bfb\uff1a\u4e0d\u8981\u6bcf\u53e5\u90fd\u52a0\u8868\u60c5\uff0c\u4e0d\u8981\u5806\u780c\u56fe\u6807\uff0c\u4e0d\u8981\u5f71\u54cd\u4e13\u4e1a\u6027\u548c\u4fe1\u606f\u51c6\u786e\u6027\u3002',
 ].join('\n')
@@ -518,6 +520,7 @@ function createStore() {
   const inFlightSendByRequestId = new Map()
   const userMessageByRequestId = new Map()
   const assistantMessageByRequestId = new Map()
+  const visibleUserPromptByRequestId = new Map()
 
   // --- subscription ---
   //
@@ -576,6 +579,15 @@ function createStore() {
       output ? `我读到的结果是：${output}` : '这次工具没有返回可展开的正文结果，我会继续按当前问题补充判断，而不是停在“我看看”。',
       '如果这是排查任务，我会继续给出原因、影响和下一步处理；如果是执行任务，我会继续完成后汇报结果。',
     ].join('\n')
+  }
+
+  function currentVisibleUserPrompt() {
+    const requestId = state.runningClientRequestId
+    return requestId ? (visibleUserPromptByRequestId.get(requestId) || '') : ''
+  }
+
+  function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
+    return sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
   }
 
   /** Force an immediate, unbatched notification (used by deterministic tests). */
@@ -1211,7 +1223,7 @@ function createStore() {
       const s = runSession()
       if (!s) return
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-      msg.content += delta
+      msg.content = sanitizeHermesVisibleReply(msg.content + delta)
       notify()
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
@@ -1290,6 +1302,7 @@ function createStore() {
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
       if (msg) {
         delete msg.isStreaming
+        msg.content = sanitizeHermesVisibleReply(msg.content)
         if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
       }
 
@@ -1311,7 +1324,7 @@ function createStore() {
         s.messages.push({
           id: uid(),
           role: 'system',
-          content: `⚠️ Agent run failed: ${err}`,
+          content: `Agent 运行失败：${err}`,
           timestamp: Date.now(),
         })
         persistSessionMessages(s.id)
@@ -1333,7 +1346,7 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-    msg.content += delta
+    msg.content = sanitizeHermesVisibleReply(msg.content + delta)
     notify()
   }
 
@@ -1409,6 +1422,7 @@ function createStore() {
     if (msg) {
       delete msg.isStreaming
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
+      msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
     }
     s.updatedAt = Date.now()
@@ -1425,7 +1439,7 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-    msg.content = finalOutput
+    msg.content = sanitizeHermesVisibleReply(finalOutput)
     notify()
   }
 
@@ -1435,7 +1449,7 @@ function createStore() {
       s.messages.push({
         id: uid(),
         role: 'system',
-        content: `⚠️ Agent run failed: ${err || 'unknown error'}`,
+        content: `Agent 运行失败：${err || 'unknown error'}`,
         timestamp: Date.now(),
       })
       persistSessionMessages(s.id)
@@ -1636,6 +1650,7 @@ function createStore() {
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
     }
+    visibleUserPromptByRequestId.set(clientRequestId, displayText || runText)
     let s = activeSession()
     if (!s) {
       s = createLocalSession({
@@ -1706,7 +1721,7 @@ function createStore() {
       userMessage.status = 'error'
       assistantMessage.error = e?.message || String(e)
       delete assistantMessage.isStreaming
-      if (!assistantMessage.content.trim()) assistantMessage.content = `Agent run failed: ${e?.message || e}`
+      if (!assistantMessage.content.trim()) assistantMessage.content = `Agent 运行失败：${e?.message || e}`
       if (!assistantMessage.content.trim()) s.messages.push({
         id: uid(),
         role: 'system',
@@ -1718,6 +1733,7 @@ function createStore() {
       throw e
     } finally {
       inFlightSendByRequestId.delete(clientRequestId)
+      visibleUserPromptByRequestId.delete(clientRequestId)
     }
     })
     inFlightSendByRequestId.set(clientRequestId, runPromise)

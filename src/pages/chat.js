@@ -18,6 +18,7 @@ import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
+import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -39,12 +40,12 @@ const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
-  'You are OpenClaw inside SuperClaw.',
-  'Your identity is OpenClaw, the execution agent for browser automation, desktop control, file operations, screenshots, OCR-assisted operation, workflow execution, and tool-based task completion.',
-  'When the user asks who you are, answer as OpenClaw first. You may briefly mention that you use an underlying model as a reasoning engine, but do not describe yourself as only MiniMax-M3 or only a model provider.',
-  'Do not claim to be Hermes or Claude Code.',
-  'Default to Simplified Chinese for replies unless the user explicitly asks for another language.',
-  'Use registered tools and skills for real operations instead of pretending in text.',
+  '你是 SuperClaw 里的 OpenClaw。',
+  '你的身份是 OpenClaw，是负责浏览器自动化、桌面控制、文件操作、截图、OCR 辅助操作、工作流执行和工具调用的执行 Agent。',
+  '用户问你是谁时，先回答你是 OpenClaw；可以简短说明底层模型只是推理引擎，不要把自己说成只是 MiniMax-M3 或只是模型供应商。',
+  '不要自称 Hermes 或 Claude Code。',
+  SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
+  '需要真实操作时使用已注册工具和 skills，不要用普通聊天文本假装执行。',
 ].join('\n')
 const OPENCLAW_LOCAL_IDENTITY_ANSWER = '我是 OpenClaw，SuperClaw 里的执行智能体，负责浏览器、桌面、文件、截图/OCR 和自动化工具调用；需要真实操作时我会使用已注册工具，并在高风险动作前等待你的确认。'
 
@@ -104,6 +105,7 @@ let _sendInputLocked = false
 let _activeClientRequestId = null
 let _lastSendFingerprint = ''
 let _lastSendAt = 0
+let _lastVisibleUserText = ''
 const _inFlightRequestIds = new Set()
 const _seenChatEventKeys = new Set()
 const _recentAssistantFinals = new Map()
@@ -2347,6 +2349,10 @@ function stripOpenClawIdentityPrelude(text) {
     .trim()
 }
 
+function sanitizeOpenClawVisibleReply(text) {
+  return sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, { agent: 'openclaw' })
+}
+
 function getOpenClawSendFingerprint(text, attachments = []) {
   const attSig = (attachments || []).map(a => [
     a.category || a.type || '',
@@ -2614,6 +2620,7 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   if (_inFlightRequestIds.has(clientRequestId)) return
   _inFlightRequestIds.add(clientRequestId)
   _activeClientRequestId = clientRequestId
+  _lastVisibleUserText = text
   const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
   appendUserMessage(text, attachments)
   saveMessage({
@@ -3124,7 +3131,7 @@ function handleChatEvent(payload, eventId = '') {
         _streamStartTime = Date.now()
         updateSendState()
       }
-      _currentAiText = c.text
+      _currentAiText = sanitizeOpenClawVisibleReply(c.text)
       throttledRender()
     }
     return
@@ -3134,7 +3141,13 @@ function handleChatEvent(payload, eventId = '') {
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
-    const finalText = c?.text || ''
+    const rawFinalText = c?.text || ''
+    if (rawFinalText) {
+      _currentAiText = sanitizeOpenClawVisibleReply(rawFinalText)
+    } else if (_currentAiText) {
+      _currentAiText = sanitizeOpenClawVisibleReply(_currentAiText)
+    }
+    const finalText = _currentAiText || ''
     const finalImages = c?.images || []
     const finalVideos = c?.videos || []
     const finalAudios = c?.audios || []
@@ -4203,6 +4216,7 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
 
 function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
+  text = sanitizeOpenClawVisibleReply(text || '')
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
   const wrap = document.createElement('div')

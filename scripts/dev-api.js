@@ -6027,7 +6027,7 @@ function _extractSseReply(text) {
   }
   if (!sawDataLine) return ''
   if (content) return content
-  if (reasoning) return `[reasoning] ${reasoning}`
+  if (reasoning) return '上游只返回了推理内容，已隐藏内部推理；请重新发起请求或检查模型配置。'
   return ''
 }
 
@@ -8273,7 +8273,7 @@ const handlers = {
       const geminiText = data.candidates?.[0]?.content?.parts?.map?.(p => p.text).filter(Boolean).join('') || ''
       const content = data.choices?.[0]?.message?.content
       const reasoning = data.choices?.[0]?.message?.reasoning_content
-      return anthropicText || geminiText || content || (reasoning ? `[reasoning] ${reasoning}` : '（无回复内容）')
+      return anthropicText || geminiText || content || (reasoning ? '上游只返回了推理内容，已隐藏内部推理；请重新发起请求或检查模型配置。' : '（无回复内容）')
     } catch (e) {
       clearTimeout(timeout)
       if (e.name === 'AbortError') throw new Error('请求超时 (30s)')
@@ -8368,7 +8368,7 @@ const handlers = {
         }
         if (!reply && v.choices?.[0]?.message) {
           const msg = v.choices[0].message
-          reply = msg.content || (msg.reasoning_content ? `[reasoning] ${msg.reasoning_content}` : '')
+          reply = msg.content || (msg.reasoning_content ? '上游只返回了推理内容，已隐藏内部推理；请重新发起请求或检查模型配置。' : '')
         }
         if (!reply && v.output?.text) reply = v.output.text
       } catch {}
