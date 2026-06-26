@@ -870,9 +870,8 @@ function setupGatewayBanner() {
         const t0 = Date.now()
         while (Date.now() - t0 < 30000) {
           try {
-            const s = await api.getServicesStatus()
-            const gw = s?.find?.(x => x.label === 'ai.openclaw.gateway') || s?.[0]
-            if (gw?.running) { update(true); return }
+            const { refreshGatewayStatus } = await import('./lib/app-state.js')
+            if (await refreshGatewayStatus()) { update(true); return }
           } catch {}
           const sec = Math.floor((Date.now() - t0) / 1000)
           btn.textContent = `${t('dashboard.starting')} ${sec}s`

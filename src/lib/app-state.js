@@ -203,6 +203,11 @@ function _setGatewayRunning(val, foreign = false) {
   }
 }
 
+export function confirmGatewayRunningFromLiveConnection() {
+  _gwStopCount = 0
+  _setGatewayRunning(true, false)
+}
+
 /** 刷新 Gateway 运行状态（轻量，仅查服务状态）
  *  防抖：running→stopped 需要连续 3 次检测才切换，避免瞬态误判 */
 export async function refreshGatewayStatus() {
@@ -212,8 +217,8 @@ export async function refreshGatewayStatus() {
       const gw = services.find?.(s => s.label === 'ai.openclaw.gateway') || services[0]
       const ownedRunning = gw?.running === true && gw?.owned_by_current_instance !== false
       const foreignRunning = gw?.running === true && gw?.owned_by_current_instance === false
-      const health = ownedRunning ? await probeOpenclawGatewayHealth() : { ready: false }
-      const nowRunning = ownedRunning && health.ready
+      const health = await probeOpenclawGatewayHealth()
+      const nowRunning = (ownedRunning || !foreignRunning) && health.ready
       if (nowRunning) {
         _gwStopCount = 0
         if (!_gatewayRunning) {
@@ -231,6 +236,14 @@ export async function refreshGatewayStatus() {
       }
     }
   } catch {
+    try {
+      const health = await probeOpenclawGatewayHealth()
+      if (health.ready) {
+        _gwStopCount = 0
+        _setGatewayRunning(true, false)
+        return _gatewayRunning
+      }
+    } catch {}
     _gwStopCount++
     if (_gwStopCount >= 3) _setGatewayRunning(false)
   }

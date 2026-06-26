@@ -1607,7 +1607,10 @@ async function connectGateway() {
         if (bar) bar.style.display = 'none'
         if (overlay) overlay.style.display = 'none'
         // WS 已连接，主动刷新 Gateway 状态以消除顶部横条延迟
-        import('../lib/app-state.js').then(m => m.refreshGatewayStatus()).catch(() => {})
+        import('../lib/app-state.js').then(m => {
+          m.confirmGatewayRunningFromLiveConnection?.()
+          return m.refreshGatewayStatus()
+        }).catch(() => {})
       } else if (status === 'error') {
         // 连接错误：显示引导遮罩而非底部条
         if (bar) bar.style.display = 'none'

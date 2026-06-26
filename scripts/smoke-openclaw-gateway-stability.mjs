@@ -16,12 +16,21 @@ function assert(condition, label, details = '') {
 const appState = read('src/lib/app-state.js')
 const devApi = read('scripts/dev-api.js')
 const chat = read('src/pages/chat.js')
+const main = read('src/main.js')
 
 assert(
   appState.includes('probeOpenclawGatewayHealth') &&
     appState.includes('http://127.0.0.1:18789/health') &&
-    appState.includes('health.ready'),
+    appState.includes('health.ready') &&
+    appState.includes('confirmGatewayRunningFromLiveConnection') &&
+    appState.includes('const nowRunning = (ownedRunning || !foreignRunning) && health.ready'),
   'APP_STATE_HEALTH_READY_GATES_GATEWAY',
+)
+
+assert(
+  main.includes('await refreshGatewayStatus()') &&
+    !main.includes('if (gw?.running) { update(true); return }'),
+  'GATEWAY_BANNER_USES_HEALTH_READY_STATE',
 )
 
 assert(
