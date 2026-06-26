@@ -129,12 +129,12 @@ export class WsClient {
   }
 
   onStatusChange(fn) {
-    this._statusListeners.push(fn)
+    if (!this._statusListeners.includes(fn)) this._statusListeners.push(fn)
     return () => { this._statusListeners = this._statusListeners.filter(cb => cb !== fn) }
   }
 
   onReady(fn) {
-    this._readyCallbacks.push(fn)
+    if (!this._readyCallbacks.includes(fn)) this._readyCallbacks.push(fn)
     return () => { this._readyCallbacks = this._readyCallbacks.filter(cb => cb !== fn) }
   }
 
@@ -814,8 +814,9 @@ export class WsClient {
     this._unsupportedMethods.clear()
   }
 
-  chatSend(sessionKey, message, attachments) {
-    const params = { sessionKey, message, deliver: false, idempotencyKey: uuid() }
+  chatSend(sessionKey, message, attachments, options = {}) {
+    const idempotencyKey = options?.idempotencyKey || uuid()
+    const params = { sessionKey, message, deliver: false, idempotencyKey }
     if (attachments && attachments.length > 0) {
       params.attachments = attachments
       console.log('[ws] 发送附件:', attachments.length, '个')
@@ -886,7 +887,7 @@ export class WsClient {
   }
 
   onEvent(callback) {
-    this._eventListeners.push(callback)
+    if (!this._eventListeners.includes(callback)) this._eventListeners.push(callback)
     return () => { this._eventListeners = this._eventListeners.filter(fn => fn !== callback) }
   }
 

@@ -36,6 +36,15 @@ const STORAGE_LOCAL_SESSIONS_KEY = 'superclaw-chat-local-sessions'
 const STORAGE_WORKSPACE_PANEL_KEY = 'superclaw-chat-workspace-open'
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
+const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
+const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
+const OPENCLAW_IDENTITY_PRELUDE = [
+  'You are OpenClaw inside SuperClaw.',
+  'Your identity is OpenClaw, the execution agent for browser automation, desktop control, file operations, screenshots, OCR-assisted operation, workflow execution, and tool-based task completion.',
+  'When the user asks who you are, answer as OpenClaw first. You may briefly mention that you use an underlying model as a reasoning engine, but do not describe yourself as only MiniMax-M3 or only a model provider.',
+  'Do not claim to be Hermes or Claude Code.',
+  'Use registered tools and skills for real operations instead of pretending in text.',
+].join('\n')
 
 const COMMANDS = [
   { title: 'chat.cmdSession', commands: [
@@ -89,6 +98,15 @@ let _isLoadingHistory = false
 let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
 let _seenRunIds = new Set()
 let _pageActive = false
+let _sendInputLocked = false
+let _activeClientRequestId = null
+let _lastSendFingerprint = ''
+let _lastSendAt = 0
+const _inFlightRequestIds = new Set()
+const _seenChatEventKeys = new Set()
+const _recentAssistantFinals = new Map()
+const OPENCLAW_SEND_DEDUPE_WINDOW_MS = 1200
+const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
@@ -488,13 +506,15 @@ function bindEvents(page) {
   })
 
   _textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); sendMessage() }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) sendMessage(e)
     if (e.key === 'Escape') hideCmdPanel()
   })
 
-  _sendBtn.addEventListener('click', () => {
+  _sendBtn.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
     if (_isStreaming) stopGeneration()
-    else sendMessage()
+    else sendMessage(e)
   })
 
   if (_hostedBtn) _hostedBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleHostedPanel() })
@@ -2255,7 +2275,115 @@ function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
   ].join('\n'))
 }
 
-async function sendMessage() {
+function createOpenClawClientRequestId() {
+  return `openclaw-${uuid()}`
+}
+
+function withOpenClawIdentityPrelude(prompt) {
+  const body = String(prompt || '').trim()
+  if (!body || body.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return body
+  return [
+    OPENCLAW_IDENTITY_CONTEXT_START,
+    OPENCLAW_IDENTITY_PRELUDE,
+    OPENCLAW_IDENTITY_CONTEXT_END,
+    '',
+    'User:',
+    body,
+  ].join('\n')
+}
+
+function stripOpenClawIdentityPrelude(text) {
+  const raw = String(text || '')
+  if (!raw.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return raw
+  const escapedStart = OPENCLAW_IDENTITY_CONTEXT_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escapedEnd = OPENCLAW_IDENTITY_CONTEXT_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return raw
+    .replace(new RegExp(`${escapedStart}[\\s\\S]*?${escapedEnd}\\s*`, 'g'), '')
+    .replace(/^User:\s*/i, '')
+    .trim()
+}
+
+function getOpenClawSendFingerprint(text, attachments = []) {
+  const attSig = (attachments || []).map(a => [
+    a.category || a.type || '',
+    a.mimeType || a.mime || '',
+    a.fileName || a.name || '',
+    a.content ? String(a.content).length : '',
+    a.url || '',
+  ].join(':')).join('|')
+  return `${String(text || '').trim()}::${attSig}`
+}
+
+function rememberBounded(set, key, limit = 400) {
+  if (!key) return
+  set.add(key)
+  if (set.size > limit) {
+    const first = set.values().next().value
+    set.delete(first)
+  }
+}
+
+function getChatEventText(payload) {
+  const c = extractChatContent(payload?.message)
+  return String(c?.text || '')
+}
+
+function getChatEventDedupeKey(payload, eventId = '') {
+  if (!payload) return ''
+  const messageId = payload.message?.id || payload.messageId || payload.id || ''
+  if (eventId) return `event:${eventId}`
+  if (messageId) return `message:${payload.state || ''}:${payload.runId || ''}:${messageId}`
+  const text = getChatEventText(payload)
+  if (!text && payload.state !== 'complete' && payload.state !== 'aborted') return ''
+  return [
+    payload.sessionKey || _sessionKey || '',
+    payload.state || '',
+    payload.runId || '',
+    text.length,
+    text.slice(0, 80),
+    text.slice(-80),
+  ].join('|')
+}
+
+function getAssistantFinalFingerprint(payload, text, tools = []) {
+  const toolSig = (tools || []).map(t => t.id || t.name || '').join(',')
+  return [
+    payload?.sessionKey || _sessionKey || '',
+    String(text || '').trim(),
+    payload?.message?.id || '',
+    toolSig,
+  ].join('|')
+}
+
+function isDuplicateRecentAssistantFinal(fingerprint) {
+  if (!fingerprint) return false
+  const now = Date.now()
+  for (const [key, ts] of _recentAssistantFinals) {
+    if (now - ts > OPENCLAW_FINAL_DEDUPE_WINDOW_MS) _recentAssistantFinals.delete(key)
+  }
+  return _recentAssistantFinals.has(fingerprint)
+}
+
+function rememberAssistantFinal(fingerprint) {
+  if (!fingerprint) return
+  _recentAssistantFinals.set(fingerprint, Date.now())
+  if (_recentAssistantFinals.size > 80) {
+    const first = _recentAssistantFinals.keys().next().value
+    _recentAssistantFinals.delete(first)
+  }
+}
+
+async function sendMessage(event) {
+  if (event) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  if (_sendInputLocked) return
+  _sendInputLocked = true
+  setTimeout(() => {
+    _sendInputLocked = false
+    updateSendState()
+  }, 350)
   let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
   ensureReadySessionKey()
@@ -2264,10 +2392,18 @@ async function sendMessage() {
     return
   }
   hideCmdPanel()
+  const attachments = [..._attachments]
+  const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
+  const now = Date.now()
+  if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
+    return
+  }
+  _lastSendFingerprint = sendFingerprint
+  _lastSendAt = now
+  const clientRequestId = createOpenClawClientRequestId()
   _textarea.value = ''
   _textarea.style.height = 'auto'
   updateSendState()
-  const attachments = [..._attachments]
   _attachments = []
   renderAttachments()
   if (attachments.length && isOcrIntentText(text)) {
@@ -2321,20 +2457,23 @@ async function sendMessage() {
       return
     }
   }
-  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments }); return }
-  doSend(text, attachments)
+  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments, clientRequestId }); return }
+  doSend(text, attachments, clientRequestId)
 }
 
-async function doSend(text, attachments = []) {
+async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
   ensureReadySessionKey()
   if (!wsClient.gatewayReady || !_sessionKey) {
     toast(t('chat.gatewayNotReadySend'), 'warning')
     return
   }
-  const sendText = buildAttachmentTriggeredPrompt(text, attachments)
+  if (_inFlightRequestIds.has(clientRequestId)) return
+  _inFlightRequestIds.add(clientRequestId)
+  _activeClientRequestId = clientRequestId
+  const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
   appendUserMessage(text, attachments)
   saveMessage({
-    id: uuid(), sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
+    id: `openclaw-user-${clientRequestId}`, sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
     attachments: attachments?.length ? attachments.map(a => ({ category: a.category || 'image', mimeType: a.mimeType || '', content: a.content || '', url: a.url || '' })) : undefined
   })
   showTyping(true)
@@ -2342,12 +2481,26 @@ async function doSend(text, attachments = []) {
   _startResponseWatchdog()
   startGenerationTimeoutManager()
   try {
-    await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined)
+    await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined, {
+      idempotencyKey: clientRequestId,
+      clientRequestId,
+    })
   } catch (err) {
     showTyping(false)
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     _sendTimestamp = 0
+    if (_textarea && !_textarea.value.trim()) {
+      _textarea.value = text
+      _textarea.style.height = 'auto'
+      _textarea.style.height = Math.min(_textarea.scrollHeight, 150) + 'px'
+    }
+    if (attachments?.length) {
+      _attachments = [...attachments, ..._attachments]
+      renderAttachments()
+    }
+    _inFlightRequestIds.delete(clientRequestId)
+    if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
     appendSystemMessage(`${t('chat.sendFailed')}${err.message}`)
   } finally {
     _isSending = false
@@ -2442,7 +2595,7 @@ function processMessageQueue() {
   if (_messageQueue.length === 0 || _isSending || _isStreaming) return
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
-  else doSend(msg.text, msg.attachments || [])
+  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId())
 }
 
 function currentCollaborationTask() {
@@ -2734,7 +2887,7 @@ function handleEvent(msg) {
     }
   }
 
-  if (event === 'chat') handleChatEvent(payload)
+  if (event === 'chat') handleChatEvent(payload, msg.id)
 
   // Compaction 状态指示：上游 2026.3.12 新增 status_reaction 事件
   if (event === 'chat.status_reaction' || event === 'status_reaction') {
@@ -2747,13 +2900,19 @@ function handleEvent(msg) {
   }
 }
 
-function handleChatEvent(payload) {
+function handleChatEvent(payload, eventId = '') {
   const hostedSessionKey = getHostedBoundSessionKey()
   const isCurrentSession = !payload.sessionKey || !_sessionKey || payload.sessionKey === _sessionKey
   const isHostedSession = !!payload.sessionKey && !!hostedSessionKey && payload.sessionKey === hostedSessionKey
 
   // sessionKey 过滤：当前会话照常渲染；托管绑定会话在后台继续驱动循环
   if (!isCurrentSession && !isHostedSession) return
+  const eventKey = getChatEventDedupeKey(payload, eventId)
+  if (eventKey && _seenChatEventKeys.has(eventKey)) {
+    console.log('[chat] skipped duplicate chat event:', eventKey)
+    return
+  }
+  rememberBounded(_seenChatEventKeys, eventKey, 600)
 
   if (!isCurrentSession && isHostedSession) {
     if (payload.state === 'final' && shouldCaptureHostedTarget(payload)) {
@@ -2844,6 +3003,11 @@ function handleChatEvent(payload) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
     }
     const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length || finalScreenshotCards.length || finalConfirmations.length
+    const assistantFingerprint = getAssistantFinalFingerprint(payload, finalText || _currentAiText, finalTools.length ? finalTools : _currentAiTools)
+    if (!_currentAiBubble && isDuplicateRecentAssistantFinal(assistantFingerprint)) {
+      console.log('[chat] skipped duplicate assistant final')
+      return
+    }
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
     if (!_currentAiBubble && !hasContent) return
     // 标记 runId 为已处理，防止重复
@@ -2904,6 +3068,7 @@ function handleChatEvent(payload) {
       group.appendChild(meta)
     }
     if (_currentAiText || _currentAiImages.length) {
+      rememberAssistantFinal(assistantFingerprint)
       saveMessage({
         id: payload.runId || uuid(), sessionKey: _sessionKey, role: 'assistant',
         content: _currentAiText, timestamp: Date.now(),
@@ -3019,7 +3184,7 @@ function extractChatContent(message) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
   }
   const content = message.content
-  if (typeof content === 'string') return { text: stripThinkingTags(content), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
+  if (typeof content === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(content)), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
   if (Array.isArray(content)) {
     const texts = [], images = [], videos = [], audios = [], files = []
     for (const block of content) {
@@ -3086,13 +3251,13 @@ function extractChatContent(message) {
       else if (/\.(jpe?g|png|gif|webp|heic|svg)(\?|$)/i.test(url)) images.push({ url, mediaType: 'image/png' })
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
-    const text = texts.length ? stripThinkingTags(texts.join('\n')) : ''
+    const text = texts.length ? stripOpenClawIdentityPrelude(stripThinkingTags(texts.join('\n'))) : ''
     return { text, images, videos, audios, files, tools, screenshotCards, confirmations }
   }
   if (screenshotCards.length || confirmations.length) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   }
-  if (typeof message.text === 'string') return { text: stripThinkingTags(message.text), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
+  if (typeof message.text === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(message.text)), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   return null
 }
 
@@ -3378,6 +3543,8 @@ function resetStreamState() {
   _currentAiAudios = []
   _currentAiFiles = []
   _currentAiTools = []
+  if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
+  _activeClientRequestId = null
   _currentRunId = null
   _isStreaming = false
   _streamStartTime = 0
@@ -3642,6 +3809,7 @@ function extractContent(msg) {
 
 function appendUserMessage(text, attachments = [], msgTime) {
   if (!_messagesEl || !_typingEl) return
+  const displayText = stripOpenClawIdentityPrelude(text)
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-user sc-msg-row user'
   const group = document.createElement('div')
@@ -3688,9 +3856,9 @@ function appendUserMessage(text, attachments = [], msgTime) {
     if (mediaContainer.children.length) bubble.appendChild(mediaContainer)
   }
 
-  if (text) {
+  if (displayText) {
     const textNode = document.createElement('div')
-    textNode.textContent = text
+    textNode.textContent = displayText
     bubble.appendChild(textNode)
   }
 
@@ -4036,7 +4204,7 @@ function updateSendState() {
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
     _sendBtn.title = t('chat.cmdStopGen')
   } else {
-    _sendBtn.disabled = !_textarea.value.trim() && !_attachments.length
+    _sendBtn.disabled = _sendInputLocked || _isSending || (!_textarea.value.trim() && !_attachments.length)
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
     _sendBtn.title = t('chat.send')
   }
@@ -4548,6 +4716,13 @@ export function cleanup() {
   _currentAiAudios = []
   _currentAiFiles = []
   _currentAiTools = []
+  _activeClientRequestId = null
+  _inFlightRequestIds.clear()
+  _seenChatEventKeys.clear()
+  _recentAssistantFinals.clear()
+  _sendInputLocked = false
+  _lastSendFingerprint = ''
+  _lastSendAt = 0
   _currentRunId = null
   _isStreaming = false
   _isSending = false
