@@ -39,6 +39,10 @@
   Create a test package without the customer user system,
   or embedded API keys. Existing customer credentials are not copied.
 
+.PARAMETER ReleaseUserPackage
+  Create a customer delivery package with auth required and yyapi selected
+  as the default model source. No customer credentials or API keys are copied.
+
 .PARAMETER PackageOnly
   Skip frontend and Tauri compilation and package the existing executable.
 #>
@@ -51,6 +55,7 @@ param(
   [switch]$SkipNpmInstall,
   [string]$OutputDir = "",
   [switch]$SanitizedTest,
+  [switch]$ReleaseUserPackage,
   [switch]$PackageOnly
 )
 
@@ -101,7 +106,31 @@ function Set-SanitizedTestBuildEnv {
   return $previous
 }
 
-function Restore-SanitizedTestBuildEnv([hashtable]$Previous) {
+function Set-ReleaseUserPackageBuildEnv {
+  if (-not $ReleaseUserPackage) { return @{} }
+  $keys = @(
+    "VITE_ENABLE_ECOMMERCE_ASSISTANT",
+    "VITE_SUPERCLAW_MODE",
+    "VITE_SUPERCLAW_MODEL_SOURCE",
+    "VITE_SUPERCLAW_AUTH_REQUIRED",
+    "VITE_SUPERCLAW_YYAPI_ENABLED",
+    "VITE_SUPERCLAW_USE_LOCAL_AUTH_FALLBACK"
+  )
+  $previous = @{}
+  foreach ($key in $keys) {
+    $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
+  }
+  [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MODE", "release", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MODEL_SOURCE", "yyapi", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_AUTH_REQUIRED", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_YYAPI_ENABLED", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_USE_LOCAL_AUTH_FALLBACK", "true", "Process")
+  Ok "Release user package frontend flags: mode=release, modelSource=yyapi, authRequired=true"
+  return $previous
+}
+
+function Restore-BuildEnv([hashtable]$Previous) {
   if (-not $Previous) { return }
   foreach ($key in $Previous.Keys) {
     [Environment]::SetEnvironmentVariable($key, $Previous[$key], "Process")
@@ -1026,6 +1055,10 @@ $ExeDest = Join-Path $OutDir "superclaw.exe"
 
 Set-Location $Root
 
+if ($SanitizedTest -and $ReleaseUserPackage) {
+  Fail "Choose only one package mode: -SanitizedTest or -ReleaseUserPackage"
+}
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  SuperClaw Desktop Client Builder" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -1034,6 +1067,9 @@ Write-Host ("Mode:    " + $(if ($Debug) { "debug" } else { "release" }))
 Write-Host ("Output:  " + $OutDir)
 if ($SanitizedTest) {
   Write-Host "Package: MiniMax-only test build without customer user system" -ForegroundColor Yellow
+}
+if ($ReleaseUserPackage) {
+  Write-Host "Package: customer release user package with auth/yyapi enabled" -ForegroundColor Green
 }
 if ($PackageOnly) {
   Write-Host "Build:   PackageOnly (using existing executable)" -ForegroundColor Yellow
@@ -1152,7 +1188,7 @@ if ($PackageOnly) {
   Step "Building Tauri shell"
   Warn "Skipped by -PackageOnly"
 } else {
-  $previousBuildEnv = Set-SanitizedTestBuildEnv
+  $previousBuildEnv = if ($SanitizedTest) { Set-SanitizedTestBuildEnv } elseif ($ReleaseUserPackage) { Set-ReleaseUserPackageBuildEnv } else { @{} }
   try {
     Invoke-Checked -File "npm" -Arguments @("run", "build") -Title "Building frontend"
 
@@ -1162,7 +1198,7 @@ if ($PackageOnly) {
       Invoke-Checked -File "npm" -Arguments @("run", "tauri:build") -Title "Building Tauri shell with embedded frontend"
     }
   } finally {
-    Restore-SanitizedTestBuildEnv $previousBuildEnv
+    Restore-BuildEnv $previousBuildEnv
   }
 }
 
@@ -1201,6 +1237,17 @@ if ($SanitizedTest) {
   )
   $SanitizedReadme = $SanitizedReadmeLines -join [Environment]::NewLine
   Write-Utf8NoBom (Join-Path $OutDir "README-SANITIZED-TEST.txt") $SanitizedReadme
+}
+if ($ReleaseUserPackage) {
+  $ReleaseReadmeLines = @(
+    "SuperClaw 1.0.4 user delivery package",
+    "",
+    "1. This package is built with auth required and yyapi selected as the model source.",
+    "2. No real API key, token, local customer session, or activation secret is bundled.",
+    "3. The desktop client keeps a local login/activation session when the embedded EXE has no external /api/auth service.",
+    "4. Model/provider credentials must be supplied by the configured user/yyapi flow after delivery."
+  )
+  Write-Utf8NoBom (Join-Path $OutDir "README-RELEASE-USER-PACKAGE.txt") ($ReleaseReadmeLines -join [Environment]::NewLine)
 }
 
 Step "Fixing portable uv virtualenv paths"

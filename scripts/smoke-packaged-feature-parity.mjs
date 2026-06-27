@@ -171,10 +171,22 @@ const testFlagsOk = [
   assertContains(desktopBuild, "VITE_SUPERCLAW_TEST_BUILD", "PACKAGED_TEST_BUILD_FLAGS"),
   assertContains(desktopBuild, "VITE_SUPERCLAW_FORCE_PROVIDER", "PACKAGED_TEST_BUILD_FLAGS"),
   assertContains(desktopBuild, "VITE_ENABLE_ECOMMERCE_ASSISTANT", "PACKAGED_TEST_BUILD_FLAGS"),
-  assertMatch(packageJson, /"build:desktop"\s*:\s*"[^"]*-SanitizedTest/, "PACKAGED_TEST_BUILD_FLAGS"),
+  assertMatch(packageJson, /"build:desktop:test"\s*:\s*"[^"]*-SanitizedTest/, "PACKAGED_TEST_BUILD_FLAGS"),
 ].every(Boolean);
 if (testFlagsOk) pass("PACKAGED_TEST_BUILD_FLAGS");
 ok = testFlagsOk && ok;
+
+const releaseUserFlagsOk = [
+  assertContains(desktopBuild, "ReleaseUserPackage", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertContains(desktopBuild, "VITE_SUPERCLAW_MODE", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertContains(desktopBuild, "VITE_SUPERCLAW_MODEL_SOURCE", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertContains(desktopBuild, "VITE_SUPERCLAW_AUTH_REQUIRED", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertContains(desktopBuild, "VITE_SUPERCLAW_YYAPI_ENABLED", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertContains(desktopBuild, "VITE_SUPERCLAW_USE_LOCAL_AUTH_FALLBACK", "PACKAGED_RELEASE_USER_FLAGS"),
+  assertMatch(packageJson, /"build:desktop"\s*:\s*"[^"]*-ReleaseUserPackage/, "PACKAGED_RELEASE_USER_FLAGS"),
+].every(Boolean);
+if (releaseUserFlagsOk) pass("PACKAGED_RELEASE_USER_FLAGS");
+ok = releaseUserFlagsOk && ok;
 
 const tauriDragDropOk = assertMatch(
   tauriConfig,
