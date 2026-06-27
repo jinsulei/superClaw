@@ -281,9 +281,11 @@ async function renderMiniMaxTestPanel(page) {
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
       <button class="btn btn-primary btn-sm" id="btn-save-minimax-test">保存 MiniMax 配置</button>
+      <button class="btn btn-secondary btn-sm" id="btn-test-minimax-test">测试模型连接</button>
       <button class="btn btn-secondary btn-sm" id="btn-reload-minimax-test">重新读取配置</button>
       <span style="font-size:12px;color:var(--text-secondary)">${configuredText}</span>
     </div>
+    <div id="minimax-test-result" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
       ${miniMaxSyncBadge('OpenClaw', sync.openclaw)}
       ${miniMaxSyncBadge('OpenClaw Agent', sync.openclawAgent)}
@@ -294,6 +296,49 @@ async function renderMiniMaxTestPanel(page) {
 
   panel.querySelector('#btn-reload-minimax-test')?.addEventListener('click', () => {
     renderMiniMaxTestPanel(page).catch(err => toast(`MiniMax 配置读取失败: ${err?.message || err}`, 'error'))
+  })
+  panel.querySelector('#btn-test-minimax-test')?.addEventListener('click', async () => {
+    const btn = panel.querySelector('#btn-test-minimax-test')
+    const input = panel.querySelector('#minimax-test-api-key')
+    const select = panel.querySelector('#minimax-test-base-url')
+    const result = panel.querySelector('#minimax-test-result')
+    const oldText = btn?.textContent || '测试模型连接'
+    const setResult = (message, ok = false) => {
+      if (!result) return
+      result.textContent = message
+      result.style.color = ok ? 'var(--success)' : 'var(--text-secondary)'
+    }
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = '测试中...'
+    }
+    try {
+      const latest = await api.readOpenclawConfig().catch(() => ({}))
+      const savedProvider = latest?.models?.providers?.[defaults.providerId] || {}
+      const apiKey = String(input?.value || savedProvider.apiKey || '').trim()
+      const baseUrlForTest = select?.value || savedProvider.baseUrl || defaults.baseUrl
+      if (!apiKey) {
+        setResult('尚未配置 MiniMax API Key，请先填写或保存后再测试。')
+        return
+      }
+      const started = Date.now()
+      await api.testModel(baseUrlForTest, apiKey, defaults.model, 'openai-completions')
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1)
+      setResult(`MiniMax 模型连接测试成功：${defaults.model}（${elapsed}s）`, true)
+      toast(`MiniMax 模型连接测试成功：${defaults.model}`, 'success')
+    } catch (err) {
+      const message = String(err?.message || err || '').replace(/sk-[A-Za-z0-9_-]{12,}/g, '[REDACTED_KEY]')
+      const summary = /401|2049|unauthorized|invalid/i.test(message)
+        ? 'MiniMax API Key 验证失败，请检查 Key 是否有效。'
+        : `MiniMax 模型连接失败：${message.slice(0, 180)}`
+      setResult(summary)
+      toast(summary, 'error', { duration: 8000 })
+    } finally {
+      if (btn) {
+        btn.disabled = false
+        btn.textContent = oldText
+      }
+    }
   })
   panel.querySelector('#btn-save-minimax-test')?.addEventListener('click', async () => {
     const btn = panel.querySelector('#btn-save-minimax-test')

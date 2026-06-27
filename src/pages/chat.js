@@ -35,6 +35,7 @@ const STORAGE_SESSION_NAMES_KEY = 'superclaw-chat-session-names'
 const STORAGE_SESSION_WORKFILES_KEY = 'superclaw-chat-session-workfiles'
 const STORAGE_LOCAL_SESSIONS_KEY = 'superclaw-chat-local-sessions'
 const STORAGE_WORKSPACE_PANEL_KEY = 'superclaw-chat-workspace-open'
+const OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY = 'superclaw-openclaw-manual-collapsed-messages'
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
 const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
@@ -119,6 +120,35 @@ const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
 const _toolEventSeen = new Set()
+
+function loadOpenClawManualCompactCollapsed() {
+  try {
+    const raw = localStorage.getItem(OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY)
+    const list = JSON.parse(raw || '[]')
+    return new Set(Array.isArray(list) ? list.filter(Boolean).map(String) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveOpenClawManualCompactCollapsed(keys) {
+  try {
+    localStorage.setItem(OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY, JSON.stringify([...keys]))
+  } catch {}
+}
+
+function isOpenClawManualCompactCollapsed(key) {
+  if (!key) return false
+  return loadOpenClawManualCompactCollapsed().has(String(key))
+}
+
+function setOpenClawManualCompactCollapsed(key, collapsed) {
+  if (!key) return
+  const keys = loadOpenClawManualCompactCollapsed()
+  if (collapsed) keys.add(String(key))
+  else keys.delete(String(key))
+  saveOpenClawManualCompactCollapsed(keys)
+}
 let _errorTimer = null, _lastErrorMsg = null
 let _responseWatchdog = null, _postFinalCheck = null
 let _ultimateTimer = null, _sendTimestamp = 0
@@ -3625,6 +3655,7 @@ function createStreamBubble(meta = {}) {
   group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
+  bubble.dataset.compactKey = meta.dedupeKey || ''
   bubble.innerHTML = '<span class="stream-cursor"></span>'
   group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
@@ -3649,11 +3680,14 @@ function createOpenClawRoleLine(role = 'assistant') {
 function renderCompactAssistantContent(rawText, container) {
   if (!container) return
   const compact = compactChatMessage(rawText)
+  const compactKey = container.dataset.compactKey || ''
+  const canToggle = !!compact.collapsed
+  const manualCollapsed = canToggle && isOpenClawManualCompactCollapsed(compactKey)
   container.innerHTML = ''
 
   const wrapper = document.createElement('div')
   wrapper.className = 'assistant-compact-message'
-  if (compact.collapsed) wrapper.classList.add('is-collapsed')
+  if (canToggle) wrapper.classList.add(manualCollapsed ? 'is-collapsed' : 'is-expanded')
 
   const content = document.createElement('div')
   content.className = 'assistant-compact-message__content'
@@ -3665,18 +3699,19 @@ function renderCompactAssistantContent(rawText, container) {
   const renderContent = (text) => {
     content.innerHTML = renderMarkdown(mergeShortSectionLines(text))
   }
-  renderContent(compact.preview)
+  renderContent(manualCollapsed ? compact.preview : compact.content)
   if (compact.preview || compact.content) wrapper.appendChild(content)
 
-  if (compact.collapsed) {
+  if (canToggle) {
     const toggle = document.createElement('button')
     toggle.type = 'button'
     toggle.className = 'assistant-compact-message__toggle'
-    toggle.textContent = '展开详情'
+    toggle.textContent = manualCollapsed ? '\u5c55\u5f00\u8be6\u60c5' : '\u6536\u8d77\u8be6\u60c5'
     toggle.addEventListener('click', () => {
       const expanded = wrapper.classList.toggle('is-expanded')
       wrapper.classList.toggle('is-collapsed', !expanded)
-      toggle.textContent = expanded ? '收起详情' : '展开详情'
+      setOpenClawManualCompactCollapsed(compactKey, !expanded)
+      toggle.textContent = expanded ? '\u6536\u8d77\u8be6\u60c5' : '\u5c55\u5f00\u8be6\u60c5'
       renderContent(expanded ? compact.content : compact.preview)
     })
     wrapper.appendChild(toggle)
@@ -4308,6 +4343,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   appendLifeAssistantCardsToEl(bubble, screenshotCards, confirmations)
   const textEl = document.createElement('div')
   textEl.className = 'msg-text'
+  textEl.dataset.compactKey = renderMeta.dedupeKey || ''
   renderCompactAssistantContent(text || '', textEl)
   bubble.appendChild(textEl)
   appendImagesToEl(bubble, images)

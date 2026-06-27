@@ -126,6 +126,37 @@ function escAttr(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+const HERMES_COMPACT_COLLAPSED_STORAGE_KEY = 'superclaw-hermes-manual-collapsed-messages'
+
+function loadHermesManualCompactCollapsed() {
+  try {
+    const raw = localStorage.getItem(HERMES_COMPACT_COLLAPSED_STORAGE_KEY)
+    const list = JSON.parse(raw || '[]')
+    return new Set(Array.isArray(list) ? list.filter(Boolean).map(String) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveHermesManualCompactCollapsed(keys) {
+  try {
+    localStorage.setItem(HERMES_COMPACT_COLLAPSED_STORAGE_KEY, JSON.stringify([...keys]))
+  } catch {}
+}
+
+function isHermesManualCompactCollapsed(key) {
+  if (!key) return false
+  return loadHermesManualCompactCollapsed().has(String(key))
+}
+
+function setHermesManualCompactCollapsed(key, collapsed) {
+  if (!key) return
+  const keys = loadHermesManualCompactCollapsed()
+  if (collapsed) keys.add(String(key))
+  else keys.delete(String(key))
+  saveHermesManualCompactCollapsed(keys)
+}
+
 function escapeRegExp(s) {
   return String(s ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -1641,11 +1672,13 @@ export function render() {
     return failed || emptyDone
   }
 
-  function renderCompactAssistantHtml(rawText) {
+  function renderCompactAssistantHtml(rawText, messageId = '') {
     const compact = compactChatMessage(rawText)
     const previewHtml = compact.preview ? mdToHtml(compact.preview) : ''
     const fullHtml = compact.content ? mdToHtml(compact.content) : ''
     const canToggle = !!compact.collapsed
+    const compactKey = String(messageId || '')
+    const manualCollapsed = canToggle && isHermesManualCompactCollapsed(compactKey)
     const toolHtml = compact.toolLines.length ? `
       <details class="tool-log-summary">
         <summary>${escHtml(compact.toolSummary)}</summary>
@@ -1654,14 +1687,14 @@ export function render() {
     ` : ''
     const toggleHtml = canToggle ? `
       <button type="button" class="assistant-compact-message__toggle" data-compact-toggle>
-        展开详情
+        ${manualCollapsed ? '\u5c55\u5f00\u8be6\u60c5' : '\u6536\u8d77\u8be6\u60c5'}
       </button>
     ` : ''
 
     return `
-      <div class="assistant-compact-message ${canToggle ? 'is-collapsed' : ''}">
-        ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview">${previewHtml}</div>` : ''}
-        <div class="assistant-compact-message__content assistant-compact-message__full" ${canToggle ? 'hidden' : ''}>${fullHtml}</div>
+      <div class="assistant-compact-message ${canToggle ? (manualCollapsed ? 'is-collapsed' : 'is-expanded') : ''}" data-compact-key="${escAttr(compactKey)}">
+        ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview" ${manualCollapsed ? '' : 'hidden'}>${previewHtml}</div>` : ''}
+        <div class="assistant-compact-message__content assistant-compact-message__full" ${manualCollapsed ? 'hidden' : ''}>${fullHtml}</div>
         ${toggleHtml}
         ${toolHtml}
       </div>
@@ -1691,7 +1724,7 @@ export function render() {
     const ecommerceCardHtml = renderEcommerceStageCardHtml(m)
     const messageContentHtml = [
       renderMessageAttachments(m.attachments || []),
-      (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content)) : '',
+      (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content, m.id)) : '',
       lifeAssistantHtml,
       ecommerceCardHtml,
       m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
@@ -2235,7 +2268,9 @@ export function render() {
         const full = wrapper.querySelector('.assistant-compact-message__full')
         if (preview) preview.hidden = expanded
         if (full) full.hidden = !expanded
-        btn.textContent = expanded ? '收起详情' : '展开详情'
+        const compactKey = wrapper.dataset.compactKey || ''
+        setHermesManualCompactCollapsed(compactKey, !expanded)
+        btn.textContent = expanded ? '\u6536\u8d77\u8be6\u60c5' : '\u5c55\u5f00\u8be6\u60c5'
       })
     })
   }
