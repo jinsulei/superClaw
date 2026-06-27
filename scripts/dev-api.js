@@ -37,6 +37,8 @@ import {
   guardAgentIdentityReply,
   normalizeAgentIdentityName,
 } from '../src/shared/agent-identity-guard.js'
+import { getRuntimeMode } from './lib/runtime-mode.mjs'
+import { readYyapiConfig, yyapiRelaySummary } from './lib/yyapi-config.mjs'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 function resolveAgentIdentityName(input, fallback = 'hermes') {
@@ -2784,9 +2786,116 @@ function openclawMiniMaxGatewayConfig() {
       ...directConfig,
       configPath: directConfig.paths?.openclaw || '',
     },
+    yyapiConfig: readYyapiConfig(process.env),
     configPath: directConfig.paths?.openclaw || '',
   })
   return { ...directConfig, effective }
+}
+
+function directModelConfigForAgent(agentName) {
+  const name = cleanMiniMaxValue(agentName || 'openclaw').toLowerCase()
+  if (name === 'openclaw') {
+    const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+    const dataRoot = path.join(resourcesRoot, 'data')
+    const directConfig = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+    return {
+      ...directConfig,
+      configPath: directConfig.paths?.openclaw || '',
+    }
+  }
+  const plain = readMiniMaxPlainConfig()
+  const configPath = name === 'claude' || name === 'claude-code' || name === 'claudecode'
+    ? plain.paths?.claudePanel
+    : plain.paths?.hermes
+  return {
+    provider: MINIMAX_TEST_DEFAULTS.providerId,
+    baseUrl: plain.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl,
+    model: MINIMAX_TEST_DEFAULTS.model,
+    apiKey: plain.apiKey || '',
+    configPath: configPath || '',
+  }
+}
+
+function authYyapiKitEffectiveModelConfig(agentName = 'openclaw', options = {}) {
+  const name = cleanMiniMaxValue(agentName || 'openclaw').toLowerCase()
+  const env = options.env || process.env
+  const yyapiConfig = readYyapiConfig(env, options.yyapiConfig || {})
+  const directConfig = options.directConfig || directModelConfigForAgent(name)
+  return getEffectiveModelConfig(name, {
+    env,
+    directConfig,
+    yyapiConfig,
+    configPath: directConfig.configPath || yyapiConfig.configPath || '',
+  })
+}
+
+function authYyapiKitRelayConfig(agentName = 'openclaw') {
+  const effective = authYyapiKitEffectiveModelConfig(agentName)
+  if (effective.modelSource === 'yyapi') {
+    return {
+      ...yyapiRelaySummary(readYyapiConfig(process.env)),
+      effective,
+    }
+  }
+  return {
+    mode: 'DIRECT',
+    provider: effective.provider,
+    baseUrl: effective.baseUrl,
+    model: effective.model,
+    apiKeyConfigured: effective.apiKeyConfigured,
+    apiKeyFingerprint: effective.apiKeyFingerprint,
+    status: effective.status,
+    code: effective.code,
+    effective,
+  }
+}
+
+async function handleAuthYyapiKitRestApi(req, res, url) {
+  if (!url.pathname.startsWith('/api/')) return false
+  if (url.pathname === '/api/runtime-mode') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    sendJsonResponse(res, 200, { ok: true, runtime: getRuntimeMode(process.env) })
+    return true
+  }
+  if (url.pathname === '/api/effective-model-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, config: authYyapiKitEffectiveModelConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/relay-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, relay: authYyapiKitRelayConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/test-relay') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const body = await readBody(req)
+    const agent = cleanMiniMaxValue(body.agent || body.agentName || url.searchParams.get('agent') || 'openclaw')
+    const effective = authYyapiKitEffectiveModelConfig(agent)
+    sendJsonResponse(res, 200, {
+      ok: effective.status === 'ready',
+      language: 'zh-CN',
+      message: effective.status === 'ready' ? '模型配置检查通过。' : '模型配置未就绪。',
+      code: effective.code,
+      config: effective,
+    })
+    return true
+  }
+  return false
 }
 
 function openclawMiniMaxGatewayEnv() {
@@ -7380,9 +7489,26 @@ const handlers = {
   },
 
   get_effective_model_config({ agentName } = {}) {
-    const name = cleanMiniMaxValue(agentName || 'openclaw')
-    if (name === 'openclaw') return openclawMiniMaxGatewayConfig().effective
-    return getEffectiveModelConfig(name, {})
+    return authYyapiKitEffectiveModelConfig(agentName || 'openclaw')
+  },
+
+  runtime_mode() {
+    return getRuntimeMode(process.env)
+  },
+
+  relay_config({ agentName } = {}) {
+    return authYyapiKitRelayConfig(agentName || 'openclaw')
+  },
+
+  test_relay({ agentName } = {}) {
+    const effective = authYyapiKitEffectiveModelConfig(agentName || 'openclaw')
+    return {
+      ok: effective.status === 'ready',
+      language: 'zh-CN',
+      message: effective.status === 'ready' ? '模型配置检查通过。' : '模型配置未就绪。',
+      code: effective.code,
+      config: effective,
+    }
   },
 
   async payment_request({ action, payload } = {}) {
@@ -14140,6 +14266,7 @@ async function _apiMiddleware(req, res, next) {
     requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
   } catch {}
   if (requestUrl && sendHermesMediaFileResponse(req, res, requestUrl)) return
+  if (requestUrl && await handleAuthYyapiKitRestApi(req, res, requestUrl)) return
 
   if (!req.url?.startsWith('/__api/')) return next()
 

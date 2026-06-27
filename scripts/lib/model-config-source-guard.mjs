@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { getRuntimeMode } from './runtime-mode.mjs'
 
 export const MODEL_CONFIG_DEFAULTS = Object.freeze({
   provider: 'minimax',
@@ -64,14 +65,15 @@ export function modelConfigKeyFingerprint(value) {
 }
 
 export function getRuntimeModelPolicy(env = process.env) {
-  const mode = normalizeMode(env.SUPERCLAW_MODE || env.VITE_SUPERCLAW_MODE)
-  const modelSource = normalizeModelSource(env.MODEL_SOURCE || env.SUPERCLAW_MODEL_SOURCE, mode)
-  const authRequired = boolFlag(env.AUTH_REQUIRED || env.SUPERCLAW_AUTH_REQUIRED, mode === 'release')
-  const allowDirectFallback = boolFlag(
-    env.ALLOW_DIRECT_FALLBACK || env.SUPERCLAW_ALLOW_DIRECT_FALLBACK,
-    false
-  )
-  return { mode, modelSource, authRequired, allowDirectFallback }
+  const runtime = getRuntimeMode(env)
+  return {
+    mode: runtime.mode,
+    superclawMode: runtime.superclawMode,
+    modelSource: runtime.modelSource,
+    yyapiEnabled: runtime.yyapiEnabled,
+    authRequired: runtime.authRequired,
+    allowDirectFallback: runtime.allowDirectFallback,
+  }
 }
 
 function firstConfiguredKey(config = {}, env = {}) {
@@ -136,6 +138,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
         apiKeyFingerprint: yyapi.apiKeyFingerprint,
         configPath: yyapi.configPath || options.configPath || '',
         status: 'config_conflict',
+        configStatus: 'config_conflict',
         code: 'CONFIG_CONFLICT',
         warnings,
       }
@@ -154,6 +157,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
         apiKeyFingerprint: yyapi.apiKeyFingerprint,
         configPath: yyapi.configPath || options.configPath || '',
         status: 'needs_setup',
+        configStatus: 'needs_setup',
         code: 'YYAPI_MODEL_CONFIG_REQUIRED',
         warnings,
       }
@@ -170,6 +174,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
       apiKeyFingerprint: yyapi.apiKeyFingerprint,
       configPath: yyapi.configPath || options.configPath || '',
       status: 'ready',
+      configStatus: 'ready',
       code: 'OK',
       warnings,
     }
@@ -188,6 +193,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
       apiKeyFingerprint: direct.apiKeyFingerprint,
       configPath: direct.configPath || options.configPath || '',
       status: 'needs_setup',
+      configStatus: 'needs_setup',
       code: 'DIRECT_MODEL_CONFIG_REQUIRED',
       warnings,
     }
@@ -204,6 +210,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
     apiKeyFingerprint: direct.apiKeyFingerprint,
     configPath: direct.configPath || options.configPath || '',
     status: 'ready',
+    configStatus: 'ready',
     code: 'OK',
     warnings,
   }
