@@ -88,6 +88,7 @@ function hermesMediaRoots() {
   const roots = [
     path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'generated'),
     path.join(appRootDir(), 'resources', 'data', 'generated'),
+    path.join(OPENCLAW_DIR, 'clawpanel', 'images'),
     path.join(hermesHome(), 'generated'),
     path.join(hermesHome(), 'image_cache'),
   ]
@@ -108,6 +109,54 @@ function readHermesMediaImageDataUrl(rawPath) {
   if (!allowed) throw new Error('MEDIA image path is outside allowed Hermes generated directories')
   const b64 = fs.readFileSync(filePath).toString('base64')
   return `data:${mime};base64,${b64}`
+}
+
+function isHermesMediaRouteTraversal(routePath) {
+  const normalized = path.normalize(String(routePath || '').replace(/\\/g, '/'))
+  return normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')
+}
+
+function resolveHermesMediaRoutePath(routePath) {
+  let value = String(routePath || '').trim()
+  if (!value) throw new Error('MEDIA route path is required')
+  try { value = decodeURIComponent(value) } catch {}
+  value = value.replace(/^["']|["']$/g, '')
+  if (!value || value.includes('\0')) throw new Error('Invalid MEDIA route path')
+  if (isHermesMediaRouteTraversal(value)) throw new Error('MEDIA route path traversal is not allowed')
+  if (/^file:\/\//i.test(value) || path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)) {
+    return normalizeLocalMediaPath(value)
+  }
+  const relativePath = path.normalize(value)
+  if (path.isAbsolute(relativePath) || isHermesMediaRouteTraversal(relativePath)) {
+    throw new Error('MEDIA route path traversal is not allowed')
+  }
+  const roots = hermesMediaRoots()
+  for (const root of roots) {
+    const candidate = path.resolve(root, relativePath)
+    if (isPathInside(root, candidate) && fs.existsSync(candidate)) return candidate
+  }
+  return path.resolve(roots[0], relativePath)
+}
+
+function sendHermesMediaFileResponse(req, res, url) {
+  const prefix = '/api/hermes/media/file/'
+  if (req.method !== 'GET' || !url.pathname.startsWith(prefix)) return false
+  try {
+    const routePath = url.pathname.slice(prefix.length) || url.searchParams.get('path') || ''
+    const filePath = resolveHermesMediaRoutePath(routePath)
+    const dataUrl = readHermesMediaImageDataUrl(filePath)
+    const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl)
+    if (!match) throw new Error('MEDIA image route failed to encode image')
+    res.statusCode = 200
+    res.setHeader('Content-Type', match[1])
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(Buffer.from(match[2], 'base64'))
+  } catch (error) {
+    const message = error?.message || String(error)
+    const status = /not found|inaccessible|does not exist/i.test(message) ? 404 : 403
+    sendJsonResponse(res, status, { error: message })
+  }
+  return true
 }
 
 function uvBinDir() {
@@ -13035,6 +13084,12 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
 }
 
 async function _apiMiddleware(req, res, next) {
+  let requestUrl = null
+  try {
+    requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
+  } catch {}
+  if (requestUrl && sendHermesMediaFileResponse(req, res, requestUrl)) return
+
   if (!req.url?.startsWith('/__api/')) return next()
 
   const rawPath = req.url.slice('/__api/'.length).split(/[?#]/)[0]

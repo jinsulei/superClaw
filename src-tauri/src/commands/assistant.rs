@@ -55,6 +55,7 @@ fn normalize_media_path(raw: &str) -> PathBuf {
 
 fn hermes_media_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    roots.push(data_dir().join("images"));
     if let Some(resources) = super::app_resources_dir() {
         roots.push(resources.join("data").join("generated"));
         roots.push(resources.join("data").join("hermes").join("generated"));

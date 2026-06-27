@@ -159,18 +159,26 @@ function normalizeHermesMessageContent(content) {
       continue
     }
 
-    const imageUrl = part.image_url?.url || part.url || part.source?.url || ''
+    const imageUrl = part.image_url?.url || part.imageUrl || part.previewUrl || part.url || part.source?.url || ''
     const imageData = part.data || part.source?.data || ''
+    const mediaPath = part.mediaPath || part.savedPath || part.localPath || part.filePath || part.path || ''
     if (type === 'image_url' || type === 'input_image' || type === 'image') {
       const mimeType = part.mimeType || part.media_type || part.source?.media_type || 'image/png'
-      if (imageUrl || imageData) {
+      if (imageUrl || imageData || mediaPath) {
         attachments.push({
           category: 'image',
           type: 'image',
           mimeType,
+          imageUrl,
+          previewUrl: part.previewUrl || '',
           url: imageUrl,
           content: imageData,
           fileName: part.fileName || part.name || 'image',
+          mediaPath: part.mediaPath || '',
+          savedPath: part.savedPath || '',
+          localPath: part.localPath || '',
+          filePath: part.filePath || '',
+          path: part.path || '',
         })
       }
     }
@@ -1626,15 +1634,23 @@ function createStore() {
         const category = String(item?.category || item?.type || '').toLowerCase() || 'file'
         const mimeType = item?.mimeType || item?.mediaType || item?.mime || ''
         const content = item?.content || item?.data || ''
-        const url = item?.url || ''
-        if (!content && !url) return null
+        const imageUrl = item?.imageUrl || item?.previewUrl || item?.url || ''
+        const mediaPath = item?.mediaPath || item?.savedPath || item?.localPath || item?.filePath || item?.path || ''
+        if (!content && !imageUrl && !mediaPath) return null
         return {
           category,
           type: category,
           mimeType,
           fileName: item?.fileName || item?.name || '',
           content,
-          url,
+          imageUrl: item?.imageUrl || '',
+          previewUrl: item?.previewUrl || '',
+          url: item?.url || '',
+          mediaPath: item?.mediaPath || '',
+          savedPath: item?.savedPath || '',
+          localPath: item?.localPath || '',
+          filePath: item?.filePath || '',
+          path: item?.path || '',
         }
       })
       .filter(Boolean)

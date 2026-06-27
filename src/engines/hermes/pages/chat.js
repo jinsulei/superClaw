@@ -817,6 +817,45 @@ const HERMES_MEDIA_IMAGE_EXTENSIONS = {
   '.gif': 'image/gif',
 }
 
+function isWindowsAbsoluteImagePath(value = '') {
+  return /^[A-Za-z]:[\\/]/.test(String(value || '').trim())
+}
+
+function isLocalFileImageUrl(value = '') {
+  return /^file:\/\//i.test(String(value || '').trim())
+}
+
+function isSafeRenderableImageSrc(value = '') {
+  const src = String(value || '').trim()
+  if (!src) return false
+  if (/^(data:image\/|blob:|https?:\/\/|\/api\/|app:|asset:|tauri:)/i.test(src)) return true
+  if (isWindowsAbsoluteImagePath(src) || isLocalFileImageUrl(src)) return false
+  return false
+}
+
+function attachmentMediaPath(att = {}) {
+  const candidates = [
+    att.mediaPath,
+    att.savedPath,
+    att.localPath,
+    att.filePath,
+    att.path,
+    att.imageUrl,
+    att.previewUrl,
+    att.url,
+    att.source?.url,
+  ]
+  for (const candidate of candidates) {
+    const value = String(candidate || '').trim()
+    if (!value) continue
+    if (isSafeRenderableImageSrc(value)) continue
+    if (isWindowsAbsoluteImagePath(value) || isLocalFileImageUrl(value) || /[\\/][^\\/]+\.(png|jpe?g|webp|gif)$/i.test(value)) {
+      return value
+    }
+  }
+  return ''
+}
+
 function parseHermesMediaDirectivePath(value = '') {
   let mediaPath = String(value || '').trim().replace(/^["']|["']$/g, '')
   if (!mediaPath) return null
@@ -1828,8 +1867,9 @@ export function render() {
 
   function attachmentImageSrc(att) {
     if (!att) return ''
-    if (att.dataUrl) return att.dataUrl
-    if (att.url) return att.url
+    if (isSafeRenderableImageSrc(att.dataUrl)) return att.dataUrl
+    const url = att.imageUrl || att.previewUrl || att.url || att.source?.url || ''
+    if (isSafeRenderableImageSrc(url)) return url
     const data = att.content || att.data
     if (!data) return ''
     return `data:${att.mimeType || att.mediaType || 'image/png'};base64,${data}`
@@ -1846,14 +1886,14 @@ export function render() {
       <div class="hm-chat-attachments">
         ${images.map(att => {
           const src = attachmentImageSrc(att)
-          const mediaPath = att.mediaPath || ''
+          const mediaPath = attachmentMediaPath(att)
           if (!src && !mediaPath) return ''
           if (!src && mediaPath) {
             return `
               <figure class="hm-chat-attachment-image is-loading" data-hermes-media-figure>
                 <img data-hermes-media-path="${escAttr(mediaPath)}" alt="${escAttr(att.fileName || att.name || 'image')}" hidden>
                 ${att.fileName || att.name ? `<figcaption>${escHtml(att.fileName || att.name)}</figcaption>` : ''}
-                <div class="hm-chat-media-status" data-hermes-media-status>Loading image...</div>
+                <div class="hm-chat-media-status" data-hermes-media-status>正在加载图片...</div>
               </figure>
             `
           }
@@ -1893,7 +1933,7 @@ export function render() {
         delete img.dataset.hermesMediaLoading
         figure?.classList.remove('is-loading')
         figure?.classList.add('is-error')
-        if (status) status.textContent = 'Image load failed'
+        if (status) status.textContent = '图片预览加载失败，请检查文件是否存在。'
         console.warn('[Hermes] MEDIA image load failed', err)
       }
     }
@@ -1905,7 +1945,9 @@ export function render() {
       <div class="hm-chat-pending-attachments">
         ${pendingAttachments.map((att, idx) => `
           <div class="hm-chat-pending-image">
-            <img src="${escAttr(attachmentImageSrc(att))}" alt="${escAttr(att.fileName || 'image')}">
+            ${attachmentImageSrc(att)
+              ? `<img src="${escAttr(attachmentImageSrc(att))}" alt="${escAttr(att.fileName || 'image')}">`
+              : `<span class="hm-chat-pending-image-placeholder">${escHtml(att.fileName || 'image')}</span>`}
             <span>${escHtml(att.fileName || 'image')}</span>
             <button type="button" data-remove-attachment="${idx}" title="Remove image">${ICONS.close}</button>
           </div>
