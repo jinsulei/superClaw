@@ -10,6 +10,15 @@ import { CHANNEL_LABELS } from '../lib/channel-labels.js'
 import { t } from '../lib/i18n.js'
 import { wsClient } from '../lib/ws-client.js'
 
+async function listenTauriEvent(name, handler) {
+  // 127.0.0.1 dev pages can be opened inside another desktop WebView that
+  // exposes window.__TAURI__. Only the packaged SuperClaw webview should wait
+  // for Tauri progress events; dev/web mode must call the backend directly.
+  if (window.location?.hostname !== 'tauri.localhost') return null
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen(name, handler)
+}
+
 // ── 渠道注册表：面板内置向导，覆盖 OpenClaw 官方渠道 + 国内扩展渠道 ──
 
 const PLATFORM_REGISTRY = {
@@ -1607,7 +1616,7 @@ async function openConfigDialog(pid, page, state, accountId) {
         const logBox = actionResultEl.querySelector('#channel-action-log-box')
         const progressBar = actionResultEl.querySelector('#channel-action-progress-bar')
         const progressText = actionResultEl.querySelector('#channel-action-progress-text')
-        const { listen } = await import('@tauri-apps/api/event')
+        const listen = listenTauriEvent
         let unlistenLog = null, unlistenProgress = null
         let _qrTimer = null
         let progressFallback = null
@@ -2018,7 +2027,7 @@ async function openConfigDialog(pid, page, state, accountId) {
       const logBox = actionResultEl.querySelector('#channel-action-log-box')
       const progressBar = actionResultEl.querySelector('#channel-action-progress-bar')
       const progressText = actionResultEl.querySelector('#channel-action-progress-text')
-      const { listen } = await import('@tauri-apps/api/event')
+      const listen = listenTauriEvent
       let unlistenLog = null
       let unlistenProgress = null
       let unlistenDone = null
@@ -2217,7 +2226,7 @@ async function openConfigDialog(pid, page, state, accountId) {
           let unlistenLog, unlistenProgress
           const progressFallback = startProgressFallback(logBox, progressBar, progressText, t('channels.downloadingPlugin'))
           try {
-            const { listen } = await import('@tauri-apps/api/event')
+            const listen = listenTauriEvent
             unlistenLog = await listen('plugin-log', (e) => {
               logBox.textContent += e.payload + '\n'
               logBox.scrollTop = logBox.scrollHeight

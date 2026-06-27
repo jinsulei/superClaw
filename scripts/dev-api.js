@@ -2532,10 +2532,16 @@ function openclawMiniMaxGatewayEnv() {
   const minimaxConfig = openclawMiniMaxGatewayConfig()
   if (minimaxConfig.effective?.modelSource !== 'direct') return {}
   if (minimaxConfig.effective?.status !== 'ready') return {}
-  if (!minimaxConfig.apiKey) return {}
+  const apiKey = pickOpenClawMiniMaxApiKey(
+    minimaxConfig.apiKey,
+    process.env.MINIMAX_API_KEY,
+    process.env.MINIMAX_CN_API_KEY,
+    process.env.OPENAI_API_KEY
+  )
+  if (!apiKey) return {}
   return {
-    MINIMAX_API_KEY: minimaxConfig.apiKey,
-    OPENAI_API_KEY: minimaxConfig.apiKey,
+    MINIMAX_API_KEY: apiKey,
+    OPENAI_API_KEY: apiKey,
     OPENAI_BASE_URL: minimaxConfig.baseUrl,
     OPENAI_MODEL: minimaxConfig.model,
     SUPERCLAW_FORCE_PROVIDER: 'minimax',
@@ -2561,7 +2567,7 @@ function requireOpenClawMiniMaxGatewayConfig() {
   if (minimaxConfig.effective?.modelSource === 'yyapi' && minimaxConfig.effective?.status === 'ready') {
     return minimaxConfig
   }
-  if (!minimaxConfig.apiKey) {
+  if (!minimaxConfig.effective?.apiKeyConfigured && !minimaxConfig.apiKey) {
     const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
     error.code = 'OPENCLAW_MINIMAX_API_KEY_REQUIRED'
     throw error
@@ -4643,6 +4649,60 @@ function bundledOpenClawExtensionExists(pluginId) {
   return candidates.some(dir => fs.existsSync(path.join(dir, 'openclaw.plugin.json')) || fs.existsSync(dir))
 }
 
+const OPENCLAW_CHANNEL_PLUGIN_PACKAGES = {
+  'openclaw-weixin': '@tencent-weixin/openclaw-weixin',
+  qqbot: '@tencent-connect/openclaw-qqbot',
+}
+
+function npmPackagePathParts(packageName) {
+  const value = String(packageName || '').trim()
+  if (!value) return []
+  if (value.startsWith('@')) {
+    const [scope, name] = value.split('/')
+    return scope && name ? [scope, name] : []
+  }
+  return [value]
+}
+
+function openclawPluginInstallCandidates(pluginId, packageName = null) {
+  const candidates = [
+    path.join(OPENCLAW_DIR, 'extensions', pluginId),
+    path.join(OPENCLAW_DIR, 'plugins', 'node_modules', pluginId),
+  ]
+  const packageNames = [...new Set([packageName, OPENCLAW_CHANNEL_PLUGIN_PACKAGES[pluginId]].filter(Boolean))]
+  for (const pkg of packageNames) {
+    const parts = npmPackagePathParts(pkg)
+    if (!parts.length) continue
+    candidates.push(path.join(OPENCLAW_DIR, 'npm', 'node_modules', ...parts))
+    candidates.push(path.join(OPENCLAW_DIR, '.openclaw', 'npm', 'node_modules', ...parts))
+    candidates.push(path.join(OPENCLAW_DIR, 'plugins', 'node_modules', ...parts))
+  }
+  return [...new Set(candidates)]
+}
+
+function isOpenClawInstalledPluginDir(dir) {
+  return !!(dir && (
+    fs.existsSync(path.join(dir, 'package.json'))
+    || fs.existsSync(path.join(dir, 'index.js'))
+    || fs.existsSync(path.join(dir, 'openclaw.plugin.json'))
+  ))
+}
+
+function readOpenClawPluginPackageMeta(dir) {
+  const meta = { version: null, description: null }
+  if (!dir) return meta
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'))
+    meta.version = pkg.version || null
+    meta.description = pkg.description || null
+  } catch {}
+  return meta
+}
+
+function findOpenClawInstalledPlugin(pluginId, packageName = null) {
+  return openclawPluginInstallCandidates(pluginId, packageName).find(isOpenClawInstalledPluginDir) || null
+}
+
 function ensureOpenClawStatusPluginDefaults(config) {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return false
   let changed = false
@@ -5482,6 +5542,8 @@ async function waitForGatewayReady(label = 'ai.openclaw.gateway', timeoutMs = 30
     await new Promise(resolve => setTimeout(resolve, 500))
   }
   const detail = lastHealth?.status ? ` health=${lastHealth.status}` : ''
+  throw new Error(`OpenClaw Gateway startup timed out.${detail} log: ${path.join(LOGS_DIR, 'gateway.err.log')}`)
+  throw new Error(`OpenClaw Gateway 启动超时，请点击重新连接。${detail} 日志：${path.join(LOGS_DIR, 'gateway.err.log')}`)
   throw new Error(`OpenClaw Gateway 启动超时，请点击重新连接。${detail} 日志：${path.join(LOGS_DIR, 'gateway.err.log')}`)
 }
 
@@ -7074,7 +7136,7 @@ const handlers = {
       return true
     }
     winStartGateway()
-    await waitForGatewayReady(label)
+    await waitForGatewayReady(label, 90000)
     return true
   },
 
@@ -7412,6 +7474,27 @@ const handlers = {
     const plugins = []
     const seen = new Set()
 
+    const addInstalledPlugin = (name, p, packageName = null) => {
+      if (seen.has(name)) return
+      seen.add(name)
+      const entryCfg = entries[name] || (packageName ? entries[packageName] : null) || {}
+      const enabled = !!entryCfg?.enabled || allowArr.includes(name) || (packageName ? allowArr.includes(packageName) : false)
+      const allowed = enabled
+      const meta = readOpenClawPluginPackageMeta(p)
+      plugins.push({
+        id: name,
+        packageName,
+        installed: true,
+        builtin: false,
+        enabled,
+        allowed,
+        version: meta.version,
+        description: meta.description,
+        path: p,
+        config: entryCfg?.config || null,
+      })
+    }
+
     // Scan extensions directory
     if (fs.existsSync(extDir)) {
       for (const name of fs.readdirSync(extDir)) {
@@ -7420,18 +7503,14 @@ const handlers = {
         if (!fs.statSync(p).isDirectory()) continue
         const hasMarker = fs.existsSync(path.join(p, 'package.json')) || fs.existsSync(path.join(p, 'plugin.ts')) || fs.existsSync(path.join(p, 'index.js'))
         if (!hasMarker) continue
-        seen.add(name)
-        const entryCfg = entries[name]
-        const enabled = !!entryCfg?.enabled || allowArr.includes(name)
-        const allowed = enabled
-        let version = null, description = null
-        try {
-          const pkg = JSON.parse(fs.readFileSync(path.join(p, 'package.json'), 'utf8'))
-          version = pkg.version || null
-          description = pkg.description || null
-        } catch {}
-        plugins.push({ id: name, installed: true, builtin: false, enabled, allowed, version, description, config: entryCfg?.config || null })
+        addInstalledPlugin(name, p)
       }
+    }
+
+    // Channel plugins installed by `openclaw plugins install` live under npm node_modules.
+    for (const [pid, packageName] of Object.entries(OPENCLAW_CHANNEL_PLUGIN_PACKAGES)) {
+      const p = findOpenClawInstalledPlugin(pid, packageName)
+      if (p) addInstalledPlugin(pid, p, packageName)
     }
 
     // Include entries from config not found in extensions dir
@@ -12394,16 +12473,18 @@ const handlers = {
   // —— 渠道插件状态/操作（暂未在 Node 实现，先抛友好错误）——
   check_weixin_plugin_status() {
     const pid = 'openclaw-weixin'
-    const candidates = [
-      path.join(OPENCLAW_DIR, 'extensions', pid),
-      path.join(OPENCLAW_DIR, 'plugins', 'node_modules', pid),
-    ]
-    const pluginDir = candidates.find(dir => fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'index.js')))
-    let version = null
-    if (pluginDir && fs.existsSync(path.join(pluginDir, 'package.json'))) {
-      try { version = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8')).version || null } catch {}
+    const packageName = OPENCLAW_CHANNEL_PLUGIN_PACKAGES[pid]
+    const candidates = openclawPluginInstallCandidates(pid, packageName)
+    const pluginDir = candidates.find(isOpenClawInstalledPluginDir)
+    const meta = readOpenClawPluginPackageMeta(pluginDir)
+    return {
+      installed: !!pluginDir,
+      version: meta.version,
+      installedVersion: meta.version,
+      plugin: pid,
+      packageName,
+      path: pluginDir || candidates[0],
     }
-    return { installed: !!pluginDir, version, installedVersion: version, plugin: pid, path: pluginDir || candidates[0] }
   },
   diagnose_channel() {
     return { ok: false, error: 'Web 模式暂未实现渠道诊断，请使用桌面客户端' }
