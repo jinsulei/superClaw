@@ -20,6 +20,13 @@ import {
 } from './lib/model-config-source-guard.mjs'
 import { getRuntimeMode } from './lib/runtime-mode.mjs'
 import { readYyapiConfig, yyapiRelaySummary } from './lib/yyapi-config.mjs'
+import {
+  activateAuthSession,
+  getAuthStatus,
+  loginAuthSession,
+  logoutAuthSession,
+} from './lib/auth-session.mjs'
+import { getAuthGuardDecision } from './lib/auth-guard.mjs'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 // ---------------------------------------------------------------------------
@@ -2334,6 +2341,75 @@ async function handleAuthYyapiKitRestApi(req, res, url) {
       return true
     }
     sendJsonResponse(res, 200, { ok: true, runtime: getRuntimeMode(process.env) })
+    return true
+  }
+  if (url.pathname === '/api/auth/status') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = getAuthStatus(process.env)
+    sendJsonResponse(res, 200, { ok: true, status, guard: getAuthGuardDecision(status) })
+    return true
+  }
+  if (url.pathname === '/api/auth/login') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = loginAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '登录状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_LOGIN_FAILED',
+        message: error.message || '登录失败',
+      })
+    }
+    return true
+  }
+  if (url.pathname === '/api/auth/logout') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = logoutAuthSession(process.env)
+    sendJsonResponse(res, 200, {
+      ok: true,
+      message: '已退出登录。',
+      status,
+      guard: getAuthGuardDecision(status),
+    })
+    return true
+  }
+  if (url.pathname === '/api/auth/activate') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = activateAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '激活状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_ACTIVATION_FAILED',
+        message: error.message || '激活失败',
+      })
+    }
     return true
   }
   if (url.pathname === '/api/effective-model-config') {

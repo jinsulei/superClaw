@@ -7,7 +7,7 @@ window._splashModuleStart = Date.now()
 // 标记 JS 模块已加载（供 index.html 多阶段启动检测使用）
 window._jsLoaded = true
 
-import { initRouter, navigate, setDefaultRoute } from './router.js'
+import { initRouter, navigate, registerRoute, setDefaultRoute } from './router.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
 import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
@@ -23,6 +23,7 @@ import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
 import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
+import { fetchAuthStatus, getAuthGuardDecision } from './lib/auth-session.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -73,7 +74,31 @@ function isLocalDevAuthBypass() {
  * 替代旧版本地密码保护
  */
 async function checkRemoteAuth() {
-  return { ok: true }
+  if (isLocalDevAuthBypass()) {
+    return {
+      ok: true,
+      status: { authRequired: false, allowAppAccess: true, reason: 'local_dev_bypass' },
+      guard: { allowAppAccess: true, targetRoute: null, reason: 'local_dev_bypass' },
+    }
+  }
+  try {
+    const status = await fetchAuthStatus()
+    const guard = status.guard || getAuthGuardDecision(status)
+    return {
+      ok: Boolean(guard.allowAppAccess),
+      status,
+      guard,
+      targetRoute: guard.targetRoute,
+    }
+  } catch (error) {
+    console.warn('[auth] status check failed:', error?.message || error)
+    return {
+      ok: false,
+      status: { authRequired: true, allowAppAccess: false, reason: 'auth_status_unavailable' },
+      guard: { allowAppAccess: false, targetRoute: '/login', reason: 'auth_status_unavailable' },
+      targetRoute: '/login',
+    }
+  }
 }
 
 const _logoSvg = `<svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -164,7 +189,12 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
-  navigate('/dashboard')
+  try {
+    const auth = await checkRemoteAuth()
+    navigate(auth.ok ? '/dashboard' : (auth.targetRoute || '/login'))
+  } catch {
+    navigate('/login')
+  }
 }
 
 const sidebar = document.getElementById('sidebar')
@@ -177,7 +207,17 @@ const content = document.getElementById('content')
  */
 async function renderAuthPage(app) {
   if (app) app.innerHTML = ''
-  navigate('/dashboard')
+  const route = (window.location.hash.slice(1) || '/login').split('?')[0]
+  const loaders = {
+    '/login': () => import('./pages/login.js'),
+    '/register': () => import('./pages/register.js'),
+    '/activate': () => import('./pages/activate.js'),
+  }
+  const loader = loaders[route] || loaders['/login']
+  const mod = await loader()
+  const page = await (mod.render || mod.default)?.()
+  if (app && page) app.appendChild(page)
+  _hideSplash()
 }
 
 async function renderLocalAccessPage(app) {
@@ -404,6 +444,28 @@ async function boot() {
   console.time('[boot] initEngineManager')
   await initEngineManager()
   console.timeEnd('[boot] initEngineManager')
+
+  registerRoute('/login', () => import('./pages/login.js'))
+  registerRoute('/register', () => import('./pages/register.js'))
+  registerRoute('/activate', () => import('./pages/activate.js'))
+
+  const authCheck = await checkRemoteAuth()
+  const authRoutes = new Set(['/login', '/register', '/activate'])
+  const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
+  if (!authCheck.ok) {
+    let targetRoute = authCheck.targetRoute || '/login'
+    if (currentRoute === '/register') targetRoute = '/register'
+    if (currentRoute === '/activate' && authCheck.status?.loggedIn) targetRoute = '/activate'
+    setDefaultRoute(targetRoute)
+    if (currentRoute !== targetRoute) navigate(targetRoute)
+    renderSidebar(sidebar)
+    initRouter(content)
+    _hideSplash()
+    return
+  }
+  if (authRoutes.has(currentRoute)) {
+    navigate('/dashboard')
+  }
 
   // 订阅内核版本变化：低于硬地板时弹出全屏拦截，恢复后自动隐藏；
   // 同时刷新 sidebar 以反映 "内核可升级" 提示卡片状态。
