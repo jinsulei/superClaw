@@ -47,14 +47,27 @@ function publicLocalStatus() {
   const loggedIn = Boolean(user)
   const activated = Boolean(authState?.activated)
   const authRequired = Boolean(authState?.authRequired ?? runtime.authRequired)
+  const allowAppAccess = !authRequired || (activated && loggedIn)
+  let nextStep = 'app'
+  let reason = 'auth_not_required'
+  if (authRequired && !activated) {
+    nextStep = 'activate'
+    reason = 'activation_required'
+  } else if (authRequired && !loggedIn) {
+    nextStep = 'login'
+    reason = 'login_required'
+  } else if (authRequired) {
+    reason = 'authenticated'
+  }
   return {
     authRequired,
     loggedIn,
     activated,
-    allowAppAccess: !authRequired || (loggedIn && activated),
+    allowAppAccess,
+    nextStep,
     sessionConfigured: loggedIn,
     user,
-    reason: loggedIn ? (activated ? 'authenticated' : 'activation_required') : (authRequired ? 'login_required' : 'auth_not_required'),
+    reason,
     mode: runtime.mode,
     modelSource: runtime.modelSource,
     yyapiEnabled: runtime.yyapiEnabled,
@@ -81,18 +94,22 @@ export function clearLocalAuthSession() {
   localStorage.removeItem(AUTH_STATE_KEY)
 }
 
+function clearLocalLoginSession() {
+  localStorage.removeItem(AUTH_USER_KEY)
+}
+
 export function getLocalAuthStatus() {
   return publicLocalStatus()
 }
 
 export function getAuthGuardDecision(status = publicLocalStatus()) {
-  if (status.allowAppAccess) {
+  if (!status.authRequired || status.allowAppAccess) {
     return { allowAppAccess: true, targetRoute: null, reason: status.reason || 'authenticated' }
   }
-  if (!status.loggedIn) {
-    return { allowAppAccess: false, targetRoute: '/login', reason: status.reason || 'login_required' }
+  if (!status.activated) {
+    return { allowAppAccess: false, targetRoute: '/activate', reason: status.reason || 'activation_required' }
   }
-  return { allowAppAccess: false, targetRoute: '/activate', reason: status.reason || 'activation_required' }
+  return { allowAppAccess: false, targetRoute: '/login', reason: status.reason || 'login_required' }
 }
 
 async function requestJson(path, options = {}) {
@@ -121,12 +138,15 @@ function loginLocalAuth(input = {}) {
     throw error
   }
   const runtime = buildRuntimeMode()
+  const current = publicLocalStatus()
+  const activated = Boolean(current.activated || !runtime.authRequired)
+  const allowAppAccess = !runtime.authRequired || activated
   const status = {
-    ...publicLocalStatus(),
+    ...current,
     authRequired: runtime.authRequired,
     loggedIn: true,
-    activated: !runtime.authRequired,
-    allowAppAccess: !runtime.authRequired,
+    activated,
+    allowAppAccess,
     sessionConfigured: true,
     user: {
       id: username,
@@ -135,7 +155,8 @@ function loginLocalAuth(input = {}) {
       phone: cleanRuntimeValue(input.phone),
       email: cleanRuntimeValue(input.email),
     },
-    reason: runtime.authRequired ? 'activation_required' : 'authenticated',
+    nextStep: allowAppAccess ? 'app' : 'activate',
+    reason: allowAppAccess ? 'authenticated' : 'activation_required',
     source: 'local-fallback',
   }
   savePublicStatus(status)
@@ -150,16 +171,13 @@ function activateLocalAuth(input = {}) {
     throw error
   }
   const current = publicLocalStatus()
-  if (!current.loggedIn) {
-    const error = new Error('请先登录后再激活。')
-    error.code = 'AUTH_LOGIN_REQUIRED'
-    throw error
-  }
+  const loggedIn = Boolean(current.loggedIn)
   const status = {
     ...current,
     activated: true,
-    allowAppAccess: true,
-    reason: 'authenticated',
+    allowAppAccess: !current.authRequired || loggedIn,
+    nextStep: loggedIn ? 'app' : 'login',
+    reason: loggedIn ? 'authenticated' : 'login_required',
     source: 'local-fallback',
   }
   savePublicStatus(status)
@@ -217,7 +235,7 @@ export async function logoutAuth() {
     return payload
   } catch (error) {
     if (!shouldUseLocalAuthFallback()) throw error
-    clearLocalAuthSession()
+    clearLocalLoginSession()
     const status = publicLocalStatus()
     return { ok: true, status, guard: getAuthGuardDecision(status), source: 'local-fallback' }
   }

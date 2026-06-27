@@ -95,8 +95,8 @@ async function checkRemoteAuth() {
     return {
       ok: false,
       status: { authRequired: true, allowAppAccess: false, reason: 'auth_status_unavailable' },
-      guard: { allowAppAccess: false, targetRoute: '/login', reason: 'auth_status_unavailable' },
-      targetRoute: '/login',
+      guard: { allowAppAccess: false, targetRoute: '/activate', reason: 'auth_status_unavailable' },
+      targetRoute: '/activate',
     }
   }
 }
@@ -453,9 +453,10 @@ async function boot() {
   const authRoutes = new Set(['/login', '/register', '/activate'])
   const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
   if (!authCheck.ok) {
-    let targetRoute = authCheck.targetRoute || '/login'
-    if (currentRoute === '/register') targetRoute = '/register'
-    if (currentRoute === '/activate' && authCheck.status?.loggedIn) targetRoute = '/activate'
+    let targetRoute = authCheck.targetRoute || '/activate'
+    if (authCheck.status?.activated && targetRoute === '/login' && currentRoute === '/register') {
+      targetRoute = '/register'
+    }
     setDefaultRoute(targetRoute)
     if (currentRoute !== targetRoute) navigate(targetRoute)
     renderSidebar(sidebar)
@@ -1143,7 +1144,7 @@ function startUpdateChecker() {
     }
   }
 
-  const legacyUserRoutes = new Set(['/login', '/register', '/activate', '/claim', '/profile'])
+  const legacyUserRoutes = new Set(['/claim', '/profile'])
   const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
   if (legacyUserRoutes.has(currentRoute)) {
     window.location.hash = '#/dashboard'

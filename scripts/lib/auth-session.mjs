@@ -34,16 +34,24 @@ function publicStatus(runtime = getRuntimeMode(process.env), override = {}) {
   const loggedIn = Boolean(override.loggedIn ?? sessionValid)
   const activated = Boolean(override.activated ?? state.activated)
   const authRequired = Boolean(runtime.authRequired)
-  const allowAppAccess = !authRequired || (loggedIn && activated)
+  const allowAppAccess = !authRequired || (activated && loggedIn)
+  let nextStep = 'app'
   let reason = 'auth_not_required'
-  if (authRequired && !loggedIn) reason = 'login_required'
-  else if (authRequired && !activated) reason = 'activation_required'
-  else if (authRequired) reason = 'authenticated'
+  if (authRequired && !activated) {
+    nextStep = 'activate'
+    reason = 'activation_required'
+  } else if (authRequired && !loggedIn) {
+    nextStep = 'login'
+    reason = 'login_required'
+  } else if (authRequired) {
+    reason = 'authenticated'
+  }
   return {
     authRequired,
     loggedIn,
     activated,
     allowAppAccess,
+    nextStep,
     sessionValid,
     sessionConfigured: sessionValid,
     user: loggedIn ? publicUser(state.user || {}) : null,
@@ -74,17 +82,12 @@ export function loginAuthSession(input = {}, env = process.env) {
     phone: cleanText(input.phone),
     email: cleanText(input.email),
   })
-  state.activated = !getRuntimeMode(env).authRequired
+  state.activated = Boolean(state.activated || !getRuntimeMode(env).authRequired)
   state.createdAt = Date.now()
   return getAuthStatus(env)
 }
 
 export function activateAuthSession(input = {}, env = process.env) {
-  if (!state.user) {
-    const error = new Error('请先登录后再激活。')
-    error.code = 'AUTH_LOGIN_REQUIRED'
-    throw error
-  }
   const code = cleanText(input.activationCode || input.code || input.license || input.key)
   if (code.length < 4) {
     const error = new Error('请输入有效激活码。')
@@ -98,11 +101,11 @@ export function activateAuthSession(input = {}, env = process.env) {
 export function logoutAuthSession(env = process.env) {
   state.secret = ''
   state.user = null
-  state.activated = false
   state.createdAt = 0
   return getAuthStatus(env)
 }
 
 export function resetAuthSession(env = process.env) {
+  state.activated = false
   return logoutAuthSession(env)
 }

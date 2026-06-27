@@ -42,7 +42,7 @@ export function render() {
         mode: 'register',
       })
       const status = result.status || {}
-      navigate(status.allowAppAccess ? '/dashboard' : '/activate')
+      navigate(status.allowAppAccess ? '/dashboard' : (status.nextStep === 'activate' ? '/activate' : '/login'))
     } catch (error) {
       errorEl.textContent = error.message || '注册失败'
       errorEl.hidden = false

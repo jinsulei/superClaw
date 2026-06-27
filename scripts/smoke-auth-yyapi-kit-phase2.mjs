@@ -45,18 +45,29 @@ function runReleaseGuardCheck() {
   let guard = getAuthGuardDecision(status)
   assert.equal(status.authRequired, true)
   assert.equal(status.allowAppAccess, false)
+  assert.equal(status.nextStep, 'activate')
+  assert.equal(guard.targetRoute, '/activate')
+
+  const activationInput = 'phase2-activation-code'
+  status = activateAuthSession({ activationCode: activationInput }, env)
+  guard = getAuthGuardDecision(status)
+  assert.equal(status.loggedIn, false)
+  assert.equal(status.activated, true)
+  assert.equal(status.allowAppAccess, false)
+  assert.equal(status.nextStep, 'login')
   assert.equal(guard.targetRoute, '/login')
+  assertPublicPayload(status, activationInput)
 
   const passwordInput = 'phase2-private-password'
   status = loginAuthSession({ username: 'phase2-user', password: passwordInput }, env)
   guard = getAuthGuardDecision(status)
   assert.equal(status.loggedIn, true)
-  assert.equal(status.activated, false)
-  assert.equal(status.allowAppAccess, false)
-  assert.equal(guard.targetRoute, '/activate')
+  assert.equal(status.activated, true)
+  assert.equal(status.allowAppAccess, true)
+  assert.equal(status.nextStep, 'app')
+  assert.equal(guard.targetRoute, null)
   assertPublicPayload(status, passwordInput)
 
-  const activationInput = 'phase2-activation-code'
   status = activateAuthSession({ activationCode: activationInput }, env)
   guard = getAuthGuardDecision(status)
   assert.equal(status.loggedIn, true)
@@ -69,6 +80,7 @@ function runReleaseGuardCheck() {
   guard = getAuthGuardDecision(status)
   assert.equal(status.loggedIn, false)
   assert.equal(status.allowAppAccess, false)
+  assert.equal(status.nextStep, 'login')
   assert.equal(guard.targetRoute, '/login')
   console.log('AUTH_KIT_PHASE2_RELEASE_GUARD_PASS')
 }

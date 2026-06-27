@@ -47,7 +47,7 @@ export function render() {
         password: data.get('password'),
       })
       const status = result.status || {}
-      navigate(status.allowAppAccess ? '/dashboard' : '/activate')
+      navigate(status.allowAppAccess ? '/dashboard' : (status.nextStep === 'activate' ? '/activate' : '/login'))
     } catch (error) {
       errorEl.textContent = error.message || '登录失败'
       errorEl.hidden = false
