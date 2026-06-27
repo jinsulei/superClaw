@@ -41,7 +41,11 @@ const claudeInput = '你是谁？请用中文说明你的身份。'
 const claudeEnglishReply = 'I am Claude Code running inside a native Claude CLI integration for coding tasks and project analysis.'
 const sanitizedClaude = sanitizeVisibleReplyForChinese(claudeEnglishReply, claudeInput, { agent: 'claude' })
 assert.equal(sanitizedClaude, CLAUDE_CODE_VISIBLE_IDENTITY_ZH)
+const claudeModelIdentityReply = '我是 MiniMax-M3 大语言模型，由模型服务商提供。'
+const sanitizedClaudeModelIdentity = sanitizeVisibleReplyForChinese(claudeModelIdentityReply, claudeInput, { agent: 'claude' })
+assert.equal(sanitizedClaudeModelIdentity, CLAUDE_CODE_VISIBLE_IDENTITY_ZH)
 assert.ok(claudeServer.includes('sanitizeVisibleReplyLanguage'))
+assert.ok(claudeServer.includes('looksLikeModelIdentityAnswer'))
 assert.ok(claudeServer.includes('sanitizeModelOutput(text, { prompt'))
 console.log('CLAUDE_VISIBLE_REPLY_ZH_CN: PASS')
 

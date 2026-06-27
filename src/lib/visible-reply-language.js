@@ -95,7 +95,17 @@ export function isPaymentCodeRequest(input, reply = '') {
 
 export function isIdentityQuestion(input) {
   const value = String(input || '')
-  return /(你是谁|你是什么|说明你的身份|who are you|what are you)/i.test(value)
+  return /(你是谁|你是什么|你叫什么|说明你的身份|身份定位|介绍下自己|自我介绍|你能做什么|你的能力|能力和定位|who are you|what are you|introduce yourself|what can you do)/i.test(value)
+}
+
+export function looksLikeModelIdentityAnswer(reply) {
+  const value = String(reply || '')
+  if (!value) return false
+  if (/Claude\s*Code|Claude\s*Panel|SuperClaw\s*UI|代码.*(?:助手|协作)|项目.*(?:分析|协作)/i.test(value)) {
+    return false
+  }
+  return /(?:我是|我叫|我的身份是|作为|I am|I'm|my identity is).{0,48}(?:MiniMax|MiniMax-M3|GPT|gpt-[\w.-]+|Anthropic|Claude(?!\s*Code)|语言模型|大模型|AI\s*模型|模型供应商|model provider|large language model)/i.test(value)
+    || /(?:MiniMax|MiniMax-M3|GPT|gpt-[\w.-]+|Anthropic|Claude(?!\s*Code)|语言模型|大模型|AI\s*模型|large language model).{0,32}(?:训练|提供|驱动|模型|assistant)/i.test(value)
 }
 
 export function sanitizeVisibleReplyForChinese(reply, input = '', options = {}) {
@@ -109,7 +119,7 @@ export function sanitizeVisibleReplyForChinese(reply, input = '', options = {}) 
     return PAYMENT_CODE_SAFE_REPLY_ZH
   }
 
-  if (agent.includes('claude') && isIdentityQuestion(input) && (isMostlyEnglishVisibleText(text) || !countChinese(text))) {
+  if (agent.includes('claude') && isIdentityQuestion(input) && (isMostlyEnglishVisibleText(text) || !countChinese(text) || looksLikeModelIdentityAnswer(text))) {
     return CLAUDE_CODE_VISIBLE_IDENTITY_ZH
   }
 
