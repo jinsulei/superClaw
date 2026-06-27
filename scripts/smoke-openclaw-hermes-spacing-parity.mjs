@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -30,38 +29,39 @@ const scoped = openclawCss.slice(markerIndex)
 assertPass(
   'OPENCLAW_HERMES_CHAT_COLUMN_PARITY',
   scoped.includes('.openclaw-chat .chat-messages.sc-chat-stage') &&
-    scoped.includes('--agent-chat-column-max: 1180px') &&
-    scoped.includes('width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)))') &&
+    scoped.includes('--agent-chat-column-max: var(--superclaw-chat-stage-max, 1480px)') &&
+    scoped.includes('calc(100vw - var(--agent-chat-column-reserved))') &&
+    scoped.includes('max-width: var(--agent-chat-column-max)') &&
     scoped.includes('padding: var(--space-md, 16px) 24px') &&
     scoped.includes('margin-inline: auto') &&
     scoped.includes('box-sizing: border-box'),
-  'OpenClaw message column must be centered with the shared 1180px chat column.',
+  'OpenClaw message column must be centered with the shared wide chat column.',
 )
 
 assertPass(
   'OPENCLAW_COMPOSER_CENTERED_LIKE_HERMES',
   chat.includes('openclaw-composer-row') &&
     scoped.includes('.openclaw-chat .openclaw-composer-row') &&
-    scoped.includes('width: min(var(--agent-chat-column-max), calc(100% - var(--agent-chat-column-gutter)))') &&
+    scoped.includes('calc(100vw - var(--agent-chat-column-reserved))') &&
     scoped.includes('max-width: var(--agent-chat-column-max)') &&
     scoped.includes('margin-inline: auto') &&
-    hermesCss.includes('max-width: 1180px'),
-  'OpenClaw composer should share the widened Hermes 1180px centered composer width.',
+    hermesCss.includes('max-width: var(--superclaw-chat-stage-max, 1480px)'),
+  'OpenClaw composer should share the widened Hermes centered composer width.',
 )
 
 assertPass(
   'OPENCLAW_NO_100VW_COMPOSER',
-  !/\.openclaw-chat\s+\.openclaw-composer-row[^}]*100vw/s.test(scoped),
-  'OpenClaw composer must not use 100vw.',
+  !/\.openclaw-chat\s+\.openclaw-composer-row[^}]*width:\s*100vw/s.test(scoped),
+  'OpenClaw composer must not use raw 100vw.',
 )
 
 assertPass(
   'OPENCLAW_BUBBLE_WIDTH_PARITY',
-  scoped.includes('max-width: min(980px, 72vw)') &&
-    scoped.includes('max-width: min(520px, 46vw)') &&
+  scoped.includes('max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)))') &&
+    scoped.includes('max-width: min(var(--superclaw-chat-user-readable-max, 620px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)))') &&
     hermesCss.includes('max-width: min(980px, 72vw)') &&
     hermesCss.includes('max-width: min(520px, 46vw)'),
-  'OpenClaw assistant/user bubble max-width should match Hermes values.',
+  'OpenClaw assistant/user bubble max-width should stay readable while using the shared wide stage.',
 )
 
 assertPass(
@@ -73,17 +73,12 @@ assertPass(
   'OpenClaw narrow viewport rules should keep the composer and message column inside the viewport.',
 )
 
-const diffFiles = execSync('git diff --name-only', {
-  cwd: root,
-  encoding: 'utf8',
-  stdio: ['ignore', 'pipe', 'ignore'],
-}).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-
 assertPass(
   'HERMES_STYLE_ALIGNED',
-  diffFiles.includes('src/engines/hermes/style/hermes.css') &&
-    hermesCss.includes('width: min(1180px, calc(100% - 48px))'),
-  'Hermes CSS should be aligned with the shared 1180px chat column in this spacing fix.',
+  hermesCss.includes('--superclaw-chat-stage-max: 1480px') &&
+    hermesCss.includes('calc(100vw - var(--superclaw-chat-stage-reserved, 320px))') &&
+    hermesCss.includes('max-width: var(--superclaw-chat-stage-max, 1480px)'),
+  'Hermes CSS should be aligned with the shared wide chat column.',
 )
 
 console.log('smoke-openclaw-hermes-spacing-parity passed')
