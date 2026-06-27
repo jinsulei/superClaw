@@ -170,9 +170,47 @@ function Copy-Directory([string]$Source, [string]$Destination) {
   }
 }
 
+function Get-WindowsLongPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $Path
+  }
+
+  $FullPath = [System.IO.Path]::GetFullPath($Path)
+  if ($FullPath.StartsWith("\\?\", [System.StringComparison]::Ordinal)) {
+    return $FullPath
+  }
+  if ($FullPath.StartsWith("\\", [System.StringComparison]::Ordinal)) {
+    return "\\?\UNC\" + $FullPath.Substring(2)
+  }
+  return "\\?\" + $FullPath
+}
+
 function Remove-IfExists([string]$Path) {
-  if (Test-Path $Path) {
-    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return
+  }
+
+  $LongPath = Get-WindowsLongPath $Path
+  if ([System.IO.File]::Exists($LongPath)) {
+    [System.IO.File]::SetAttributes($LongPath, [System.IO.FileAttributes]::Normal)
+    [System.IO.File]::Delete($LongPath)
+    return
+  }
+
+  if ([System.IO.Directory]::Exists($LongPath)) {
+    try {
+      [System.IO.Directory]::Delete($LongPath, $true)
+    } catch {
+      Warn "Retrying long-path cleanup: $Path"
+      $EmptyDir = Join-Path ([System.IO.Path]::GetTempPath()) ("superclaw-empty-" + [Guid]::NewGuid().ToString("N"))
+      New-Item -ItemType Directory -Path $EmptyDir -Force | Out-Null
+      try {
+        robocopy $EmptyDir $Path /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        [System.IO.Directory]::Delete($LongPath, $true)
+      } finally {
+        [System.IO.Directory]::Delete((Get-WindowsLongPath $EmptyDir), $true)
+      }
+    }
   }
 }
 
