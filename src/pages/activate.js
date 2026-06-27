@@ -1,6 +1,11 @@
 import { navigate } from '../router.js'
 import { activateAuth, clearLocalAuthSession, fetchAuthStatus } from '../lib/auth-session.js'
 
+function enterAuthenticatedApp() {
+  window.location.hash = '#/dashboard'
+  window.location.reload()
+}
+
 export function render() {
   const page = document.createElement('div')
   page.className = 'auth-page'
@@ -41,7 +46,12 @@ export function render() {
       const btn = form.querySelector('button[type="submit"]')
       btn.disabled = true
     try {
-      await activateAuth({ activationCode: data.get('activationCode') })
+      const result = await activateAuth({ activationCode: data.get('activationCode') })
+      const status = result.status || {}
+      if (status.allowAppAccess) {
+        enterAuthenticatedApp()
+        return
+      }
       desc.textContent = '激活成功，请注册或登录账号。'
       navigate('/login')
     } catch (error) {

@@ -86,9 +86,22 @@ function runSpacingAndStaticChecks() {
     "targetRoute: '/login'",
   ])
   assertTextContains('src/pages/activate.js', [
+    'function enterAuthenticatedApp()',
+    "window.location.hash = '#/dashboard'",
+    'window.location.reload()',
     "navigate('/login')",
     '激活并继续登录',
     '#/register',
+  ])
+  assertTextContains('src/pages/login.js', [
+    'function enterAuthenticatedApp()',
+    "window.location.hash = '#/dashboard'",
+    'window.location.reload()',
+  ])
+  assertTextContains('src/pages/register.js', [
+    'function enterAuthenticatedApp()',
+    "window.location.hash = '#/dashboard'",
+    'window.location.reload()',
   ])
   assertTextContains('src/style/pages.css', [
     '.auth-card',

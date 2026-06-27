@@ -1,6 +1,11 @@
 import { navigate } from '../router.js'
 import { loginAuth } from '../lib/auth-session.js'
 
+function enterAuthenticatedApp() {
+  window.location.hash = '#/dashboard'
+  window.location.reload()
+}
+
 function field(label, name, type = 'text', placeholder = '') {
   return `
     <label class="auth-field">
@@ -47,7 +52,11 @@ export function render() {
         password: data.get('password'),
       })
       const status = result.status || {}
-      navigate(status.allowAppAccess ? '/dashboard' : (status.nextStep === 'activate' ? '/activate' : '/login'))
+      if (status.allowAppAccess) {
+        enterAuthenticatedApp()
+        return
+      }
+      navigate(status.nextStep === 'activate' ? '/activate' : '/login')
     } catch (error) {
       errorEl.textContent = error.message || '登录失败'
       errorEl.hidden = false
