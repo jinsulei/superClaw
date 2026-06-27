@@ -66,6 +66,50 @@ function isPathInside(parent, child) {
   return childPath === parentPath || childPath.startsWith(parentPath + path.sep)
 }
 
+const HERMES_MEDIA_EXTENSIONS = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+])
+
+function normalizeLocalMediaPath(input) {
+  let value = String(input || '').trim().replace(/^["']|["']$/g, '')
+  if (/^file:\/\//i.test(value)) {
+    value = value.replace(/^file:\/\//i, '')
+    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(value)) value = value.slice(1)
+    try { value = decodeURIComponent(value) } catch {}
+  }
+  return path.resolve(value)
+}
+
+function hermesMediaRoots() {
+  const roots = [
+    path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'generated'),
+    path.join(appRootDir(), 'resources', 'data', 'generated'),
+    path.join(hermesHome(), 'generated'),
+    path.join(hermesHome(), 'image_cache'),
+  ]
+  return Array.from(new Set(roots.map(root => path.resolve(root))))
+}
+
+function readHermesMediaImageDataUrl(rawPath) {
+  if (!rawPath) throw new Error('MEDIA path is required')
+  const filePath = normalizeLocalMediaPath(rawPath)
+  const ext = path.extname(filePath).toLowerCase()
+  const mime = HERMES_MEDIA_EXTENSIONS.get(ext)
+  if (!mime) throw new Error(`Unsupported MEDIA image type: ${ext || '(none)'}`)
+  if (!fs.existsSync(filePath)) throw new Error(`MEDIA file not found: ${rawPath}`)
+  const stat = fs.statSync(filePath)
+  if (!stat.isFile()) throw new Error(`MEDIA path is not a file: ${rawPath}`)
+  if (stat.size > 20 * 1024 * 1024) throw new Error('MEDIA image is larger than 20MB')
+  const allowed = hermesMediaRoots().some(root => isPathInside(root, filePath))
+  if (!allowed) throw new Error('MEDIA image path is outside allowed Hermes generated directories')
+  const b64 = fs.readFileSync(filePath).toString('base64')
+  return `data:${mime};base64,${b64}`
+}
+
 function uvBinDir() {
   // 新结构优先：<app_root>/resources/bin/
   const newPath = path.join(appRootDir(), 'resources', 'bin')
@@ -5575,6 +5619,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_list_dir', 'assistant_open_path', 'assistant_system_info', 'assistant_list_processes',
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
+  'hermes_load_media_image',
   'read_minimax_test_config', 'save_minimax_test_config', 'configure_claude_code_relay',
   'payment_request',
 ])
@@ -9429,6 +9474,10 @@ const handlers = {
       }
     }
     throw new Error(`图片 ${id} 不存在`)
+  },
+
+  hermes_load_media_image({ path: mediaPath }) {
+    return readHermesMediaImageDataUrl(mediaPath)
   },
 
   assistant_delete_image({ id }) {

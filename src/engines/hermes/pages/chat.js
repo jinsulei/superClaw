@@ -809,6 +809,57 @@ function parseImageDataUrl(dataUrl, fallbackMime = 'image/png') {
   return { mimeType: match[1] || fallbackMime || 'image/png', content: match[2] || '' }
 }
 
+const HERMES_MEDIA_IMAGE_EXTENSIONS = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+function parseHermesMediaDirectivePath(value = '') {
+  let mediaPath = String(value || '').trim().replace(/^["']|["']$/g, '')
+  if (!mediaPath) return null
+  if (/^file:\/\//i.test(mediaPath)) {
+    mediaPath = mediaPath.replace(/^file:\/\//i, '')
+    if (/^\/[A-Za-z]:/.test(mediaPath)) mediaPath = mediaPath.slice(1)
+    try { mediaPath = decodeURIComponent(mediaPath) } catch {}
+  }
+  const extMatch = mediaPath.match(/(\.[A-Za-z0-9]+)(?:[?#].*)?$/)
+  const ext = extMatch ? extMatch[1].toLowerCase() : ''
+  const mimeType = HERMES_MEDIA_IMAGE_EXTENSIONS[ext]
+  if (!mimeType) return null
+  const fileName = mediaPath.split(/[\\/]/).pop() || 'image'
+  return {
+    category: 'image',
+    type: 'image',
+    mediaPath,
+    fileName,
+    mimeType,
+  }
+}
+
+function splitHermesMediaDirectives(rawText = '') {
+  const attachments = []
+  const lines = String(rawText || '').split(/\r?\n/)
+  const visibleLines = []
+  for (const line of lines) {
+    const match = /^\s*MEDIA:\s*(.+?)\s*$/i.exec(line)
+    if (match) {
+      const parsed = parseHermesMediaDirectivePath(match[1])
+      if (parsed) {
+        attachments.push(parsed)
+        continue
+      }
+    }
+    visibleLines.push(line)
+  }
+  return {
+    text: visibleLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    attachments,
+  }
+}
+
 function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -1035,6 +1086,7 @@ export function render() {
   let linkError = ''
   let pendingAttachmentInstructions = ''
   let pendingAttachments = []
+  const mediaDataUrlCache = new Map()
   let attachmentDragActive = false
   let attachmentDragDepth = 0
   let gwOnline = false
@@ -1713,7 +1765,15 @@ export function render() {
       `
     }
     const isUser = m.role === 'user'
-    const canCopy = !!(m.content || '').trim()
+    const mediaParsed = isUser
+      ? { text: m.content || '', attachments: [] }
+      : splitHermesMediaDirectives(m.content || '')
+    const visibleContent = mediaParsed.text || ''
+    const attachments = [
+      ...(Array.isArray(m.attachments) ? m.attachments : []),
+      ...mediaParsed.attachments,
+    ]
+    const canCopy = !!visibleContent.trim()
     const canSpeak = !isUser && canCopy
     const lifeAssistantHtml = [
       ...(Array.isArray(m.screenshotCards) ? m.screenshotCards.map(renderScreenshotCardHtml) : []),
@@ -1723,11 +1783,11 @@ export function render() {
     ].filter(Boolean).join('')
     const ecommerceCardHtml = renderEcommerceStageCardHtml(m)
     const messageContentHtml = [
-      renderMessageAttachments(m.attachments || []),
-      (m.content || '').trim() ? (isUser ? mdToHtml(m.content) : renderCompactAssistantHtml(m.content, m.id)) : '',
+      renderMessageAttachments(attachments),
+      visibleContent.trim() ? (isUser ? mdToHtml(visibleContent) : renderCompactAssistantHtml(visibleContent, m.id)) : '',
       lifeAssistantHtml,
       ecommerceCardHtml,
-      m.isStreaming && !m.content ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
+      m.isStreaming && !visibleContent ? '<span class="hm-chat-streaming-dots"><span></span><span></span><span></span></span>' : '',
     ].filter(Boolean).join('')
     return `
       <div class="hm-chat-msg hm-chat-msg--${escHtml(m.role)} sc-msg-row ${isUser ? 'user' : 'assistant'}" data-mid="${escAttr(m.id)}">
@@ -1779,14 +1839,24 @@ export function render() {
     const images = (attachments || []).filter(att => {
       const category = String(att?.category || att?.type || '').toLowerCase()
       const mime = String(att?.mimeType || att?.mediaType || att?.mime || '').toLowerCase()
-      return category === 'image' || mime.startsWith('image/')
+      return category === 'image' || mime.startsWith('image/') || !!att?.mediaPath
     })
     if (!images.length) return ''
     return `
       <div class="hm-chat-attachments">
         ${images.map(att => {
           const src = attachmentImageSrc(att)
-          if (!src) return ''
+          const mediaPath = att.mediaPath || ''
+          if (!src && !mediaPath) return ''
+          if (!src && mediaPath) {
+            return `
+              <figure class="hm-chat-attachment-image is-loading" data-hermes-media-figure>
+                <img data-hermes-media-path="${escAttr(mediaPath)}" alt="${escAttr(att.fileName || att.name || 'image')}" hidden>
+                ${att.fileName || att.name ? `<figcaption>${escHtml(att.fileName || att.name)}</figcaption>` : ''}
+                <div class="hm-chat-media-status" data-hermes-media-status>Loading image...</div>
+              </figure>
+            `
+          }
           return `
             <figure class="hm-chat-attachment-image">
               <img src="${escAttr(src)}" alt="${escAttr(att.fileName || att.name || 'image')}">
@@ -1796,6 +1866,37 @@ export function render() {
         }).join('')}
       </div>
     `
+  }
+
+  async function hydrateHermesMediaImages(root = el) {
+    const nodes = Array.from(root.querySelectorAll('img[data-hermes-media-path]:not([data-hermes-media-loaded]):not([data-hermes-media-loading])'))
+    if (!nodes.length) return
+    for (const img of nodes) {
+      const mediaPath = img.dataset.hermesMediaPath
+      if (!mediaPath) continue
+      const figure = img.closest('[data-hermes-media-figure]')
+      const status = figure?.querySelector('[data-hermes-media-status]')
+      try {
+        img.dataset.hermesMediaLoading = '1'
+        let dataUrl = mediaDataUrlCache.get(mediaPath)
+        if (!dataUrl) {
+          dataUrl = await api.loadHermesMediaImage(mediaPath)
+          mediaDataUrlCache.set(mediaPath, dataUrl)
+        }
+        img.src = dataUrl
+        img.hidden = false
+        img.dataset.hermesMediaLoaded = '1'
+        delete img.dataset.hermesMediaLoading
+        figure?.classList.remove('is-loading', 'is-error')
+        if (status) status.remove()
+      } catch (err) {
+        delete img.dataset.hermesMediaLoading
+        figure?.classList.remove('is-loading')
+        figure?.classList.add('is-error')
+        if (status) status.textContent = 'Image load failed'
+        console.warn('[Hermes] MEDIA image load failed', err)
+      }
+    }
   }
 
   function renderPendingAttachments() {
@@ -2082,6 +2183,7 @@ export function render() {
       </div>
     `
     bind()
+    hydrateHermesMediaImages(el)
 
     // Restore / auto-scroll.
     const msgsEl = el.querySelector('.hm-chat-messages')
@@ -2147,6 +2249,7 @@ export function render() {
     const wasNearBottom = isMessagesNearBottom()
     msgsEl.innerHTML = renderMessages()
     bindMessageActions()
+    hydrateHermesMediaImages(msgsEl)
     if (forceScrollBottom || wasNearBottom) {
       msgsEl.scrollTop = msgsEl.scrollHeight
       if (msgsEl.scrollHeight > 0) forceScrollBottom = false
@@ -2175,7 +2278,10 @@ export function render() {
         const s = store.activeSession()
         const msg = s?.messages.find(m => m.id === mid)
         if (!msg?.content) return
-        const ok = await copyText(msg.content)
+        const copyContent = msg.role === 'assistant'
+          ? splitHermesMediaDirectives(msg.content).text || msg.content
+          : msg.content
+        const ok = await copyText(copyContent)
         toast(ok ? t('common.copied') : t('engine.chatCopyFailed'), ok ? 'success' : 'error')
       })
     })
@@ -2186,7 +2292,9 @@ export function render() {
         const mid = btn.dataset.voiceMid
         const s = store.activeSession()
         const msg = s?.messages.find(m => m.id === mid)
-        const text = msg?.content || ''
+        const text = msg?.role === 'assistant'
+          ? splitHermesMediaDirectives(msg?.content || '').text
+          : msg?.content || ''
         if (!text.trim()) return
         const status = await voicePlaybackController.toggleAsync({ key: mid, text, rate: voiceRate })
         if (status === 'started') toast(t('engine.chatVoiceFallbackTts'), 'info')

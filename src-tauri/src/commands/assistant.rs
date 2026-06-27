@@ -5,7 +5,7 @@ use base64::{engine::general_purpose, Engine as _};
 #[cfg(target_os = "windows")]
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 审计日志：记录 AI 助手的敏感操作（exec / read / write）
 fn audit_log(action: &str, detail: &str) {
@@ -24,6 +24,54 @@ fn audit_log(action: &str, detail: &str) {
 /// ClawPanel 数据目录（~/.openclaw/clawpanel/）
 fn data_dir() -> PathBuf {
     super::openclaw_dir().join("clawpanel")
+}
+
+fn media_mime(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+fn normalize_media_path(raw: &str) -> PathBuf {
+    let mut value = raw.trim().trim_matches(&['"', '\''][..]).to_string();
+    if value.to_ascii_lowercase().starts_with("file://") {
+        value = value[7..].to_string();
+        if cfg!(windows) && value.starts_with('/') && value.chars().nth(2) == Some(':') {
+            value = value[1..].to_string();
+        }
+    }
+    PathBuf::from(value)
+}
+
+fn hermes_media_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(resources) = super::app_resources_dir() {
+        roots.push(resources.join("data").join("generated"));
+        roots.push(resources.join("data").join("hermes").join("generated"));
+        roots.push(resources.join("data").join("hermes").join("image_cache"));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd.join("src-tauri").join("resources").join("data").join("generated"));
+        roots.push(cwd.join("resources").join("data").join("generated"));
+    }
+    roots
+}
+
+fn canonical_media_roots() -> Vec<PathBuf> {
+    hermes_media_roots()
+        .into_iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect()
 }
 
 /// 确保数据目录及子目录存在，返回目录路径
@@ -116,6 +164,38 @@ pub async fn assistant_load_image(id: String) -> Result<String, String> {
 }
 
 /// 删除图片文件
+#[tauri::command]
+pub async fn hermes_load_media_image(path: String) -> Result<String, String> {
+    let requested = normalize_media_path(&path);
+    let filepath = tokio::fs::canonicalize(&requested)
+        .await
+        .map_err(|e| format!("MEDIA image not found or inaccessible: {e}"))?;
+
+    let mime = media_mime(&filepath).ok_or_else(|| "Unsupported MEDIA image type".to_string())?;
+    let allowed = canonical_media_roots()
+        .iter()
+        .any(|root| filepath.starts_with(root));
+    if !allowed {
+        return Err("MEDIA image path is outside allowed Hermes generated directories".to_string());
+    }
+
+    let meta = tokio::fs::metadata(&filepath)
+        .await
+        .map_err(|e| format!("Failed to read MEDIA image metadata: {e}"))?;
+    if !meta.is_file() {
+        return Err("MEDIA path is not a file".to_string());
+    }
+    if meta.len() > 20 * 1024 * 1024 {
+        return Err("MEDIA image is larger than 20MB".to_string());
+    }
+
+    let bytes = tokio::fs::read(&filepath)
+        .await
+        .map_err(|e| format!("Failed to read MEDIA image: {e}"))?;
+    let b64 = general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
 #[tauri::command]
 pub async fn assistant_delete_image(id: String) -> Result<(), String> {
     let dir = data_dir().join("images");

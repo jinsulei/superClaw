@@ -251,6 +251,7 @@ pub fn run() {
             assistant::assistant_ensure_data_dir,
             assistant::assistant_save_image,
             assistant::assistant_load_image,
+            assistant::hermes_load_media_image,
             assistant::assistant_delete_image,
             ocr::ocr_get_config,
             ocr::ocr_set_enabled,

@@ -499,6 +499,7 @@ export const api = {
   ensureDataDir: () => invoke('assistant_ensure_data_dir'),
   saveImage: (id, data) => invoke('assistant_save_image', { id, data }),
   loadImage: (id) => invoke('assistant_load_image', { id }),
+  loadHermesMediaImage: (path) => invoke('hermes_load_media_image', { path }),
   deleteImage: (id) => invoke('assistant_delete_image', { id }),
   ocrGetConfig: () => cachedInvoke('ocr_get_config', {}, 10000),
   ocrSetEnabled: (enabled) => { invalidate('ocr_get_config'); return invoke('ocr_set_enabled', { enabled }) },

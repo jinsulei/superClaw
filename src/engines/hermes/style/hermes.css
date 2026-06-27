@@ -5582,6 +5582,17 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   max-width: min(260px, 72%);
 }
 
+[data-engine="hermes"] .hm-chat-attachment-image.is-loading,
+[data-engine="hermes"] .hm-chat-attachment-image.is-error {
+  min-width: 160px;
+  min-height: 64px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--hm-border);
+  border-radius: var(--hm-radius-sm);
+  background: rgba(255, 255, 255, 0.55);
+}
+
 [data-engine="hermes"] .hm-chat-attachment-image img {
   display: block;
   max-width: 100%;
@@ -5597,6 +5608,13 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   color: var(--hm-text-tertiary);
   font-family: var(--hm-font-mono);
   font-size: 10.5px;
+}
+
+[data-engine="hermes"] .hm-chat-media-status {
+  padding: 8px 10px;
+  color: var(--hm-text-tertiary);
+  font-family: var(--hm-font-mono);
+  font-size: 11px;
 }
 
 [data-engine="hermes"] .hm-chat-msg-footer {
