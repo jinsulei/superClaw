@@ -112,6 +112,8 @@ const tauriLib = "src-tauri/src/lib.rs";
 const modelPage = "src/pages/models.js";
 const minimaxConfig = "src/lib/minimax-test-config.js";
 const desktopBuild = "scripts/build-desktop-client.ps1";
+const packageJson = "package.json";
+const tauriConfig = "src-tauri/tauri.conf.json";
 
 let ok = true;
 
@@ -169,9 +171,18 @@ const testFlagsOk = [
   assertContains(desktopBuild, "VITE_SUPERCLAW_TEST_BUILD", "PACKAGED_TEST_BUILD_FLAGS"),
   assertContains(desktopBuild, "VITE_SUPERCLAW_FORCE_PROVIDER", "PACKAGED_TEST_BUILD_FLAGS"),
   assertContains(desktopBuild, "VITE_ENABLE_ECOMMERCE_ASSISTANT", "PACKAGED_TEST_BUILD_FLAGS"),
+  assertMatch(packageJson, /"build:desktop"\s*:\s*"[^"]*-SanitizedTest/, "PACKAGED_TEST_BUILD_FLAGS"),
 ].every(Boolean);
 if (testFlagsOk) pass("PACKAGED_TEST_BUILD_FLAGS");
 ok = testFlagsOk && ok;
+
+const tauriDragDropOk = assertMatch(
+  tauriConfig,
+  /"dragDropEnabled"\s*:\s*false/,
+  "PACKAGED_TAURI_HTML5_DRAG_DROP",
+);
+if (tauriDragDropOk) pass("PACKAGED_TAURI_HTML5_DRAG_DROP");
+ok = tauriDragDropOk && ok;
 
 ok = assertDistMarker("btn-test-minimax-test", "PACKAGED_DIST_OPENCLAW_MINIMAX_TEST_ENTRY") && ok;
 ok = assertDistMarker("hermes_load_media_image", "PACKAGED_DIST_HERMES_MEDIA_LOAD") && ok;
@@ -200,6 +211,8 @@ ok = assertNoSensitiveLeak([
   modelPage,
   minimaxConfig,
   desktopBuild,
+  packageJson,
+  tauriConfig,
 ]) && ok;
 
 if (!ok || process.exitCode) {
