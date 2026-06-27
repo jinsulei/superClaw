@@ -15,6 +15,7 @@
   --superclaw-chat-stage-gutter: 48px;
   --superclaw-chat-assistant-readable-max: 980px;
   --superclaw-chat-user-readable-max: 620px;
+  --superclaw-chat-bubble-edge-room: 80px;
   display: flex;
   flex-direction: row;
   height: 100%;
@@ -2194,12 +2195,12 @@
 }
 
 .sc-chat-stage .sc-msg-group.user {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%);
+  max-width: min(var(--superclaw-chat-user-readable-max, 620px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
   align-items: flex-end;
 }
 
 .sc-chat-stage .sc-msg-group.assistant {
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
   align-items: flex-start;
 }
 
@@ -2207,7 +2208,7 @@
   display: inline-block;
   flex: 0 0 auto;
   width: fit-content;
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: 100%;
   min-width: 0;
   min-height: 0;
   height: auto;
@@ -2223,7 +2224,7 @@
 }
 
 .sc-chat-stage .sc-msg-bubble.user {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%);
+  max-width: 100%;
   background: #39d68f;
   color: #082018;
   border: none;
@@ -2238,22 +2239,22 @@
 }
 
 .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant {
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: 100%;
 }
 
 .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(.assistant-compact-message.is-expanded) {
   width: fit-content;
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: 100%;
 }
 
 .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(.assistant-compact-message.is-collapsed) {
   width: fit-content;
-  max-width: min(860px, 72%);
+  max-width: 100%;
 }
 
 .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table) {
   min-width: 0;
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: 100%;
 }
 
 .chat-messages.sc-chat-stage {
@@ -2400,11 +2401,11 @@
 }
 
 .openclaw-chat .sc-msg-group.user {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%);
+  max-width: min(var(--superclaw-chat-user-readable-max, 620px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
 }
 
 .openclaw-chat .sc-msg-group.assistant {
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
 }
 
 .openclaw-chat .sc-msg-bubble {
@@ -2418,7 +2419,7 @@
 }
 
 .openclaw-chat .sc-msg-bubble.user {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), 46%);
+  max-width: 100%;
 }
 
 .openclaw-chat .sc-msg-bubble.assistant,
@@ -2427,7 +2428,7 @@
 .openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(.assistant-compact-message.is-collapsed),
 .openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table) {
   width: fit-content;
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), 72%);
+  max-width: 100%;
   border: 0;
 }
 

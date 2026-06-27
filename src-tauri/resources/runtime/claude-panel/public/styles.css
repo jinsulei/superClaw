@@ -7401,6 +7401,7 @@ body.dark .conversation-mode .transcript .message.user {
   --sc-chat-stage-gutter: 48px;
   --sc-chat-assistant-readable-max: 980px;
   --sc-chat-user-readable-max: 620px;
+  --sc-chat-bubble-edge-room: 80px;
 }
 
 .sc-chat-stage {
@@ -7447,7 +7448,7 @@ body.dark .conversation-mode .transcript .message.user {
 .sc-chat-stage .sc-msg-bubble {
   display: inline-block;
   width: fit-content;
-  max-width: min(var(--sc-chat-assistant-readable-max), 72%);
+  max-width: min(var(--sc-chat-assistant-readable-max), calc(100% - var(--sc-chat-bubble-edge-room)));
   min-width: 0;
   min-height: 0;
   height: auto;
@@ -7463,7 +7464,7 @@ body.dark .conversation-mode .transcript .message.user {
 }
 
 .sc-chat-stage .sc-msg-bubble.user {
-  max-width: min(var(--sc-chat-user-readable-max), 46%);
+  max-width: min(var(--sc-chat-user-readable-max), calc(100% - var(--sc-chat-bubble-edge-room)));
   background: #39d68f;
   color: #082018;
   border: none;
@@ -7572,11 +7573,11 @@ body.dark .conversation-mode .transcript .message.user {
 .conversation-mode .transcript .message.assistant,
 .conversation-mode .transcript .message.system,
 .conversation-mode .transcript .message.error {
-  max-width: min(var(--sc-chat-assistant-readable-max), 72%) !important;
+  max-width: min(var(--sc-chat-assistant-readable-max), calc(100% - var(--sc-chat-bubble-edge-room))) !important;
 }
 
 .conversation-mode .transcript .message.user {
-  max-width: min(var(--sc-chat-user-readable-max), 46%) !important;
+  max-width: min(var(--sc-chat-user-readable-max), calc(100% - var(--sc-chat-bubble-edge-room))) !important;
 }
 
 .composer,
