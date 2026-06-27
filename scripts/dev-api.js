@@ -14,6 +14,10 @@ import http from 'http'
 import https from 'https'
 import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
+import {
+  assertDirectModelConfigWritable,
+  getEffectiveModelConfig,
+} from './lib/model-config-source-guard.mjs'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 // ---------------------------------------------------------------------------
@@ -997,16 +1001,46 @@ function hermesGitBashPath() {
   return _hermesGitBashPath
 }
 
+function normalizeHermesMiniMaxBaseUrl(value) {
+  const raw = String(value || '').trim().replace(/\/+$/, '')
+  if (!raw) return ''
+  if (raw.includes('api.minimaxi.com')) return 'https://api.minimaxi.com/v1'
+  if (raw.includes('api.minimax.io')) return 'https://api.minimax.io/v1'
+  return raw.replace(/\/anthropic$/i, '/v1')
+}
+
+function hermesProviderUsesMiniMax(provider) {
+  return String(provider || '').trim().toLowerCase().includes('minimax')
+}
+
 function hermesRuntimeEnv(extra = {}) {
   const localEnv = readDotEnvVars(path.join(hermesHome(), '.env'))
-  const minimaxBaseUrl = localEnv.MINIMAX_BASE_URL || process.env.MINIMAX_BASE_URL || 'https://api.minimaxi.com/v1'
-  const minimaxApiKey = localEnv.MINIMAX_API_KEY || process.env.MINIMAX_API_KEY || localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
+  const hermesProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || 'minimax'
+  const minimaxBaseUrl = normalizeHermesMiniMaxBaseUrl(
+    localEnv.MINIMAX_BASE_URL
+      || localEnv.MINIMAX_CN_BASE_URL
+      || process.env.MINIMAX_BASE_URL
+      || process.env.MINIMAX_CN_BASE_URL
+      || localEnv.OPENAI_BASE_URL
+      || process.env.OPENAI_BASE_URL
+      || 'https://api.minimaxi.com/v1'
+  )
+  const minimaxApiKey = localEnv.MINIMAX_API_KEY
+    || localEnv.MINIMAX_CN_API_KEY
+    || process.env.MINIMAX_API_KEY
+    || process.env.MINIMAX_CN_API_KEY
+    || localEnv.OPENAI_API_KEY
+    || process.env.OPENAI_API_KEY
+    || ''
+  const openAiBaseUrl = hermesProviderUsesMiniMax(hermesProvider)
+    ? minimaxBaseUrl
+    : (localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || minimaxBaseUrl)
   const env = {
     ...process.env,
     ...localEnv,
     PATH: hermesEnhancedPath(),
-    HERMES_PROVIDER: localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || 'minimax',
-    OPENAI_BASE_URL: localEnv.OPENAI_BASE_URL || minimaxBaseUrl,
+    HERMES_PROVIDER: hermesProvider,
+    OPENAI_BASE_URL: openAiBaseUrl,
     OPENAI_MODEL: localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || 'MiniMax-M3',
     OPENAI_API_KEY: localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || minimaxApiKey,
     SUPERCLAW_FORCE_PROVIDER: localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || 'minimax',
@@ -2220,11 +2254,21 @@ function openclawMiniMaxKeyFingerprint(apiKey) {
 function openclawMiniMaxGatewayConfig() {
   const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
   const dataRoot = path.join(resourcesRoot, 'data')
-  return resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+  const directConfig = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+  const effective = getEffectiveModelConfig('openclaw', {
+    directConfig: {
+      ...directConfig,
+      configPath: directConfig.paths?.openclaw || '',
+    },
+    configPath: directConfig.paths?.openclaw || '',
+  })
+  return { ...directConfig, effective }
 }
 
 function openclawMiniMaxGatewayEnv() {
   const minimaxConfig = openclawMiniMaxGatewayConfig()
+  if (minimaxConfig.effective?.modelSource !== 'direct') return {}
+  if (minimaxConfig.effective?.status !== 'ready') return {}
   if (!minimaxConfig.apiKey) return {}
   return {
     MINIMAX_API_KEY: minimaxConfig.apiKey,
@@ -2239,6 +2283,18 @@ function openclawMiniMaxGatewayEnv() {
 
 function requireOpenClawMiniMaxGatewayConfig() {
   const minimaxConfig = openclawMiniMaxGatewayConfig()
+  if (minimaxConfig.effective?.status === 'config_conflict') {
+    const error = new Error('OpenClaw 模型配置冲突：当前 release/yyapi 模式要求 yyapi 接管，但检测到 direct MiniMax 配置仍在生效。')
+    error.code = 'CONFIG_CONFLICT'
+    error.details = minimaxConfig.effective
+    throw error
+  }
+  if (minimaxConfig.effective?.modelSource === 'yyapi' && minimaxConfig.effective?.status !== 'ready') {
+    const error = new Error('OpenClaw 模型配置未就绪：当前 release/yyapi 模式必须由 yyapi 提供模型配置，禁止 fallback 到 direct MiniMax。')
+    error.code = minimaxConfig.effective?.code || 'YYAPI_MODEL_CONFIG_REQUIRED'
+    error.details = minimaxConfig.effective
+    throw error
+  }
   if (!minimaxConfig.apiKey) {
     const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
     error.code = 'OPENCLAW_MINIMAX_API_KEY_REQUIRED'
@@ -5669,6 +5725,7 @@ const ALWAYS_LOCAL = new Set([
   'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
   'hermes_load_media_image',
+  'get_effective_model_config',
   'read_minimax_test_config', 'save_minimax_test_config', 'configure_claude_code_relay',
   'payment_request',
 ])
@@ -6116,6 +6173,7 @@ function writeMiniMaxClaudeRelay(config = {}) {
 
 function saveMiniMaxTestConfigLocal(input = {}) {
   const normalized = normalizeMiniMaxTestPayload(input)
+  assertDirectModelConfigWritable('minimax-test-config')
   const plain = readMiniMaxPlainConfig()
   const apiKey = normalized.apiKey || plain.apiKey
   const nextConfig = ensureMiniMaxOpenClawConfig(plain.cfg, normalized, apiKey)
@@ -6484,6 +6542,12 @@ const handlers = {
     return { ok: true, mode: 'dev-api', noUserSystem: true, provider: 'minimax' }
   },
 
+  get_effective_model_config({ agentName } = {}) {
+    const name = cleanMiniMaxValue(agentName || 'openclaw')
+    if (name === 'openclaw') return openclawMiniMaxGatewayConfig().effective
+    return getEffectiveModelConfig(name, {})
+  },
+
   async payment_request({ action, payload } = {}) {
     return forwardPaymentRequest(action, payload || {})
   },
@@ -6548,6 +6612,7 @@ const handlers = {
   },
 
   configure_claude_code_relay({ config } = {}) {
+    assertDirectModelConfigWritable('claude-code')
     const payload = config || {}
     const baseUrl = cleanMiniMaxBaseUrl(payload.baseUrl)
     const apiKey = cleanMiniMaxValue(payload.apiKey)
