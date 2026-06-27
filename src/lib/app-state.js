@@ -114,6 +114,13 @@ function isOpenclawGatewayHealthReady(body) {
   return body.ok === true || body.ready === true || status === 'live' || status === 'ready'
 }
 
+function isOpenclawGatewayServiceReady(service) {
+  if (!service || service.running !== true) return false
+  if (service.health_ready === true) return true
+  const status = String(service.health_status || '').toLowerCase()
+  return service.health_http_ok === true && (status === 'live' || status === 'ready')
+}
+
 export async function probeOpenclawGatewayHealth(timeoutMs = OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -171,7 +178,7 @@ export async function detectOpenclawStatus() {
       const gw = services.value.find?.(s => s.label === 'ai.openclaw.gateway') || services.value[0]
       const foreign = gw?.running === true && gw?.owned_by_current_instance === false
       const health = gw?.running === true && !foreign
-        ? await probeOpenclawGatewayHealth()
+        ? (isOpenclawGatewayServiceReady(gw) ? { ready: true } : await probeOpenclawGatewayHealth())
         : { ready: false }
       _setGatewayRunning(gw?.running === true && !foreign && health.ready, foreign)
     }
@@ -217,8 +224,10 @@ export async function refreshGatewayStatus() {
       const gw = services.find?.(s => s.label === 'ai.openclaw.gateway') || services[0]
       const ownedRunning = gw?.running === true && gw?.owned_by_current_instance !== false
       const foreignRunning = gw?.running === true && gw?.owned_by_current_instance === false
-      const health = await probeOpenclawGatewayHealth()
-      const nowRunning = (ownedRunning || !foreignRunning) && health.ready
+      const health = ownedRunning && isOpenclawGatewayServiceReady(gw)
+        ? { ready: true }
+        : await probeOpenclawGatewayHealth()
+      const nowRunning = ownedRunning && health.ready
       if (nowRunning) {
         _gwStopCount = 0
         if (!_gatewayRunning) {

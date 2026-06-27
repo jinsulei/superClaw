@@ -191,6 +191,24 @@ fn panel_status_ready(port: u16) -> bool {
     buf.starts_with("HTTP/1.1 200") || buf.starts_with("HTTP/1.0 200")
 }
 
+fn read_panel_status(port: u16) -> Option<Value> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(700)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    let request = format!(
+        "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).ok()?;
+    if !(buf.starts_with("HTTP/1.1 200") || buf.starts_with("HTTP/1.0 200")) {
+        return None;
+    }
+    let body = buf.split_once("\r\n\r\n").map(|(_, body)| body).unwrap_or("");
+    serde_json::from_str::<Value>(body).ok()
+}
+
 fn wait_for_panel(port: u16) -> bool {
     for _ in 0..40 {
         if panel_status_ready(port) {
@@ -226,7 +244,7 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
         .env("CLEAN_PANEL_DATA_DIR", &data_dir)
         .env(
             "CLEAN_PANEL_CLAUDE_SETTINGS_PATH",
-            home.join(".claude").join("settings.json"),
+            home.join("claude-config").join("settings.json"),
         )
         .env(
             "CLEAN_PANEL_CLAUDE_PROJECTS_JSON_PATH",
@@ -310,21 +328,101 @@ fn status_impl() -> Result<Value, String> {
         .get("running")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let panel_status = if panel_running {
+        read_panel_status(CLAUDE_PANEL_PORT)
+    } else {
+        None
+    };
+    let effective_mode = panel_status
+        .as_ref()
+        .and_then(|v| v.get("effectiveMode").or_else(|| v.get("runtimeMode")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("OPENAI_RELAY")
+        .to_string();
+    let execution_backend = panel_status
+        .as_ref()
+        .and_then(|v| v.get("executionBackend"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| {
+            if effective_mode == "NATIVE_CLAUDE_CODE" {
+                "native-claude-cli".to_string()
+            } else {
+                "openai-relay".to_string()
+            }
+        });
     let cli_installed = claude.is_file();
     let connected = version.is_some() || (panel_installed && panel_running);
+    let panel_version = panel_status
+        .as_ref()
+        .and_then(|v| v.get("claudeVersion"))
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let message = if effective_mode == "NATIVE_CLAUDE_CODE" {
+        "Claude Code native CLI is connected through the Claude Panel runtime."
+    } else {
+        "Claude Code panel relay is available through the portable clean-claude-panel runtime."
+    };
 
     Ok(json!({
         "installed": cli_installed || panel_installed,
         "connected": connected,
         "running": panel_running,
         "mode": "panel",
-        "runtimeMode": "OPENAI_RELAY",
+        "runtimeMode": effective_mode,
+        "effectiveMode": effective_mode,
+        "executionBackend": execution_backend,
+        "spawnedProcess": panel_status
+            .as_ref()
+            .and_then(|v| v.get("spawnedProcess"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "relayCalled": panel_status
+            .as_ref()
+            .and_then(|v| v.get("relayCalled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         "needsPanel": true,
-        "message": "Claude Code panel relay is available through the portable clean-claude-panel runtime.",
+        "message": message,
         "panelUrl": panel_url(),
         "url": panel_url(),
-        "version": version.or_else(|| panel_installed.then(|| "Claude Code Panel relay".to_string())),
+        "version": version.or(panel_version).or_else(|| panel_installed.then(|| "Claude Code Panel relay".to_string())),
         "versionError": if cli_installed { error } else { String::new() },
+        "model": panel_status
+            .as_ref()
+            .and_then(|v| v.get("model"))
+            .cloned()
+            .unwrap_or_else(|| json!("")),
+        "baseHost": panel_status
+            .as_ref()
+            .and_then(|v| v.get("baseHost"))
+            .cloned()
+            .unwrap_or_else(|| json!("")),
+        "runtimeBaseHost": panel_status
+            .as_ref()
+            .and_then(|v| v.get("runtimeBaseHost"))
+            .cloned()
+            .unwrap_or_else(|| json!("")),
+        "authConfigured": panel_status
+            .as_ref()
+            .and_then(|v| v.get("authConfigured"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "nativeClaude": panel_status
+            .as_ref()
+            .and_then(|v| v.get("nativeClaude"))
+            .cloned()
+            .unwrap_or_else(|| json!(null)),
+        "relay": panel_status
+            .as_ref()
+            .and_then(|v| v.get("relay"))
+            .cloned()
+            .unwrap_or_else(|| json!(null)),
+        "relayConfig": panel_status
+            .as_ref()
+            .and_then(|v| v.get("relayConfig"))
+            .cloned()
+            .unwrap_or_else(|| json!(null)),
         "paths": {
             "resources": resources,
             "claude": claude,
@@ -652,7 +750,11 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
     let managed = existing
         .get("managedBy")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "superclaw-minimax-test");
+        .is_some_and(|v| {
+            v == "superclaw-minimax-test"
+                || v == "superclaw-yyapi"
+                || v == "superclaw-release-yyapi"
+        });
     let has_existing_user_config = existing
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -705,7 +807,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("MiniMax");
+        .unwrap_or("YYAPI");
     let relay_provider = config
         .get("provider")
         .and_then(|v| v.as_str())
@@ -717,13 +819,13 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("minimax");
+        .unwrap_or("yyapi");
     let managed_by = config
         .get("managedBy")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("superclaw-minimax-test");
+        .unwrap_or("superclaw-yyapi");
 
     let mut branch_models = config
         .get("branchModels")

@@ -75,7 +75,7 @@ function runReleaseYyapi() {
 }
 
 function runConflictGuard() {
-  const conflict = getEffectiveModelConfig('openclaw', {
+  const override = getEffectiveModelConfig('openclaw', {
     env: {
       SUPERCLAW_MODE: 'release',
       MODEL_SOURCE: 'yyapi',
@@ -94,9 +94,12 @@ function runConflictGuard() {
       apiKey: yyapiTokenForSmoke,
     },
   })
-  assert.equal(conflict.status, 'config_conflict')
-  assert.equal(conflict.code, 'CONFIG_CONFLICT')
-  assert.equal(conflict.warnings.includes('CONFIG_CONFLICT_DIRECT_WITH_YYAPI'), true)
+  assert.equal(override.status, 'ready')
+  assert.equal(override.code, 'OK')
+  assert.equal(override.modelSource, 'direct')
+  assert.equal(override.apiKeySource, 'direct-user')
+  assert.equal(override.warnings.includes('USER_DIRECT_MODEL_OVERRIDE'), true)
+  assertNoRawKeyLeak(override, directKey)
   assert.throws(() => assertDirectModelConfigWritable('openclaw', {
     env: {
       SUPERCLAW_MODE: 'release',
@@ -104,7 +107,7 @@ function runConflictGuard() {
       AUTH_REQUIRED: 'true',
     },
   }), /direct model config is disabled/)
-  console.log('MODEL_CONFIG_CONFLICT_BLOCKS_GATEWAY_HALF_START')
+  console.log('MODEL_CONFIG_USER_DIRECT_OVERRIDE_PRESERVED')
 }
 
 function runAgentIsolation() {
@@ -131,7 +134,8 @@ function runAgentIsolation() {
 
   const devApi = fs.readFileSync(path.join(process.cwd(), 'scripts', 'dev-api.js'), 'utf8')
   assert.match(devApi, /assertDirectModelConfigWritable\('minimax-test-config'\)/)
-  assert.match(devApi, /assertDirectModelConfigWritable\('claude-code'\)/)
+  assert.doesNotMatch(devApi, /assertDirectModelConfigWritable\('claude-code'\)/)
+  assert.match(devApi, /existing-user-relay-config/)
   console.log('MODEL_CONFIG_AGENT_WRITE_ISOLATED')
 }
 

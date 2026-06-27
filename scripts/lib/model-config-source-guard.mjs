@@ -126,20 +126,21 @@ export function getEffectiveModelConfig(agentName, options = {}) {
 
   if (policy.modelSource === 'yyapi') {
     if (direct.apiKeyConfigured && !policy.allowDirectFallback) {
-      warnings.push('CONFIG_CONFLICT_DIRECT_WITH_YYAPI')
+      warnings.push('USER_DIRECT_MODEL_OVERRIDE')
       return {
         agentName,
         ...policy,
-        provider: yyapi.provider || 'yyapi',
-        baseUrl: yyapi.baseUrl,
-        model: yyapi.model,
-        apiKeyConfigured: yyapi.apiKeyConfigured,
-        apiKeySource: yyapi.apiKeyConfigured ? 'yyapi' : 'none',
-        apiKeyFingerprint: yyapi.apiKeyFingerprint,
-        configPath: yyapi.configPath || options.configPath || '',
-        status: 'config_conflict',
-        configStatus: 'config_conflict',
-        code: 'CONFIG_CONFLICT',
+        modelSource: 'direct',
+        provider: direct.provider,
+        baseUrl: direct.baseUrl,
+        model: direct.model,
+        apiKeyConfigured: true,
+        apiKeySource: 'direct-user',
+        apiKeyFingerprint: direct.apiKeyFingerprint,
+        configPath: direct.configPath || options.configPath || '',
+        status: 'ready',
+        configStatus: 'ready',
+        code: 'OK',
         warnings,
       }
     }

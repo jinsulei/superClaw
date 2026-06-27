@@ -2223,6 +2223,63 @@ function pickOpenClawMiniMaxApiKey(...values) {
   return ''
 }
 
+function isOpenClawMiniMaxModelRef(value) {
+  return String(value || '').trim().toLowerCase().startsWith('minimax/')
+}
+
+function isOpenClawYyapiModelRef(value) {
+  return String(value || '').trim().toLowerCase().startsWith('yyapi/')
+}
+
+function modelIdFromOpenClawRef(value) {
+  const ref = String(value || '').trim()
+  const slash = ref.indexOf('/')
+  return slash >= 0 ? ref.slice(slash + 1) : ref
+}
+
+function openclawModelRefs(config = {}) {
+  const refs = [
+    config?.agents?.defaults?.model?.primary,
+    config?.agents?.defaults?.primary,
+    config?.models?.primary?.model,
+    config?.models?.primary,
+  ]
+  if (Array.isArray(config?.agents?.list)) {
+    for (const agent of config.agents.list) {
+      refs.push(agent?.model?.primary, agent?.primary)
+    }
+  }
+  return refs.map(ref => String(ref || '').trim()).filter(Boolean)
+}
+
+function resolveOpenClawYyapiConfig(resourcesRoot, dataRoot) {
+  const safeResourcesRoot = resourcesRoot ? path.resolve(resourcesRoot) : null
+  const safeDataRoot = dataRoot ? path.resolve(dataRoot) : null
+  if (!safeResourcesRoot || !safeDataRoot || !isPathInside(safeResourcesRoot, safeDataRoot)) {
+    return { provider: 'yyapi', baseUrl: '', model: '', apiKey: '', apiKeyConfigured: false }
+  }
+
+  const openclawPath = path.join(safeDataRoot, '.openclaw', 'openclaw.json')
+  const openclaw = readJsonFileRelaxed(openclawPath) || {}
+  const yyapiProvider = openclaw.models?.providers?.yyapi || {}
+  const yyapiRefs = openclawModelRefs(openclaw).filter(isOpenClawYyapiModelRef)
+  const providerModels = Array.isArray(yyapiProvider.models) ? yyapiProvider.models : []
+  const firstProviderModel = providerModels
+    .map(model => typeof model === 'string' ? model : model?.id)
+    .map(model => String(model || '').trim())
+    .find(Boolean)
+  const model = modelIdFromOpenClawRef(yyapiRefs[0]) || String(yyapiProvider.model || firstProviderModel || '').trim()
+  const apiKey = normalizeApiKey(yyapiProvider.apiKey || yyapiProvider.api_key || yyapiProvider.token)
+  return {
+    provider: 'yyapi',
+    baseUrl: String(yyapiProvider.baseUrl || yyapiProvider.base_url || '').trim().replace(/\/+$/, ''),
+    model,
+    apiKey,
+    apiKeyConfigured: !!apiKey,
+    configPath: openclawPath,
+  }
+}
+
 function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
   const safeResourcesRoot = resourcesRoot ? path.resolve(resourcesRoot) : null
   const safeDataRoot = dataRoot ? path.resolve(dataRoot) : null
@@ -2234,7 +2291,8 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
   const agentModelsPath = path.join(safeDataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json')
   const openclaw = readJsonFileRelaxed(openclawPath) || {}
   const agentModels = readJsonFileRelaxed(agentModelsPath) || {}
-  const apiKey = pickOpenClawMiniMaxApiKey(
+  const directMiniMaxActive = openclawModelRefs(openclaw).some(isOpenClawMiniMaxModelRef)
+  const apiKey = directMiniMaxActive ? pickOpenClawMiniMaxApiKey(
     openclaw.providers?.minimax?.apiKey,
     openclaw.models?.providers?.minimax?.apiKey,
     openclaw.modelProviders?.minimax?.apiKey,
@@ -2244,7 +2302,7 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
     agentModels.providers?.minimax?.apiKey,
     agentModels.minimax?.apiKey,
     agentModels.models?.providers?.minimax?.apiKey
-  )
+  ) : ''
 
   return {
     provider: 'minimax',
@@ -2260,16 +2318,30 @@ function openclawMiniMaxKeyFingerprint(apiKey) {
   return key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 8) : ''
 }
 
+function modelGuardEnv(env = process.env) {
+  const runtime = getRuntimeMode(env)
+  if (runtime.modelSource !== 'yyapi') return env
+  const next = { ...env }
+  for (const key of ['MINIMAX_API_KEY', 'MINIMAX_CN_API_KEY', 'OPENAI_API_KEY']) {
+    delete next[key]
+  }
+  return next
+}
+
 function openclawMiniMaxGatewayConfig() {
   const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
   const dataRoot = path.join(resourcesRoot, 'data')
   const directConfig = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+  const fileYyapiConfig = resolveOpenClawYyapiConfig(resourcesRoot, dataRoot)
+  const envYyapiConfig = readYyapiConfig(process.env)
+  const yyapiConfig = fileYyapiConfig.apiKeyConfigured ? fileYyapiConfig : envYyapiConfig
   const effective = getEffectiveModelConfig('openclaw', {
+    env: modelGuardEnv(process.env),
     directConfig: {
       ...directConfig,
       configPath: directConfig.paths?.openclaw || '',
     },
-    yyapiConfig: readYyapiConfig(process.env),
+    yyapiConfig,
     configPath: directConfig.paths?.openclaw || '',
   })
   return { ...directConfig, effective }
@@ -2302,10 +2374,16 @@ function directModelConfigForAgent(agentName) {
 function authYyapiKitEffectiveModelConfig(agentName = 'openclaw', options = {}) {
   const name = cleanMiniMaxValue(agentName || 'openclaw').toLowerCase()
   const env = options.env || process.env
-  const yyapiConfig = readYyapiConfig(env, options.yyapiConfig || {})
+  let yyapiConfig = readYyapiConfig(env, options.yyapiConfig || {})
+  if (name === 'openclaw' && !yyapiConfig.apiKeyConfigured) {
+    const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+    const dataRoot = path.join(resourcesRoot, 'data')
+    const fileYyapiConfig = resolveOpenClawYyapiConfig(resourcesRoot, dataRoot)
+    if (fileYyapiConfig.apiKeyConfigured) yyapiConfig = fileYyapiConfig
+  }
   const directConfig = options.directConfig || directModelConfigForAgent(name)
   return getEffectiveModelConfig(name, {
-    env,
+    env: modelGuardEnv(env),
     directConfig,
     yyapiConfig,
     configPath: directConfig.configPath || yyapiConfig.configPath || '',
@@ -2480,6 +2558,9 @@ function requireOpenClawMiniMaxGatewayConfig() {
     error.details = minimaxConfig.effective
     throw error
   }
+  if (minimaxConfig.effective?.modelSource === 'yyapi' && minimaxConfig.effective?.status === 'ready') {
+    return minimaxConfig
+  }
   if (!minimaxConfig.apiKey) {
     const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
     error.code = 'OPENCLAW_MINIMAX_API_KEY_REQUIRED'
@@ -2489,7 +2570,7 @@ function requireOpenClawMiniMaxGatewayConfig() {
 }
 
 function openclawRuntimeEnv(extra = {}) {
-  return {
+  const env = {
     ...process.env,
     OPENCLAW_HOME: OPENCLAW_DIR,
     OPENCLAW_STATE_DIR: OPENCLAW_DIR,
@@ -2498,6 +2579,17 @@ function openclawRuntimeEnv(extra = {}) {
     ...openclawMiniMaxGatewayEnv(),
     ...(extra || {}),
   }
+  const bundledDir = bundledOpenclawBinDir()
+  if (bundledDir) {
+    const pathEntries = [
+      bundledDir,
+      path.join(bundledDir, 'node_modules', 'npm', 'bin'),
+      env.PATH || '',
+    ].filter(Boolean)
+    env.PATH = pathEntries.join(path.delimiter)
+    if (isWindows) env.Path = env.PATH
+  }
+  return env
 }
 
 function normalizeBackgroundStdio(stdio) {
@@ -6356,6 +6448,71 @@ function writeMiniMaxClaudeRelay(config = {}) {
   return { configured: true, skipped: false, provider: next.provider, model: next.model, path: target }
 }
 
+function isPlaceholderRelayCredential(value = '') {
+  const raw = cleanMiniMaxValue(value)
+  if (!raw) return true
+  if (raw.includes('${') || raw.includes('*')) return true
+  return /^(your_api_key|login_required|superclaw-login-required)$/i.test(raw)
+}
+
+function isManagedRelayConfig(config = {}) {
+  return [
+    'superclaw-minimax-test',
+    'superclaw-yyapi',
+    'superclaw-release-yyapi',
+  ].includes(cleanMiniMaxValue(config.managedBy))
+}
+
+function writeClaudeRelayConfig(config = {}) {
+  const target = miniMaxDataPath('claude-panel', 'relay-config.json')
+  const current = readJsonFileRelaxed(target) || {}
+  const force = config.force === true
+  const hasExistingUserConfig = current.enabled === true
+    && !!cleanMiniMaxBaseUrl(current.baseUrl)
+    && !isPlaceholderRelayCredential(current.apiKey)
+
+  if (hasExistingUserConfig && !isManagedRelayConfig(current) && !force) {
+    return {
+      configured: false,
+      skipped: true,
+      reason: 'existing-user-relay-config',
+      path: target,
+    }
+  }
+
+  const apiKey = cleanMiniMaxValue(config.apiKey)
+  const baseUrl = cleanMiniMaxBaseUrl(config.baseUrl)
+  const model = cleanMiniMaxValue(config.model)
+  const defaultProvider = cleanMiniMaxValue(config.defaultProvider) || cleanMiniMaxValue(current.defaultProvider) || 'yyapi'
+  const branchModels = Array.isArray(config.branchModels) && config.branchModels.length
+    ? config.branchModels.map(item => cleanMiniMaxValue(item)).filter(Boolean)
+    : (Array.isArray(config.models) && config.models.length
+        ? config.models.map(item => cleanMiniMaxValue(item)).filter(Boolean)
+        : (model ? [model] : []))
+
+  const next = {
+    ...current,
+    enabled: true,
+    interfaceType: cleanMiniMaxValue(config.interfaceType) || cleanMiniMaxValue(current.interfaceType) || 'relay',
+    name: cleanMiniMaxValue(config.name) || cleanMiniMaxValue(current.name) || (defaultProvider === 'yyapi' ? 'YYAPI' : 'OpenAI Compatible'),
+    provider: cleanMiniMaxValue(config.provider) || cleanMiniMaxValue(current.provider) || 'openai-compatible',
+    defaultProvider,
+    baseUrl,
+    model,
+    branchModels,
+    models: Array.isArray(config.models) && config.models.length
+      ? config.models.map(item => cleanMiniMaxValue(item)).filter(Boolean)
+      : (Array.isArray(current.models) ? current.models : branchModels),
+    managedBy: cleanMiniMaxValue(config.managedBy) || (defaultProvider === 'yyapi' ? 'superclaw-yyapi' : cleanMiniMaxValue(current.managedBy) || 'superclaw-user-relay'),
+    updatedAt: new Date().toISOString(),
+  }
+  if (apiKey) next.apiKey = apiKey
+  else if (current.apiKey) next.apiKey = current.apiKey
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  return { configured: true, skipped: false, provider: next.provider, model: next.model, path: target }
+}
+
 function saveMiniMaxTestConfigLocal(input = {}) {
   const normalized = normalizeMiniMaxTestPayload(input)
   assertDirectModelConfigWritable('minimax-test-config')
@@ -6814,11 +6971,10 @@ const handlers = {
   },
 
   configure_claude_code_relay({ config } = {}) {
-    assertDirectModelConfigWritable('claude-code')
     const payload = config || {}
     const baseUrl = cleanMiniMaxBaseUrl(payload.baseUrl)
     const apiKey = cleanMiniMaxValue(payload.apiKey)
-    const model = cleanMiniMaxValue(payload.model || MINIMAX_TEST_DEFAULTS.model)
+    const model = cleanMiniMaxValue(payload.model)
     if (!baseUrl || !apiKey || !model) {
       return {
         configured: false,
@@ -6827,13 +6983,12 @@ const handlers = {
         path: miniMaxDataPath('claude-panel', 'relay-config.json'),
       }
     }
-    return writeMiniMaxClaudeRelay({
+    return writeClaudeRelayConfig({
       ...payload,
       baseUrl,
       apiKey,
       model,
       branchModels: Array.isArray(payload.branchModels) ? payload.branchModels : (Array.isArray(payload.models) ? payload.models : [model]),
-      managedBy: cleanMiniMaxValue(payload.managedBy) || 'superclaw-minimax-test',
     })
   },
 
@@ -7242,7 +7397,7 @@ const handlers = {
   install_qqbot_plugin({ version } = {}) {
     const spec = version ? `@tencent-connect/openclaw-qqbot@${version}` : '@tencent-connect/openclaw-qqbot@latest'
     try {
-      execOpenclawSync(['plugins', 'install', spec], { timeout: 600000, cwd: homedir(), windowsHide: true }, 'QQBot 插件安装失败')
+      execOpenclawSync(['plugins', 'install', '--force', spec], { timeout: 600000, cwd: homedir(), windowsHide: true }, 'QQBot 插件安装失败')
       return '安装成功'
     } catch (e) {
       throw new Error('QQBot 插件安装失败: ' + (e.message || e))
@@ -7351,7 +7506,7 @@ const handlers = {
     if (!packageName || !pluginId) throw new Error('packageName 和 pluginId 不能为空')
     const spec = version ? `${packageName.trim()}@${version}` : packageName.trim()
     try {
-      execOpenclawSync(['plugins', 'install', spec], { timeout: 120000, cwd: homedir(), windowsHide: true }, `插件 ${pluginId} 安装失败`)
+      execOpenclawSync(['plugins', 'install', '--force', spec], { timeout: 600000, cwd: homedir(), windowsHide: true }, `插件 ${pluginId} 安装失败`)
       return '安装成功'
     } catch (e) {
       throw new Error(`插件 ${pluginId} 安装失败: ` + (e.message || e))
@@ -10565,7 +10720,9 @@ const handlers = {
     const isOpenAiChat = ['custom', 'openai', 'openai-api', 'openrouter', 'deepseek', 'minimax', 'minimax-cn'].includes(lowerProvider)
     const providerLine = `  provider: ${providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`
     const baseUrlLine = baseUrlValue ? `  base_url: ${baseUrlValue}\n` : ''
-    const customProvidersBlock = ''
+    const customProvidersBlock = lowerProvider === 'custom' && baseUrlValue
+      ? `custom_providers:\n  - name: custom_openai\n    base_url: ${baseUrlValue}\n    key_env: OPENAI_API_KEY\n    api_mode: chat_completions\n    model: ${modelStr}\n`
+      : ''
     // config.yaml
     const configPath = path.join(home, 'config.yaml')
     let configContent
@@ -12236,14 +12393,52 @@ const handlers = {
 
   // —— 渠道插件状态/操作（暂未在 Node 实现，先抛友好错误）——
   check_weixin_plugin_status() {
-    // 静默返回未安装即可，UI 会显示"未安装"
-    return { installed: false, version: null, plugin: null }
+    const pid = 'openclaw-weixin'
+    const candidates = [
+      path.join(OPENCLAW_DIR, 'extensions', pid),
+      path.join(OPENCLAW_DIR, 'plugins', 'node_modules', pid),
+    ]
+    const pluginDir = candidates.find(dir => fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'index.js')))
+    let version = null
+    if (pluginDir && fs.existsSync(path.join(pluginDir, 'package.json'))) {
+      try { version = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8')).version || null } catch {}
+    }
+    return { installed: !!pluginDir, version, installedVersion: version, plugin: pid, path: pluginDir || candidates[0] }
   },
   diagnose_channel() {
     return { ok: false, error: 'Web 模式暂未实现渠道诊断，请使用桌面客户端' }
   },
-  run_channel_action() {
-    throw new Error('Web 模式暂未实现渠道操作，请使用桌面客户端')
+  run_channel_action({ platform, action, version } = {}) {
+    const pid = String(platform || '').trim()
+    const actionId = String(action || '').trim()
+    if (!pid || !actionId) throw new Error('platform 和 action 不能为空')
+
+    if (actionId === 'install') {
+      const specs = {
+        weixin: version ? `@tencent-weixin/openclaw-weixin@${version}` : '@tencent-weixin/openclaw-weixin@latest',
+        qqbot: version ? `@tencent-connect/openclaw-qqbot@${version}` : '@tencent-connect/openclaw-qqbot@latest',
+      }
+      const spec = specs[pid]
+      if (!spec) throw new Error(`Web 模式暂不支持安装渠道: ${pid}`)
+      const output = execOpenclawSync(
+        ['plugins', 'install', '--force', spec],
+        { timeout: 600000, cwd: homedir(), windowsHide: true },
+        `渠道插件 ${pid} 安装失败`
+      )
+      return output || `渠道插件 ${pid} 安装成功`
+    }
+
+    if (actionId === 'login') {
+      const channelId = pid === 'weixin' ? 'openclaw-weixin' : pid
+      const output = execOpenclawSync(
+        ['channels', 'login', '--channel', channelId],
+        { timeout: 600000, cwd: homedir(), windowsHide: true },
+        `渠道 ${pid} 登录失败`
+      )
+      return output || `渠道 ${pid} 登录完成`
+    }
+
+    throw new Error(`不支持的渠道动作: ${pid}/${actionId}`)
   },
   repair_qqbot_channel_setup() {
     throw new Error('Web 模式暂未实现 QQ Bot 自动修复，请使用桌面客户端')
@@ -12472,6 +12667,22 @@ async function claudePanelRunning(panel = claudePanelPaths()) {
   return _httpJsonProbe(`${baseUrl}/api/status`, 2000)
 }
 
+async function claudePanelStatus(panel = claudePanelPaths()) {
+  if (!(await _tcpProbe('127.0.0.1', panel.port, 800))) return null
+  const baseUrl = String(panel.url || `http://127.0.0.1:${panel.port}/`).replace(/\/+$/, '')
+  try {
+    const resp = await globalThis.fetch(`${baseUrl}/api/status`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(2500),
+    })
+    if (!resp.ok) return null
+    const body = await resp.json()
+    return body && typeof body === 'object' ? body : null
+  } catch {
+    return null
+  }
+}
+
 async function waitForClaudePanel(panel, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -12495,7 +12706,7 @@ function claudePanelEnv(paths, panel) {
     CLEAN_PANEL_ADMIN_PORT: String(panel.port + 1),
     CLEAN_PANEL_HOME_DIR: paths.homeDir,
     CLEAN_PANEL_DATA_DIR: panel.dataDir,
-    CLEAN_PANEL_CLAUDE_SETTINGS_PATH: path.join(paths.homeDir, '.claude', 'settings.json'),
+    CLEAN_PANEL_CLAUDE_SETTINGS_PATH: path.join(paths.homeDir, 'claude-config', 'settings.json'),
     CLEAN_PANEL_CLAUDE_PROJECTS_JSON_PATH: path.join(paths.homeDir, '.claude.json'),
     CLEAN_PANEL_CLAUDE_SKILLS_DIR: path.join(paths.homeDir, '.claude', 'skills'),
     CLAUDE_CLI_PATH: paths.claude,
@@ -12698,26 +12909,46 @@ async function claudeCodeStatus() {
 
   const panel = claudePanelPaths(paths)
   const panelRunning = await claudePanelRunning(panel)
+  const panelStatus = panelRunning ? await claudePanelStatus(panel) : null
   const cliInstalled = fs.existsSync(paths.claude)
   const panelInstalled = fs.existsSync(panel.server)
   const panelRelayConnected = panelInstalled && panelRunning
+  const effectiveMode = panelStatus?.effectiveMode || panelStatus?.runtimeMode || 'OPENAI_RELAY'
+  const executionBackend = panelStatus?.executionBackend
+    || (effectiveMode === 'NATIVE_CLAUDE_CODE' ? 'native-claude-cli' : 'openai-relay')
+  const message = effectiveMode === 'NATIVE_CLAUDE_CODE'
+    ? 'Claude Code native CLI is connected through the Claude Panel runtime.'
+    : 'Claude Code UI panel relay is available through the portable clean-claude-panel runtime.'
 
   return {
     installed: cliInstalled || panelInstalled,
     connected: !!version || panelRelayConnected,
     running: panelRunning,
     mode: 'panel',
-    runtimeMode: 'OPENAI_RELAY',
+    runtimeMode: effectiveMode,
+    effectiveMode,
+    executionBackend,
+    spawnedProcess: panelStatus?.spawnedProcess === true,
+    relayCalled: panelStatus?.relayCalled === true,
     needsPanel: true,
-    message: 'Claude Code UI panel relay is available through the portable clean-claude-panel runtime.',
-    version: version || (panelInstalled ? 'Claude Code Panel relay' : null),
+    message,
+    version: version || panelStatus?.claudeVersion || (panelInstalled ? 'Claude Code Panel relay' : null),
     versionError: cliInstalled ? versionError : '',
+    model: panelStatus?.model || '',
+    baseHost: panelStatus?.baseHost || '',
+    runtimeBaseHost: panelStatus?.runtimeBaseHost || '',
+    authConfigured: panelStatus?.authConfigured === true,
+    nativeClaude: panelStatus?.nativeClaude || null,
+    relay: panelStatus?.relay || null,
+    relayConfig: panelStatus?.relayConfig || null,
     paths,
     url: panel.url,
     panelUrl: panel.url,
     panel: {
       installed: panelInstalled,
       running: panelRunning,
+      effectiveMode,
+      executionBackend,
       url: panel.url,
       port: panel.port,
       dir: panel.dir,

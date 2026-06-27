@@ -63,6 +63,9 @@ $ErrorActionPreference = "Stop"
 $MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
 $MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
 $MiniMaxTestModel = "MiniMax-M3"
+$YyapiDefaultBaseUrl = "http://124.222.21.44:3002/v1"
+$YyapiLoginRequiredModel = "superclaw-login-required"
+$YyapiDefaultModels = @("gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-image-2")
 
 function Step([string]$Message) {
   Write-Host ""
@@ -128,6 +131,16 @@ function Set-ReleaseUserPackageBuildEnv {
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_USE_LOCAL_AUTH_FALLBACK", "true", "Process")
   Ok "Release user package frontend flags: mode=release, modelSource=yyapi, authRequired=true"
   return $previous
+}
+
+function Get-ReleaseYyapiBaseUrl {
+  foreach ($key in @("VITE_YYAPI_BASE_URL", "SUPERCLAW_YYAPI_BASE_URL", "YYAPI_BASE_URL")) {
+    $value = [Environment]::GetEnvironmentVariable($key, "Process")
+    if (-not $value) { $value = [Environment]::GetEnvironmentVariable($key, "User") }
+    if (-not $value) { $value = [Environment]::GetEnvironmentVariable($key, "Machine") }
+    if ($value -and $value.Trim()) { return $value.Trim().TrimEnd("/") }
+  }
+  return $YyapiDefaultBaseUrl
 }
 
 function Restore-BuildEnv([hashtable]$Previous) {
@@ -464,8 +477,27 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
     Copy-Directory $RuntimeSkills $PortableSkills
   }
 
-  $providers = [ordered]@{
-    minimax = [ordered]@{
+  $providers = [ordered]@{}
+  if ($ReleaseUserPackage -and -not $SanitizedTestMode) {
+    $providers.yyapi = [ordered]@{
+      baseUrl = (Get-ReleaseYyapiBaseUrl)
+      apiKey = "LOGIN_REQUIRED"
+      api = "openai-completions"
+      models = @(
+        [ordered]@{
+          id = $YyapiLoginRequiredModel
+          name = "Login required"
+          api = "openai-completions"
+          reasoning = $false
+          input = @("text")
+          contextWindow = 128000
+          maxTokens = 4096
+        }
+      )
+    }
+    $defaultModelRef = "yyapi/$YyapiLoginRequiredModel"
+  } else {
+    $providers.minimax = [ordered]@{
       baseUrl = $MiniMaxTestBaseUrl
       apiKey = '${MINIMAX_API_KEY}'
       api = "openai-completions"
@@ -481,8 +513,8 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         }
       )
     }
+    $defaultModelRef = "minimax/$MiniMaxTestModel"
   }
-  $defaultModelRef = "minimax/$MiniMaxTestModel"
   $defaultModels = [ordered]@{}
   $defaultModels[$defaultModelRef] = [ordered]@{}
 
@@ -598,11 +630,17 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "openclaw.json") ($config | ConvertTo-Json -Depth 20)
   $agentModelDir = Join-Path $OpenClawDataDir "agents\main\agent"
   New-Item -ItemType Directory -Path $agentModelDir -Force | Out-Null
+  $agentModelProvider = "minimax"
+  $agentModelName = $MiniMaxTestModel
+  if ($ReleaseUserPackage -and -not $SanitizedTestMode) {
+    $agentModelProvider = "yyapi"
+    $agentModelName = $YyapiLoginRequiredModel
+  }
   $agentModels = [ordered]@{
     providers = $providers
     defaults = [ordered]@{
-      provider = "minimax"
-      model = $MiniMaxTestModel
+      provider = $agentModelProvider
+      model = $agentModelName
       modelRef = $defaultModelRef
     }
   }
@@ -628,19 +666,33 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
 function Write-PortableClaudePanelRelayConfig([string]$ClaudePanelDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $ClaudePanelDataDir -Force | Out-Null
   $configPath = Join-Path $ClaudePanelDataDir "relay-config.json"
+  $releaseMode = $ReleaseUserPackage -and -not $SanitizedTestMode
   $models = @($MiniMaxTestModel)
+  $relayName = "MiniMax"
+  $relayDefaultProvider = "minimax"
+  $relayBaseUrl = $MiniMaxTestBaseUrl
+  $relayApiKey = "YOUR_API_KEY"
+  $relayManagedBy = "superclaw-minimax-test"
+  if ($releaseMode) {
+    $models = $YyapiDefaultModels
+    $relayName = "YYAPI"
+    $relayDefaultProvider = "yyapi"
+    $relayBaseUrl = Get-ReleaseYyapiBaseUrl
+    $relayApiKey = "LOGIN_REQUIRED"
+    $relayManagedBy = "superclaw-yyapi"
+  }
   $config = [ordered]@{
     enabled = $true
     interfaceType = "relay"
-    name = "MiniMax"
+    name = $relayName
     provider = "openai-compatible"
-    defaultProvider = "minimax"
-    baseUrl = $MiniMaxTestBaseUrl
+    defaultProvider = $relayDefaultProvider
+    baseUrl = $relayBaseUrl
     model = $models[0]
     models = $models
     branchModels = $models
-    apiKey = "YOUR_API_KEY"
-    managedBy = "superclaw-minimax-test"
+    apiKey = $relayApiKey
+    managedBy = $relayManagedBy
     updatedAt = (Get-Date).ToUniversalTime().ToString("o")
   }
   Write-Utf8NoBom $configPath ($config | ConvertTo-Json -Depth 10)
@@ -650,6 +702,47 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
   $configPath = Join-Path $HermesDataDir "config.yaml"
   $envPath = Join-Path $HermesDataDir ".env"
+
+  if ($ReleaseUserPackage -and -not $SanitizedTestMode) {
+    $yyapiBaseUrl = Get-ReleaseYyapiBaseUrl
+    Set-Content -Path $configPath -Encoding UTF8 -Value @"
+# Hermes Agent configuration (managed by SuperClaw release user package)
+# No real API key is bundled. Login/model sync writes the user's yyapi key.
+model:
+  default: $YyapiLoginRequiredModel
+  provider: custom
+  api_mode: chat_completions
+  base_url: $yyapiBaseUrl
+custom_providers:
+  - name: yyapi
+    base_url: $yyapiBaseUrl
+    key_env: OPENAI_API_KEY
+    api_mode: chat_completions
+    model: $YyapiLoginRequiredModel
+platform_toolsets:
+  api_server:
+    - hermes-api-server
+terminal:
+  backend: local
+platforms:
+  api_server:
+    enabled: true
+api_server:
+  host: 127.0.0.1
+  port: 8642
+skills:
+  disabled: []
+"@
+
+    Set-Content -Path $envPath -Encoding UTF8 -Value @"
+HERMES_PROVIDER=custom
+OPENAI_BASE_URL=$yyapiBaseUrl
+OPENAI_MODEL=$YyapiLoginRequiredModel
+API_SERVER_KEY=clawpanel-local
+GATEWAY_ALLOW_ALL_USERS=true
+"@
+    return
+  }
 
   Set-Content -Path $configPath -Encoding UTF8 -Value @"
 # Hermes Agent configuration (managed by SuperClaw)

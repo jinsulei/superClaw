@@ -21,9 +21,10 @@ const main = read('src/main.js')
 assert(
   appState.includes('probeOpenclawGatewayHealth') &&
     appState.includes('http://127.0.0.1:18789/health') &&
+    appState.includes('isOpenclawGatewayServiceReady') &&
     appState.includes('health.ready') &&
     appState.includes('confirmGatewayRunningFromLiveConnection') &&
-    appState.includes('const nowRunning = (ownedRunning || !foreignRunning) && health.ready'),
+    appState.includes('const nowRunning = ownedRunning && health.ready'),
   'APP_STATE_HEALTH_READY_GATES_GATEWAY',
 )
 

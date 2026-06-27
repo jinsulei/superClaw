@@ -137,7 +137,7 @@ export default {
     }, {
       section: '',
       items: [
-        { route: '/models', label: t('sidebar.models'), icon: 'models' },
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
         { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/about', label: t('sidebar.about'), icon: 'about' },

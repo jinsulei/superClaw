@@ -1161,13 +1161,16 @@ function openExternalUrl(href) {
   import('@tauri-apps/plugin-shell').then(({ open }) => open(href)).catch(() => window.open(href, '_blank'))
 }
 
-const BUNDLED_OPENCLAW_CMD = '.\\resources\\runtime\\openclaw\\openclaw.cmd'
-
 function bundledOpenclawCommand(args) {
-  return `${BUNDLED_OPENCLAW_CMD} ${args}`
+  const safeArgs = String(args || '').trim()
+  return `$ErrorActionPreference='Stop'; $roots=@(); function Add-OpenClawRoot($p){ if(-not $p){ return }; $cur=[string]$p; if(Test-Path -LiteralPath $cur -PathType Leaf){ $cur=Split-Path -Parent $cur }; for($i=0; $i -lt 7 -and $cur; $i++){ $script:roots += $cur; $parent=Split-Path -Parent $cur; if($parent -eq $cur){ break }; $cur=$parent } }; try { $info=Invoke-RestMethod -UseBasicParsing -Uri 'http://127.0.0.1:1420/__api/check_installation' -TimeoutSec 3; Add-OpenClawRoot $info.path } catch {}; Add-OpenClawRoot $env:SUPERCLAW_HOME; $proc=Get-Process -Name superclaw -ErrorAction SilentlyContinue | Where-Object { $_.Path } | Select-Object -First 1; if($proc -and $proc.Path){ Add-OpenClawRoot (Split-Path -Parent $proc.Path) }; Add-OpenClawRoot (Get-Location).Path; $rels=@('openclaw.cmd','runtime\\openclaw\\openclaw.cmd','resources\\runtime\\openclaw\\openclaw.cmd','src-tauri\\resources\\runtime\\openclaw\\openclaw.cmd'); $openclaw=$null; foreach($root in ($roots | Where-Object { $_ } | Select-Object -Unique)){ foreach($rel in $rels){ $candidate=Join-Path $root $rel; if(Test-Path -LiteralPath $candidate){ $openclaw=(Resolve-Path -LiteralPath $candidate).Path; break } }; if($openclaw){ break } }; if(-not $openclaw){ throw 'Cannot find bundled openclaw.cmd. Keep SuperClaw open, run this command while 127.0.0.1:1420 is available, or set SUPERCLAW_HOME to the SuperClaw package folder.' }; & $openclaw ${safeArgs}`
 }
 
 function getManualCommandSpecs(pid, reg) {
+  // Release UI hides manual install/login commands; users should use the
+  // built-in one-click flow backed by the bundled OpenClaw runtime.
+  return []
+
   if (pid === 'weixin') {
     return [
       {
@@ -1607,11 +1610,13 @@ async function openConfigDialog(pid, page, state, accountId) {
         const { listen } = await import('@tauri-apps/api/event')
         let unlistenLog = null, unlistenProgress = null
         let _qrTimer = null
-        const cleanup = () => { unlistenLog?.(); unlistenProgress?.(); clearTimeout(_qrTimer) }
+        let progressFallback = null
+        const cleanup = () => { unlistenLog?.(); unlistenProgress?.(); clearTimeout(_qrTimer); progressFallback?.stop() }
 
         try {
           btn.disabled = true
           btn.textContent = t('channels.executingShort')
+          progressFallback = startProgressFallback(logBox, progressBar, progressText, t('channels.downloadingPlugin'))
           if (logBox) {
             const hint = document.createElement('div')
             hint.style.cssText = 'color:var(--text-tertiary);font-style:italic'
@@ -1696,16 +1701,15 @@ async function openConfigDialog(pid, page, state, accountId) {
           })
           unlistenProgress = await listen('channel-action-progress', (e) => {
             if (e.payload?.platform !== pid || e.payload?.action !== actionId) return
+            progressFallback?.event()
             const pct = Number(e.payload?.progress || 0)
-            if (progressBar) progressBar.style.width = `${pct}%`
-            if (progressText) progressText.textContent = `${pct}%`
+            updateProgress(progressBar, progressText, pct)
           })
 
           // runChannelAction 的版本由后端自动检测（微信/QQ 版本号独立于 OpenClaw）
           const output = await api.runChannelAction(pid, actionId, null)
           _flushQr() // 命令结束后刷新残留 QR 缓冲
-          if (progressBar) progressBar.style.width = '100%'
-          if (progressText) progressText.textContent = '100%'
+          progressFallback?.finish()
           toast(t('channels.executionDone'), 'success')
           // 安装完成后刷新插件状态
           if (pid === 'weixin' && actionId === 'install') {
@@ -2019,16 +2023,19 @@ async function openConfigDialog(pid, page, state, accountId) {
       let unlistenProgress = null
       let unlistenDone = null
       let unlistenError = null
+      let progressFallback = null
       const cleanup = () => {
         unlistenLog?.()
         unlistenProgress?.()
         unlistenDone?.()
         unlistenError?.()
+        progressFallback?.stop()
       }
 
       try {
         btn.disabled = true
         btn.textContent = t('channels.executingShort')
+        progressFallback = startProgressFallback(logBox, progressBar, progressText, t('channels.downloadingPlugin'))
         unlistenLog = await listen('channel-action-log', (e) => {
           if (e.payload?.platform !== pid || e.payload?.action !== actionId) return
           if (logBox) {
@@ -2038,14 +2045,13 @@ async function openConfigDialog(pid, page, state, accountId) {
         })
         unlistenProgress = await listen('channel-action-progress', (e) => {
           if (e.payload?.platform !== pid || e.payload?.action !== actionId) return
+          progressFallback?.event()
           const pct = Number(e.payload?.progress || 0)
-          if (progressBar) progressBar.style.width = `${pct}%`
-          if (progressText) progressText.textContent = `${pct}%`
+          updateProgress(progressBar, progressText, pct)
         })
         unlistenDone = await listen('channel-action-done', (e) => {
           if (e.payload?.platform !== pid || e.payload?.action !== actionId) return
-          if (progressBar) progressBar.style.width = '100%'
-          if (progressText) progressText.textContent = '100%'
+          progressFallback?.finish()
         })
         unlistenError = await listen('channel-action-error', (e) => {
           if (e.payload?.platform !== pid || e.payload?.action !== actionId) return
@@ -2057,6 +2063,7 @@ async function openConfigDialog(pid, page, state, accountId) {
 
         // 微信/QQ 等第三方插件版本号独立，不 pin；run_channel_action 的 version 参数仅用于 npx 包名
         const output = await api.runChannelAction(pid, actionId, null)
+        progressFallback?.finish()
         toast(t('channels.actionDone'), 'success')
         if (logBox && output && !String(output).includes(logBox.textContent)) {
           logBox.textContent += (logBox.textContent ? '\n' : '') + String(output)
@@ -2208,6 +2215,7 @@ async function openConfigDialog(pid, page, state, accountId) {
           const progressBar = resultEl.querySelector('#plugin-progress-bar')
           const progressText = resultEl.querySelector('#plugin-progress-text')
           let unlistenLog, unlistenProgress
+          const progressFallback = startProgressFallback(logBox, progressBar, progressText, t('channels.downloadingPlugin'))
           try {
             const { listen } = await import('@tauri-apps/api/event')
             unlistenLog = await listen('plugin-log', (e) => {
@@ -2215,9 +2223,9 @@ async function openConfigDialog(pid, page, state, accountId) {
               logBox.scrollTop = logBox.scrollHeight
             })
             unlistenProgress = await listen('plugin-progress', (e) => {
+              progressFallback.event()
               const pct = e.payload
-              progressBar.style.width = pct + '%'
-              progressText.textContent = pct + '%'
+              updateProgress(progressBar, progressText, pct)
             })
           } catch {}
 
@@ -2236,7 +2244,9 @@ async function openConfigDialog(pid, page, state, accountId) {
             } else {
               await api.installChannelPlugin(pluginPackage, pluginId, pluginVersion)
             }
+            progressFallback.finish()
           } catch (e) {
+            progressFallback.stop()
             toast(t('channels.pluginInstallFailed') + ': ' + e, 'error')
             btnSave.disabled = false
             btnVerify.disabled = false
@@ -2245,6 +2255,7 @@ async function openConfigDialog(pid, page, state, accountId) {
             if (unlistenProgress) unlistenProgress()
             return
           }
+          progressFallback.stop()
           if (unlistenLog) unlistenLog()
           if (unlistenProgress) unlistenProgress()
         } else {
@@ -2289,6 +2300,42 @@ function getChannelBindingKey(pid) {
     weixin: 'openclaw-weixin',
   }
   return map[pid] || pid
+}
+
+function updateProgress(progressBar, progressText, value) {
+  const pct = Math.max(0, Math.min(100, Number(value || 0)))
+  if (progressBar) progressBar.style.width = `${pct}%`
+  if (progressText) progressText.textContent = `${pct}%`
+}
+
+function appendPlainLog(logBox, message) {
+  if (!logBox || !message) return
+  const line = document.createElement('div')
+  line.textContent = message
+  logBox.appendChild(line)
+  logBox.scrollTop = logBox.scrollHeight
+}
+
+function startProgressFallback(logBox, progressBar, progressText, message) {
+  let active = true
+  let pct = 8
+  updateProgress(progressBar, progressText, pct)
+  appendPlainLog(logBox, message)
+  let timer = setInterval(() => {
+    if (!active) return
+    pct = Math.min(85, pct + (pct < 35 ? 9 : 5))
+    updateProgress(progressBar, progressText, pct)
+  }, 2500)
+  const clear = () => {
+    active = false
+    if (timer) clearInterval(timer)
+    timer = null
+  }
+  return {
+    event() { clear() },
+    finish() { clear(); updateProgress(progressBar, progressText, 100) },
+    stop() { clear() },
+  }
 }
 
 function escapeAttr(str) {

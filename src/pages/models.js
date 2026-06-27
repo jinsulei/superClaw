@@ -9,12 +9,7 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
-import { isMiniMaxOnlyMode, isTestBuildMode } from '../lib/test-build-mode.js'
-import {
-  getMiniMaxTestDefaults,
-  readMiniMaxTestConfig,
-  saveMiniMaxTestConfig,
-} from '../lib/minimax-test-config.js'
+import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl, getYyapiConsoleUrl } from '../lib/yyapi-config.js'
 
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
@@ -29,6 +24,49 @@ function modelIdFromRef(ref = '') {
   if (!value) return ''
   const slash = value.indexOf('/')
   return slash >= 0 ? value.slice(slash + 1) : value
+}
+
+function isYyapiPrimary(ref = '', yyapiModels = []) {
+  const value = String(ref || '').trim()
+  if (!value) return true
+  if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
+  return yyapiModels.includes(value)
+}
+
+function isDirectMiniMaxPrimary(ref = '') {
+  return String(ref || '').trim().toLowerCase().startsWith('minimax/')
+}
+
+function isPlaceholderModelCredential(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return true
+  if (raw.includes('${') || raw.includes('*')) return true
+  return /^(your_api_key|login_required|superclaw-login-required|\$\{minimax_api_key\}|\$\{openai_api_key\})$/i.test(raw)
+}
+
+function hasUserMiniMaxCredential(config) {
+  const provider = config?.models?.providers?.minimax
+    || config?.providers?.minimax
+    || config?.modelProviders?.minimax
+    || config?.providerConfigs?.minimax
+    || {}
+  return !isPlaceholderModelCredential(provider.apiKey || provider.api_key || provider.token || '')
+}
+
+function isStaleMiniMaxTemplatePrimary(config, ref = '') {
+  const value = String(ref || '').trim()
+  if (!isDirectMiniMaxPrimary(value)) return false
+  if (hasUserMiniMaxCredential(config)) return false
+  const modelId = modelIdFromRef(value).toLowerCase()
+  return !modelId || modelId === 'minimax-m3'
+}
+
+function cleanupStaleMiniMaxTemplate(config) {
+  if (hasUserMiniMaxCredential(config)) return
+  delete config.models?.providers?.minimax
+  delete config.providers?.minimax
+  delete config.modelProviders?.minimax
+  delete config.providerConfigs?.minimax
 }
 
 function ensurePortableOpenClawSkills(config) {
@@ -88,6 +126,63 @@ function ensurePortableOpenClawSkills(config) {
   }
 }
 
+function ensureYyapiManagedModelSelection(config, yyapiModelIds = []) {
+  if (!yyapiModelIds.length) return ''
+  const fallbackRef = modelRefForProvider(YYAPI_PROVIDER_KEY, yyapiModelIds[0])
+
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  if (!config.agents.defaults.model) config.agents.defaults.model = {}
+
+  const defaults = config.agents.defaults
+  const currentPrimary = getCurrentPrimary(config)
+  let primary = currentPrimary
+  const staleMiniMaxTemplate = isStaleMiniMaxTemplatePrimary(config, currentPrimary)
+  if (isYyapiPrimary(currentPrimary, yyapiModelIds) || staleMiniMaxTemplate) {
+    const currentModelId = modelIdFromRef(currentPrimary)
+    primary = !staleMiniMaxTemplate && yyapiModelIds.includes(currentModelId)
+      ? modelRefForProvider(YYAPI_PROVIDER_KEY, currentModelId)
+      : fallbackRef
+    defaults.model.primary = primary
+
+    if (!defaults.models || typeof defaults.models !== 'object' || Array.isArray(defaults.models)) {
+      defaults.models = {}
+    }
+    for (const key of Object.keys(defaults.models)) {
+      if (isStaleMiniMaxTemplatePrimary(config, key)
+        || (key.startsWith(`${YYAPI_PROVIDER_KEY}/`) && !yyapiModelIds.includes(modelIdFromRef(key)))) {
+        delete defaults.models[key]
+      }
+    }
+    defaults.models[primary] = defaults.models[primary] || {}
+    if (staleMiniMaxTemplate) cleanupStaleMiniMaxTemplate(config)
+  }
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      if (!agent.model) agent.model = {}
+      const agentPrimary = String(agent.model.primary || '').trim()
+      const agentStaleMiniMaxTemplate = isStaleMiniMaxTemplatePrimary(config, agentPrimary)
+      if (isYyapiPrimary(agentPrimary, yyapiModelIds) || agentStaleMiniMaxTemplate) {
+        const agentModelId = modelIdFromRef(agentPrimary)
+        agent.model.primary = !agentStaleMiniMaxTemplate && yyapiModelIds.includes(agentModelId)
+          ? modelRefForProvider(YYAPI_PROVIDER_KEY, agentModelId)
+          : primary || fallbackRef
+      }
+      if (Array.isArray(agent.model.fallbacks)) {
+        agent.model.fallbacks = agent.model.fallbacks.filter(ref => {
+          const value = String(ref || '').trim()
+          if (isStaleMiniMaxTemplatePrimary(config, value)) return false
+          return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+        })
+      }
+    }
+  }
+
+  return primary
+}
+
 // 主模型 localStorage 持久化键名
 const STORAGE_PRIMARY_MODEL_KEY = 'superclaw-primary-model'
 
@@ -110,11 +205,13 @@ export async function render() {
       <button class="btn btn-primary btn-sm" id="btn-add-provider">${t('models.addProvider')}</button>
       <button class="btn btn-secondary btn-sm" id="btn-undo" disabled>${t('models.undo')}</button>
       <span style="flex:1"></span>
+      <button class="btn btn-secondary btn-sm" id="btn-refresh-yyapi" title="${t('models.refreshYYApi')}">${icon('refresh-cw', 13)} ${t('models.refreshYYApi')}</button>
+      <button class="btn btn-secondary btn-sm" id="btn-open-yyapi-console">${icon('external-link', 13)} ${t('models.openYYApiConsole')}</button>
     </div>
     <div class="form-hint" style="margin-bottom:var(--space-md)">
       ${t('models.providerHint')}
     </div>
-    <div id="minimax-test-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
+    <div id="yyapi-token-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
     <div id="default-model-bar"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
@@ -161,7 +258,12 @@ async function loadConfig(page, state) {
 
     renderDefaultBar(page, state)
     renderProviders(page, state)
-    renderMiniMaxTestPanel(page).catch(err => console.warn('[models] MiniMax test panel failed:', err?.message || err))
+    renderYyapiTokenPanel(page).catch(err => console.warn('[models] yyapi token panel failed:', err))
+
+    // 自动初始化：如果 YYAPI 服务商不存在且有用户令牌，自动创建
+    autoInitYYApi(page, state).catch(err => {
+      console.error('[models] autoInitYYApi 失败:', err)
+    })
   } catch (e) {
     console.error('[models] loadConfig failed:', e)
     const detail = escapeHtml(e?.stack || e?.message || String(e))
@@ -226,147 +328,67 @@ function maskApiKey(key = '') {
   return `${value.slice(0, 6)}****${value.slice(-4)}`
 }
 
-function shouldShowMiniMaxTestPanel() {
-  return isMiniMaxOnlyMode() || isTestBuildMode()
-}
-
-function miniMaxSyncBadge(label, ok) {
-  const color = ok ? 'var(--success)' : 'var(--text-tertiary)'
-  const bg = ok ? 'var(--success-muted)' : 'var(--bg-tertiary)'
-  return `<span style="display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:2px 8px;background:${bg};color:${color};font-size:12px">${escapeHtml(label)} ${ok ? 'OK' : '待同步'}</span>`
-}
-
-async function renderMiniMaxTestPanel(page) {
-  const panel = page.querySelector('#minimax-test-panel')
+async function renderYyapiTokenPanel(page) {
+  const panel = page.querySelector('#yyapi-token-panel')
   if (!panel) return
-  if (!shouldShowMiniMaxTestPanel()) {
-    panel.style.display = 'none'
-    panel.innerHTML = ''
-    return
+  try {
+    const { getTokenList, getFullTokenKey } = await import('../lib/user-api.js')
+    const tokens = await getTokenList()
+    const token = (tokens || []).find(t => t?.is_default || t?.isDefault || t?.default)
+      || (tokens || []).find(t => t?.enabled !== false && t?.status !== 'disabled')
+      || (tokens || [])[0]
+    if (!token) {
+      panel.style.display = ''
+      panel.innerHTML = `
+        <div class="config-section-title">YYApi API Key</div>
+        <div style="color:var(--text-tertiary);font-size:13px">当前账号暂无可用令牌</div>
+      `
+      return
+    }
+
+    let fullKey = token.key || token.apiKey || token.api_key || ''
+    if (token.id && (!fullKey || fullKey.includes('*'))) {
+      const keyData = await getFullTokenKey(token.id)
+      fullKey = typeof keyData === 'string' ? keyData : (keyData?.key || keyData?.apiKey || keyData?.api_key || fullKey)
+    }
+    if (fullKey && !fullKey.includes('*')) {
+      try { localStorage.setItem('superclaw_yyapi_key', fullKey) } catch {}
+    }
+    const noKeyText = '未获取到明文 Key'
+    const safeKey = escapeHtml(fullKey || noKeyText)
+    const masked = escapeHtml(maskApiKey(fullKey) || noKeyText)
+    panel.style.display = ''
+    panel.innerHTML = `
+      <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span>YYApi API Key</span>
+        <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">${escapeHtml(String(token.name || token.id || '默认令牌'))}</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;min-width:0">
+        <code id="yyapi-token-value" data-full="${safeKey}" data-masked="${masked}" data-visible="0" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg-tertiary);border:1px solid var(--border-primary);border-radius:6px;padding:8px 10px;font-size:12px">${masked}</code>
+        <button class="btn btn-sm btn-secondary" id="btn-toggle-yyapi-token">显示</button>
+        <button class="btn btn-sm btn-secondary" id="btn-copy-yyapi-token">复制</button>
+      </div>
+    `
+    panel.querySelector('#btn-toggle-yyapi-token')?.addEventListener('click', () => {
+      const valueEl = panel.querySelector('#yyapi-token-value')
+      const visible = valueEl.dataset.visible === '1'
+      valueEl.dataset.visible = visible ? '0' : '1'
+      valueEl.textContent = visible ? valueEl.dataset.masked : valueEl.dataset.full
+      panel.querySelector('#btn-toggle-yyapi-token').textContent = visible ? '显示' : '隐藏'
+    })
+    panel.querySelector('#btn-copy-yyapi-token')?.addEventListener('click', async () => {
+      const value = panel.querySelector('#yyapi-token-value')?.dataset.full || ''
+      if (!value || value === noKeyText) return toast('没有可复制的 API Key', 'warning')
+      await navigator.clipboard?.writeText(value)
+      toast('API Key 已复制', 'success')
+    })
+  } catch (err) {
+    panel.style.display = ''
+    panel.innerHTML = `
+      <div class="config-section-title">YYApi API Key</div>
+      <div style="color:var(--text-tertiary);font-size:13px">令牌读取失败：${escapeHtml(err.message || err)}</div>
+    `
   }
-
-  const defaults = getMiniMaxTestDefaults()
-  const status = await readMiniMaxTestConfig()
-  const baseUrl = status.baseUrl || defaults.baseUrl
-  const masked = status.maskedKey || ''
-  const configuredText = status.hasApiKey
-    ? `已配置 API Key：${escapeHtml(masked)}`
-    : '未配置 API Key'
-  const sync = status.synced || {}
-  panel.style.display = ''
-  panel.innerHTML = `
-    <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-      <span>测试版 MiniMax 配置</span>
-      <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">免登录测试模式</span>
-    </div>
-    <div class="form-hint" style="margin-bottom:var(--space-sm)">
-      所有 Agent 默认使用 MiniMax，本页只写入本地运行配置，不写源码、不联网上报。
-    </div>
-    <div style="display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(180px,1fr) minmax(140px,.7fr);gap:10px;align-items:end">
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">API Key</label>
-        <input class="form-input" id="minimax-test-api-key" type="password" autocomplete="off" placeholder="${status.hasApiKey ? `已保存：${escapeHtml(masked)}，留空则保留` : '粘贴 MiniMax API Key'}">
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Base URL</label>
-        <select class="form-input" id="minimax-test-base-url">
-          <option value="${escapeHtml(defaults.baseUrl)}" ${baseUrl === defaults.baseUrl ? 'selected' : ''}>国际 ${escapeHtml(defaults.baseUrl)}</option>
-          <option value="${escapeHtml(defaults.cnBaseUrl)}" ${baseUrl === defaults.cnBaseUrl ? 'selected' : ''}>国内 ${escapeHtml(defaults.cnBaseUrl)}</option>
-        </select>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Model</label>
-        <input class="form-input" id="minimax-test-model" value="${escapeHtml(defaults.model)}" readonly>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
-      <button class="btn btn-primary btn-sm" id="btn-save-minimax-test">保存 MiniMax 配置</button>
-      <button class="btn btn-secondary btn-sm" id="btn-test-minimax-test">测试模型连接</button>
-      <button class="btn btn-secondary btn-sm" id="btn-reload-minimax-test">重新读取配置</button>
-      <span style="font-size:12px;color:var(--text-secondary)">${configuredText}</span>
-    </div>
-    <div id="minimax-test-result" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
-    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
-      ${miniMaxSyncBadge('OpenClaw', sync.openclaw)}
-      ${miniMaxSyncBadge('OpenClaw Agent', sync.openclawAgent)}
-      ${miniMaxSyncBadge('Hermes', sync.hermes)}
-      ${miniMaxSyncBadge('Claude Panel', sync.claudePanel)}
-    </div>
-  `
-
-  panel.querySelector('#btn-reload-minimax-test')?.addEventListener('click', () => {
-    renderMiniMaxTestPanel(page).catch(err => toast(`MiniMax 配置读取失败: ${err?.message || err}`, 'error'))
-  })
-  panel.querySelector('#btn-test-minimax-test')?.addEventListener('click', async () => {
-    const btn = panel.querySelector('#btn-test-minimax-test')
-    const input = panel.querySelector('#minimax-test-api-key')
-    const select = panel.querySelector('#minimax-test-base-url')
-    const result = panel.querySelector('#minimax-test-result')
-    const oldText = btn?.textContent || '测试模型连接'
-    const setResult = (message, ok = false) => {
-      if (!result) return
-      result.textContent = message
-      result.style.color = ok ? 'var(--success)' : 'var(--text-secondary)'
-    }
-    if (btn) {
-      btn.disabled = true
-      btn.textContent = '测试中...'
-    }
-    try {
-      const latest = await api.readOpenclawConfig().catch(() => ({}))
-      const savedProvider = latest?.models?.providers?.[defaults.providerId] || {}
-      const apiKey = String(input?.value || savedProvider.apiKey || '').trim()
-      const baseUrlForTest = select?.value || savedProvider.baseUrl || defaults.baseUrl
-      if (!apiKey) {
-        setResult('尚未配置 MiniMax API Key，请先填写或保存后再测试。')
-        return
-      }
-      const started = Date.now()
-      await api.testModel(baseUrlForTest, apiKey, defaults.model, 'openai-completions')
-      const elapsed = ((Date.now() - started) / 1000).toFixed(1)
-      setResult(`MiniMax 模型连接测试成功：${defaults.model}（${elapsed}s）`, true)
-      toast(`MiniMax 模型连接测试成功：${defaults.model}`, 'success')
-    } catch (err) {
-      const message = String(err?.message || err || '').replace(/sk-[A-Za-z0-9_-]{12,}/g, '[REDACTED_KEY]')
-      const summary = /401|2049|unauthorized|invalid/i.test(message)
-        ? 'MiniMax API Key 验证失败，请检查 Key 是否有效。'
-        : `MiniMax 模型连接失败：${message.slice(0, 180)}`
-      setResult(summary)
-      toast(summary, 'error', { duration: 8000 })
-    } finally {
-      if (btn) {
-        btn.disabled = false
-        btn.textContent = oldText
-      }
-    }
-  })
-  panel.querySelector('#btn-save-minimax-test')?.addEventListener('click', async () => {
-    const btn = panel.querySelector('#btn-save-minimax-test')
-    const input = panel.querySelector('#minimax-test-api-key')
-    const select = panel.querySelector('#minimax-test-base-url')
-    const oldText = btn?.textContent || '保存 MiniMax 配置'
-    if (btn) {
-      btn.disabled = true
-      btn.textContent = '保存中...'
-    }
-    try {
-      await saveMiniMaxTestConfig({
-        apiKey: input?.value || '',
-        baseUrl: select?.value || defaults.baseUrl,
-        model: defaults.model,
-      })
-      if (input) input.value = ''
-      await renderMiniMaxTestPanel(page)
-      toast('MiniMax 本地配置已保存并同步', 'success')
-    } catch (err) {
-      toast(`MiniMax 配置保存失败: ${err?.message || err}`, 'error')
-    } finally {
-      if (btn) {
-        btn.disabled = false
-        btn.textContent = oldText
-      }
-    }
-  })
 }
 
 // 渲染当前主模型状态栏
@@ -1347,11 +1369,20 @@ function applyDefaultModel(state) {
 function bindTopActions(page, state) {
   page.querySelector('#btn-add-provider').onclick = () => addProvider(page, state)
   page.querySelector('#btn-undo').onclick = () => undo(page, state)
+  const yyapiRefreshBtn = page.querySelector('#btn-refresh-yyapi')
+  if (yyapiRefreshBtn) yyapiRefreshBtn.onclick = () => refreshYYApiKeys(page, state)
+  const yyapiConsoleBtn = page.querySelector('#btn-open-yyapi-console')
+  if (yyapiConsoleBtn) yyapiConsoleBtn.onclick = () => openYYApiConsole()
+
 }
 
-// 模型配置对话框：测试版只保留本地手动 Provider 配置。
+// 模型配置对话框（默认 YYApi，API Key 可下拉选择也可手动输入）
 function addProvider(page, state) {
+  const yyapiBaseUrl = getYyapiBaseUrl()
   const presetMap = new Map()
+  if (yyapiBaseUrl) {
+    presetMap.set(YYAPI_PROVIDER_KEY, { key: YYAPI_PROVIDER_KEY, label: 'YYAPI', baseUrl: yyapiBaseUrl, api: 'openai-completions' })
+  }
   for (const preset of PROVIDER_PRESETS) presetMap.set(preset.key, preset)
   const quickPresets = Array.from(presetMap.values())
   const defaultPreset = quickPresets[0] || { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions' }
@@ -1379,7 +1410,10 @@ function addProvider(page, state) {
       </div>
       <div class="form-group">
         <label class="form-label">${t('models.apiKey')}</label>
-        <input class="form-input" data-name="apiKey-input" id="apikey-input" placeholder="${t('models.apiKeyPlaceholder')}">
+        <select class="form-input" data-name="apiKey-select" id="apikey-select">
+          <option value="">${t('common.loading')}</option>
+        </select>
+        <input class="form-input" data-name="apiKey-input" id="apikey-input" placeholder="${t('models.apiKeyPlaceholder')}" style="display:none">
         <div class="form-hint">${t('models.apiKeyHint')}</div>
       </div>
       <div class="form-group">
@@ -1409,6 +1443,48 @@ function addProvider(page, state) {
     }
   })
 
+  // 异步加载 API Key 列表填充下拉框
+  ;(async () => {
+    try {
+      const { getTokenList } = await import('../lib/user-api.js')
+      const tokens = await getTokenList()
+      const select = overlay.querySelector('#apikey-select')
+      const input = overlay.querySelector('[data-name="apiKey-input"]')
+      if (!select) return
+      if (tokens && tokens.length) {
+        select.innerHTML = tokens.map((tok, i) => {
+          const label = tok.name || tok.id || `Token ${i + 1}`
+          // value 用 id（数字），确认时会自动调 getFullTokenKey 获取明文 key
+          const val = tok.id || tok.key || ''
+          return `<option value="${val}">${label}</option>`
+        }).join('') + '<option value="__custom__">✏️ 手动输入</option>'
+        // 默认选中第一个
+        select.value = tokens[0].id || tokens[0].key || ''
+      } else {
+        select.innerHTML = '<option value="">-- 暂无密钥 --</option>' + '<option value="__custom__">✏️ 手动输入</option>'
+        select.value = '__custom__'
+      }
+      // 切换 select/input
+      const doToggle = () => {
+        if (select.value === '__custom__') {
+          select.style.display = 'none'
+          input.style.display = ''
+          input.focus()
+        }
+      }
+      select.addEventListener('change', doToggle)
+      if (select.value === '__custom__') doToggle()
+    } catch (err) {
+      console.error('[addProvider] 加载 API Key 列表失败:', err)
+      const select = overlay.querySelector('#apikey-select')
+      if (select) {
+        select.innerHTML = '<option value="">-- 加载失败 --</option>' + '<option value="__custom__">✏️ 手动输入</option>'
+        select.value = '__custom__'
+        select.dispatchEvent(new Event('change'))
+      }
+    }
+  })()
+
   overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove() })
   overlay.querySelector('[data-action="cancel"]').onclick = () => overlay.remove()
 
@@ -1417,8 +1493,9 @@ function addProvider(page, state) {
     const baseUrlInput = overlay.querySelector('[data-name="baseUrl"]')
     const key = keyInput.value.trim() || 'OPENAI'
     const baseUrl = baseUrlInput.value.trim()
+    const select = overlay.querySelector('[data-name="apiKey-select"]')
     const input = overlay.querySelector('[data-name="apiKey-input"]')
-    const apiKeyVal = input.value.trim()
+    const apiKeyVal = (input.style.display !== 'none' ? input.value : select.value).trim()
     const apiType = overlay.querySelector('[data-name="api"]').value
 
     if (!key) {
@@ -1434,6 +1511,19 @@ function addProvider(page, state) {
     if (!state.config.models) state.config.models = { mode: 'replace', providers: {} }
     if (!state.config.models.providers) state.config.models.providers = {}
 
+    let finalApiKey = apiKeyVal
+    // 如果输入的是 token ID（纯数字），尝试获取完整 key
+    if (/^\d+$/.test(apiKeyVal)) {
+      try {
+        const { getFullTokenKey } = await import('../lib/user-api.js')
+        const keyData = await getFullTokenKey(apiKeyVal)
+        if (keyData.key) finalApiKey = keyData.key
+        else if (keyData.apiKey) finalApiKey = keyData.apiKey
+      } catch (err) {
+        console.error('[addProvider] 获取完整 API Key 失败:', err)
+      }
+    }
+
     const presetModels = MODEL_PRESETS[key] || MODEL_PRESETS[key.toLowerCase()] || []
     const initialModels = key.toLowerCase().startsWith('minimax') && presetModels.length
       ? [{ ...presetModels[0], input: ['text', 'image'] }]
@@ -1441,7 +1531,7 @@ function addProvider(page, state) {
 
     state.config.models.providers[key] = {
       baseUrl: baseUrl,
-      apiKey: apiKeyVal || '',
+      apiKey: finalApiKey || '',
       api: apiType,
       managed: false,
       models: initialModels,
@@ -1452,6 +1542,79 @@ function addProvider(page, state) {
     autoSave(state)
     toast(t('models.providerAdded', { name: key }), 'success')
   }
+}
+
+// 自动初始化 YYApi 服务商（如果存在用户令牌，自动创建并拉取模型列表）
+async function autoInitYYApi(page, state) {
+  // 如果已有 YYAPI 服务商则跳过
+  if (state.config?.models?.providers?.[YYAPI_PROVIDER_KEY]) return
+  const yyapiBaseUrl = getYyapiBaseUrl()
+  if (!yyapiBaseUrl) return
+
+  let tokens, firstKey
+  try {
+    const { getTokenList, getFullTokenKey } = await import('../lib/user-api.js')
+    tokens = await getTokenList()
+    if (!tokens || !tokens.length) return
+    const firstToken = tokens[0]
+    // 只要有 token ID，就获取完整 key（list 接口返回的 key 可能是脱敏的）
+    if (firstToken.id) {
+      try {
+        const keyData = await getFullTokenKey(firstToken.id)
+        firstKey = keyData.key || keyData.apiKey || ''
+      } catch (_) {
+        firstKey = firstToken.key || ''
+      }
+    } else {
+      firstKey = firstToken.key || ''
+    }
+  } catch (err) {
+    console.error('[autoInitYYApi] 获取令牌失败:', err)
+    return
+  }
+  if (!firstKey) return
+
+  // 拉取 YYApi 模型列表
+  let modelIds = []
+  try {
+    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
+      headers: { 'Authorization': `Bearer ${firstKey}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (modelResp.ok) {
+      const modelData = await modelResp.json()
+      modelIds = (modelData.data || modelData || [])
+        .filter(m => m.id)
+        .map(m => ({ id: m.id, name: m.id, input: ['text', 'image'] }))
+    }
+  } catch (err) {
+    console.error('[autoInitYYApi] 拉取模型列表失败:', err)
+  }
+
+  if (!state.config.models) state.config.models = { mode: 'replace', providers: {} }
+  if (!state.config.models.providers) state.config.models.providers = {}
+
+  // 自动初始化时只把主模型写入配置，避免上百个模型全量写入导致 gateway schema 验证失败
+  const primaryModelId = modelIds.length ? modelIds[0].id : null
+  state.config.models.providers[YYAPI_PROVIDER_KEY] = {
+    baseUrl: yyapiBaseUrl,
+    apiKey: firstKey,
+    api: 'openai-completions',
+    models: modelIds,
+  }
+  cleanupStaleMiniMaxTemplate(state.config)
+
+  // 自动设置主模型；打包模板里的 yyapi/superclaw-login-required 也会在这里替换掉。
+  if (primaryModelId) {
+    ensureYyapiManagedModelSelection(state.config, modelIds.map(m => m.id).filter(Boolean))
+  }
+  ensurePortableOpenClawSkills(state.config)
+
+  renderProviders(page, state)
+  renderDefaultBar(page, state)
+  updateUndoBtn(page, state)
+  autoSave(state)
+  console.log(`[autoInitYYApi] YYAPI provider added, models=${modelIds.length}, primary=${primaryModelId || ''}`)
 }
 
 // 编辑服务商
@@ -1874,6 +2037,136 @@ async function fetchRemoteModels(btn, page, state, providerKey) {
     } else {
       toast(t('models.fetchFailed', { error: errStr }), 'error')
     }
+  }
+}
+
+/**
+ * 刷新 YYApi 模型列表
+ * 调用 v2 API 获取最新 key 和模型
+ */
+async function refreshYYApiKeys(page, state) {
+  const btn = page.querySelector('#btn-refresh-yyapi')
+  if (!btn) return
+  btn.disabled = true
+  const origText = btn.innerHTML
+  btn.innerHTML = t('models.refreshing')
+
+  try {
+    const yyapiBaseUrl = getYyapiBaseUrl()
+    if (!yyapiBaseUrl) {
+      toast('YYAPI 未配置', 'warning')
+      return
+    }
+    const { getTokenList, getFullTokenKey } = await import('../lib/user-api.js')
+    const tokens = await getTokenList()
+    if (!tokens || !tokens.length) {
+      toast(t('models.yyapiNoToken'), 'warning')
+      return
+    }
+
+    const firstToken = tokens[0]
+    let fullKey = ''
+    // 只要有 token ID，就获取完整 key（list 接口返回的 key 可能是脱敏的）
+    if (firstToken.id) {
+      try {
+        const keyData = await getFullTokenKey(firstToken.id)
+        fullKey = typeof keyData === 'string' ? keyData : (keyData.key || keyData.apiKey || '')
+      } catch (_) {
+        fullKey = firstToken.key || ''
+      }
+    } else {
+      fullKey = firstToken.key || ''
+    }
+    if (!fullKey) {
+      toast(t('models.yyapiNoKey'), 'warning')
+      return
+    }
+
+    // 从 YYApi 获取模型列表
+    const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
+      headers: { 'Authorization': `Bearer ${fullKey}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!modelResp.ok) {
+      toast(t('models.yyapiFetchFailed'), 'error')
+      return
+    }
+    const modelData = await modelResp.json()
+    const modelIds = (modelData.data || modelData || [])
+      .filter(m => m.id)
+      .map(m => ({ id: m.id, name: m.id, input: ['text', 'image'] }))
+
+    if (!modelIds.length) {
+      toast(t('models.yyapiNoModels'), 'info')
+      return
+    }
+
+    // 更新本地配置
+    pushUndo(state)
+    if (!state.config.models) state.config.models = {}
+    if (!state.config.models.providers) state.config.models.providers = {}
+    const existing = state.config.models.providers[YYAPI_PROVIDER_KEY]
+    if (!existing) {
+      state.config.models.providers[YYAPI_PROVIDER_KEY] = {
+        baseUrl: yyapiBaseUrl,
+        apiKey: fullKey,
+        api: 'openai-completions',
+        models: modelIds,
+      }
+    } else {
+      existing.baseUrl = yyapiBaseUrl
+      existing.apiKey = fullKey
+      existing.api = existing.api || 'openai-completions'
+      existing.models = modelIds
+    }
+    cleanupStaleMiniMaxTemplate(state.config)
+
+    const yyapiIds = modelIds.map(m => m.id).filter(Boolean)
+    const nextPrimary = ensureYyapiManagedModelSelection(state.config, yyapiIds)
+    ensurePortableOpenClawSkills(state.config)
+    if (nextPrimary) {
+      try { localStorage.setItem(STORAGE_PRIMARY_MODEL_KEY, nextPrimary) } catch {}
+    }
+
+    renderProviders(page, state)
+    renderDefaultBar(page, state)
+    updateUndoBtn(page, state)
+    const saved = await doAutoSave(state)
+    if (saved) {
+      toast(t('models.yyapiRefreshDone', { count: modelIds.length }), 'success')
+    }
+  } catch (err) {
+    toast(t('models.yyapiRefreshFailed') + ': ' + (err.message || err), 'error')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = origText
+  }
+}
+
+/**
+ * 打开 YYApi 控制台 - 直接在浏览器打开，不内置
+ */
+async function openYYApiConsole() {
+  const yyapiConsoleUrl = getYyapiConsoleUrl()
+  if (!yyapiConsoleUrl) {
+    toast('YYAPI 未配置', 'warning')
+    return
+  }
+  if (window.__TAURI_INTERNALS__) {
+    return openYYApiConsoleDesktop(yyapiConsoleUrl)
+  }
+  // Web 端：直接在新标签页打开
+  window.open(yyapiConsoleUrl, '_blank')
+}
+
+/** Tauri 桌面端：直接在系统浏览器打开 YYApi 控制台 */
+async function openYYApiConsoleDesktop(yyapiConsoleUrl) {
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(yyapiConsoleUrl)
+  } catch (_) {
+    // 降级：window.open 兜底
+    window.open(yyapiConsoleUrl, '_blank')
   }
 }
 
