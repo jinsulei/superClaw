@@ -8819,25 +8819,25 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-body,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row .hm-chat-msg-content-wrap {
   width: fit-content !important;
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px))) !important;
+  max-width: min(980px, 72vw) !important;
   flex: 0 1 auto !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-body,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg.sc-msg-row.user .hm-chat-msg-content-wrap {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px))) !important;
+  max-width: min(520px, 46vw) !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble,
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-expanded),
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg-bubble.sc-msg-bubble:has(.assistant-compact-message.is-collapsed) {
   width: fit-content !important;
-  max-width: 100% !important;
+  max-width: min(980px, 72vw) !important;
   flex: 0 1 auto !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .hm-chat-msg--user .hm-chat-msg-bubble.sc-msg-bubble {
-  max-width: 100% !important;
+  max-width: min(520px, 46vw) !important;
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage .assistant-compact-message,
