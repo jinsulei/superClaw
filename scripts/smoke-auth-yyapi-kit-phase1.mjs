@@ -112,13 +112,15 @@ function runConflictGuard() {
       apiKey: yyapiTokenForSmoke,
     }),
   })
-  assert.equal(result.status, 'config_conflict')
-  assert.equal(result.configStatus, 'config_conflict')
-  assert.equal(result.code, 'CONFIG_CONFLICT')
-  assert.equal(result.warnings.includes('CONFIG_CONFLICT_DIRECT_WITH_YYAPI'), true)
+  assert.equal(result.status, 'ready')
+  assert.equal(result.configStatus, 'ready')
+  assert.equal(result.code, 'OK')
+  assert.equal(result.modelSource, 'direct')
+  assert.equal(result.apiKeySource, 'direct-user')
+  assert.equal(result.warnings.includes('USER_DIRECT_MODEL_OVERRIDE'), true)
   assertNoRawKeyLeak(result, directKey)
   assertNoRawKeyLeak(result, yyapiTokenForSmoke)
-  console.log('AUTH_KIT_CONFIG_CONFLICT_GUARD_PASS')
+  console.log('AUTH_KIT_USER_DIRECT_OVERRIDE_PRESERVED_PASS')
 }
 
 function runApiExistenceCheck() {

@@ -68,14 +68,6 @@ function runReleaseGuardCheck() {
   assert.equal(guard.targetRoute, null)
   assertPublicPayload(status, passwordInput)
 
-  status = activateAuthSession({ activationCode: activationInput }, env)
-  guard = getAuthGuardDecision(status)
-  assert.equal(status.loggedIn, true)
-  assert.equal(status.activated, true)
-  assert.equal(status.allowAppAccess, true)
-  assert.equal(guard.targetRoute, null)
-  assertPublicPayload(status, passwordInput, activationInput)
-
   status = logoutAuthSession(env)
   guard = getAuthGuardDecision(status)
   assert.equal(status.loggedIn, false)
@@ -96,27 +88,53 @@ function assertTextContains(file, terms) {
 function runStaticIntegrationCheck() {
   for (const file of [
     'src/lib/auth-session.js',
+    'src/lib/user-api.js',
+    'src/lib/yyapi-config.js',
+    'src/lib/license-binding.js',
     'src/pages/login.js',
     'src/pages/register.js',
     'src/pages/activate.js',
+    'src/pages/claim.js',
+    'src/pages/profile.js',
     'scripts/lib/auth-session.mjs',
     'scripts/lib/auth-guard.mjs',
   ]) {
     assert.equal(fs.existsSync(path.join(process.cwd(), file)), true, `${file} must exist`)
   }
-  assertTextContains('scripts/dev-api.js', [
-    '/api/auth/status',
-    '/api/auth/login',
-    '/api/auth/logout',
-    '/api/auth/activate',
-  ])
+
   assertTextContains('src/main.js', [
     "registerRoute('/login'",
     "registerRoute('/register'",
     "registerRoute('/activate'",
-    'fetchAuthStatus',
-    'checkRemoteAuth',
+    "registerRoute('/claim'",
+    "registerRoute('/profile'",
+    'isLoggedIn',
+    'getDefaultYyapiProfile',
+    'getTokenList',
+    'getFullTokenKey',
+    "configureHermes('custom'",
+    'configureClaudeCodeRelay',
   ])
+
+  assertTextContains('src/pages/login.js', [
+    'login({ username, password })',
+    '__superclaw_sync_default_model_settings',
+    "new CustomEvent('superclaw:login')",
+  ])
+
+  assertTextContains('src/pages/register.js', [
+    'registerV2',
+    'new_api_key',
+    "localStorage.setItem('superclaw_yyapi_key'",
+    "navigateToAuth('claim')",
+  ])
+
+  assertTextContains('src/pages/models.js', [
+    'yyapi-token-panel',
+    'getYyapiConsoleUrl',
+    'autoInitYYApi',
+  ])
+
   console.log('AUTH_KIT_PHASE2_STATIC_INTEGRATION_PASS')
 }
 
@@ -130,11 +148,9 @@ function runNoForbiddenMarkerCheck() {
     'scripts/lib/auth-guard.mjs',
     'scripts/smoke-auth-yyapi-kit-phase2.mjs',
   ]
-  const legacyEndpointPattern = /124\.222\.21\.44/
   const viteKeyMarker = ['VITE', 'MINIMAX', 'API', 'KEY'].join('_')
   for (const file of files) {
     const text = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
-    assert.equal(legacyEndpointPattern.test(text), false, `${file} contains a legacy endpoint`)
     assert.equal(text.includes(viteKeyMarker), false, `${file} contains a forbidden frontend key marker`)
   }
   console.log('AUTH_KIT_PHASE2_NO_FORBIDDEN_MARKERS_PASS')

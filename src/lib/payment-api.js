@@ -1,5 +1,12 @@
 const PAYMENT_NOT_CONFIGURED = 'PAYMENT_API_NOT_CONFIGURED'
 
+import {
+  getTopupInfo as getUserTopupInfo,
+  getUserQuota as getUserPaymentQuota,
+  createPaymentOrder as createUserPaymentOrder,
+  getPaymentOrderStatus as getUserPaymentOrderStatus,
+} from './user-api.js'
+
 async function readJson(resp) {
   try {
     return await resp.json()
@@ -14,7 +21,7 @@ function unwrapPaymentResponse(data = {}) {
   return Object.keys(rest).length ? rest : data
 }
 
-async function callPaymentApi(action, payload = {}) {
+async function callStandalonePaymentApi(action, payload = {}) {
   const resp = await fetch('/__api/payment_request', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -33,20 +40,49 @@ async function callPaymentApi(action, payload = {}) {
   return unwrapPaymentResponse(data)
 }
 
+async function withStandaloneFallback(primaryCall, action, payload = {}) {
+  try {
+    return await primaryCall()
+  } catch (primaryError) {
+    try {
+      return await callStandalonePaymentApi(action, payload)
+    } catch (fallbackError) {
+      if (fallbackError?.code === PAYMENT_NOT_CONFIGURED) {
+        throw primaryError
+      }
+      throw fallbackError
+    }
+  }
+}
+
 export async function getTopupInfo() {
-  return callPaymentApi('topup-info')
+  return withStandaloneFallback(
+    () => getUserTopupInfo({ suppressAuthRedirect: true }),
+    'topup-info',
+  )
 }
 
 export async function getUserQuota() {
-  return callPaymentApi('quota')
+  return withStandaloneFallback(
+    () => getUserPaymentQuota({ suppressAuthRedirect: true }),
+    'quota',
+  )
 }
 
 export async function createPaymentOrder(amount, type) {
-  return callPaymentApi('create-order', { amount, type })
+  return withStandaloneFallback(
+    () => createUserPaymentOrder(amount, type, { suppressAuthRedirect: true }),
+    'create-order',
+    { amount, type },
+  )
 }
 
 export async function getPaymentOrderStatus(orderId) {
-  return callPaymentApi('order-status', { orderId, _: Date.now() })
+  return withStandaloneFallback(
+    () => getUserPaymentOrderStatus(orderId),
+    'order-status',
+    { orderId, _: Date.now() },
+  )
 }
 
 export { PAYMENT_NOT_CONFIGURED }

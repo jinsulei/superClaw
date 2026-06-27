@@ -10,7 +10,7 @@ window._jsLoaded = true
 import { initRouter, navigate, registerRoute, setDefaultRoute } from './router.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
-import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
+import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, refreshGatewayStatus, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
 import { api, checkBackendHealth, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
@@ -22,8 +22,9 @@ import { initFeatureGates } from './lib/feature-gates.js'
 import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
-import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
-import { fetchAuthStatus, getAuthGuardDecision } from './lib/auth-session.js'
+import { isMiniMaxOnlyMode } from './lib/test-build-mode.js'
+import { isLoggedIn, navigateTo } from './lib/user-api.js'
+import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -75,30 +76,51 @@ function isLocalDevAuthBypass() {
  */
 async function checkRemoteAuth() {
   if (isLocalDevAuthBypass()) {
-    return {
-      ok: true,
-      status: { authRequired: false, allowAppAccess: true, reason: 'local_dev_bypass' },
-      guard: { allowAppAccess: true, targetRoute: null, reason: 'local_dev_bypass' },
-    }
+    sessionStorage.setItem('superclaw_authed', '1')
+    return { ok: true }
   }
-  try {
-    const status = await fetchAuthStatus()
-    const guard = status.guard || getAuthGuardDecision(status)
-    return {
-      ok: Boolean(guard.allowAppAccess),
-      status,
-      guard,
-      targetRoute: guard.targetRoute,
-    }
-  } catch (error) {
-    console.warn('[auth] status check failed:', error?.message || error)
-    return {
-      ok: false,
-      status: { authRequired: true, allowAppAccess: false, reason: 'auth_status_unavailable' },
-      guard: { allowAppAccess: false, targetRoute: '/activate', reason: 'auth_status_unavailable' },
-      targetRoute: '/activate',
-    }
+
+  if (isLoggedIn()) {
+    sessionStorage.setItem('superclaw_authed', '1')
+    try {
+      if (isTauri) {
+        await api.readPanelConfig()
+      } else {
+        await fetch('/__api/auth_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: '123456' }),
+        })
+      }
+    } catch {}
+    return { ok: true }
   }
+
+  return { ok: false }
+}
+
+function getInitialAuthRoute() {
+  const route = (window.location.hash.slice(1) || '').split('?')[0]
+  if (route === '/register' || route === '/login' || route === '/claim') return route
+  if (sessionStorage.getItem('superclaw_activation_code')) return '/register'
+  return '/activate'
+}
+
+function isReleaseAuthRequired() {
+  const value = String(import.meta.env.VITE_SUPERCLAW_AUTH_REQUIRED || '').toLowerCase()
+  return value === '1' || value === 'true'
+}
+
+function shouldUseYyapiModelSource() {
+  const source = String(import.meta.env.VITE_SUPERCLAW_MODEL_SOURCE || '').toLowerCase()
+  if (source === 'yyapi') return true
+  if (source === 'direct' || source === 'minimax') return false
+  return !isMiniMaxOnlyMode()
+}
+
+function getAuthDefaultRoute(authCheck) {
+  if (authCheck?.ok) return '/dashboard'
+  return getInitialAuthRoute()
 }
 
 const _logoSvg = `<svg class="login-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -189,12 +211,21 @@ function showBackendDownOverlay() {
 
 // 全局 401 拦截：尝试重新建立本地 session，不清除远程 JWT
 window.__superclaw_show_login = async function() {
-  try {
-    const auth = await checkRemoteAuth()
-    navigate(auth.ok ? '/dashboard' : (auth.targetRoute || '/login'))
-  } catch {
-    navigate('/login')
+  if (isLoggedIn()) {
+    try {
+      if (isTauri) {
+        await api.readPanelConfig()
+      } else {
+        fetch('/__api/auth_login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: '123456' }),
+        }).catch(() => {})
+      }
+    } catch {}
+    return
   }
+  navigateTo('login')
 }
 
 const sidebar = document.getElementById('sidebar')
@@ -206,23 +237,102 @@ const content = document.getElementById('content')
  * @param {HTMLElement} app
  */
 async function renderAuthPage(app) {
-  if (app) app.innerHTML = ''
-  const route = (window.location.hash.slice(1) || '/login').split('?')[0]
-  const loaders = {
-    '/login': () => import('./pages/login.js'),
-    '/register': () => import('./pages/register.js'),
-    '/activate': () => import('./pages/activate.js'),
+  const authRoute = (window.location.hash.slice(1) || '').split('?')[0]
+  let pageMod
+  try {
+    if (authRoute === '/register') {
+      pageMod = await import('./pages/register.js')
+    } else if (authRoute === '/activate') {
+      pageMod = await import('./pages/activate.js')
+    } else if (authRoute === '/claim') {
+      pageMod = await import('./pages/claim.js')
+    } else if (authRoute === '/login') {
+      pageMod = await import('./pages/login.js')
+    } else {
+      window.location.hash = '#/activate'
+      pageMod = await import('./pages/activate.js')
+    }
+    const page = await pageMod.render()
+    app.innerHTML = ''
+    app.appendChild(page)
+  } catch (e) {
+    app.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:var(--text-secondary);font-size:14px">${t('common.loadFailed')}: ${escapeHtml(e.message)}</div>`
   }
-  const loader = loaders[route] || loaders['/login']
-  const mod = await loader()
-  const page = await (mod.render || mod.default)?.()
-  if (app && page) app.appendChild(page)
-  _hideSplash()
 }
 
 async function renderLocalAccessPage(app) {
   if (app) app.innerHTML = ''
   navigate('/dashboard')
+}
+
+// YYApi model sync helpers. Release user packages use the logged-in user's yyapi key
+// to configure Hermes, OpenClaw, and Claude Code automatically.
+function normalizeYyapiModelRows(raw) {
+  const rows = Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw) ? raw : [])
+  return rows
+    .map(m => (typeof m === 'string' ? m : m?.id))
+    .filter(Boolean)
+    .map(id => ({ id, name: id, input: ['text', 'image'] }))
+}
+
+function pickYyapiDefaultModel(modelIds = []) {
+  const ids = modelIds.map(m => (typeof m === 'string' ? m : m?.id)).filter(Boolean)
+  return ids[0] || ''
+}
+
+function modelIdFromRef(ref = '') {
+  const value = String(ref || '').trim()
+  if (!value) return ''
+  const slash = value.indexOf('/')
+  return slash >= 0 ? value.slice(slash + 1) : value
+}
+
+function yyapiModelRef(modelId = '') {
+  const id = String(modelId || '').trim()
+  return id ? `${YYAPI_PROVIDER_KEY}/${id}` : ''
+}
+
+function isYyapiPrimary(ref = '', yyapiModelIds = []) {
+  const value = String(ref || '').trim()
+  if (!value) return true
+  if (value.startsWith(`${YYAPI_PROVIDER_KEY}/`)) return true
+  return yyapiModelIds.includes(value)
+}
+
+function isDirectMiniMaxPrimary(ref = '') {
+  return String(ref || '').trim().toLowerCase().startsWith('minimax/')
+}
+
+function isPlaceholderModelCredential(value = '') {
+  const raw = String(value || '').trim()
+  if (!raw) return true
+  if (raw.includes('${') || raw.includes('*')) return true
+  return /^(your_api_key|login_required|superclaw-login-required|\$\{minimax_api_key\}|\$\{openai_api_key\})$/i.test(raw)
+}
+
+function hasUserMiniMaxCredential(config) {
+  const provider = config?.models?.providers?.minimax
+    || config?.providers?.minimax
+    || config?.modelProviders?.minimax
+    || config?.providerConfigs?.minimax
+    || {}
+  return !isPlaceholderModelCredential(provider.apiKey || provider.api_key || provider.token || '')
+}
+
+function isStaleMiniMaxTemplatePrimary(config, ref = '') {
+  const value = String(ref || '').trim()
+  if (!isDirectMiniMaxPrimary(value)) return false
+  if (hasUserMiniMaxCredential(config)) return false
+  const modelId = modelIdFromRef(value).toLowerCase()
+  return !modelId || modelId === 'minimax-m3'
+}
+
+function cleanupStaleMiniMaxTemplate(config) {
+  if (hasUserMiniMaxCredential(config)) return
+  delete config.models?.providers?.minimax
+  delete config.providers?.minimax
+  delete config.modelProviders?.minimax
+  delete config.providerConfigs?.minimax
 }
 
 // OpenClaw portable defaults
@@ -287,6 +397,131 @@ function ensurePortableOpenClawSkills(config) {
   }
 }
 
+function ensureYyapiManagedModelSelection(config, yyapiModelIds = [], defaultModel = '') {
+  const fallbackModel = yyapiModelIds.includes(defaultModel) ? defaultModel : yyapiModelIds[0]
+  const fallbackRef = yyapiModelRef(fallbackModel)
+  if (!fallbackRef) return { primary: '', managed: false }
+
+  if (!config.agents) config.agents = {}
+  if (!config.agents.defaults) config.agents.defaults = {}
+  if (!config.agents.defaults.model) config.agents.defaults.model = {}
+
+  const defaults = config.agents.defaults
+  const currentPrimary = String(defaults.model.primary || '').trim()
+  const staleMiniMaxTemplate = isStaleMiniMaxTemplatePrimary(config, currentPrimary)
+  const defaultsManaged = isYyapiPrimary(currentPrimary, yyapiModelIds) || staleMiniMaxTemplate
+  let primary = currentPrimary
+
+  if (defaultsManaged) {
+    const currentModelId = modelIdFromRef(currentPrimary)
+    primary = !staleMiniMaxTemplate && yyapiModelIds.includes(currentModelId)
+      ? yyapiModelRef(currentModelId)
+      : fallbackRef
+    defaults.model.primary = primary
+
+    if (Array.isArray(defaults.model.fallbacks)) {
+      defaults.model.fallbacks = defaults.model.fallbacks.filter(ref => {
+        const value = String(ref || '').trim()
+        if (isStaleMiniMaxTemplatePrimary(config, value)) return false
+        return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+      })
+    }
+
+    if (!defaults.models || typeof defaults.models !== 'object' || Array.isArray(defaults.models)) {
+      defaults.models = {}
+    }
+    for (const key of Object.keys(defaults.models)) {
+      if (isStaleMiniMaxTemplatePrimary(config, key)
+        || (key.startsWith(`${YYAPI_PROVIDER_KEY}/`) && !yyapiModelIds.includes(modelIdFromRef(key)))) {
+        delete defaults.models[key]
+      }
+    }
+    defaults.models[primary] = defaults.models[primary] || {}
+    if (staleMiniMaxTemplate) cleanupStaleMiniMaxTemplate(config)
+  }
+
+  if (Array.isArray(config.agents.list)) {
+    for (const agent of config.agents.list) {
+      if (!agent || typeof agent !== 'object') continue
+      if (!agent.model) agent.model = {}
+      const agentPrimary = String(agent.model.primary || '').trim()
+      const agentStaleMiniMaxTemplate = isStaleMiniMaxTemplatePrimary(config, agentPrimary)
+      if (isYyapiPrimary(agentPrimary, yyapiModelIds) || agentStaleMiniMaxTemplate) {
+        const agentModelId = modelIdFromRef(agentPrimary)
+        agent.model.primary = !agentStaleMiniMaxTemplate && yyapiModelIds.includes(agentModelId)
+          ? yyapiModelRef(agentModelId)
+          : primary || fallbackRef
+      }
+      if (Array.isArray(agent.model.fallbacks)) {
+        agent.model.fallbacks = agent.model.fallbacks.filter(ref => {
+          const value = String(ref || '').trim()
+          if (isStaleMiniMaxTemplatePrimary(config, value)) return false
+          return !value.startsWith(`${YYAPI_PROVIDER_KEY}/`) || yyapiModelIds.includes(modelIdFromRef(value))
+        })
+      }
+    }
+  }
+
+  return { primary, managed: defaultsManaged }
+}
+
+async function getDefaultYyapiProfile() {
+  if (!isLoggedIn() || !shouldUseYyapiModelSource()) return null
+  const yyapiBaseUrl = getYyapiBaseUrl()
+  if (!yyapiBaseUrl) return null
+
+  let fullKey = ''
+
+  try {
+    const { getTokenList, getFullTokenKey } = await import('./lib/user-api.js')
+    const tokenList = await getTokenList()
+    const tokens = Array.isArray(tokenList)
+      ? tokenList
+      : (Array.isArray(tokenList?.items) ? tokenList.items : (Array.isArray(tokenList?.tokens) ? tokenList.tokens : []))
+    const token = tokens.find(t => t?.is_default || t?.isDefault || t?.default)
+      || tokens.find(t => t?.enabled !== false && t?.status !== 'disabled')
+      || tokens[0]
+
+    if (token?.id) {
+      const keyData = await getFullTokenKey(token.id)
+      fullKey = typeof keyData === 'string'
+        ? keyData
+        : (keyData?.key || keyData?.apiKey || keyData?.api_key || '')
+    } else {
+      fullKey = token?.key || token?.apiKey || token?.api_key || ''
+    }
+
+    if (fullKey && !fullKey.includes('*')) {
+      try { localStorage.setItem('superclaw_yyapi_key', fullKey) } catch {}
+    }
+  } catch (err) {
+    console.warn('[yyapi] default key fetch failed, falling back to local cache:', err.message)
+  }
+
+  if (!fullKey) fullKey = localStorage.getItem('superclaw_yyapi_key') || ''
+  if (!fullKey || fullKey.includes('*')) return null
+
+  const modelResp = await fetch(`${yyapiBaseUrl}/models`, {
+    headers: { Authorization: `Bearer ${fullKey}` },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (modelResp.status === 401) {
+    try { localStorage.removeItem('superclaw_yyapi_key') } catch {}
+  }
+  if (!modelResp.ok) throw new Error(`YYAPI models HTTP ${modelResp.status}`)
+
+  const modelData = await modelResp.json()
+  const modelIds = normalizeYyapiModelRows(modelData)
+  if (!modelIds.length) return null
+
+  return {
+    apiKey: fullKey,
+    baseUrl: yyapiBaseUrl,
+    models: modelIds,
+    defaultModel: pickYyapiDefaultModel(modelIds),
+  }
+}
+
 async function syncHermesModel() {
   try {
     const config = await api.hermesReadConfig()
@@ -326,74 +561,78 @@ async function syncHermesModel() {
   }
 }
 
-async function syncMiniMaxTestModelSettings() {
-  const minimax = getMiniMaxDefaultConfig()
-  const primaryRef = `${minimax.provider}/${minimax.model}`
-
+async function syncDefaultModelSettings() {
   try {
+    const profile = await getDefaultYyapiProfile()
+    if (!profile) {
+      await syncHermesModel()
+      return
+    }
+
     const config = await api.readOpenclawConfig()
     if (!config.models) config.models = {}
     if (!config.models.providers) config.models.providers = {}
+    const openclawConfigBefore = JSON.stringify(config)
 
-    const previous = config.models.providers[minimax.provider] || {}
-    config.models.providers[minimax.provider] = {
-      ...previous,
-      baseUrl: minimax.baseUrl,
-      apiKey: previous.apiKey || '',
-      api: previous.api || 'openai-completions',
-      models: [
-        { id: minimax.model, name: minimax.model, input: ['text', 'image'] },
-      ],
-      managed: false,
+    const yyapiModelIds = profile.models.map(m => m.id).filter(Boolean)
+    if (!yyapiModelIds.length || !profile.defaultModel) {
+      await syncHermesModel()
+      return
     }
+
+    const previous = config.models.providers[YYAPI_PROVIDER_KEY] || {}
+    config.models.providers[YYAPI_PROVIDER_KEY] = {
+      ...previous,
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey,
+      api: previous.api || 'openai-completions',
+      models: profile.models,
+    }
+    cleanupStaleMiniMaxTemplate(config)
 
     if (!config.agents) config.agents = {}
     if (!config.agents.defaults) config.agents.defaults = {}
     if (!config.agents.defaults.model) config.agents.defaults.model = {}
-    config.agents.defaults.model.primary = primaryRef
-    config.agents.defaults.model.fallbacks = []
-    if (!config.agents.defaults.models || typeof config.agents.defaults.models !== 'object') {
-      config.agents.defaults.models = {}
-    }
-    config.agents.defaults.models[primaryRef] = config.agents.defaults.models[primaryRef] || {}
-
-    for (const agent of (config.agents.list || [])) {
-      if (!agent.model || typeof agent.model !== 'object') agent.model = {}
-      agent.model.primary = primaryRef
-      agent.model.fallbacks = []
-    }
-
+    const openclawSelection = ensureYyapiManagedModelSelection(config, yyapiModelIds, profile.defaultModel)
     ensurePortableOpenClawSkills(config)
-    await api.writeOpenclawConfig(config)
-    try { localStorage.setItem('superclaw-primary-model', primaryRef) } catch {}
-  } catch (err) {
-    console.warn('[test-build] MiniMax OpenClaw sync failed:', err.message)
-  }
-
-  try {
-    const hermesConfig = await api.hermesReadConfig().catch(() => null)
-    const existingKey = hermesConfig?.api_key || ''
-    await api.configureHermes('minimax', existingKey, minimax.model, minimax.baseUrl)
-    saveHermesPrimary(minimax.model)
-    if (existingKey && typeof api.configureClaudeCodeRelay === 'function') {
-      await api.configureClaudeCodeRelay({
-        baseUrl: minimax.baseUrl,
-        apiKey: existingKey,
-        model: minimax.model,
-        models: [minimax.model],
-        force: false,
-      }).catch(err => console.warn('[test-build] Claude Code relay MiniMax sync failed:', err.message))
+    const openclawPrimary = openclawSelection.primary
+    if (openclawSelection.managed && openclawPrimary) {
+      try { localStorage.setItem('superclaw-primary-model', openclawPrimary) } catch {}
     }
-  } catch (err) {
-    console.warn('[test-build] MiniMax Hermes sync failed:', err.message)
-  }
-}
 
-async function syncDefaultModelSettings() {
-  try {
-    await syncMiniMaxTestModelSettings()
+    if (JSON.stringify(config) !== openclawConfigBefore) {
+      await api.writeOpenclawConfig(config, false)
+    }
+
+    const hermesConfig = await api.hermesReadConfig().catch(() => null)
+    const hermesSaved = loadHermesPrimary()
+    const hermesCurrent = hermesConfig?.model || ''
+    const hermesModel = yyapiModelIds.includes(hermesSaved)
+      ? hermesSaved
+      : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
+
+    await api.configureHermes('custom', profile.apiKey, hermesModel, profile.baseUrl)
+    saveHermesPrimary(hermesModel)
+
+    if (openclawSelection.managed && typeof api.configureClaudeCodeRelay === 'function') {
+      await api.configureClaudeCodeRelay({
+        name: 'YYAPI',
+        provider: 'openai-compatible',
+        defaultProvider: YYAPI_PROVIDER_KEY,
+        interfaceType: 'relay',
+        baseUrl: profile.baseUrl,
+        apiKey: profile.apiKey,
+        model: modelIdFromRef(openclawPrimary) || profile.defaultModel,
+        models: yyapiModelIds,
+        branchModels: yyapiModelIds,
+        managedBy: 'superclaw-yyapi',
+        force: false,
+      }).catch(err => console.warn('[model-sync] Claude Code relay sync failed:', err.message))
+    }
+
+    console.log(`[model-sync] yyapi synced: openclaw=${openclawPrimary || 'unchanged'}, hermes=${hermesModel || 'unchanged'}`)
   } catch (err) {
-    console.warn('[model-sync] MiniMax default model sync failed:', err.message)
+    console.warn('[model-sync] default model sync failed:', err.message)
     await syncHermesModel()
   }
 }
@@ -448,17 +687,16 @@ async function boot() {
   registerRoute('/login', () => import('./pages/login.js'))
   registerRoute('/register', () => import('./pages/register.js'))
   registerRoute('/activate', () => import('./pages/activate.js'))
+  registerRoute('/claim', () => import('./pages/claim.js'))
+  registerRoute('/profile', () => import('./pages/profile.js'))
 
   const authCheck = await checkRemoteAuth()
-  const authRoutes = new Set(['/login', '/register', '/activate'])
+  const authRoutes = new Set(['/login', '/register', '/activate', '/claim'])
   const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
   if (!authCheck.ok) {
-    let targetRoute = authCheck.targetRoute || '/activate'
-    if (authCheck.status?.activated && targetRoute === '/login' && currentRoute === '/register') {
-      targetRoute = '/register'
-    }
+    const targetRoute = getAuthDefaultRoute(authCheck)
     setDefaultRoute(targetRoute)
-    if (currentRoute !== targetRoute) navigate(targetRoute)
+    if (!authRoutes.has(currentRoute)) navigate(targetRoute)
     renderSidebar(sidebar)
     initRouter(content)
     _hideSplash()
@@ -960,6 +1198,9 @@ function setupGatewayBanner() {
   }
 
   update(isGatewayRunning(), isGatewayForeign())
+  refreshGatewayStatus()
+    .then(() => update(isGatewayRunning(), isGatewayForeign()))
+    .catch(() => {})
   onGatewayChange(update)
   // 引擎切换时刷新横幅（Hermes 模式隐藏，OpenClaw 模式按 Gateway 状态显示）
   onEngineChange(() => update(isGatewayRunning(), isGatewayForeign()))
@@ -1144,11 +1385,6 @@ function startUpdateChecker() {
     }
   }
 
-  const legacyUserRoutes = new Set(['/claim', '/profile'])
-  const currentRoute = (window.location.hash.slice(1) || '').split('?')[0]
-  if (legacyUserRoutes.has(currentRoute)) {
-    window.location.hash = '#/dashboard'
-  }
   try {
     await boot()
     console.timeEnd('[boot] total')

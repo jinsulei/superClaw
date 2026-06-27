@@ -58,6 +58,7 @@ function NAV_ITEMS_FULL() { return [
   {
     section: '',
     items: [
+      { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
       { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
       // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
       { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
@@ -340,11 +341,8 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
   const services = await _runSwitchProgressStep(progress, 30, 42, () => api.getServicesStatus().catch(() => []))
   const gw = _findOpenClawGateway(services)
   if (gw?.running) {
-    if (pairingRepaired) {
-      await _runSwitchProgressStep(progress, 42, 64, () => api.restartService('ai.openclaw.gateway'))
-    }
     try {
-      await _waitForOpenClawGatewayHealth(progress, pairingRepaired ? 64 : 46, 84, 9000)
+      await _waitForOpenClawGatewayHealth(progress, 46, 84, 9000)
       return gw
     } catch (e) {
       console.warn('[sidebar] OpenClaw Gateway running but unhealthy, restarting once:', e)

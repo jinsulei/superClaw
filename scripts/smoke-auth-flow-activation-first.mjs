@@ -72,50 +72,75 @@ function runDevBypass() {
   console.log('AUTH_FLOW_DEV_BYPASS: PASS')
 }
 
+function read(file) {
+  return fs.readFileSync(path.join(process.cwd(), file), 'utf8')
+}
+
 function assertTextContains(file, terms) {
-  const text = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
+  const text = read(file)
   for (const term of terms) {
     assert.equal(text.includes(term), true, `${file} missing ${term}`)
   }
 }
 
-function runSpacingAndStaticChecks() {
-  assertTextContains('src/lib/auth-session.js', [
-    "nextStep = 'activate'",
-    "targetRoute: '/activate'",
-    "targetRoute: '/login'",
-  ])
+function runRealYyapiStaticChecks() {
+  for (const file of [
+    'src/lib/user-api.js',
+    'src/lib/yyapi-config.js',
+    'src/lib/license-binding.js',
+    'src/pages/claim.js',
+    'src/pages/profile.js',
+  ]) {
+    assert.equal(fs.existsSync(path.join(process.cwd(), file)), true, `${file} must exist`)
+  }
+
   assertTextContains('src/pages/activate.js', [
-    'function enterAuthenticatedApp()',
-    "window.location.hash = '#/dashboard'",
-    'window.location.reload()',
-    "navigate('/login')",
-    '激活并继续登录',
-    '#/register',
+    'activateCode',
+    'prepareActivationBinding',
+    "sessionStorage.setItem('superclaw_activation_code'",
+    "navigateToAuth('register')",
   ])
+
   assertTextContains('src/pages/login.js', [
-    'function enterAuthenticatedApp()',
-    "window.location.hash = '#/dashboard'",
-    'window.location.reload()',
+    'login({ username, password })',
+    'setToken(result.token)',
+    'setStoredUser(result.user)',
+    'superclaw_yyapi_username',
+    '__superclaw_sync_default_model_settings',
+    "navigateTo('dashboard')",
+    "new CustomEvent('superclaw:login')",
   ])
+
   assertTextContains('src/pages/register.js', [
-    'function enterAuthenticatedApp()',
-    "window.location.hash = '#/dashboard'",
-    'window.location.reload()',
+    'registerV2',
+    'superclaw_activation_code',
+    'new_api_key',
+    "localStorage.setItem('superclaw_yyapi_key'",
+    "navigateToAuth('claim')",
   ])
-  assertTextContains('src/style/pages.css', [
-    '.auth-card',
-    'display: flex',
-    'flex-direction: column',
-    'min-height: 42px',
-    '.auth-btn + .auth-btn',
-    '.auth-footer-separator',
+
+  assertTextContains('src/main.js', [
+    "registerRoute('/activate'",
+    "registerRoute('/login'",
+    "registerRoute('/register'",
+    "registerRoute('/claim'",
+    'getDefaultYyapiProfile',
+    "configureHermes('custom'",
+    'configureClaudeCodeRelay',
   ])
-  console.log('AUTH_PAGES_SPACING: PASS')
+
+  assertTextContains('src/pages/models.js', [
+    'yyapi-token-panel',
+    'getTokenList',
+    'getFullTokenKey',
+    'autoInitYYApi',
+  ])
+
+  console.log('AUTH_REAL_YYAPI_FLOW_STATIC: PASS')
 }
 
 runReleaseActivationFirst()
 runLoginAfterActivation()
 runAppAfterLogin()
 runDevBypass()
-runSpacingAndStaticChecks()
+runRealYyapiStaticChecks()
