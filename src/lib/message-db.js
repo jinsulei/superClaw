@@ -10,6 +10,17 @@ const STORE_SESSIONS = 'sessions'
 
 let _db = null
 
+function mediaFields(message = {}) {
+  const fields = {}
+  for (const key of ['attachments', 'images', 'videos', 'audios', 'files', 'tools', 'screenshotCards', 'confirmations']) {
+    if (Array.isArray(message[key]) && message[key].length) fields[key] = message[key]
+  }
+  for (const key of ['runId', 'clientRequestId', 'idempotencyKey', 'messageId', 'eventId', 'type', 'state']) {
+    if (message[key]) fields[key] = message[key]
+  }
+  return fields
+}
+
 function openDB() {
   return new Promise((resolve, reject) => {
     if (_db) return resolve(_db)
@@ -42,7 +53,8 @@ export async function saveMessage(message) {
       role: message.role || 'assistant',
       content: message.content || message.text || '',
       timestamp: message.timestamp || Date.now(),
-      sync: true
+      sync: true,
+      ...mediaFields(message),
     })
   } catch (e) {
     console.error('[db] saveMessage error:', e)
@@ -63,7 +75,8 @@ export async function saveMessages(messages) {
         role: msg.role || 'assistant',
         content: msg.content || msg.text || '',
         timestamp: msg.timestamp || Date.now(),
-        sync: true
+        sync: true,
+        ...mediaFields(msg),
       })
     })
   } catch (e) {

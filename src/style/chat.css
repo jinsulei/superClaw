@@ -1342,10 +1342,33 @@
   border: 1px solid var(--border);
 }
 
+.chat-attachment-item .msg-img,
+.chat-attachment-item .msg-img-loading,
+.chat-attachment-item .msg-img-error {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+}
+
 .chat-attachment-item img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.chat-attachment-placeholder {
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+  word-break: break-all;
 }
 
 .chat-attachment-del {
@@ -1368,6 +1391,28 @@
 
 .chat-attachment-del:hover {
   background: rgba(255,0,0,0.8);
+}
+
+.chat-page.openclaw-image-drag-over .chat-input-area {
+  outline: 2px dashed var(--accent);
+  outline-offset: 6px;
+}
+
+.chat-page.openclaw-image-drag-over::after {
+  content: "松开上传图片";
+  position: fixed;
+  inset: 72px 24px 96px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 700;
+  z-index: 30;
+  pointer-events: none;
 }
 
 /* 图片灯箱 */
@@ -1499,6 +1544,22 @@
   border-radius: 6px;
   cursor: pointer;
   object-fit: cover;
+}
+
+.msg-img-loading,
+.msg-img-error {
+  min-width: 160px;
+  min-height: 96px;
+  padding: 12px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: var(--bg-secondary);
 }
 
 /* 消息内视频 */
