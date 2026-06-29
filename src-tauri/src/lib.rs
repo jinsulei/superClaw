@@ -1,3 +1,4 @@
+﻿mod agent_lifecycle;
 mod commands;
 mod models;
 mod tray;
@@ -8,6 +9,17 @@ use commands::{
     hermes_providers, logs, memory, messaging, ocr, pairing, service, shared_memory, skills, update,
 };
 use tauri::Manager;
+
+#[tauri::command]
+async fn stop_agent(agent: String) -> Result<(), String> {
+    let parsed = agent_lifecycle::parse_managed_agent(&agent)?;
+    agent_lifecycle::stop_managed_agent(parsed)
+}
+
+#[tauri::command]
+async fn stop_all_agents() -> Result<(), String> {
+    agent_lifecycle::stop_all_managed_agents()
+}
 
 #[cfg(windows)]
 fn allow_microphone_permission(app: &tauri::AppHandle) {
@@ -115,6 +127,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            agent_lifecycle::cleanup_stale_managed_agents_on_startup();
             service::start_backend_guardian(app.handle().clone());
             tauri::async_runtime::spawn(async {
                 if let Err(err) = claude_code::claude_code_start().await {
@@ -359,10 +372,13 @@ pub fn run() {
             claude_code::claude_code_stop,
             claude_code::claude_code_status,
             claude_code::configure_claude_code_relay,
+            stop_agent,
+            stop_all_agents,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时最小化到托盘，不退出应用
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = agent_lifecycle::stop_all_managed_agents();
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -371,16 +387,7 @@ pub fn run() {
         .expect("启动 SuperClaw 失败")
         .run(|_app, event| {
             if let tauri::RunEvent::Exit = event {
-                #[cfg(target_os = "windows")]
-                {
-                    // 退出时关闭 Gateway 终端窗口
-                    use std::os::windows::process::CommandExt;
-                    const CREATE_NO_WINDOW: u32 = 0x08000000;
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/c", "taskkill", "/fi", "WINDOWTITLE eq OpenClaw Gateway"])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
-                }
+                let _ = agent_lifecycle::stop_all_managed_agents();
             }
         });
 }
