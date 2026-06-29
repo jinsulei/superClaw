@@ -8,8 +8,9 @@ import {
   getModelProviderProfile,
   hermesProviderIdForProfile,
   modelRefForProfile,
-  normalizeProviderProfileConfig,
   openClawProviderIdForProfile,
+  normalizeProviderProfileConfig,
+  providerProfileForBaseUrl,
 } from '../src/lib/model-provider-profiles.js'
 
 const cn = normalizeProviderProfileConfig({ providerId: DEFAULT_MODEL_PROVIDER_PROFILE_ID })
@@ -38,6 +39,32 @@ assert.equal(intl.providerId, 'minimax')
 assert.equal(hermesProviderIdForProfile(intl), 'minimax')
 assert.equal(getModelProviderProfile(intl.providerId).agent.managedBy, 'superclaw-provider-profile:minimax')
 
+const yyapiProfile = getModelProviderProfile('yyapi')
+assert.equal(yyapiProfile.baseUrl, 'http://124.222.21.44:3002/v1')
+assert.equal(yyapiProfile.defaultModel, '')
+assert.equal(openClawProviderIdForProfile({ providerId: 'yyapi' }), 'yyapi')
+assert.equal(hermesProviderIdForProfile({ providerId: 'yyapi' }), 'custom')
+assert.equal(providerProfileForBaseUrl('http://124.222.21.44:3002/v1').id, 'yyapi')
+
+const yyapi = normalizeProviderProfileConfig({
+  providerId: 'yyapi',
+  baseUrl: 'http://124.222.21.44:3002/v1',
+  model: 'yyapi-runtime-model-from-login',
+})
+assert.equal(yyapi.providerId, 'yyapi')
+assert.equal(yyapi.group, 'yyapi')
+assert.equal(yyapi.model, 'yyapi-runtime-model-from-login')
+assert.equal(modelRefForProfile(yyapi), 'yyapi/yyapi-runtime-model-from-login')
+
+const yyapiEnv = envForProviderProfile(yyapi, 'yyapi-secret-for-smoke')
+assert.equal(yyapiEnv.YYAPI_API_KEY, 'yyapi-secret-for-smoke')
+assert.equal(yyapiEnv.YYAPI_TOKEN, 'yyapi-secret-for-smoke')
+assert.equal(yyapiEnv.SUPERCLAW_YYAPI_API_KEY, 'yyapi-secret-for-smoke')
+assert.equal(yyapiEnv.SUPERCLAW_YYAPI_MODEL, 'yyapi-runtime-model-from-login')
+assert.equal(yyapiEnv.OPENAI_BASE_URL, yyapi.baseUrl)
+assert.equal(yyapiEnv.OPENAI_MODEL, 'yyapi-runtime-model-from-login')
+assert.equal(yyapiEnv.SUPERCLAW_MODEL_PROVIDER_PROFILE, 'yyapi')
+
 const devApi = fs.readFileSync(path.join(process.cwd(), 'scripts', 'dev-api.js'), 'utf8')
 assert.match(devApi, /normalizeProviderProfileConfig/)
 assert.match(devApi, /envForProviderProfile/)
@@ -54,3 +81,4 @@ console.log('PROVIDER_PROFILE_MINIMAX_DEFAULT_CN: PASS')
 console.log('PROVIDER_PROFILE_MINIMAX_OPENCLAW_MAPPING: PASS')
 console.log('PROVIDER_PROFILE_MINIMAX_HERMES_ENV: PASS')
 console.log('PROVIDER_PROFILE_MINIMAX_CLAUDE_MANAGED_BY: PASS')
+console.log('PROVIDER_PROFILE_YYAPI_RUNTIME_MODEL: PASS')

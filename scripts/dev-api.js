@@ -18,6 +18,15 @@ import {
   assertDirectModelConfigWritable,
   getEffectiveModelConfig,
 } from './lib/model-config-source-guard.mjs'
+import { getRuntimeMode } from './lib/runtime-mode.mjs'
+import { readYyapiConfig, yyapiRelaySummary } from './lib/yyapi-config.mjs'
+import {
+  activateAuthSession,
+  getAuthStatus,
+  loginAuthSession,
+  logoutAuthSession,
+} from './lib/auth-session.mjs'
+import { getAuthGuardDecision } from './lib/auth-guard.mjs'
 import {
   DEFAULT_MODEL_PROVIDER_PROFILE_ID,
   buildOpenClawProviderConfig,
@@ -2743,6 +2752,166 @@ function openclawMiniMaxGatewayConfig() {
     configPath: directConfig.paths?.openclaw || '',
   })
   return { ...directConfig, effective }
+}
+
+function authYyapiKitEffectiveModelConfig(agentName = 'openclaw', options = {}) {
+  const name = cleanMiniMaxValue(agentName || 'openclaw').toLowerCase()
+  const env = options.env || process.env
+  const yyapiConfig = readYyapiConfig(env, options.yyapiConfig || {})
+  let directConfig = options.directConfig || {}
+  if (!options.directConfig && name === 'openclaw') {
+    const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+    const dataRoot = path.join(resourcesRoot, 'data')
+    const resolved = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+    directConfig = {
+      ...resolved,
+      configPath: resolved.paths?.openclaw || '',
+    }
+  }
+  return getEffectiveModelConfig(name, {
+    env,
+    directConfig,
+    yyapiConfig,
+    configPath: directConfig.configPath || yyapiConfig.configPath || '',
+  })
+}
+
+function authYyapiKitRelayConfig(agentName = 'openclaw') {
+  const effective = authYyapiKitEffectiveModelConfig(agentName)
+  if (effective.modelSource === 'yyapi') {
+    return {
+      ...yyapiRelaySummary(readYyapiConfig(process.env)),
+      effective,
+    }
+  }
+  return {
+    mode: 'DIRECT',
+    provider: effective.provider,
+    baseUrl: effective.baseUrl,
+    model: effective.model,
+    apiKeyConfigured: effective.apiKeyConfigured,
+    apiKeyFingerprint: effective.apiKeyFingerprint,
+    status: effective.status,
+    code: effective.code,
+    effective,
+  }
+}
+
+async function handleAuthYyapiKitRestApi(req, res, url) {
+  if (!url.pathname.startsWith('/api/')) return false
+  if (url.pathname === '/api/runtime-mode') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    sendJsonResponse(res, 200, { ok: true, runtime: getRuntimeMode(process.env) })
+    return true
+  }
+  if (url.pathname === '/api/auth/status') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = getAuthStatus(process.env)
+    sendJsonResponse(res, 200, { ok: true, status, guard: getAuthGuardDecision(status) })
+    return true
+  }
+  if (url.pathname === '/api/auth/login') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = loginAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '登录状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_LOGIN_FAILED',
+        message: error.message || '登录失败',
+      })
+    }
+    return true
+  }
+  if (url.pathname === '/api/auth/logout') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = logoutAuthSession(process.env)
+    sendJsonResponse(res, 200, {
+      ok: true,
+      message: '已退出登录。',
+      status,
+      guard: getAuthGuardDecision(status),
+    })
+    return true
+  }
+  if (url.pathname === '/api/auth/activate') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = activateAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '激活状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_ACTIVATION_FAILED',
+        message: error.message || '激活失败',
+      })
+    }
+    return true
+  }
+  if (url.pathname === '/api/effective-model-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, config: authYyapiKitEffectiveModelConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/relay-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, relay: authYyapiKitRelayConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/test-relay') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const body = await readBody(req)
+    const agent = cleanMiniMaxValue(body.agent || body.agentName || url.searchParams.get('agent') || 'openclaw')
+    const effective = authYyapiKitEffectiveModelConfig(agent)
+    sendJsonResponse(res, 200, {
+      ok: effective.status === 'ready',
+      language: 'zh-CN',
+      message: effective.status === 'ready' ? '模型配置检查通过。' : '模型配置未就绪。',
+      code: effective.code,
+      config: effective,
+    })
+    return true
+  }
+  return false
 }
 
 function openclawMiniMaxGatewayEnv() {
@@ -14053,6 +14222,7 @@ async function _apiMiddleware(req, res, next) {
     requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
   } catch {}
   if (requestUrl && sendHermesMediaFileResponse(req, res, requestUrl)) return
+  if (requestUrl && await handleAuthYyapiKitRestApi(req, res, requestUrl)) return
 
   if (!req.url?.startsWith('/__api/')) return next()
 

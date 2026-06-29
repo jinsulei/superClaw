@@ -1,6 +1,7 @@
 const MINIMAX_MODEL_ID = 'MiniMax-M3'
 const MINIMAX_CN_BASE_URL = 'https://api.minimaxi.com/v1'
 const MINIMAX_INTL_BASE_URL = 'https://api.minimax.io/v1'
+const YYAPI_BASE_URL = 'http://124.222.21.44:3002/v1'
 
 const MINIMAX_MODELS = Object.freeze([
   {
@@ -96,6 +97,33 @@ export const MODEL_PROVIDER_PROFILES = Object.freeze({
       managedBy: 'superclaw-provider-profile:minimax-cn',
     }),
   }),
+  yyapi: Object.freeze({
+    id: 'yyapi',
+    group: 'yyapi',
+    name: 'YYAPI',
+    label: 'YYAPI',
+    region: 'cn',
+    api: 'openai-completions',
+    transport: 'openai_chat',
+    baseUrl: YYAPI_BASE_URL,
+    defaultModel: '',
+    models: Object.freeze([]),
+    env: Object.freeze({
+      apiKey: 'YYAPI_API_KEY',
+      baseUrl: 'YYAPI_BASE_URL',
+      openAiApiKey: 'OPENAI_API_KEY',
+      openAiBaseUrl: 'OPENAI_BASE_URL',
+      openAiModel: 'OPENAI_MODEL',
+      openClawApiKey: 'OPENCLAW_YYAPI_API_KEY',
+      forceProvider: 'SUPERCLAW_FORCE_PROVIDER',
+    }),
+    agent: Object.freeze({
+      hermesProvider: 'custom',
+      openclawProvider: 'yyapi',
+      claudeProvider: 'openai-compatible',
+      managedBy: 'superclaw-provider-profile:yyapi',
+    }),
+  }),
 })
 
 export const DEFAULT_MODEL_PROVIDER_PROFILE_ID = 'minimax-cn'
@@ -129,8 +157,14 @@ export function getMiniMaxProviderProfiles() {
   return listModelProviderProfiles({ group: 'minimax' })
 }
 
+export function getYyapiProviderProfiles() {
+  return listModelProviderProfiles({ group: 'yyapi' })
+}
+
 export function providerProfileForBaseUrl(baseUrl, fallbackId = DEFAULT_MODEL_PROVIDER_PROFILE_ID) {
   const value = withoutTrailingSlash(baseUrl)
+  if (value.includes('124.222.21.44:3002')) return getModelProviderProfile('yyapi')
+  if (value.includes('yyapi')) return getModelProviderProfile('yyapi')
   if (value.includes('api.minimaxi.com')) return getModelProviderProfile('minimax-cn')
   if (value.includes('api.minimax.io')) return getModelProviderProfile('minimax')
   return getModelProviderProfile(fallbackId)
@@ -156,6 +190,7 @@ export function normalizeProviderProfileConfig(input = {}, fallbackId = DEFAULT_
     agent: profile.agent,
     cnBaseUrl: MODEL_PROVIDER_PROFILES['minimax-cn'].baseUrl,
     intlBaseUrl: MODEL_PROVIDER_PROFILES.minimax.baseUrl,
+    yyapiBaseUrl: MODEL_PROVIDER_PROFILES.yyapi.baseUrl,
   }
 }
 
@@ -217,11 +252,19 @@ export function envForProviderProfile(profileConfig = {}, apiKey = '') {
     if (config.group === 'minimax') {
       env.MINIMAX_API_KEY = apiKey
       env.MINIMAX_CN_API_KEY = apiKey
+    } else if (config.group === 'yyapi') {
+      env.YYAPI_TOKEN = apiKey
+      env.SUPERCLAW_YYAPI_API_KEY = apiKey
+      env.SUPERCLAW_YYAPI_TOKEN = apiKey
     }
   }
   if (config.group === 'minimax') {
     env.MINIMAX_BASE_URL = config.baseUrl
     env.MINIMAX_CN_BASE_URL = config.baseUrl
+  } else if (config.group === 'yyapi') {
+    env.YYAPI_BASE_URL = config.baseUrl
+    env.SUPERCLAW_YYAPI_BASE_URL = config.baseUrl
+    if (config.model) env.SUPERCLAW_YYAPI_MODEL = config.model
   }
   return env
 }
@@ -238,6 +281,9 @@ export function managedEnvKeysForProviderProfile(profileConfig = {}) {
     config.env.forceProvider,
     ...(config.group === 'minimax'
       ? ['MINIMAX_API_KEY', 'MINIMAX_CN_API_KEY', 'MINIMAX_BASE_URL', 'MINIMAX_CN_BASE_URL']
+      : []),
+    ...(config.group === 'yyapi'
+      ? ['YYAPI_TOKEN', 'YYAPI_BASE_URL', 'SUPERCLAW_YYAPI_API_KEY', 'SUPERCLAW_YYAPI_TOKEN', 'SUPERCLAW_YYAPI_BASE_URL', 'SUPERCLAW_YYAPI_MODEL']
       : []),
     'SUPERCLAW_MODEL_PROVIDER_PROFILE',
     'SUPERCLAW_MODEL_PROVIDER_GROUP',
