@@ -1,11 +1,16 @@
 import { api, invoke } from './tauri-api.js'
 import { getMiniMaxDefaultConfig } from './test-build-mode.js'
+import {
+  DEFAULT_MODEL_PROVIDER_PROFILE_ID,
+  buildOpenClawProviderConfig,
+  getModelProviderProfile,
+  hermesProviderIdForProfile,
+  modelRefForProfile,
+  normalizeProviderProfileConfig,
+  openClawProviderIdForProfile,
+  providerProfileForBaseUrl,
+} from './model-provider-profiles.js'
 
-const PROVIDER_ID = 'minimax'
-const PROVIDER_NAME = 'MiniMax'
-const MODEL_ID = 'MiniMax-M3'
-const INTL_BASE_URL = 'https://api.minimax.io/v1'
-const CN_BASE_URL = 'https://api.minimaxi.com/v1'
 const MASKED_KEY_RE = /\*{2,}/
 
 function clean(value) {
@@ -17,14 +22,11 @@ function withTrailingBaseUrl(value) {
 }
 
 function providerForBaseUrl(baseUrl) {
-  return withTrailingBaseUrl(baseUrl).includes('api.minimaxi.com') ? 'minimax-cn' : PROVIDER_ID
+  return hermesProviderIdForProfile({ baseUrl })
 }
 
 function openAiBaseUrlForMiniMaxUrl(baseUrl) {
-  const value = withTrailingBaseUrl(baseUrl)
-  if (value.includes('api.minimaxi.com')) return CN_BASE_URL
-  if (value.includes('api.minimax.io')) return INTL_BASE_URL
-  return value
+  return normalizeProviderProfileConfig({ baseUrl }).baseUrl
 }
 
 function isPlainNewKey(value) {
@@ -33,19 +35,7 @@ function isPlainNewKey(value) {
 }
 
 function modelRef() {
-  return `${PROVIDER_ID}/${MODEL_ID}`
-}
-
-function openClawModelDefinition() {
-  return {
-    id: MODEL_ID,
-    name: MODEL_ID,
-    api: 'openai-completions',
-    reasoning: true,
-    input: ['text'],
-    contextWindow: 204800,
-    maxTokens: 131072,
-  }
+  return modelRefForProfile(getMiniMaxTestDefaults())
 }
 
 function cloneConfig(input) {
@@ -60,14 +50,11 @@ function cloneConfig(input) {
 export function getMiniMaxTestDefaults() {
   const base = getMiniMaxDefaultConfig()
   const configuredBaseUrl = withTrailingBaseUrl(base.baseUrl)
-  return {
-    providerId: PROVIDER_ID,
-    providerName: PROVIDER_NAME,
-    model: clean(base.model) || MODEL_ID,
-    baseUrl: configuredBaseUrl === INTL_BASE_URL ? CN_BASE_URL : configuredBaseUrl || CN_BASE_URL,
-    cnBaseUrl: withTrailingBaseUrl(base.cnBaseUrl) || CN_BASE_URL,
-    intlBaseUrl: INTL_BASE_URL,
-  }
+  return normalizeProviderProfileConfig({
+    providerId: base.providerId || base.provider || DEFAULT_MODEL_PROVIDER_PROFILE_ID,
+    model: base.model,
+    baseUrl: configuredBaseUrl || undefined,
+  })
 }
 
 export function maskApiKey(apiKey) {
@@ -84,13 +71,11 @@ export function normalizeMiniMaxTestConfig(input = {}) {
   const baseUrl = allowedBaseUrls.includes(rawBaseUrl)
     ? rawBaseUrl
     : defaults.baseUrl
-  const next = {
-    providerId: PROVIDER_ID,
-    providerName: PROVIDER_NAME,
-    model: MODEL_ID,
+  const next = normalizeProviderProfileConfig({
+    providerId: input.providerId || providerProfileForBaseUrl(baseUrl).id,
+    model: input.model || defaults.model,
     baseUrl,
-    cnBaseUrl: defaults.cnBaseUrl,
-  }
+  })
   if (isPlainNewKey(input.apiKey)) next.apiKey = clean(input.apiKey)
   return next
 }
@@ -102,13 +87,8 @@ function ensureMiniMaxProvider(openclawConfig, config, apiKey) {
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
-  const models = [openClawModelDefinition()]
-  cfg.models.providers[PROVIDER_ID] = {
-    api: 'openai-completions',
-    baseUrl: config.baseUrl,
-    models,
-  }
-  if (apiKey) cfg.models.providers[PROVIDER_ID].apiKey = apiKey
+  const providerId = openClawProviderIdForProfile(config)
+  cfg.models.providers[providerId] = buildOpenClawProviderConfig(config, apiKey)
   delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
@@ -134,9 +114,9 @@ function statusFromParts(config, apiKey, synced = {}) {
   const normalized = normalizeMiniMaxTestConfig(config)
   const hasApiKey = !!clean(apiKey)
   return {
-    providerId: PROVIDER_ID,
-    providerName: PROVIDER_NAME,
-    model: MODEL_ID,
+    providerId: normalized.providerId,
+    providerName: normalized.providerName,
+    model: normalized.model,
     baseUrl: normalized.baseUrl,
     cnBaseUrl: normalized.cnBaseUrl,
     hasApiKey,
@@ -151,7 +131,9 @@ function statusFromParts(config, apiKey, synced = {}) {
 }
 
 function statusFromOpenClawConfig(openclawConfig = {}) {
-  const provider = openclawConfig?.models?.providers?.[PROVIDER_ID] || {}
+  const defaults = getMiniMaxTestDefaults()
+  const providerId = openClawProviderIdForProfile(defaults)
+  const provider = openclawConfig?.models?.providers?.[providerId] || {}
   const baseUrl = openAiBaseUrlForMiniMaxUrl(provider.baseUrl) || getMiniMaxTestDefaults().baseUrl
   const apiKey = clean(provider.apiKey)
   return statusFromParts({ baseUrl }, apiKey, {
@@ -196,10 +178,11 @@ async function configureHermesMiniMax(config, apiKey) {
   if (!apiKey) return false
   const provider = providerForBaseUrl(config.baseUrl)
   try {
-    await api.configureHermes(provider, apiKey, MODEL_ID, config.baseUrl)
+    await api.configureHermes(provider, apiKey, config.model, config.baseUrl)
     await setOptionalHermesEnv('HERMES_PROVIDER', provider)
-    await setOptionalHermesEnv('OPENAI_MODEL', MODEL_ID)
-    await setOptionalHermesEnv('SUPERCLAW_FORCE_PROVIDER', PROVIDER_ID)
+    await setOptionalHermesEnv('OPENAI_MODEL', config.model)
+    await setOptionalHermesEnv('SUPERCLAW_FORCE_PROVIDER', config.group || 'minimax')
+    await setOptionalHermesEnv('SUPERCLAW_MODEL_PROVIDER_PROFILE', config.providerId)
     return true
   } catch {
     return false
@@ -213,15 +196,15 @@ async function configureClaudePanelMiniMax(config, apiKey) {
       force: true,
       enabled: true,
       interfaceType: 'relay',
-      name: PROVIDER_NAME,
-      provider: 'openai-compatible',
-      defaultProvider: PROVIDER_ID,
+      name: config.providerName,
+      provider: getModelProviderProfile(config.providerId).agent.claudeProvider,
+      defaultProvider: config.providerId,
       baseUrl: config.baseUrl,
       apiKey,
-      model: MODEL_ID,
-      models: [MODEL_ID],
-      branchModels: [MODEL_ID],
-      managedBy: 'superclaw-minimax-test',
+      model: config.model,
+      models: [config.model],
+      branchModels: [config.model],
+      managedBy: getModelProviderProfile(config.providerId).agent.managedBy,
     })
     return result?.configured !== false
   } catch {
@@ -232,7 +215,8 @@ async function configureClaudePanelMiniMax(config, apiKey) {
 export async function applyMiniMaxTestConfig(input = {}) {
   const config = normalizeMiniMaxTestConfig(input)
   const current = await api.readOpenclawConfig().catch(() => ({}))
-  const existingKey = clean(current?.models?.providers?.[PROVIDER_ID]?.apiKey)
+  const providerId = openClawProviderIdForProfile(config)
+  const existingKey = clean(current?.models?.providers?.[providerId]?.apiKey)
   const apiKey = config.apiKey || existingKey
   const next = ensureMiniMaxProvider(current, config, apiKey)
   await api.writeOpenclawConfig(next)

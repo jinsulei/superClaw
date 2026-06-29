@@ -1,4 +1,5 @@
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled'])
+const DEFAULT_MINIMAX_PROVIDER_PROFILE = 'minimax-cn'
 
 function clean(value) {
   return String(value || '').trim()
@@ -50,7 +51,7 @@ export function isMiniMaxOnlyMode() {
 
 export function getMiniMaxDefaultConfig() {
   return {
-    provider: 'minimax',
+    provider: value('VITE_SUPERCLAW_MINIMAX_PROVIDER', 'superclaw_minimax_provider', DEFAULT_MINIMAX_PROVIDER_PROFILE),
     model: value('VITE_SUPERCLAW_MINIMAX_MODEL', 'superclaw_minimax_model', 'MiniMax-M3'),
     baseUrl: value('VITE_SUPERCLAW_MINIMAX_BASE_URL', 'superclaw_minimax_base_url', 'https://api.minimaxi.com/v1'),
     cnBaseUrl: 'https://api.minimaxi.com/v1',
