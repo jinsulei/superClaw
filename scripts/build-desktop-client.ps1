@@ -58,6 +58,8 @@ $ErrorActionPreference = "Stop"
 $MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
 $MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
 $MiniMaxTestModel = "MiniMax-M3"
+$MiniMaxProviderProfile = "minimax-cn"
+$MiniMaxManagedBy = "superclaw-provider-profile:$MiniMaxProviderProfile"
 
 function Step([string]$Message) {
   Write-Host ""
@@ -84,6 +86,7 @@ function Set-SanitizedTestBuildEnv {
     "VITE_SUPERCLAW_TEST_BUILD",
     "VITE_SUPERCLAW_FORCE_PROVIDER",
     "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_MINIMAX_PROVIDER",
     "VITE_SUPERCLAW_MINIMAX_BASE_URL",
     "VITE_SUPERCLAW_MINIMAX_MODEL"
   )
@@ -95,6 +98,7 @@ function Set-SanitizedTestBuildEnv {
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_PROVIDER", $MiniMaxProviderProfile, "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $MiniMaxTestBaseUrl, "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $MiniMaxTestModel, "Process")
   Ok "Sanitized test frontend flags: ecommerce=true, provider=minimax, YYAPI disabled"
@@ -611,7 +615,7 @@ function Write-PortableClaudePanelRelayConfig([string]$ClaudePanelDataDir, [bool
     models = $models
     branchModels = $models
     apiKey = "YOUR_API_KEY"
-    managedBy = "superclaw-minimax-test"
+    managedBy = $MiniMaxManagedBy
     updatedAt = (Get-Date).ToUniversalTime().ToString("o")
   }
   Write-Utf8NoBom $configPath ($config | ConvertTo-Json -Depth 10)
@@ -627,7 +631,7 @@ function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = 
 # Rewritten during portable packaging to avoid leaking local provider state.
 model:
   default: $MiniMaxTestModel
-  provider: minimax
+  provider: $MiniMaxProviderProfile
   api_mode: chat_completions
   base_url: $MiniMaxTestBaseUrl
 platform_toolsets:
