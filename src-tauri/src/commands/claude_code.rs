@@ -107,7 +107,39 @@ fn read_env_file(path: &Path) -> HashMap<String, String> {
     out
 }
 
-fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String)> {
+fn claude_relay_env(resources: &Path) -> Option<(String, String, String)> {
+    let config = fs::read_to_string(claude_relay_config_path(resources)).ok()?;
+    let value: Value = serde_json::from_str(&config).ok()?;
+    if value
+        .get("enabled")
+        .and_then(|item| item.as_bool())
+        .is_some_and(|enabled| !enabled)
+    {
+        return None;
+    }
+    let key = value
+        .get("apiKey")
+        .and_then(|item| item.as_str())
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty() && !item.contains("${"))?;
+    let base = value
+        .get("baseUrl")
+        .and_then(|item| item.as_str())
+        .map(|item| item.trim().trim_end_matches('/').to_string())
+        .filter(|item| !item.is_empty() && !item.contains("${"))?;
+    let model = value
+        .get("model")
+        .and_then(|item| item.as_str())
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .unwrap_or_else(|| "MiniMax-M3".to_string());
+    Some((key, base, model))
+}
+
+fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String, String)> {
+    if let Some(relay) = claude_relay_env(resources) {
+        return Some(relay);
+    }
     let env = read_env_file(&hermes_env_path(resources));
     let key = env
         .get("MINIMAX_API_KEY")
@@ -119,16 +151,25 @@ fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String)> {
         .or_else(|| env.get("MINIMAX_CN_BASE_URL"))
         .cloned()
         .filter(|v| !v.trim().is_empty() && !v.contains("${"))?;
-    Some((key, base))
+    let model = env
+        .get("OPENAI_MODEL")
+        .cloned()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "MiniMax-M3".to_string());
+    Some((key, base, model))
 }
 
 fn apply_minimax_env(cmd: &mut Command, resources: &Path) {
-    if let Some((key, base)) = claude_compatible_minimax_env(resources) {
+    if let Some((key, base, model)) = claude_compatible_minimax_env(resources) {
         cmd.env("MINIMAX_API_KEY", &key)
             .env("MINIMAX_BASE_URL", &base)
             .env("ANTHROPIC_API_KEY", &key)
             .env("ANTHROPIC_AUTH_TOKEN", &key)
-            .env("ANTHROPIC_BASE_URL", &base);
+            .env("ANTHROPIC_BASE_URL", &base)
+            .env("ANTHROPIC_MODEL", &model)
+            .env("ANTHROPIC_DEFAULT_HAIKU_MODEL", &model)
+            .env("ANTHROPIC_DEFAULT_SONNET_MODEL", &model)
+            .env("ANTHROPIC_DEFAULT_OPUS_MODEL", &model);
     }
 }
 
@@ -459,24 +500,28 @@ fn write_native_launcher(
         "set \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\"".to_string(),
         minimax_env
             .as_ref()
-            .map(|(key, _)| format!("set \"{}={}\"", "MINIMAX_API_KEY", key))
+            .map(|(key, _, _)| format!("set \"{}={}\"", "MINIMAX_API_KEY", key))
             .unwrap_or_else(|| "rem MINIMAX_API_KEY not configured".to_string()),
         minimax_env
             .as_ref()
-            .map(|(_, base)| format!("set \"{}={}\"", "MINIMAX_BASE_URL", base))
+            .map(|(_, base, _)| format!("set \"{}={}\"", "MINIMAX_BASE_URL", base))
             .unwrap_or_else(|| "rem MINIMAX_BASE_URL not configured".to_string()),
         minimax_env
             .as_ref()
-            .map(|(key, _)| format!("set \"ANTHROPIC_API_KEY={}\"", key))
+            .map(|(key, _, _)| format!("set \"ANTHROPIC_API_KEY={}\"", key))
             .unwrap_or_else(|| "rem ANTHROPIC_API_KEY not configured".to_string()),
         minimax_env
             .as_ref()
-            .map(|(key, _)| format!("set \"ANTHROPIC_AUTH_TOKEN={}\"", key))
+            .map(|(key, _, _)| format!("set \"ANTHROPIC_AUTH_TOKEN={}\"", key))
             .unwrap_or_else(|| "rem ANTHROPIC_AUTH_TOKEN not configured".to_string()),
         minimax_env
             .as_ref()
-            .map(|(_, base)| format!("set \"ANTHROPIC_BASE_URL={}\"", base))
+            .map(|(_, base, _)| format!("set \"ANTHROPIC_BASE_URL={}\"", base))
             .unwrap_or_else(|| "rem ANTHROPIC_BASE_URL not configured".to_string()),
+        minimax_env
+            .as_ref()
+            .map(|(_, _, model)| format!("set \"ANTHROPIC_MODEL={}\"", model))
+            .unwrap_or_else(|| "rem ANTHROPIC_MODEL not configured".to_string()),
         format!("set \"PATH={};%PATH%\"", claude_dir.display()),
         quote_cmd(claude),
     ];

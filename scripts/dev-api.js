@@ -13039,6 +13039,44 @@ function claudePanelEnv(paths, panel) {
   }
 }
 
+function claudeCompatibleModelEnv(paths = claudeCodePaths()) {
+  const out = {}
+  const panel = claudePanelPaths(paths)
+  const relayPath = panel.relayConfig || path.join(panel.dataDir, 'relay-config.json')
+  const relay = readJsonFileRelaxed(relayPath) || {}
+  const relayKey = cleanMiniMaxValue(relay.apiKey)
+  const relayBaseUrl = cleanMiniMaxBaseUrl(relay.baseUrl)
+  const relayModel = cleanMiniMaxValue(relay.model || relay.branchModels?.[0] || '')
+  if (relay.enabled !== false && relayKey && relayBaseUrl) {
+    out.ANTHROPIC_API_KEY = relayKey
+    out.ANTHROPIC_AUTH_TOKEN = relayKey
+    out.ANTHROPIC_BASE_URL = relayBaseUrl
+    if (relayModel) {
+      out.ANTHROPIC_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_HAIKU_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_SONNET_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_OPUS_MODEL = relayModel
+    }
+    return out
+  }
+
+  const hermesEnv = readEnvFile(path.join(hermesHome(), '.env'))
+  const key = cleanMiniMaxValue(hermesEnv.MINIMAX_API_KEY || hermesEnv.MINIMAX_CN_API_KEY)
+  const baseUrl = cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_BASE_URL || hermesEnv.MINIMAX_CN_BASE_URL)
+  const model = cleanMiniMaxValue(hermesEnv.OPENAI_MODEL || MINIMAX_TEST_DEFAULTS.model)
+  if (!key || !baseUrl) return out
+  out.MINIMAX_API_KEY = key
+  out.MINIMAX_BASE_URL = baseUrl
+  out.ANTHROPIC_API_KEY = key
+  out.ANTHROPIC_AUTH_TOKEN = key
+  out.ANTHROPIC_BASE_URL = baseUrl
+  out.ANTHROPIC_MODEL = model
+  out.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
+  out.ANTHROPIC_DEFAULT_SONNET_MODEL = model
+  out.ANTHROPIC_DEFAULT_OPUS_MODEL = model
+  return out
+}
+
 async function startClaudePanel() {
   const status = await claudeCodeStatus()
   const paths = status.paths
@@ -13120,6 +13158,7 @@ async function startNativeClaudeTerminal(cwd) {
     CLAUDE_CODE_PROJECTS_DIR: paths.projectsDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     PATH: `${path.dirname(paths.claude)}${path.delimiter}${process.env.PATH || ''}`,
+    ...claudeCompatibleModelEnv(paths),
   }
   fs.mkdirSync(env.APPDATA, { recursive: true })
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
@@ -13203,6 +13242,7 @@ async function claudeCodeStatus() {
     CLAUDE_CONFIG_DIR: path.join(paths.homeDir, 'claude-config'),
     CLAUDE_CODE_PROJECTS_DIR: paths.projectsDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    ...claudeCompatibleModelEnv(paths),
   }
   fs.mkdirSync(env.APPDATA, { recursive: true })
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
