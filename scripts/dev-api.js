@@ -18,7 +18,34 @@ import {
   assertDirectModelConfigWritable,
   getEffectiveModelConfig,
 } from './lib/model-config-source-guard.mjs'
+import { sanitizeMediaVisibleText } from '../src/shared/chat-output-guard.js'
+import {
+  buildAgentIdentitySystemPrompt,
+  guardAgentIdentityReply,
+  normalizeAgentIdentityName,
+} from '../src/shared/agent-identity-guard.js'
 const DOCKER_TASK_TIMEOUT_MS = 10 * 60 * 1000
+
+function resolveAgentIdentityName(input, fallback = 'hermes') {
+  return normalizeAgentIdentityName(input) || normalizeAgentIdentityName(fallback) || fallback
+}
+
+function withAgentIdentityInstructions(instructions, agentName) {
+  const identityPrompt = buildAgentIdentitySystemPrompt(agentName)
+  const base = typeof instructions === 'string' ? instructions.trim() : ''
+  if (!identityPrompt) return base
+  if (!base) return identityPrompt
+  if (base.includes(identityPrompt)) return base
+  return `${identityPrompt}\n\n${base}`
+}
+
+function sanitizeAgentIdentityOutput(text, agentName, userText) {
+  return guardAgentIdentityReply({
+    agentName,
+    userText,
+    assistantText: text,
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Hermes Agent// ---------------------------------------------------------------------------
@@ -1170,6 +1197,416 @@ function killWindowsProcessTree(pid) {
   } catch {}
 }
 
+const DEV_AGENT_DEFAULT_PORTS = {
+  hermes: 8642,
+  openclaw: 18789,
+  claudecode: 3020,
+}
+
+function isLocalRequest(req) {
+  const ip = String(req.socket?.remoteAddress || '').toLowerCase()
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'localhost'
+}
+
+function normalizeAgentName(agent) {
+  const x = String(agent || '').trim().toLowerCase()
+  if (x === 'hermes') return 'hermes'
+  if (x === 'openclaw') return 'openclaw'
+  if (x === 'claudecode' || x === 'claude-code' || x === 'claude_code' || x === 'claude') return 'claudecode'
+  return null
+}
+
+function getAgentDefaultPort(agent) {
+  return DEV_AGENT_DEFAULT_PORTS[agent] || null
+}
+
+function localDevAgentFeature(agent) {
+  if (agent === 'hermes') return ['hermes_cli', 'hermes-agent', 'uv-python']
+  if (agent === 'openclaw') return ['openclaw', 'gateway run']
+  if (agent === 'claudecode') return ['claude-panel', 'clean-claude-panel', 'server.js']
+  return []
+}
+
+function getManagedDevChild(agent) {
+  if (agent === 'hermes') return _hermesGwProcess || null
+  if (agent === 'claudecode') return _claudePanelChild || null
+  return null
+}
+
+function clearManagedDevChild(agent, child) {
+  if (agent === 'hermes' && _hermesGwProcess === child) _hermesGwProcess = null
+  if (agent === 'claudecode' && _claudePanelChild === child) _claudePanelChild = null
+}
+
+function getPortProcessDetails(port) {
+  const targetPort = Number(port)
+  if (!Number.isInteger(targetPort) || targetPort <= 0) return null
+
+  if (isWindows) {
+    const script = [
+      `$c=Get-NetTCPConnection -LocalPort ${targetPort} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
+      'if($c){',
+      '  $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)"',
+      '  [pscustomobject]@{pid=$c.OwningProcess; executablePath=$p.ExecutablePath; commandLine=$p.CommandLine} | ConvertTo-Json -Compress',
+      '}',
+    ].join('; ')
+    const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 5000,
+    })
+    const raw = String(result.stdout || '').trim()
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      return {
+        pid: Number(parsed.pid || parsed.Pid || parsed.ProcessId || 0),
+        executablePath: String(parsed.executablePath || parsed.ExecutablePath || ''),
+        commandLine: String(parsed.commandLine || parsed.CommandLine || ''),
+      }
+    } catch {
+      return null
+    }
+  }
+
+  try {
+    const raw = execSync(`lsof -nP -iTCP:${targetPort} -sTCP:LISTEN -Fp 2>/dev/null | head -n 1`, {
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim()
+    const pid = Number(raw.replace(/^p/, ''))
+    if (!Number.isInteger(pid) || pid <= 0) return null
+    const commandLine = execSync(`ps -p ${pid} -o command= 2>/dev/null`, { encoding: 'utf8', timeout: 5000 }).trim()
+    return { pid, executablePath: '', commandLine }
+  } catch {
+    return null
+  }
+}
+
+function isVerifiedDevAgentProcess(agent, details) {
+  if (!details?.pid) return false
+  const repoRoot = normalizeForCompare(appRootDir())
+  const text = normalizeForCompare(`${details.executablePath || ''}\n${details.commandLine || ''}`)
+  if (!repoRoot || !text.includes(repoRoot)) return false
+  return localDevAgentFeature(agent).some(feature => text.includes(normalizeForCompare(feature)))
+}
+
+function stopVerifiedDevPid(agent, details) {
+  if (!isVerifiedDevAgentProcess(agent, details)) {
+    return {
+      ok: false,
+      agent,
+      stopped: false,
+      pid: details?.pid || null,
+      reason: 'unverified-port',
+      warning: 'Process ownership could not be verified; skipped.',
+    }
+  }
+
+  if (isWindows) {
+    killWindowsProcessTree(details.pid)
+  } else {
+    try { process.kill(details.pid, 'SIGTERM') } catch {}
+  }
+  return { ok: true, agent, stopped: true, pid: details.pid, reason: 'verified-port' }
+}
+
+async function stopDevAgent(agentInput) {
+  const agent = normalizeAgentName(agentInput)
+  if (!agent) return { ok: false, stopped: false, reason: 'unsupported-agent' }
+
+  if (agent === 'openclaw') {
+    try {
+      await handlers.stop_service({ label: 'ai.openclaw.gateway' })
+      return { ok: true, agent, stopped: true, pid: null, reason: 'managed' }
+    } catch (error) {
+      const details = getPortProcessDetails(getAgentDefaultPort(agent))
+      if (!details) return { ok: true, agent, stopped: false, pid: null, reason: 'not-running', warning: error?.message || String(error) }
+      const fallback = stopVerifiedDevPid(agent, details)
+      if (!fallback.ok) fallback.warning = fallback.warning || error?.message || String(error)
+      return fallback
+    }
+  }
+
+  const child = getManagedDevChild(agent)
+  if (child?.pid) {
+    const pid = Number(child.pid)
+    clearManagedDevChild(agent, child)
+    if (isWindows) killWindowsProcessTree(pid)
+    else { try { process.kill(pid, 'SIGTERM') } catch {} }
+    return { ok: true, agent, stopped: true, pid, reason: 'managed' }
+  }
+
+  const details = getPortProcessDetails(getAgentDefaultPort(agent))
+  if (!details) return { ok: true, agent, stopped: false, pid: null, reason: 'not-running' }
+  return stopVerifiedDevPid(agent, details)
+}
+
+async function waitForDevAgentReady(agent, options = {}) {
+  const attempts = Number(options.attempts || 40)
+  const delayMs = Number(options.delayMs || 500)
+  let last = null
+  for (let i = 0; i < attempts; i++) {
+    last = await createDevAgentStatus(agent)
+    if (last.ready || last.needsSetup) return last
+    if (last.status === 'error' && !(agent === 'openclaw' && last.portListening && last.verified)) return last
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+  return last || await createDevAgentStatus(agent)
+}
+
+async function startDevAgent(agentInput) {
+  const agent = normalizeAgentName(agentInput)
+  if (!agent) return { ok: false, started: false, status: 'error', reason: 'unsupported-agent' }
+
+  if (agent !== 'openclaw') {
+    return { ok: false, agent, started: false, status: 'error', reason: 'start-not-implemented' }
+  }
+
+  const current = await createDevAgentStatus(agent)
+  if (current.ready) return { ok: true, agent, started: false, status: 'ready', current }
+
+  let minimaxConfig = null
+  try {
+    minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
+  } catch (error) {
+    const code = error?.code || 'OPENCLAW_GATEWAY_CONFIG_ERROR'
+    const status = code === 'OPENCLAW_MINIMAX_API_KEY_REQUIRED' ? 'needs_setup' : 'error'
+    return {
+      ok: false,
+      agent,
+      started: false,
+      status,
+      needsSetup: status === 'needs_setup',
+      code,
+      error: error?.message || String(error),
+    }
+  }
+
+  try {
+    const runtime = await getLocalGatewayRuntime('ai.openclaw.gateway')
+    if (runtime?.running) {
+      ensureOwnedGatewayOrThrow(runtime.pid || null)
+    } else if (isMac) {
+      macStartService('ai.openclaw.gateway')
+    } else if (isLinux) {
+      linuxStartGateway()
+    } else {
+      winStartGateway()
+    }
+
+    const ready = await waitForDevAgentReady(agent, { attempts: 40, delayMs: 500 })
+    if (ready.ready) {
+      return {
+        ok: true,
+        agent,
+        started: true,
+        status: 'ready',
+        pid: ready.pid || null,
+        keyFingerprint: openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey),
+        current: ready,
+      }
+    }
+    return {
+      ok: false,
+      agent,
+      started: true,
+      status: ready.status || 'checking',
+      error: ready.error || ready.message || 'OpenClaw Gateway started but is not ready yet.',
+      current: ready,
+    }
+  } catch (error) {
+    const latest = await createDevAgentStatus(agent).catch(() => null)
+    return {
+      ok: false,
+      agent,
+      started: false,
+      status: latest?.status || 'error',
+      error: error?.message || String(error),
+      code: error?.code || undefined,
+      current: latest,
+    }
+  }
+}
+
+async function stopAllDevAgents() {
+  const results = []
+  for (const agent of ['hermes', 'openclaw', 'claudecode']) {
+    try {
+      results.push(await stopDevAgent(agent))
+    } catch (error) {
+      results.push({ ok: false, agent, stopped: false, reason: 'error', error: error?.message || String(error) })
+    }
+  }
+  return { ok: results.every(item => item.ok !== false), results }
+}
+
+function detectAgentNeedsSetup(probe) {
+  const text = JSON.stringify({
+    status: probe?.status || '',
+    message: probe?.message || '',
+    error: probe?.error || '',
+    body: probe?.body || null,
+  }).toLowerCase()
+  return /OPENCLAW_MINIMAX_API_KEY_REQUIRED|api key|missing.*key|no api key|unknown provider|needs_setup|未配置|配置未完成|minimax.*key/i.test(text)
+}
+
+async function probeLocalAgentHttp(agent, port, timeoutMs = 1500) {
+  const paths = agent === 'claudecode'
+    ? ['/api/status', '/health', '/api/health']
+    : ['/health', '/status', '/api/status']
+
+  for (const probePath of paths) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}${probePath}`, {
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+      let body = null
+      try {
+        body = await resp.json()
+      } catch {
+        body = { text: await resp.text().catch(() => '') }
+      }
+      if (resp.status === 404) continue
+      const statusText = String(body?.status || body?.state || '').toLowerCase()
+      const ready = resp.ok && (
+        body?.ok === true
+        || body?.ready === true
+        || statusText === 'ok'
+        || statusText === 'ready'
+        || statusText === 'live'
+        || statusText === 'running'
+        || agent === 'claudecode'
+      )
+      return {
+        ready,
+        httpOk: resp.ok,
+        status: statusText || (resp.ok ? 'ready' : 'not_ready'),
+        path: probePath,
+        body,
+      }
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        // Try the next conventional status path before reporting the probe error.
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  return {
+    ready: false,
+    httpOk: false,
+    status: 'no_health_endpoint',
+    message: 'No health/status endpoint responded.',
+  }
+}
+
+async function createDevAgentStatus(agent) {
+  const port = getAgentDefaultPort(agent)
+  const details = getPortProcessDetails(port)
+  const portListening = !!details?.pid
+  const verified = !!details && isVerifiedDevAgentProcess(agent, details)
+  const base = {
+    ok: true,
+    agent,
+    port,
+    pid: details?.pid || null,
+    portListening,
+    listening: portListening,
+    verified,
+    ready: false,
+    connected: false,
+    needsSetup: false,
+    status: 'stopped',
+    message: '',
+    error: null,
+  }
+
+  if (agent === 'openclaw') {
+    try {
+      const minimaxConfig = openclawMiniMaxGatewayConfig()
+      if (!minimaxConfig.apiKey) {
+        return {
+          ...base,
+          needsSetup: true,
+          status: 'needs_setup',
+          message: 'OpenClaw 模型或 Key 未配置，请先完成配置。',
+          error: 'OPENCLAW_MINIMAX_API_KEY_REQUIRED',
+        }
+      }
+    } catch (error) {
+      return {
+        ...base,
+        status: 'error',
+        message: error?.message || 'OpenClaw 模型配置检查失败。',
+        error: error?.code || error?.message || String(error),
+      }
+    }
+  }
+
+  if (!portListening) {
+    base.message = 'Agent port is not listening.'
+    return base
+  }
+
+  if (!verified) {
+    base.status = 'listening_unverified'
+    base.message = 'Port is listening, but process ownership could not be verified.'
+    return base
+  }
+
+  const probe = agent === 'openclaw'
+    ? await probeOpenclawGatewayHealth(port, 5000)
+    : await probeLocalAgentHttp(agent, port, 1500)
+  const needsSetup = detectAgentNeedsSetup(probe)
+  const ready = !!probe.ready && !needsSetup
+  const status = needsSetup
+    ? 'needs_setup'
+    : ready
+      ? 'ready'
+      : agent === 'openclaw'
+        ? (probe.httpOk || portListening && verified ? 'checking' : 'error')
+        : 'checking'
+
+  return {
+    ...base,
+    ready,
+    connected: ready,
+    needsSetup,
+    status,
+    message: needsSetup
+      ? '模型或网关配置未完成，请先完成配置。'
+      : ready
+        ? 'Gateway ready.'
+        : probe.message || `Health probe not ready: ${probe.status || 'unknown'}`,
+    error: probe.error || null,
+    health: {
+      ready: !!probe.ready,
+      httpOk: !!probe.httpOk,
+      status: probe.status || 'unknown',
+      path: probe.path || '/health',
+    },
+  }
+}
+
+async function devAgentsStatus(agentInput = null) {
+  const singleAgent = normalizeAgentName(agentInput)
+  if (agentInput && !singleAgent) {
+    return { ok: false, error: 'unsupported-agent', agent: agentInput }
+  }
+  if (singleAgent) return createDevAgentStatus(singleAgent)
+
+  const agents = {}
+  for (const agent of ['hermes', 'openclaw', 'claudecode']) {
+    agents[agent] = await createDevAgentStatus(agent)
+  }
+  return { ok: true, agents }
+}
+
 async function waitHermesPortClosed(port, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -2113,7 +2550,17 @@ function readBoundOpenclawCliPath() {
   return normalized
 }
 
+function bundledOpenclawCliPath() {
+  const bundledDir = bundledOpenclawBinDir()
+  if (!bundledDir) return null
+  const cliPath = normalizeCliPath(path.join(bundledDir, isWindows ? 'openclaw.cmd' : 'openclaw'))
+  if (!cliPath || !fs.existsSync(cliPath) || isRejectedCliPath(cliPath)) return null
+  return cliPath
+}
+
 function resolveOpenclawCliPath() {
+  const bundled = bundledOpenclawCliPath()
+  if (bundled) return bundled
   const bound = readBoundOpenclawCliPath()
   if (bound) return bound
   return collectPreferredCliCandidates()[0] || null
@@ -2226,6 +2673,10 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
   const openclaw = readJsonFileRelaxed(openclawPath) || {}
   const agentModels = readJsonFileRelaxed(agentModelsPath) || {}
   const apiKey = pickOpenClawMiniMaxApiKey(
+    process.env.OPENCLAW_MINIMAX_API_KEY,
+    process.env.MINIMAX_CN_API_KEY,
+    process.env.MINIMAX_API_KEY,
+    process.env.OPENAI_API_KEY,
     openclaw.providers?.minimax?.apiKey,
     openclaw.models?.providers?.minimax?.apiKey,
     openclaw.modelProviders?.minimax?.apiKey,
@@ -2271,7 +2722,9 @@ function openclawMiniMaxGatewayEnv() {
   if (minimaxConfig.effective?.status !== 'ready') return {}
   if (!minimaxConfig.apiKey) return {}
   return {
+    OPENCLAW_MINIMAX_API_KEY: minimaxConfig.apiKey,
     MINIMAX_API_KEY: minimaxConfig.apiKey,
+    MINIMAX_CN_API_KEY: minimaxConfig.apiKey,
     OPENAI_API_KEY: minimaxConfig.apiKey,
     OPENAI_BASE_URL: minimaxConfig.baseUrl,
     OPENAI_MODEL: minimaxConfig.model,
@@ -2301,6 +2754,113 @@ function requireOpenClawMiniMaxGatewayConfig() {
     throw error
   }
   return minimaxConfig
+}
+
+function openclawGatewayLaunchConfigDir() {
+  const rootHash = crypto.createHash('sha256').update(appRootDir()).digest('hex').slice(0, 12)
+  return path.join(os.tmpdir(), 'superclaw-openclaw-gateway-config', rootHash)
+}
+
+function openclawGatewayLaunchConfigPath() {
+  return path.join(openclawGatewayLaunchConfigDir(), 'openclaw.gateway.json')
+}
+
+function openclawEnvSecretRef(name) {
+  return { source: 'env', provider: 'default', id: name }
+}
+
+function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
+  const source = input && typeof input === 'object' ? input : {}
+  const id = String(source.id || source.model || defaults.model || 'MiniMax-M3').trim() || 'MiniMax-M3'
+  return {
+    ...source,
+    id,
+    name: String(source.name || id),
+    api: String(source.api || defaults.api || 'openai-completions'),
+    reasoning: source.reasoning !== undefined ? source.reasoning : true,
+    input: Array.isArray(source.input) && source.input.length ? source.input : ['text'],
+    contextWindow: Number(source.contextWindow || defaults.contextWindow || 204800),
+    maxTokens: Number(source.maxTokens || defaults.maxTokens || 131072),
+  }
+}
+
+function normalizeOpenClawGatewayProvider(input, defaults = {}) {
+  const provider = input && typeof input === 'object' ? { ...input } : {}
+  const modelId = String(
+    provider.model ||
+    provider.models?.[0]?.id ||
+    provider.models?.[0]?.model ||
+    defaults.model ||
+    'MiniMax-M3'
+  ).trim() || 'MiniMax-M3'
+
+  delete provider.model
+  delete provider.type
+  delete provider.name
+  provider.baseUrl = String(provider.baseUrl || defaults.baseUrl || 'https://api.minimaxi.com/v1')
+  provider.api = String(provider.api || defaults.api || 'openai-completions')
+  provider.apiKey = openclawEnvSecretRef('OPENCLAW_MINIMAX_API_KEY')
+  provider.models = Array.isArray(provider.models) && provider.models.length
+    ? provider.models.map(model => normalizeOpenClawGatewayModelEntry(model, {
+      api: provider.api,
+      model: modelId,
+      contextWindow: defaults.contextWindow,
+      maxTokens: defaults.maxTokens,
+    }))
+    : [normalizeOpenClawGatewayModelEntry({ id: modelId }, {
+      api: provider.api,
+      contextWindow: defaults.contextWindow,
+      maxTokens: defaults.maxTokens,
+    })]
+
+  return provider
+}
+
+function prepareOpenClawGatewayLaunchConfig(minimaxConfig = requireOpenClawMiniMaxGatewayConfig()) {
+  if (!fs.existsSync(CONFIG_PATH)) return { path: CONFIG_PATH, generated: false, reason: 'source_config_missing' }
+  const cfg = JSON.parse(decodeJsonFileContent(CONFIG_PATH))
+  cfg.models = cfg.models && typeof cfg.models === 'object' ? { ...cfg.models } : {}
+  cfg.models.providers = cfg.models.providers && typeof cfg.models.providers === 'object'
+    ? { ...cfg.models.providers }
+    : {}
+
+  const directDefaults = {
+    api: 'openai-completions',
+    baseUrl: minimaxConfig.baseUrl || 'https://api.minimaxi.com/v1',
+    model: minimaxConfig.model || 'MiniMax-M3',
+    contextWindow: 204800,
+    maxTokens: 131072,
+  }
+
+  const sourceProvider = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object'
+    ? cfg.models.providers.minimax
+    : {}
+  const fallbackProvider = cfg.models.providers.minimax_cn && typeof cfg.models.providers.minimax_cn === 'object'
+    ? cfg.models.providers.minimax_cn
+    : {}
+  cfg.models.providers.minimax = normalizeOpenClawGatewayProvider({
+    ...fallbackProvider,
+    ...sourceProvider,
+    baseUrl: sourceProvider.baseUrl || fallbackProvider.baseUrl || directDefaults.baseUrl,
+    api: sourceProvider.api || fallbackProvider.api || directDefaults.api,
+    models: Array.isArray(sourceProvider.models) && sourceProvider.models.length
+      ? sourceProvider.models
+      : fallbackProvider.models,
+  }, directDefaults)
+
+  if (cfg.models.providers.minimax_cn) {
+    cfg.models.providers.minimax_cn = normalizeOpenClawGatewayProvider(cfg.models.providers.minimax_cn, directDefaults)
+  }
+  delete cfg.models.mode
+  delete cfg.models.default
+  delete cfg.models.defaultProvider
+  delete cfg.models.defaultModel
+
+  const dir = openclawGatewayLaunchConfigDir()
+  fs.mkdirSync(dir, { recursive: true })
+  const target = openclawGatewayLaunchConfigPath()
+  fs.writeFileSync(target, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
+  return { path: target, generated: true, provider: 'minimax', model: directDefaults.model, baseUrl: directDefaults.baseUrl }
 }
 
 function openclawRuntimeEnv(extra = {}) {
@@ -2814,6 +3374,34 @@ function resolveAgentSkillsDir(agentId) {
   } catch {
     return path.join(OPENCLAW_DIR, 'agents', id, 'workspace', 'skills')
   }
+}
+
+function validateOpenClawSkillDeleteName(name) {
+  const n = String(name || '').trim()
+  if (!n || n.includes('..') || n.includes('/') || n.includes('\\')) {
+    throw new Error('无效的 OpenClaw Skill 名称')
+  }
+  if (['.', '.git', 'node_modules'].includes(n.toLowerCase())) {
+    throw new Error('拒绝删除危险 Skill 路径')
+  }
+  return n
+}
+
+function assertSafeOpenClawSkillPath(skillDir, allowedRoots) {
+  const target = path.resolve(skillDir)
+  const lowerTarget = isWindows ? target.toLowerCase() : target
+  if (/[\\/]\.git(?:[\\/]|$)/i.test(target) || /[\\/]node_modules(?:[\\/]|$)/i.test(target)) {
+    throw new Error('拒绝删除仓库或依赖目录')
+  }
+  for (const root of allowedRoots.filter(Boolean)) {
+    const resolvedRoot = path.resolve(root)
+    const lowerRoot = isWindows ? resolvedRoot.toLowerCase() : resolvedRoot
+    const relative = path.relative(lowerRoot, lowerTarget)
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+      return true
+    }
+  }
+  throw new Error('拒绝删除 OpenClaw Skills 根目录之外的路径')
 }
 
 function isExistingDirectory(dir) {
@@ -3533,10 +4121,26 @@ function normalizeOpenClawLegacyConfig(config) {
   const provider = config?.models?.providers?.minimax
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return
 
+  const modelId = normalizeOpenClawModelId(
+    provider.models?.[0]?.id ||
+    provider.models?.[0]?.model ||
+    provider.model
+  )
   const normalized = {
     api: provider.api || 'openai-completions',
     baseUrl: provider.baseUrl,
-    model: isInvalidOpenClawProviderModel(provider.model) ? 'MiniMax-M3' : String(provider.model).trim(),
+    models: Array.isArray(provider.models) && provider.models.length
+      ? provider.models.map(item => ({
+        ...item,
+        id: normalizeOpenClawModelId(item?.id || item?.model || modelId),
+        name: normalizeOpenClawModelId(item?.name || item?.id || item?.model || modelId),
+        api: item?.api || provider.api || 'openai-completions',
+      }))
+      : [{
+        ...miniMaxOpenClawModelDefinition(),
+        id: modelId,
+        name: modelId,
+      }],
   }
   if (Object.prototype.hasOwnProperty.call(provider, 'apiKey')) {
     normalized.apiKey = provider.apiKey
@@ -4269,8 +4873,21 @@ function writeOpenclawConfigFile(config, options = {}) {
   const base = preserveExisting && fs.existsSync(CONFIG_PATH)
     ? mergeConfigsPreservingFields(JSON.parse(decodeJsonFileContent(CONFIG_PATH)), config)
     : config
+  if (base?.models && typeof base.models === 'object' && !Array.isArray(base.models)) {
+    delete base.models.mode
+    delete base.models.default
+    delete base.models.defaultProvider
+    delete base.models.defaultModel
+  }
   normalizeOpenClawMiniMaxModel(base)
   const cleaned = stripUiFields(base)
+  if (cleaned?.models && typeof cleaned.models === 'object' && !Array.isArray(cleaned.models)) {
+    delete cleaned.models.mode
+    delete cleaned.models.default
+    delete cleaned.models.defaultProvider
+    delete cleaned.models.defaultModel
+  }
+  normalizeOpenClawMiniMaxModel(cleaned)
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
 }
@@ -4918,14 +5535,21 @@ function winStartGateway() {
   const timestamp = new Date().toISOString()
   fs.appendFileSync(logPath, `\n[${timestamp}] [ClawPanel] Starting Gateway on Windows...\n`)
   const minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
+  const launchConfig = prepareOpenClawGatewayLaunchConfig(minimaxConfig)
   fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
+  if (launchConfig.generated) {
+    fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw Gateway launch config normalized: path=${launchConfig.path} provider=${launchConfig.provider} baseUrl=${launchConfig.baseUrl} model=${launchConfig.model}\n`)
+  }
 
   // 用 cmd.exe /c 启动，不用 shell: true（避免额外 cmd.exe 进程链导致终端闪烁）
   const child = spawnOpenclaw(['gateway', 'run'], {
     stdio: ['ignore', out, err],
     windowsHide: true,
-    cwd: homedir(),
-    env: openclawMiniMaxGatewayEnv(),
+    cwd: appRootDir(),
+    env: {
+      ...openclawMiniMaxGatewayEnv(),
+      OPENCLAW_CONFIG_PATH: launchConfig.path,
+    },
   })
   child.unref()
 }
@@ -4942,7 +5566,7 @@ async function winStopGateway() {
 
   spawnOpenclawSync(['gateway', 'stop'], {
     windowsHide: true,
-    cwd: homedir(),
+    cwd: appRootDir(),
     encoding: 'utf8',
   })
 
@@ -5927,12 +6551,36 @@ function normalizeOpenClawModelRef(modelRef, fallback = miniMaxModelRef()) {
 function normalizeOpenClawMiniMaxModel(config) {
   const provider = config?.models?.providers?.minimax
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
-  if (isInvalidOpenClawModelId(provider.model)) {
-    provider.model = MINIMAX_TEST_DEFAULTS.model
-    return true
+  let changed = false
+  const modelId = normalizeOpenClawModelId(
+    provider.models?.[0]?.id ||
+    provider.models?.[0]?.model ||
+    provider.model
+  )
+  if ('model' in provider) {
+    delete provider.model
+    changed = true
   }
-  provider.model = String(provider.model).trim()
-  return false
+  if ('type' in provider) {
+    delete provider.type
+    changed = true
+  }
+  if ('name' in provider && String(provider.name || '').toLowerCase() === 'minimax') {
+    delete provider.name
+    changed = true
+  }
+  if (!Array.isArray(provider.models) || !provider.models.length) {
+    provider.models = [miniMaxOpenClawModelDefinition()]
+    changed = true
+  } else {
+    provider.models = provider.models.map(item => ({
+      ...item,
+      id: normalizeOpenClawModelId(item?.id || item?.model || modelId),
+      name: normalizeOpenClawModelId(item?.name || item?.id || item?.model || modelId),
+      api: item?.api || provider.api || 'openai-completions',
+    }))
+  }
+  return changed
 }
 
 function miniMaxOpenClawModelDefinition() {
@@ -5950,7 +6598,7 @@ function miniMaxOpenClawModelDefinition() {
 function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   const cfg = config && typeof config === 'object' && !Array.isArray(config) ? config : {}
   if (!cfg.models || typeof cfg.models !== 'object' || Array.isArray(cfg.models)) cfg.models = {}
-  cfg.models.mode = 'merge'
+  delete cfg.models.mode
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
@@ -5960,10 +6608,18 @@ function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   cfg.models.providers.minimax = {
     api: 'openai-completions',
     baseUrl: normalized.baseUrl,
-    model: normalizeOpenClawModelId(previousMiniMaxProvider.model),
+    models: Array.isArray(previousMiniMaxProvider.models) && previousMiniMaxProvider.models.length
+      ? previousMiniMaxProvider.models.map(item => ({
+        ...item,
+        id: normalizeOpenClawModelId(item?.id || item?.model),
+        name: normalizeOpenClawModelId(item?.name || item?.id || item?.model),
+        api: item?.api || 'openai-completions',
+      }))
+      : [miniMaxOpenClawModelDefinition()],
   }
   normalizeOpenClawMiniMaxModel(cfg)
   if (apiKey) cfg.models.providers.minimax.apiKey = apiKey
+  delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
 
@@ -6064,7 +6720,8 @@ function miniMaxStatusFromPlain(plain, overrides = {}) {
 function writeMiniMaxAgentModels(normalized, apiKey) {
   const target = miniMaxDataPath('.openclaw', 'agents', 'main', 'agent', 'models.json')
   const current = readJsonFileRelaxed(target) || {}
-  current.mode = 'merge'
+  delete current.mode
+  delete current.models
   if (!current.providers || typeof current.providers !== 'object' || Array.isArray(current.providers)) {
     current.providers = {}
   }
@@ -9469,13 +10126,14 @@ const handlers = {
     }
   },
   skills_uninstall({ name, agent_id } = {}) {
-    if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) throw new Error('无效的 Skill 名称')
+    const safeName = validateOpenClawSkillDeleteName(name)
     const agentDir = resolveAgentSkillsDir(agent_id)
     const baseDir = agentDir || path.join(OPENCLAW_DIR, 'skills')
-    const skillDir = path.join(baseDir, name)
-    if (!fs.existsSync(skillDir)) throw new Error(`Skill「${name}」不存在`)
+    const skillDir = path.join(baseDir, safeName)
+    assertSafeOpenClawSkillPath(skillDir, [baseDir])
+    if (!fs.existsSync(skillDir)) throw new Error(`Skill「${safeName}」不存在`)
     fs.rmSync(skillDir, { recursive: true, force: true })
-    return { success: true, name }
+    return { success: true, name: safeName }
   },
   // SkillHub SDK（内置 HTTP，不依赖 CLI）
   async skillhub_search({ query, limit }) {
@@ -10544,7 +11202,7 @@ const handlers = {
     return json
   },
 
-  async hermes_agent_run({ input, sessionId, conversationHistory, instructions, attachments } = {}) {
+  async hermes_agent_run({ input, sessionId, conversationHistory, instructions, attachments, agentName, agent_name } = {}) {
     // Web 模式下简化实现：POST /v1/runs 然后轮询或直接返回
     await handlers._hermesEnsureGatewayReady()
     const gwUrl = hermesGatewayUrl()
@@ -10555,11 +11213,15 @@ const handlers = {
       const m = envContent.match(/^API_SERVER_KEY=(.+)$/m)
       if (m) apiKey = m[1].trim()
     } catch {}
-    const payload = { input: _buildHermesRunInput(input, attachments) }
+    const effectiveAgentName = resolveAgentIdentityName(agentName || agent_name, 'hermes')
+    const payload = { input: _buildHermesRunInput(input, attachments), agentName: effectiveAgentName, agent_name: effectiveAgentName }
     if (sessionId) payload.session_id = sessionId
-    const bridgedHistory = conversationHistory || _buildHermesConversationHistoryFromSession(sessionId, input || '')
-    if (Array.isArray(bridgedHistory) && bridgedHistory.length) payload.conversation_history = bridgedHistory
-    if (instructions) payload.instructions = instructions
+    const bridgedHistory = Array.isArray(conversationHistory)
+      ? conversationHistory
+      : _buildHermesConversationHistoryFromSession(sessionId, input || '')
+    if (Array.isArray(bridgedHistory)) payload.conversation_history = bridgedHistory
+    const effectiveInstructions = withAgentIdentityInstructions(instructions, effectiveAgentName)
+    if (effectiveInstructions) payload.instructions = effectiveInstructions
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
     const resp = await globalThis.fetch(`${gwUrl}/v1/runs`, {
@@ -11172,7 +11834,6 @@ const handlers = {
       ['code_execution', '⚡ Code Execution'],
       ['vision', '👁️ Vision Analysis'],
       ['video', '🎬 Video Analysis'],
-      ['image_gen', '🎨 Image Generation'],
       ['video_gen', '🎬 Video Generation'],
       ['x_search', '🐦 X / Twitter Search'],
       ['moa', '🧠 Multi-Agent Collaboration'],
@@ -12881,6 +13542,96 @@ function _endStream(res) {
   if (!res.writableEnded && !res.destroyed) res.end()
 }
 
+function normalizeHermesStreamText(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(normalizeHermesStreamText).join('')
+  if (value && typeof value === 'object') {
+    return normalizeHermesStreamText(
+      value.delta ?? value.text_delta ?? value.content_delta
+      ?? value.output ?? value.result ?? value.content
+      ?? value.response ?? value.message ?? value.data ?? ''
+    )
+  }
+  return String(value)
+}
+
+function createHermesStreamDedupeState() {
+  return { emittedText: '', finalText: '', finalSent: false, terminalSent: false }
+}
+
+function emitHermesStreamDelta(state, incomingText, options = {}) {
+  const text = normalizeHermesStreamText(incomingText)
+  if (!text) return ''
+  const mode = options.mode === 'snapshot' ? 'snapshot' : 'delta'
+  const emitted = String(state.emittedText || '')
+  let delta = ''
+
+  if (text === emitted || (emitted && emitted.endsWith(text))) {
+    delta = ''
+  } else if (text.startsWith(emitted)) {
+    delta = text.slice(emitted.length)
+  } else if (mode === 'snapshot') {
+    delta = ''
+  } else {
+    delta = text
+  }
+
+  state.finalText = _preferHermesCompletion(state.finalText, text)
+  if (delta) {
+    state.emittedText = emitted + delta
+    state.finalText = _preferHermesCompletion(state.finalText, state.emittedText)
+  }
+  return delta
+}
+
+function finalizeHermesStreamMessage(state, finalText = '') {
+  const delta = emitHermesStreamDelta(state, finalText, { mode: 'snapshot' })
+  const output = _preferHermesCompletion(state.finalText, state.emittedText)
+  const final = Boolean(output && !state.finalSent)
+  if (final) state.finalSent = true
+  return { delta, output, final }
+}
+
+function finalizeHermesStreamDedupe(state, finalText = '') {
+  const message = finalizeHermesStreamMessage(state, finalText)
+  const terminal = !state.terminalSent
+  if (terminal) state.terminalSent = true
+  return { ...message, terminal }
+}
+
+function _splitHermesMediaLines(text) {
+  const mediaLines = []
+  const visibleLines = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^\s*MEDIA\s*:/i.test(line)) mediaLines.push(line.trim())
+    else visibleLines.push(line)
+  }
+  return { mediaLines, visibleText: visibleLines.join('\n').trim() }
+}
+
+function sanitizeHermesImageReply(text, options = {}) {
+  return sanitizeMediaVisibleText(text, {
+    imageTask: options.imageTask,
+    maxLength: options.maxLength || 140,
+  })
+
+  const raw = String(text || '')
+  const { mediaLines, visibleText } = _splitHermesMediaLines(raw)
+  const imageTask = Boolean(options.imageTask || mediaLines.length)
+  if (!imageTask) return raw
+
+  const unsafeVisible = /(^|\b)(prompt|image_prompt|negative_prompt)\b|图片提示词|提示词\s*[:：]|生成提示词|raw json|tool args|^\s*[{[]/i.test(visibleText)
+  const maxLength = Number(options.maxLength || 140)
+  let cleaned = visibleText
+
+  if (!cleaned || unsafeVisible || cleaned.length > maxLength) {
+    cleaned = mediaLines.length ? '图片已返回。' : '图片内容已返回。'
+  }
+
+  return [...mediaLines, cleaned].filter(Boolean).join('\n')
+}
+
 async function _handleHermesAgentRunStream(req, res, args = {}) {
   const controller = new AbortController()
   // Keep the Hermes run alive even if the browser stream goes quiet. The
@@ -12893,6 +13644,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
   let upstreamRunCompleted = false
   let sessionStartMessageCount = 0
   const emittedToolOutputs = new Set()
+  const streamDedupe = createHermesStreamDedupeState()
   try {
     const gwUrl = hermesGatewayUrl()
     await handlers._hermesEnsureGatewayReady()
@@ -12901,11 +13653,19 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`
 
-    const payload = { input: _buildHermesRunInput(args.input || '', args.attachments || []) }
+    const effectiveAgentName = resolveAgentIdentityName(args.agentName || args.agent_name, 'hermes')
+    const payload = {
+      input: _buildHermesRunInput(args.input || '', args.attachments || []),
+      agentName: effectiveAgentName,
+      agent_name: effectiveAgentName,
+    }
     if (args.sessionId) payload.session_id = args.sessionId
-    const bridgedHistory = args.conversationHistory || _buildHermesConversationHistoryFromSession(args.sessionId, args.input || '')
-    if (Array.isArray(bridgedHistory) && bridgedHistory.length) payload.conversation_history = bridgedHistory
-    if (args.instructions) payload.instructions = args.instructions
+    const bridgedHistory = Array.isArray(args.conversationHistory)
+      ? args.conversationHistory
+      : _buildHermesConversationHistoryFromSession(args.sessionId, args.input || '')
+    if (Array.isArray(bridgedHistory)) payload.conversation_history = bridgedHistory
+    const effectiveInstructions = withAgentIdentityInstructions(args.instructions, effectiveAgentName)
+    if (effectiveInstructions) payload.instructions = effectiveInstructions
 
     const startedResp = await globalThis.fetch(`${gwUrl}/v1/runs`, {
       method: 'POST',
@@ -12928,7 +13688,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
     if (typeof res.flushHeaders === 'function') res.flushHeaders()
-    _writeStreamEvent(res, { event: 'run.started', run_id: runId, session_id: responseSessionId })
+    _writeStreamEvent(res, { event: 'run.started', run_id: runId, session_id: responseSessionId, clientRequestId: args.clientRequestId || null })
 
     const eventsResp = await globalThis.fetch(`${gwUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}`, 'User-Agent': 'ClawPanel-Web' } : { 'User-Agent': 'ClawPanel-Web' },
@@ -12979,20 +13739,25 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
           3500
         ) || finalOutput || _assistantOutputFromHermesTools(args.sessionId)
       }
-      if (completedOutput && completedOutput.startsWith(emittedOutput) && completedOutput.length > emittedOutput.length) {
-        const missingDelta = completedOutput.slice(emittedOutput.length)
-        if (missingDelta) {
-          _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, delta: missingDelta, synthetic: true })
-          emittedOutput = completedOutput
-          finalOutput = completedOutput
-        }
+      completedOutput = sanitizeAgentIdentityOutput(
+        sanitizeHermesImageReply(completedOutput, { input: args.input || '' }),
+        effectiveAgentName,
+        args.input || '',
+      )
+      const completed = finalizeHermesStreamDedupe(streamDedupe, completedOutput)
+      if (completed.delta) {
+        _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, clientRequestId: args.clientRequestId || null, delta: completed.delta, synthetic: true })
+        emittedOutput = streamDedupe.emittedText
+        finalOutput = streamDedupe.finalText || streamDedupe.emittedText
       }
       flushSessionToolOutputs()
-      const stableOutput = completedOutput || finalOutput
-      if (stableOutput) {
-        _writeStreamEvent(res, { event: 'message.final', run_id: runId, output: stableOutput, session_id: responseSessionId })
+      const stableOutput = completed.output || completedOutput || finalOutput
+      if (completed.final && stableOutput) {
+        _writeStreamEvent(res, { event: 'message.final', run_id: runId, clientRequestId: args.clientRequestId || null, output: stableOutput, session_id: responseSessionId })
       }
-      _writeStreamEvent(res, { event: 'run.completed', run_id: runId, output: stableOutput, session_id: responseSessionId })
+      if (completed.terminal) {
+        _writeStreamEvent(res, { event: 'run.completed', run_id: runId, clientRequestId: args.clientRequestId || null, output: stableOutput, session_id: responseSessionId })
+      }
       _endStream(res)
     }
     const textFromValue = (value) => {
@@ -13027,7 +13792,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
           tool: tool.tool,
           output: tool.output,
           result: tool.output,
-          preview: '工具已完成，结果已同步',
+          preview: '工具执行完成',
           synthetic: true,
         })
       }
@@ -13039,10 +13804,13 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       const output = valueFrom(evt, ['output', 'result', 'content', 'response', 'message', 'choices', 'data'])
       const textDelta = delta || output
       if (eventName === 'message.delta' || eventName === 'delta' || eventName === 'text.delta') {
-        return { ...evt, event: 'message.delta', delta: textDelta }
+        return { ...evt, event: 'message.delta', delta: textDelta, streamMode: delta ? 'delta' : 'snapshot' }
       }
       if (eventName === 'message' && output) {
-        return { ...evt, event: 'message.delta', delta: output, snapshot: true }
+        return { ...evt, event: 'message.delta', delta: output, snapshot: true, streamMode: 'snapshot' }
+      }
+      if (eventName === 'message.final') {
+        return { ...evt, event: 'message.final', output }
       }
       if (eventName === 'run.completed' || eventName === 'completed' || eventName === 'done') {
         return { ...evt, event: 'run.completed', output }
@@ -13051,7 +13819,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
         return { ...evt, event: 'run.failed', error: evt.error || output || 'unknown error' }
       }
       if (eventName.startsWith('tool.')) return evt
-      return evt.event ? evt : (output ? { ...evt, event: 'message.delta', delta: output, snapshot: true } : evt)
+      return evt.event ? evt : (output ? { ...evt, event: 'message.delta', delta: output, snapshot: true, streamMode: 'snapshot' } : evt)
     }
     const handleEventPayload = (data) => {
       if (!data || data === '[DONE]') return false
@@ -13061,26 +13829,48 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       if (!evt) return false
       if (!evt.run_id) evt.run_id = runId
       if (!evt.session_id && responseSessionId) evt.session_id = responseSessionId
+      if (!evt.clientRequestId && args.clientRequestId) evt.clientRequestId = args.clientRequestId
       if (evt.event === 'message.delta' && typeof evt.delta === 'string') {
-        let delta = evt.delta
-        if (evt.snapshot) {
-          if (delta.startsWith(finalOutput)) delta = delta.slice(finalOutput.length)
-          else if (finalOutput.endsWith(delta)) delta = ''
-        }
+        const incoming = sanitizeAgentIdentityOutput(
+          sanitizeHermesImageReply(evt.delta, { input: args.input || '' }),
+          effectiveAgentName,
+          args.input || '',
+        )
+        const delta = emitHermesStreamDelta(streamDedupe, incoming, {
+          mode: evt.snapshot || evt.streamMode === 'snapshot' ? 'snapshot' : 'delta',
+        })
         if (!delta) return false
         evt.delta = delta
-        finalOutput += delta
-        emittedOutput += delta
+        finalOutput = streamDedupe.finalText || streamDedupe.emittedText
+        emittedOutput = streamDedupe.emittedText
       }
       if (evt.event === 'run.completed' && typeof evt.output === 'string' && evt.output) {
-        if (evt.output.startsWith(emittedOutput) && evt.output.length > emittedOutput.length) {
-          const missingDelta = evt.output.slice(emittedOutput.length)
-          if (missingDelta) {
-            _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, delta: missingDelta, synthetic: true })
-            emittedOutput = evt.output
-          }
+        const incoming = sanitizeAgentIdentityOutput(
+          sanitizeHermesImageReply(evt.output, { input: args.input || '' }),
+          effectiveAgentName,
+          args.input || '',
+        )
+        const missingDelta = emitHermesStreamDelta(streamDedupe, incoming, { mode: 'snapshot' })
+        if (missingDelta) {
+          _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, clientRequestId: args.clientRequestId || null, delta: missingDelta, synthetic: true })
+          emittedOutput = streamDedupe.emittedText
         }
-        finalOutput = evt.output
+        finalOutput = streamDedupe.finalText || incoming
+      }
+      if (evt.event === 'message.final') {
+        const incoming = sanitizeAgentIdentityOutput(
+          sanitizeHermesImageReply(evt.output || '', { input: args.input || '' }),
+          effectiveAgentName,
+          args.input || '',
+        )
+        const finalized = finalizeHermesStreamMessage(streamDedupe, incoming)
+        if (finalized.delta) {
+          _writeStreamEvent(res, { event: 'message.delta', run_id: runId, session_id: responseSessionId, clientRequestId: args.clientRequestId || null, delta: finalized.delta, synthetic: true })
+          emittedOutput = streamDedupe.emittedText
+        }
+        finalOutput = finalized.output || finalOutput
+        if (!finalized.final) return false
+        evt.output = finalized.output
       }
       if (evt.event === 'run.completed') {
         upstreamRunCompleted = true
@@ -13096,7 +13886,7 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
           if (found) {
             evt.output = found.output
             evt.result = found.output
-            evt.preview = evt.preview || '工具已完成，结果已同步'
+            evt.preview = evt.preview || '工具执行完成'
             emittedToolOutputs.add(toolOutputKey(found))
           }
         }
@@ -13171,6 +13961,90 @@ async function _apiMiddleware(req, res, next) {
     return
   }
 
+  if (cmd === 'dev/agents/status') {
+    if (!isLocalRequest(req)) {
+      sendJsonResponse(res, 403, { error: 'Local requests only' })
+      return
+    }
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return
+    }
+    sendJsonResponse(res, 200, await devAgentsStatus(requestUrl?.searchParams?.get('agent') || null))
+    return
+  }
+
+  if (cmd === 'dev/agents/start') {
+    if (!isLocalRequest(req)) {
+      sendJsonResponse(res, 403, { error: 'Local requests only' })
+      return
+    }
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return
+    }
+    const args = await readBody(req)
+    const result = await startDevAgent(args.agent)
+    sendJsonResponse(res, 200, result)
+    return
+  }
+
+  if (cmd === 'dev/agents/stop') {
+    if (!isLocalRequest(req)) {
+      sendJsonResponse(res, 403, { error: 'Local requests only' })
+      return
+    }
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return
+    }
+    const args = await readBody(req)
+    sendJsonResponse(res, 200, await stopDevAgent(args.agent))
+    return
+  }
+
+  if (cmd === 'dev/agents/stop-all') {
+    if (!isLocalRequest(req)) {
+      sendJsonResponse(res, 403, { error: 'Local requests only' })
+      return
+    }
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return
+    }
+    await readBody(req)
+    sendJsonResponse(res, 200, await stopAllDevAgents())
+    return
+  }
+
+  if (cmd === 'openclaw/skills/delete') {
+    if (!isLocalRequest(req)) {
+      sendJsonResponse(res, 403, { error: 'Local requests only' })
+      return
+    }
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return
+    }
+    try {
+      const args = await readBody(req)
+      const source = String(args.source || '').toLowerCase()
+      if (source.includes('claude') || source.includes('hermes')) {
+        sendJsonResponse(res, 400, { error: 'Only OpenClaw skills can be deleted' })
+        return
+      }
+      const name = validateOpenClawSkillDeleteName(args.skillId || args.name)
+      const result = handlers.skills_uninstall({
+        name,
+        agent_id: args.agent_id || args.agentId || null,
+      })
+      sendJsonResponse(res, 200, { ...result, skillId: name })
+    } catch (e) {
+      sendJsonResponse(res, Number(e.statusCode || e.status || 400) || 400, { error: e.message || String(e), code: e.code || undefined })
+    }
+    return
+  }
+
   if (cmd === 'hermes_agent_run_stream') {
     try {
       const args = await readBody(req)
@@ -13213,9 +14087,15 @@ async function _apiMiddleware(req, res, next) {
 export {
   _initApi,
   _apiMiddleware,
+  createHermesStreamDedupeState,
+  emitHermesStreamDelta,
   filterHermesSessionsForUi,
+  finalizeHermesStreamDedupe,
+  finalizeHermesStreamMessage,
   isHermesSmokeOrFixtureSession,
+  normalizeHermesStreamText,
   rememberHermesDeletedSession,
+  sanitizeHermesImageReply,
   isHermesDeletedSessionId,
 }
 
