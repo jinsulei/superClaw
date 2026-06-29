@@ -22,6 +22,15 @@ import { renderAgentMessageContent } from '../../../components/chat/agent-messag
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
 import { classifyHermesEcommerceWorkflowIntent } from '../lib/ecommerce-workflow-guard.js'
 import {
+  buildHermesFoodDeliveryPlan,
+  detectHermesFoodDeliveryIntent,
+  formatHermesFoodDeliveryPaymentBlockedReply,
+  formatHermesFoodDeliveryReply,
+  formatHermesFoodDeliveryUnavailable,
+  hasHermesFoodDeliveryAutomation,
+  isHermesFoodDeliveryPaymentOrSubmitStep,
+} from '../lib/hermes-food-delivery-assist.js'
+import {
   COLLAB_TARGETS,
   buildTaskContext,
   buildExecutionBrief,
@@ -3157,6 +3166,40 @@ export function render() {
     }
   }
 
+  function getHermesFoodDeliveryAutomation() {
+    if (typeof window === 'undefined') return null
+    return (
+      window.__SUPERCLAW_HERMES_DESKTOP_ASSIST__ ||
+      window.__SUPERCLAW_DESKTOP_ASSIST__ ||
+      window.__SUPERCLAW_BROWSER_AUTOMATION__ ||
+      null
+    )
+  }
+
+  function maybeRunHermesFoodDeliveryAssist(userText) {
+    if (!detectHermesFoodDeliveryIntent(userText)) return false
+
+    store.pushLocalUser(userText)
+
+    if (isHermesFoodDeliveryPaymentOrSubmitStep(userText)) {
+      store.pushLocalAssistant(formatHermesFoodDeliveryPaymentBlockedReply())
+      forceScrollBottom = true
+      draw()
+      return true
+    }
+
+    const plan = buildHermesFoodDeliveryPlan(userText)
+    const automation = getHermesFoodDeliveryAutomation()
+    const reply = hasHermesFoodDeliveryAutomation(automation)
+      ? formatHermesFoodDeliveryReply(plan)
+      : formatHermesFoodDeliveryUnavailable()
+
+    store.pushLocalAssistant(reply)
+    forceScrollBottom = true
+    draw()
+    return true
+  }
+
   function pushEcommerceAssistantMessage(message = {}) {
     if (typeof store.pushLocalAssistantMessage === 'function') {
       store.pushLocalAssistantMessage(message)
@@ -3621,6 +3664,13 @@ export function render() {
     if (isCollaborationTaskRequest(text)) {
       clearDraftForSend()
       dispatchCollaborationTask({ goal: text })
+      hermesSendInFlight = false
+      return
+    }
+
+    if (detectHermesFoodDeliveryIntent(text)) {
+      clearDraftForSend()
+      maybeRunHermesFoodDeliveryAssist(text)
       hermesSendInFlight = false
       return
     }
