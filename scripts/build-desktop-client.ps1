@@ -907,7 +907,7 @@ function Assert-CleanPackageForRelease([string]$PackageDir) {
 
   $blockedTextPatterns = @(
     "124\.222\.21\.44",
-    "sk-[A-Za-z0-9_-]{20,}",
+    "(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}",
     "Bearer\s+[A-Za-z0-9._-]{20,}",
     "release-user-package",
     "SuperClaw-1\.0\.4",
