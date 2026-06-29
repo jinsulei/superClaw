@@ -788,6 +788,7 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-panel\Documents",
     "hermes\cron",
     "hermes\logs",
+    "hermes\memory",
     "hermes\memories",
     "hermes\sessions",
     "hermes\skills\.curator_backups",
@@ -830,7 +831,8 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "clawpanel\user.json",
     "hermes\auth.json",
     "hermes\channel_directory.json",
-    "hermes\gateway_state.json"
+    "hermes\gateway_state.json",
+    "hermes\user-memory.json"
   )) {
     Remove-IfExists (Join-Path $DataRoot $name)
   }
@@ -887,7 +889,7 @@ function Clear-PackagedForbiddenFiles([string]$PackageRoot) {
   }
 
   Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @(".env", ".env.local") -or $_.Name -like "backup-*.patch" } |
+    Where-Object { $_.Name -in @(".env", ".env.local", "user-memory.json") -or $_.Name -like "backup-*.patch" } |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
   Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -Directory -Filter ".git" -ErrorAction SilentlyContinue |
@@ -896,13 +898,18 @@ function Clear-PackagedForbiddenFiles([string]$PackageRoot) {
 
 function Assert-NoForbiddenPackageFiles([string]$PackageRoot) {
   $found = Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @(".env", ".env.local") -or $_.Name -like "backup-*.patch" -or ($_.PSIsContainer -and $_.Name -eq ".git") } |
+    Where-Object {
+      $_.Name -in @(".env", ".env.local", "user-memory.json") -or
+      $_.Name -like "backup-*.patch" -or
+      ($_.PSIsContainer -and $_.Name -eq ".git") -or
+      ($_.PSIsContainer -and $_.FullName -match "\\hermes\\memory($|\\)")
+    } |
     Select-Object -First 10
   if ($found) {
     $names = ($found | ForEach-Object { $_.FullName.Replace($PackageRoot, "").TrimStart("\") }) -join ", "
     Fail "Forbidden files remain in package: $names"
   }
-  Ok "No .env, .env.local, backup patch, or .git files in package"
+  Ok "No .env, .env.local, user-memory.json, backup patch, or .git files in package"
 }
 
 function Scrub-PackagedPathExamples([string]$PackageRoot) {
@@ -966,8 +973,10 @@ function Assert-NoPackagedUserState([string]$DataRoot) {
     "hermes\cron",
     "hermes\gateway_state.json",
     "hermes\logs",
+    "hermes\memory",
     "hermes\memories",
     "hermes\sessions",
+    "hermes\user-memory.json",
     "hermes\skills\.curator_backups",
     "hermes\skills\.curator_state",
     "hermes\skills\.hub\audit.log",

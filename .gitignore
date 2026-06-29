@@ -141,5 +141,12 @@ resources/data/
 workspace/
 src-tauri/workspace/
 
+# Hermes runtime memory, never commit real user memory
+.runtime/hermes/memory/
+**/user-memory.json
+**/hermes/memory/user-memory.json
+src-tauri/resources/data/hermes/memory/
+src-tauri/resources/data/hermes/user-memory.json
+
 # Local Rust build cache for bundled helper tools
 tools/**/target/

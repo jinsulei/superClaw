@@ -46,6 +46,10 @@ import {
   mapHermesErrorToUserMessage,
   normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
 } from './hermes-response-assembler.js'
+import {
+  buildHermesMemoryContext,
+  handleHermesMemoryCommand,
+} from './hermes-memory-store.js'
 
 const formatToolResultsForUser = formatHermesToolSummaryForUser
 
@@ -1931,6 +1935,42 @@ function createStore() {
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
     }
+    const memoryCommandReply = handleHermesMemoryCommand(rawText)
+    if (memoryCommandReply) {
+      let memorySession = activeSession()
+      if (!memorySession) {
+        memorySession = createLocalSession({
+          title: deriveSessionTitleFromText(displayText || runText || rawText),
+          optimistic: false,
+          clientRequestId,
+        })
+      }
+      const userMessage = {
+        id: `user-${clientRequestId}`,
+        role: 'user',
+        content: displayText || rawText,
+        timestamp: Date.now(),
+        clientRequestId,
+      }
+      if (!memorySession.messages.some(m => m.id === userMessage.id)) {
+        memorySession.messages.push(userMessage)
+      }
+      memorySession.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: memoryCommandReply,
+        timestamp: Date.now(),
+        clientRequestId,
+      })
+      updateSessionTitleFromFirstUser(memorySession)
+      memorySession.updatedAt = Date.now()
+      memorySession.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return Promise.resolve({ status: 'success', reason: 'memory-command' })
+    }
     if (isHermesTaskStatusQuestion(rawText)) {
       let statusSession = activeSession()
       if (!statusSession) {
@@ -2057,8 +2097,10 @@ function createStore() {
       const imageContextTaskInstruction = imageIntent === 'image_context_task'
         ? '用户上传了图片，但后续文字是主要任务指令。除非文字明确要求看图、识别图、图生图，否则不要默认分析图片；应按文字要求调用工具并执行。图片仅作为上下文参考。'
         : ''
+      const memoryContextInstruction = buildHermesMemoryContext(runText)
       const runInstructions = withHermesReplyStyleInstruction([
         opts.instructions,
+        memoryContextInstruction,
         imageContextTaskInstruction,
       ].filter(Boolean).join('\n\n'))
 
