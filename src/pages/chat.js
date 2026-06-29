@@ -25,6 +25,7 @@ import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDel
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
+import { buildOpenClawEcommerceVisibleReply } from '../engines/openclaw/lib/openclaw-ecommerce-assist.js'
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
@@ -122,7 +123,7 @@ let _voiceBtn = null, _voiceInputController = null, _voicePlaybackController = n
 let _modelVoiceConfig = null
 let _voicePlaybackKey = null
 let _voiceRate = Number(localStorage.getItem('superclaw-hermes-voice-rate') || '1') || 1
-let _currentAiBubble = null, _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentRunId = null
+let _currentAiBubble = null, _currentAiBubbleRequestId = '', _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
 let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _lastHistoryHash = ''
 let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false
@@ -2948,6 +2949,33 @@ function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequest
   })
 }
 
+function appendOpenClawLocalEcommerceAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
+  const reply = buildOpenClawEcommerceVisibleReply(text)
+  if (!reply) return false
+  const now = Date.now()
+  appendUserMessage(text, attachments)
+  saveMessage({
+    id: `openclaw-user-${clientRequestId}`,
+    sessionKey: _sessionKey,
+    role: 'user',
+    content: text,
+    timestamp: now,
+    attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined,
+  })
+  appendAiMessage(reply, now + 1, [], [], [], [], [], [], [], {
+    dedupeKey: `openclaw-ecommerce-${clientRequestId}`,
+    sessionKey: _sessionKey,
+  })
+  saveMessage({
+    id: `openclaw-local-ecommerce-${clientRequestId}`,
+    sessionKey: _sessionKey,
+    role: 'assistant',
+    content: reply,
+    timestamp: now + 1,
+  })
+  return true
+}
+
 function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
   appendUserMessage(text, attachments)
   appendSystemMessage([
@@ -3241,6 +3269,9 @@ async function sendMessage(event) {
     }
     appendHermesDelegationCapabilityAnswer(text, attachments)
     appendSystemMessage('请在 `/hermes` 或 `/delegate-hermes` 后写清楚要交给 Hermes 的任务内容。')
+    return
+  }
+  if (!attachments.length && appendOpenClawLocalEcommerceAnswer(text, attachments, clientRequestId)) {
     return
   }
   if (!attachments.length && isOpenClawIdentityQuestion(text)) {
@@ -3899,6 +3930,61 @@ function hasOpenClawVisibleAssistantNode(node) {
   return !!text
 }
 
+function hasOpenClawRenderableContent(input = {}) {
+  return !!(
+    String(input.visibleText || '').trim() ||
+    String(input.text || '').trim() ||
+    String(input.content || '').trim() ||
+    String(input.message || '').trim() ||
+    input.media?.length ||
+    input.attachments?.length ||
+    input.toolCards?.length ||
+    input.images?.length ||
+    input.videos?.length ||
+    input.audios?.length ||
+    input.files?.length ||
+    input.tools?.length ||
+    input.screenshotCards?.length ||
+    input.confirmations?.length ||
+    input.confirmationCard ||
+    input.confirmation
+  )
+}
+
+function removeOpenClawEmptyBubble(bubble) {
+  if (!bubble) return false
+  const row = bubble.closest?.('.msg') || bubble.closest?.('.message-row') || bubble.closest?.('.message') || bubble.closest?.('.assistant-message') || bubble
+  if (!row || hasOpenClawVisibleAssistantNode(row)) return false
+  row.remove()
+  return true
+}
+
+function removeCurrentOpenClawStreamBubbleIfEmpty() {
+  if (!removeOpenClawEmptyBubble(_currentAiBubble)) return false
+  _currentAiBubble = null
+  _currentAiBubbleRequestId = ''
+  _lastRenderedAiText = ''
+  return true
+}
+
+function getOpenClawStableStreamId(event = {}, fallback = '') {
+  return String(
+    event.clientRequestId ||
+    event.requestId ||
+    event.idempotencyKey ||
+    fallback ||
+    event.runId ||
+    event.id ||
+    event.messageId ||
+    event.message?.id ||
+    ''
+  )
+}
+
+function isOpenClawStreamIdMismatch(stableStreamId = '') {
+  return !!(_currentAiBubbleRequestId && stableStreamId && _currentAiBubbleRequestId !== stableStreamId)
+}
+
 function hasOpenClawAssistantVisibleContentForRequest(requestId = null) {
   if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
   if (hasOpenClawVisibleAssistantNode(_currentAiBubble?.closest?.('.msg') || _currentAiBubble)) return true
@@ -3933,6 +4019,7 @@ function clearOpenClawGenerationState(reason = 'completed', requestId = null) {
   if (requestId) _inFlightRequestIds.delete(requestId)
   _activeClientRequestId = null
   _currentRunId = null
+  _currentAiBubbleRequestId = ''
   _sendTimestamp = 0
   clearOpenClawGenerationNotice()
   hideOpenClawGenerationActions()
@@ -4169,21 +4256,43 @@ function handleChatEvent(payload, eventId = '') {
     markGenerationProgress()
     _cancelResponseWatchdog()
     const c = extractChatContent(payload.message)
+    const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
+    if (isOpenClawStreamIdMismatch(stableStreamId)) return
     if (c?.images?.length) _currentAiImages = c.images
     if (c?.videos?.length) _currentAiVideos = c.videos
     if (c?.audios?.length) _currentAiAudios = c.audios
     if (c?.files?.length) _currentAiFiles = c.files
     if (c?.tools?.length) _currentAiTools = c.tools
-    if (c?.text && c.text.length > _currentAiText.length) {
+    const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || '')
+    if (!hasOpenClawRenderableContent({ visibleText: visibleDeltaText })) {
+      removeCurrentOpenClawStreamBubbleIfEmpty()
+      return
+    }
+    if (visibleDeltaText.length > _currentAiText.length) {
       showTyping(false)
       if (!_currentAiBubble) {
-        _currentAiBubble = createStreamBubble()
+        _currentAiBubble = createStreamBubble({
+          clientRequestId: stableStreamId,
+          requestId: stableStreamId,
+          dedupeKey: getOpenClawMessageDedupeKey({
+            role: 'assistant',
+            state,
+            runId,
+            sessionKey: payload.sessionKey || _sessionKey,
+            requestId: payload.requestId,
+            clientRequestId: payload.clientRequestId,
+            idempotencyKey: payload.idempotencyKey || terminalRequestId,
+          }),
+          sessionKey: _sessionKey,
+        })
+        if (!_currentAiBubble) return
+        _currentAiBubbleRequestId = stableStreamId
         _currentRunId = payload.runId
         _isStreaming = true
         _streamStartTime = Date.now()
         updateSendState()
       }
-      _currentAiText = sanitizeOpenClawVisibleReply(c.text)
+      _currentAiText = visibleDeltaText
       throttledRender()
     }
     return
@@ -4194,6 +4303,8 @@ function handleChatEvent(payload, eventId = '') {
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
+    const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
+    if (isOpenClawStreamIdMismatch(stableStreamId)) return
     const rawFinalText = c?.text || ''
     if (rawFinalText) {
       _currentAiText = sanitizeOpenClawVisibleReply(rawFinalText)
@@ -4220,7 +4331,17 @@ function handleChatEvent(payload, eventId = '') {
     if (!finalText && !_currentAiText && finalTools.length) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
     }
-    const hasContent = finalText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length || finalScreenshotCards.length || finalConfirmations.length
+    const visibleFinalText = _currentAiText || finalText
+    const hasContent = hasOpenClawRenderableContent({
+      text: visibleFinalText,
+      images: _currentAiImages,
+      videos: _currentAiVideos,
+      audios: _currentAiAudios,
+      files: _currentAiFiles,
+      tools: finalTools.length ? finalTools : _currentAiTools,
+      screenshotCards: finalScreenshotCards,
+      confirmations: finalConfirmations,
+    })
     const assistantFingerprint = getAssistantFinalFingerprint(payload, finalText || _currentAiText, finalTools.length ? finalTools : _currentAiTools)
     const assistantDedupeKey = getOpenClawMessageDedupeKey({
       id: payload.message?.id,
@@ -4251,6 +4372,12 @@ function handleChatEvent(payload, eventId = '') {
       return
     }
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
+    if (_currentAiBubble && !hasContent && removeCurrentOpenClawStreamBubbleIfEmpty()) {
+      clearOpenClawGenerationState('empty-final', terminalRequestId)
+      resetStreamState()
+      processMessageQueue()
+      return
+    }
     if (!_currentAiBubble && !hasContent) {
       clearOpenClawGenerationState('empty-final', terminalRequestId)
       return
@@ -4266,9 +4393,22 @@ function handleChatEvent(payload, eventId = '') {
     showTyping(false)
     // 如果流式阶段没有创建 bubble，从 final message 中提取
     if (!_currentAiBubble && hasContent) {
-      _currentAiBubble = createStreamBubble({ dedupeKey: assistantDedupeKey, sessionKey: _sessionKey })
+      _currentAiBubble = createStreamBubble({
+        clientRequestId: stableStreamId,
+        requestId: stableStreamId,
+        dedupeKey: assistantDedupeKey,
+        sessionKey: _sessionKey,
+      })
+      if (!_currentAiBubble) {
+        clearOpenClawGenerationState('duplicate-final-bubble', terminalRequestId)
+        resetStreamState()
+        processMessageQueue()
+        return
+      }
+      _currentAiBubbleRequestId = stableStreamId
       _currentAiText = finalText || _currentAiText
     } else if (_currentAiBubble && assistantDedupeKey) {
+      if (!_currentAiBubbleRequestId) _currentAiBubbleRequestId = stableStreamId
       markRenderedOpenClawMessage(_currentAiBubble.closest('.msg'), _sessionKey, assistantDedupeKey)
     }
     if (_currentAiBubble) {
@@ -4595,16 +4735,19 @@ function createStreamBubble(meta = {}) {
   if (!_messagesEl || !_typingEl) return null
   const sessionKey = meta.sessionKey || _sessionKey || ''
   if (meta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, meta.dedupeKey)) return null
+  const requestId = String(meta.clientRequestId || meta.requestId || meta.idempotencyKey || meta.dedupeKey || '')
   showTyping(false)
   _lastRenderedAiText = ''
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-ai sc-msg-row assistant'
+  if (requestId) wrap.dataset.requestId = requestId
   markRenderedOpenClawMessage(wrap, sessionKey, meta.dedupeKey)
   const group = document.createElement('div')
   group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
   bubble.dataset.compactKey = meta.dedupeKey || ''
+  if (requestId) bubble.dataset.requestId = requestId
   bubble.innerHTML = '<span class="stream-cursor"></span>'
   group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
@@ -4628,16 +4771,20 @@ function createOpenClawRoleLine(role = 'assistant') {
 
 function renderCompactAssistantContent(rawText, container) {
   if (!container) return
+  const visibleText = sanitizeOpenClawVisibleReply(rawText || '')
   const existingToolCard = container.closest?.('.msg-bubble')?.querySelector('.openclaw-tool-result-card')
-  if (shouldRenderOpenClawToolResultCard([], rawText)) {
+  const shouldRenderToolCard = shouldRenderOpenClawToolResultCard([], rawText)
+  if (!shouldRenderToolCard && !hasOpenClawRenderableContent({ visibleText })) return
+  if (shouldRenderToolCard) {
     container.innerHTML = ''
     if (!existingToolCard) renderOpenClawToolResultCard(container, [], rawText)
     return
   }
-  const compact = compactChatMessage(rawText)
+  const compact = compactChatMessage(visibleText)
   const compactKey = container.dataset.compactKey || ''
   const canToggle = !!compact.collapsed
   const manualCollapsed = canToggle && isOpenClawManualCompactCollapsed(compactKey)
+  if (!compact.preview && !compact.content) return
   container.innerHTML = ''
 
   const wrapper = document.createElement('div')
@@ -4813,6 +4960,7 @@ function resetStreamState() {
   _lastRenderTime = 0
   _lastRenderedAiText = ''
   _currentAiBubble = null
+  _currentAiBubbleRequestId = ''
   _currentAiText = ''
   _currentAiImages = []
   _currentAiVideos = []
@@ -4867,6 +5015,7 @@ function snapshotCurrentChatState(reason = '') {
     currentAiFiles: [...(_currentAiFiles || [])],
     currentAiTools: [...(_currentAiTools || [])],
     currentRunId: _currentRunId,
+    currentAiBubbleRequestId: _currentAiBubbleRequestId,
     isStreaming: _isStreaming,
     isSending: _isSending,
     messageQueue: [...(_messageQueue || [])],
@@ -4897,6 +5046,7 @@ function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
   _currentAiFiles = [...(snapshot.currentAiFiles || [])]
   _currentAiTools = [...(snapshot.currentAiTools || [])]
   _currentRunId = snapshot.currentRunId || null
+  _currentAiBubbleRequestId = snapshot.currentAiBubbleRequestId || ''
   _isStreaming = !!snapshot.isStreaming
   _isSending = !!snapshot.isSending
   _messageQueue = [...(snapshot.messageQueue || [])]
@@ -5528,6 +5678,7 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
 function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
   text = sanitizeOpenClawVisibleReply(text || '')
+  if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
   const wrap = document.createElement('div')

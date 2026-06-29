@@ -21,6 +21,10 @@ const requiredTerms = [
   'const summary = formatOpenClawToolResultForUser(info)',
   'const raw = info.safeRawText',
   'return formatOpenClawToolResultForUser(toolInfo)',
+  'hasOpenClawRenderableContent',
+  'removeCurrentOpenClawStreamBubbleIfEmpty',
+  'const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || \'\')',
+  'if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return',
 ]
 
 for (const term of requiredTerms) {
