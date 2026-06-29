@@ -150,6 +150,7 @@ export default {
       // Hermes 专属页面（/h/ 前缀）
       { path: '/h/setup', loader: () => import('./pages/setup.js') },
       { path: '/h/dashboard', loader: () => import('./pages/dashboard.js') },
+      { path: '/h/terminal', loader: () => import('./pages/terminal.js') },
       { path: '/h/chat', loader: () => import('./pages/chat.js') },
       { path: '/h/bridge', loader: () => import('./pages/bridge.js') },
       { path: '/h/claude-code', loader: () => import('./pages/claude-code.js') },

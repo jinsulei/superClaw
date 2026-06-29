@@ -32,7 +32,7 @@ function notifyUser(notify, message, type) {
 export function openHermesTerminalLauncher({
   info,
   health,
-  route = null,
+  route = '/h/terminal',
   navigate,
   notify,
 } = {}) {

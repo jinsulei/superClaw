@@ -3,15 +3,25 @@ import fs from 'node:fs'
 
 const dashboardPath = 'src/engines/hermes/pages/dashboard.js'
 const launcherPath = 'src/engines/hermes/lib/hermes-terminal-launcher.js'
+const indexPath = 'src/engines/hermes/index.js'
+const terminalPagePath = 'src/engines/hermes/pages/terminal.js'
 
 const dashboard = fs.readFileSync(dashboardPath, 'utf8')
 const launcher = fs.readFileSync(launcherPath, 'utf8')
+const index = fs.readFileSync(indexPath, 'utf8')
+const terminalPage = fs.readFileSync(terminalPagePath, 'utf8')
 
 assert.match(dashboard, /hm-dash-terminal-chat/, 'Hermes dashboard must keep the terminal entry')
 assert.match(dashboard, /openHermesTerminalLauncher/, 'Hermes terminal entry must call the launcher')
 assert.match(launcher, /HERMES_TERMINAL_GATEWAY_NOT_READY_MESSAGE/, 'launcher must guard gateway-not-ready')
 assert.match(launcher, /HERMES_TERMINAL_UNAVAILABLE_MESSAGE/, 'launcher must report unavailable terminal runtime')
 assert.match(launcher, /isHermesGatewayReadyForTerminal/, 'launcher must expose a gateway readiness guard')
+assert.match(launcher, /route = '\/h\/terminal'/, 'launcher must default to the safe Hermes terminal route')
+assert.match(index, /path: '\/h\/terminal'/, 'Hermes routes must register /h/terminal')
+assert.match(index, /pages\/terminal\.js/, 'Hermes terminal route must load the safe terminal page')
+assert.match(terminalPage, /Hermes 终端对话暂未启用受控 session。/, 'terminal page must state controlled session is disabled')
+assert.match(terminalPage, /当前不会执行系统命令。/, 'terminal page must state it will not execute commands')
+assert.match(terminalPage, /只允许用户手动输入命令/, 'terminal page must require manual user input for future terminal support')
 
 const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,900}/)?.[0] || ''
 assert.ok(terminalHandler.includes('openHermesTerminalLauncher'), 'terminal click handler must not be empty')
@@ -31,6 +41,7 @@ const dangerousRuntimeMarkers = [
 
 for (const marker of dangerousRuntimeMarkers) {
   assert.ok(!launcher.includes(marker), `launcher must not start a native command runtime: ${marker}`)
+  assert.ok(!terminalPage.includes(marker), `terminal page must not start a native command runtime: ${marker}`)
 }
 
 const forbiddenConfigMarkers = [
