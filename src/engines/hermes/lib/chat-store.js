@@ -33,9 +33,17 @@ import {
   guardAgentIdentityReply,
 } from '../../../shared/agent-identity-guard.js'
 import {
+  detectHermesImageIntent,
+  completeHermesReplyIfNeeded,
   formatHermesToolSummaryForUser,
+  getHermesTaskStatusSummary,
   getHermesAssistantMessageId,
+  HERMES_IMAGE_CLARIFY_REPLY,
+  HERMES_IMAGE_TO_IMAGE_UNSUPPORTED_REPLY,
   HermesResponseAssembler,
+  isHermesDebugToolsVisible,
+  isHermesTaskStatusQuestion,
+  mapHermesErrorToUserMessage,
   normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
 } from './hermes-response-assembler.js'
 
@@ -532,6 +540,7 @@ function createStore() {
     runningClientRequestId: null,
     pendingAssistantId: null,  // id of the currently streaming assistant message
     error: null,
+    taskStatus: { status: 'idle', lastStep: '', summary: '', error: '', updatedAt: 0 },
     profiles: [],
     activeProfile: safeGet(STORAGE_PROFILE) || 'default',
     loadingProfiles: false,
@@ -619,6 +628,108 @@ function createStore() {
     return requestId ? (visibleUserPromptByRequestId.get(requestId) || '') : ''
   }
 
+  function taskSession() {
+    return state.sessions.find(x => x.id === state.runningSessionId)
+      || activeSession()
+      || null
+  }
+
+  function rememberHermesTaskStatus(session, patch = {}) {
+    if (!session) return null
+    const next = {
+      ...(session.hermesTaskStatus || {}),
+      ...patch,
+      updatedAt: Date.now(),
+    }
+    session.hermesTaskStatus = next
+    state.taskStatus = next
+    return next
+  }
+
+  function currentHermesTaskStatus() {
+    const s = activeSession()
+    if (state.streaming) {
+      const last = [...(state.liveTools || [])].reverse().find(Boolean)
+      return {
+        status: 'running',
+        lastStep: last?.preview || last?.name || '正在处理当前任务',
+        summary: '',
+        error: '',
+      }
+    }
+    return s?.hermesTaskStatus || state.taskStatus || null
+  }
+
+  function recordHermesToolProgress(evtType, toolName, preview, evt = {}) {
+    const s = taskSession()
+    if (!s) return
+    const name = toolName || 'tool'
+    if (evtType === 'tool.started') {
+      rememberHermesTaskStatus(s, {
+        status: 'running',
+        lastStep: `${name}${preview ? `：${preview}` : ' 正在执行'}`,
+        error: '',
+      })
+      return
+    }
+    if (evtType === 'tool.completed') {
+      const failed = Boolean(evt.error)
+      rememberHermesTaskStatus(s, {
+        status: failed ? 'failed' : 'running',
+        lastStep: failed ? `${name} 执行失败` : `${name} 已完成，正在整理结果`,
+        summary: failed ? '' : (preview || `${name} 已完成`),
+        error: failed ? (typeof evt.error === 'string' ? evt.error : stringifyMaybe(evt.error)) : '',
+      })
+      return
+    }
+    if (evtType === 'tool.error') {
+      rememberHermesTaskStatus(s, {
+        status: 'failed',
+        lastStep: `${name} 执行失败`,
+        error: stringifyMaybe(evt.error || preview || '工具执行失败'),
+      })
+      return
+    }
+    if (evtType === 'tool.progress' && preview) {
+      rememberHermesTaskStatus(s, {
+        status: 'running',
+        lastStep: `${name}：${preview}`,
+      })
+    }
+  }
+
+  function buildHermesTaskStatusReply(userText = '') {
+    const s = activeSession()
+    return sanitizeHermesVisibleReply(getHermesTaskStatusSummary({
+      activeTask: currentHermesTaskStatus(),
+      toolEvents: state.liveTools.length ? state.liveTools : (s?.toolEvents || []),
+      failedTasks: s?.failedTasks || [],
+    }), userText)
+  }
+
+  function finalizeHermesRequestState({
+    status = 'success',
+    reason = '',
+    clientRequestId = null,
+    error = null,
+    summary = '',
+  } = {}) {
+    if (clientRequestId && state.runningClientRequestId && clientRequestId !== state.runningClientRequestId) {
+      return null
+    }
+    const s = taskSession()
+    if (s) {
+      rememberHermesTaskStatus(s, {
+        status,
+        reason,
+        summary,
+        error: error ? mapHermesErrorToUserMessage(error) : '',
+      })
+    }
+    cleanupAfterRun({ status, reason, error, summary })
+    return { status, reason, error }
+  }
+
   function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
     const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
     const normalized = normalizeHermesVisibleReplyText(visible, {
@@ -626,10 +737,14 @@ function createStore() {
       userText: prompt,
       toolEvents: state.liveTools,
     })
-    return guardAgentIdentityReply({
+    const guarded = guardAgentIdentityReply({
       agentName: 'hermes',
       userText: prompt,
       assistantText: normalized,
+    })
+    return completeHermesReplyIfNeeded(guarded, {
+      userText: prompt,
+      toolEvents: state.liveTools,
     })
   }
 
@@ -1362,6 +1477,7 @@ function createStore() {
         const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
         if (t && preview) t.preview = preview
       }
+      recordHermesToolProgress(evtType, toolName, preview, evt)
       notify()
     })
     const u3 = await tauriListen('hermes-run-done', (e) => {
@@ -1381,7 +1497,7 @@ function createStore() {
       const runTools = dedupeToolEvents([...state.liveTools])
 
       // Commit finished tool calls as messages in the transcript.
-      if (runTools.length) {
+      if (runTools.length && isHermesDebugToolsVisible()) {
         for (const t of runTools) {
           s.messages.push({
             id: uid(),
@@ -1406,7 +1522,18 @@ function createStore() {
         if (shouldPreferFinalOutput(msg.content, accepted.output || payload.output || '')) msg.content = accepted.output || payload.output || ''
         msg.content = sanitizeHermesVisibleReply(msg.content)
         if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
+        msg.content = completeHermesReplyIfNeeded(msg.content, {
+          userText: currentVisibleUserPrompt(),
+          toolEvents: runTools,
+          toolResult: runTools.length > 0,
+        })
       }
+      rememberHermesTaskStatus(s, {
+        status: 'success',
+        lastStep: '任务已完成',
+        summary: msg?.content || summarizeToolOnlyReply(runTools) || '任务已完成。',
+        error: '',
+      })
 
       // Update session metadata.
       s.updatedAt = Date.now()
@@ -1415,7 +1542,7 @@ function createStore() {
 
       persistSessionMessages(s.id)
       persistSessions()
-      cleanupAfterRun()
+      cleanupAfterRun({ status: 'success', reason: 'run-completed' })
     })
     const u4 = await tauriListen('hermes-run-error', (e) => {
       const payload = e?.payload || {}
@@ -1424,15 +1551,17 @@ function createStore() {
       adoptEventSession(payload)
       const s = runSession()
       if (s) {
-        s.messages.push({
-          id: uid(),
-          role: 'system',
-          content: `Agent 运行失败：${err}`,
-          timestamp: Date.now(),
+        const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+        delete msg.isStreaming
+        msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err), currentVisibleUserPrompt())
+        rememberHermesTaskStatus(s, {
+          status: 'failed',
+          lastStep: '任务失败',
+          error: mapHermesErrorToUserMessage(err),
         })
         persistSessionMessages(s.id)
       }
-      cleanupAfterRun()
+      cleanupAfterRun({ status: 'failed', reason: 'run-error', error: err })
     })
     unlisteners.push(u0, u1, u2, u3, u4)
   }
@@ -1506,6 +1635,7 @@ function createStore() {
       const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
       if (t && preview) t.preview = preview
     }
+    recordHermesToolProgress(evtType, toolName, preview, evt)
     notify()
   }
 
@@ -1513,7 +1643,7 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) { cleanupAfterRun(); return }
       const runTools = dedupeToolEvents([...state.liveTools])
-    if (runTools.length) {
+    if (runTools.length && isHermesDebugToolsVisible()) {
       for (const t of runTools) {
         s.messages.push({
           id: uid(),
@@ -1537,13 +1667,24 @@ function createStore() {
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
       msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
+      msg.content = completeHermesReplyIfNeeded(msg.content, {
+        userText: currentVisibleUserPrompt(),
+        toolEvents: runTools,
+        toolResult: runTools.length > 0,
+      })
     }
+    rememberHermesTaskStatus(s, {
+      status: 'success',
+      lastStep: '任务已完成',
+      summary: msg?.content || summarizeToolOnlyReply(runTools) || '任务已完成。',
+      error: '',
+    })
     s.updatedAt = Date.now()
     s.lastActiveAt = Date.now()
     updateSessionTitleFromFirstUser(s)
     persistSessionMessages(s.id)
     persistSessions()
-    cleanupAfterRun()
+    cleanupAfterRun({ status: 'success', reason: 'run-completed' })
   }
 
   function replaceStreamOutput(runSessionId, output = '') {
@@ -1559,15 +1700,17 @@ function createStore() {
   function failStreamRun(runSessionId, err) {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (s) {
-      s.messages.push({
-        id: uid(),
-        role: 'system',
-        content: `Agent 运行失败：${err || 'unknown error'}`,
-        timestamp: Date.now(),
+      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+      delete msg.isStreaming
+      msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err || 'unknown error'), currentVisibleUserPrompt())
+      rememberHermesTaskStatus(s, {
+        status: 'failed',
+        lastStep: '任务失败',
+        error: mapHermesErrorToUserMessage(err || 'unknown error'),
       })
       persistSessionMessages(s.id)
     }
-    cleanupAfterRun()
+    cleanupAfterRun({ status: 'failed', reason: 'run-failed', error: err })
   }
 
   function shouldAcceptStreamEvent(runSessionId) {
@@ -1606,8 +1749,17 @@ function createStore() {
     }
   }
 
-  function cleanupAfterRun() {
+  function cleanupAfterRun(meta = {}) {
     const completedSessionId = state.runningSessionId
+    const s = completedSessionId ? state.sessions.find(x => x.id === completedSessionId) : null
+    if (s && meta.status && meta.status !== 'success') {
+      rememberHermesTaskStatus(s, {
+        status: meta.status,
+        reason: meta.reason || '',
+        error: meta.error ? mapHermesErrorToUserMessage(meta.error) : '',
+        summary: meta.summary || '',
+      })
+    }
     if (completedSessionId) forceRemoteRefreshIds.add(completedSessionId)
     state.streaming = false
     state.runningSessionId = null
@@ -1635,8 +1787,7 @@ function createStore() {
    * The backend `hermes_agent_run` command doesn't expose a server-side
    * cancel (SSE loop runs to completion), so we:
    *   1. Detach local event listeners — any remaining deltas are ignored.
-   *   2. Convert the in-flight assistant message to its current content +
-   *      an explicit " (stopped)" suffix.
+   *   2. Keep current visible content or write a short cancelled note.
    *   3. Flip `streaming` off so the UI switches the Stop button back to
    *      Send.
    *
@@ -1656,11 +1807,11 @@ function createStore() {
       if (msg) {
         delete msg.isStreaming
         msg.content = stripInternalStatusText(msg.content)
-        if (!msg.content.trim()) msg.content = '已停止本轮回复。'
+        if (!msg.content.trim()) msg.content = '本轮已取消。需要的话，你可以重新发送。'
       }
       // Commit any finished tool calls we already know about so they aren't
       // lost when we detach listeners.
-      for (const t of dedupeToolEvents(state.liveTools)) {
+      for (const t of isHermesDebugToolsVisible() ? dedupeToolEvents(state.liveTools) : []) {
         if (t.status === 'done' || t.status === 'error') {
           s.messages.push({
             id: uid(),
@@ -1679,7 +1830,7 @@ function createStore() {
       persistSessionMessages(s.id)
       persistSessions()
     }
-    cleanupAfterRun()
+    cleanupAfterRun({ status: 'cancelled', reason: 'user-stop' })
   }
 
   function updateSessionTitleFromFirstUser(s) {
@@ -1770,13 +1921,51 @@ function createStore() {
 
   async function sendMessage(content, opts = {}) {
     const attachments = normalizeAttachments(opts.attachments || [])
-    const text = (content || '').trim() || (attachments.length ? '请分析我刚刚上传或粘贴的图片。' : '')
+    const rawText = (content || '').trim()
+    const imageIntent = detectHermesImageIntent({ text: rawText, attachments })
+    const text = rawText || (attachments.length && imageIntent === 'image_understanding' ? '请分析我刚刚上传或粘贴的图片。' : '')
     const runText = (opts.modelContent || text).trim()
     const displayText = (opts.displayContent || text).trim()
     if (!runText && !attachments.length) return
     const clientRequestId = String(opts.clientRequestId || uid())
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
+    }
+    if (isHermesTaskStatusQuestion(rawText)) {
+      let statusSession = activeSession()
+      if (!statusSession) {
+        statusSession = createLocalSession({
+          title: deriveSessionTitleFromText(displayText || runText || rawText),
+          optimistic: false,
+          clientRequestId,
+        })
+      }
+      const userMessage = {
+        id: `user-${clientRequestId}`,
+        role: 'user',
+        content: displayText || rawText,
+        timestamp: Date.now(),
+        clientRequestId,
+      }
+      if (!statusSession.messages.some(m => m.id === userMessage.id)) {
+        statusSession.messages.push(userMessage)
+      }
+      const reply = buildHermesTaskStatusReply(displayText || rawText)
+      statusSession.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: reply,
+        timestamp: Date.now(),
+        clientRequestId,
+      })
+      updateSessionTitleFromFirstUser(statusSession)
+      statusSession.updatedAt = Date.now()
+      statusSession.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return Promise.resolve({ status: 'success', reason: 'status-report' })
     }
     if (state.streaming) {
       if (streamAbortController) {
@@ -1823,6 +2012,28 @@ function createStore() {
       s.messages.push(userMessage)
       userMessageByRequestId.set(clientRequestId, userMessage.id)
     }
+    const imageIntentReply = imageIntent === 'ask_clarify'
+      ? HERMES_IMAGE_CLARIFY_REPLY
+      : imageIntent === 'image_to_image'
+        ? HERMES_IMAGE_TO_IMAGE_UNSUPPORTED_REPLY
+        : ''
+    if (imageIntentReply) {
+      s.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: imageIntentReply,
+        timestamp: Date.now(),
+        clientRequestId,
+      })
+      updateSessionTitleFromFirstUser(s)
+      s.updatedAt = Date.now()
+      s.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return
+    }
     const assistantMessage = ensureAssistantMessage(s, clientRequestId)
     updateSessionTitleFromFirstUser(s)
     s.updatedAt = Date.now()
@@ -1843,7 +2054,13 @@ function createStore() {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? opts.conversationHistory
         : (forceEmptyHistory ? [] : buildDefaultConversationHistory(s, userMessage.id))
-      const runInstructions = withHermesReplyStyleInstruction(opts.instructions)
+      const imageContextTaskInstruction = imageIntent === 'image_context_task'
+        ? '用户上传了图片，但后续文字是主要任务指令。除非文字明确要求看图、识别图、图生图，否则不要默认分析图片；应按文字要求调用工具并执行。图片仅作为上下文参考。'
+        : ''
+      const runInstructions = withHermesReplyStyleInstruction([
+        opts.instructions,
+        imageContextTaskInstruction,
+      ].filter(Boolean).join('\n\n'))
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id, clientRequestId)
@@ -1863,6 +2080,18 @@ function createStore() {
     } catch (e) {
       if (e?.name === 'AbortError') return
       userMessage.status = 'error'
+      const friendlyError = mapHermesErrorToUserMessage(e?.message || e)
+      assistantMessage.error = friendlyError
+      delete assistantMessage.isStreaming
+      if (!assistantMessage.content.trim()) assistantMessage.content = sanitizeHermesVisibleReply(friendlyError, displayText || runText)
+      rememberHermesTaskStatus(s, {
+        status: 'failed',
+        lastStep: '任务失败',
+        error: friendlyError,
+      })
+      persistSessionMessages(s.id)
+      cleanupAfterRun({ status: 'failed', reason: 'send-error', error: e })
+      throw e
       assistantMessage.error = e?.message || String(e)
       delete assistantMessage.isStreaming
       if (!assistantMessage.content.trim()) assistantMessage.content = `Agent 运行失败：${e?.message || e}`

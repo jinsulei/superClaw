@@ -79,11 +79,12 @@ const summary = formatHermesToolSummaryForUser({
   userText: '\u68c0\u67e5\u8fdb\u7a0b',
   toolEvents: [{ name: 'exec', status: 'done', result: '{"pid":123}' }],
 })
-assert.match(summary, /\u5de5\u5177\u7ed3\u679c/)
+assert.match(summary, /\u68c0\u67e5\u5df2\u5b8c\u6210|\u4efb\u52a1\u5df2\u5b8c\u6210/)
+assert.doesNotMatch(summary, /exec|execute_code|search_files|read_file|\u5de5\u5177\u7ed3\u679c|\u5de5\u5177\u8c03\u7528/)
 assert.doesNotMatch(summary, /\{"pid"/)
 
 const split = splitHermesVisibleAndDetails('\u53ef\u89c1\u6b63\u6587', [{ name: 'exec', result: 'ok' }])
 assert.equal(split.visible, '\u53ef\u89c1\u6b63\u6587')
-assert.equal(split.details.length, 1)
+assert.equal(split.details.length, 0)
 
 console.log('PASS smoke-hermes-render-no-double')

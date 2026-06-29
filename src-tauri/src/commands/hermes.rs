@@ -4793,6 +4793,14 @@ fn json_string_field(value: &Value, keys: &[&str]) -> String {
     String::new()
 }
 
+fn normalize_image_detail(detail: Option<String>) -> Option<String> {
+    let value = detail.unwrap_or_default().trim().to_ascii_lowercase();
+    match value.as_str() {
+        "low" | "high" => Some(value),
+        _ => None,
+    }
+}
+
 fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
     let text = input.trim();
     let mut parts: Vec<Value> = Vec::new();
@@ -4832,9 +4840,17 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
             {
                 continue;
             }
+            let mut image_url = serde_json::Map::new();
+            image_url.insert("url".to_string(), Value::String(url));
+            if let Some(detail) = normalize_image_detail(Some(json_string_field(
+                item,
+                &["detail", "imageDetail"],
+            ))) {
+                image_url.insert("detail".to_string(), Value::String(detail));
+            }
             parts.push(serde_json::json!({
                 "type": "image_url",
-                "image_url": { "url": url, "detail": "auto" }
+                "image_url": Value::Object(image_url)
             }));
         }
     }

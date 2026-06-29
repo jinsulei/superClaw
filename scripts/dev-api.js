@@ -13226,6 +13226,12 @@ function _readHermesApiServerKey() {
   }
 }
 
+function _normalizeHermesImageDetail(detail) {
+  const value = String(detail || '').toLowerCase().trim()
+  if (value === 'low' || value === 'high') return value
+  return undefined
+}
+
 function _buildHermesRunInput(input, attachments = []) {
   const text = String(input || '').trim()
   const parts = []
@@ -13243,7 +13249,10 @@ function _buildHermesRunInput(input, attachments = []) {
     }
     const lower = url.toLowerCase()
     if (!lower.startsWith('data:image/') && !lower.startsWith('http://') && !lower.startsWith('https://')) continue
-    parts.push({ type: 'image_url', image_url: { url, detail: 'auto' } })
+    const imageUrl = { url }
+    const detail = _normalizeHermesImageDetail(item?.detail || item?.imageDetail || item?.image_url?.detail)
+    if (detail) imageUrl.detail = detail
+    parts.push({ type: 'image_url', image_url: imageUrl })
   }
 
   const hasImage = parts.some(part => part.type === 'image_url')

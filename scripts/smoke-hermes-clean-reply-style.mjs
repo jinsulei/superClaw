@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  enforceHermesReplyLength,
   formatHermesToolSummaryForUser,
   normalizeHermesVisibleReply,
 } from '../src/engines/hermes/lib/hermes-response-assembler.js'
@@ -38,9 +39,29 @@ const ordinary = normalizeHermesVisibleReply(
 )
 
 assert.equal(ordinary, '\u53ef\u4ee5\u5904\u7406\u3002')
-assert.ok(ordinary.length <= 180, 'ordinary reply stays short')
+assert.ok(ordinary.length <= 420, 'ordinary reply stays concise')
 assert.doesNotMatch(ordinary, longTemplateTerms)
 assert.doesNotMatch(ordinary, badMarkdown)
+
+const ordinaryFull = normalizeHermesVisibleReply(
+  [
+    'requestId 是一次请求的唯一编号。',
+    '它用来把用户消息、助手回复和工具结果绑定到同一轮，避免串到别的问题里。',
+    '排查重复回复或串稿时，可以先看同一轮里的 requestId 是否一致。',
+  ].join('\n'),
+  { userText: '解释一下 requestId 是什么' },
+)
+
+const ordinaryFullLineCount = ordinaryFull.split(/\n+/).filter(Boolean).length
+assert.ok(
+  ordinaryFullLineCount >= 1 && ordinaryFullLineCount <= 5,
+  'ordinary explanation stays within the short reply line budget',
+)
+assert.match(ordinaryFull, /requestId/)
+assert.match(ordinaryFull, /工具结果/)
+
+const brief = enforceHermesReplyLength('OK', '只回复 OK')
+assert.equal(brief, 'OK')
 
 const detailed = normalizeHermesVisibleReply(
   [
@@ -65,9 +86,9 @@ const toolSummary = formatHermesToolSummaryForUser({
   ],
 })
 
-assert.match(toolSummary, /\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210/)
-assert.match(toolSummary, /\u5de5\u5177\u7ed3\u679c/)
+assert.match(toolSummary, /\u68c0\u67e5\u5df2\u5b8c\u6210|\u4efb\u52a1\u5df2\u5b8c\u6210/)
 assert.doesNotMatch(toolSummary, internalStatus)
+assert.doesNotMatch(toolSummary, /exec|execute_code|search_files|read_file|\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210|\u5de5\u5177\u7ed3\u679c/)
 assert.doesNotMatch(toolSummary, /\|.+\|/)
 assert.ok(toolSummary.length <= 160, 'tool summary stays concise')
 

@@ -223,6 +223,47 @@ const HERMES_SHORT_IDENTITY_REPLY = [
 
 const HERMES_VERBOSE_TEMPLATE_PATTERN = /(?:\u5e95\u5c42\u6a21\u578b|\u8fd0\u884c\u4f4d\u7f6e|\u8c03\u5ea6\u4e0e\u59d4\u6d3e|\u8bb0\u5fc6\u4e0e\u6280\u80fd|\u5de5\u4f5c\u539f\u5219|\u80fd\u529b\u8fb9\u754c|\u5de5\u5177\u94fe|\u5de5\u4f5c\u6d41\u7a0b)/i
 const HERMES_INTERNAL_STATUS_PATTERN = /(?:HEARTBEAT_OK|_\((?:stopped|running|done)\)_|tool\s+tool|\u7ed3\u679c\u5df2\u540c\u6b65\u5230|\u4e0b\u65b9\u8be6\u60c5|toolCallId|tool_call_id|raw json|tool args)/i
+export const HERMES_IMAGE_CLARIFY_REPLY = '我已收到图片。你想让我做什么？例如：看图说明、提取文字、检查问题，或按图执行任务。'
+export const HERMES_IMAGE_TO_IMAGE_UNSUPPORTED_REPLY = '当前模型暂不支持基于上传图片生成新图，你可以改为让我分析这张图，或切换支持图生图的模型。'
+
+export function normalizeHermesImageDetail(detail, provider = '') {
+  const value = String(detail || '').toLowerCase().trim()
+  if (!value || value === 'auto') return undefined
+  if (value === 'low' || value === 'high') return value
+  return undefined
+}
+
+export function buildHermesImageUrlPayload({ url, base64, mime, detail, provider } = {}) {
+  const imageUrl = String(url || '').trim()
+    || (base64 ? `data:${mime || 'image/png'};base64,${base64}` : '')
+  if (!imageUrl) return null
+  const normalizedDetail = normalizeHermesImageDetail(detail, provider)
+  const payload = { url: imageUrl }
+  if (normalizedDetail) payload.detail = normalizedDetail
+  return payload
+}
+
+export function detectHermesImageIntent({ text = '', attachments = [] } = {}) {
+  const hasImage = (Array.isArray(attachments) ? attachments : []).some((item) => {
+    const mime = String(item?.mimeType || item?.mediaType || item?.mime || '').toLowerCase()
+    const kind = String(item?.kind || item?.category || item?.type || '').toLowerCase()
+    return kind === 'image' || mime.startsWith('image/')
+  })
+  if (!hasImage) return 'no_image'
+
+  const s = String(text || '').trim()
+  if (!s) return 'ask_clarify'
+  if (/图生图|按这张图生成|照着这张图生成|基于这张图生成|换风格|风格转换|生成相似|生成新图|image-to-image|img2img/i.test(s)) {
+    return 'image_to_image'
+  }
+  if (/图片里有什么|图里有什么|截图里有什么|画面里|画面中|描述这张图|描述图片|看图说明|看看图片|看看这张图|看一下图片|分析图片内容|分析这张图|这张图.*问题|识别图片|提取图片文字|图片文字|OCR|问题在哪|哪里不对/i.test(s)) {
+    return 'image_understanding'
+  }
+  if (/按照|根据|继续|执行|运行|检查|排查|修复|修改|创建|删除|整理|打开|点击|查找|搜索|读取|写入|改代码|代码|文件|路径|项目|仓库|目录|报错|错误|页面|按钮|进程|gateway|配置|打包|上传|复制|清理|验证/i.test(s)) {
+    return 'image_context_task'
+  }
+  return 'image_context_task'
+}
 
 function cleanHermesMarkdownArtifacts(text) {
   return String(text || '')
@@ -244,8 +285,152 @@ function isHermesIdentityPrompt(text) {
   return /(\u4f60\u662f\u8c01|\u4ecb\u7ecd\u4e0b?\u81ea\u5df1|\u81ea\u6211\u4ecb\u7ecd|\u4f60\u662f\u4ec0\u4e48|\u4f60\u7684\u8eab\u4efd|who\s+are\s+you)/i.test(String(text || ''))
 }
 
+export function isBriefAllowedHermesQuestion(text) {
+  return /只回复|简短回答|一句话|不要解释|yes or no|OK/i.test(String(text || ''))
+}
+
+export function shouldHermesUseDetailedAnswer(text) {
+  return /详细|展开|步骤|完整|方案|排查|原因|为什么|怎么修|如何解决|工作进展|汇报问题|检查结果|详细介绍|详细说|展开说|列出步骤|给我完整计划|工作流程|能力边界/i.test(String(text || ''))
+}
+
 function isHermesDetailedPrompt(text) {
-  return /(\u8be6\u7ec6\u4ecb\u7ecd|\u8be6\u7ec6\u8bf4|\u5c55\u5f00\u8bf4|\u5217\u51fa\u6b65\u9aa4|\u7ed9\u6211\u5b8c\u6574\u8ba1\u5212|\u5de5\u4f5c\u6d41\u7a0b|\u80fd\u529b\u8fb9\u754c)/i.test(String(text || ''))
+  return shouldHermesUseDetailedAnswer(text)
+}
+
+export function isHermesStructuredReplyIntent(userText = '', text = '') {
+  const prompt = String(userText || '')
+  const body = String(text || '')
+  return (
+    /skills?|技能|能力清单|你能做什么|可用工具|工具列表|工作进展|工作汇报|汇报问题|排查结果|检查结果|当前进程|有哪些能力|能力盘点|工具结果/i.test(prompt)
+    || /当前可用\s*Skills|已加载.*skills?|skill_view|devops\/|minimax-image-generation/i.test(body)
+  )
+}
+
+export function isHermesSkillsLikeReply(text = '') {
+  return /当前可用\s*Skills|已加载.*skills?|skill_view|devops\/|minimax-image-generation/i.test(String(text || ''))
+}
+
+export function shouldKeepHermesStructuredLength(userText = '', text = '') {
+  return isHermesStructuredReplyIntent(userText, text) || isHermesSkillsLikeReply(text)
+}
+
+function limitHermesStructuredLines(text, maxNonEmpty = 12) {
+  const kept = []
+  let nonEmpty = 0
+  for (const line of String(text || '').split('\n')) {
+    if (line.trim()) nonEmpty += 1
+    kept.push(line)
+    if (nonEmpty >= maxNonEmpty) break
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function stripHermesInternalVisibleNoise(text) {
+  return String(text || '')
+    .replace(/结果已同步到下方详情。?/g, '')
+    .replace(/工具已完成[，,]\s*结果已同步/g, '')
+    .replace(/\btool\s+tool\b/gi, '工具调用')
+    .replace(/HEARTBEAT_OK/g, '')
+    .replace(/\[TOOL_CALL\][^\n]*/gi, '')
+    .replace(/^\s*---+\s*$/gm, '')
+    .trim()
+}
+
+function formatHermesSkillsStructuredReply(rawText) {
+  const cleaned = String(rawText || '')
+    .replace(/^\s*#+\s*$/gm, '')
+    .replace(/^\s*(?:📌|⚠️|✅|💬)\s*$/gm, '')
+    .replace(/\s*(📦\s*[a-z0-9][a-z0-9._/@-]{2,}\s*(?:用途|说明|描述)\s*[:：])/gi, '\n$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  const entries = []
+  const entryPattern = /📦\s*([a-z0-9][a-z0-9._/@-]{2,})\s*(?:用途|说明|描述)\s*[:：]\s*([\s\S]*?)(?=\n📦\s*[a-z0-9][a-z0-9._/@-]{2,}\s*(?:用途|说明|描述)\s*[:：]|$)/gi
+  let match
+  while ((match = entryPattern.exec(cleaned))) {
+    const name = String(match[1] || '').trim()
+    let desc = String(match[2] || '')
+      .replace(/\s*(?:触发|适用|调用)\s*[:：][\s\S]*$/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (desc.length > 68) desc = `${desc.slice(0, 68).replace(/[，。；：、\s]*$/, '')}。`
+    if (name) entries.push(`📦 **${name}** — ${desc || '可用 Skill'}`)
+  }
+
+  if (entries.length) {
+    return limitHermesStructuredLines([
+      '📌 当前可用 Skills',
+      '',
+      ...entries.slice(0, 10),
+      '',
+      '👉 需要查看或使用哪个 Skill，直接告诉我名字。',
+    ].join('\n'), 14)
+  }
+
+  const lines = cleaned
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^[-*#]?$/.test(line))
+    .filter(line => !/^(?:📌|⚠️|✅|💬)$/.test(line))
+    .slice(0, 10)
+
+  return limitHermesStructuredLines([
+    '📌 当前可用 Skills',
+    '',
+    ...lines,
+    '',
+    '👉 需要查看或使用哪个 Skill，直接告诉我名字。',
+  ].join('\n'), 14)
+}
+
+export function formatHermesStructuredReply(text = '', userText = '') {
+  let raw = stripHermesInternalVisibleNoise(tidyHermesMarkdown(stripHermesRawToolText(text)))
+  if (!raw) return ''
+
+  if (/skill|skills|Skill|Skills|技能列表|能力清单|当前可用|可用.*(?:技能|能力|工具)|工具列表/i.test(`${userText}\n${raw}`)) {
+    return formatHermesSkillsStructuredReply(raw)
+  }
+
+  if (/📌|📁|🛠|🧰|✅|👉|##|当前可用|完整列表|账户|开发者工具|网络|任务/.test(raw)) {
+    return limitHermesStructuredLines(raw)
+  }
+
+  const scope = `${userText}\n${raw}`
+  if (/skill|skills|技能列表|能力清单|当前可用|可用.*(?:技能|能力|工具)|工具列表/i.test(scope)) {
+    const lines = raw
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .filter(line => !/^[-*]?$/.test(line))
+      .slice(0, 10)
+
+    return limitHermesStructuredLines([
+      '📌 当前可用能力',
+      '',
+      lines.join('\n') || '我已整理当前可用能力，但没有拿到更详细的分类结果。',
+      '',
+      '👉 你告诉我要用哪一项，我可以直接继续处理。',
+    ].join('\n'))
+  }
+
+  if (/进展|汇报|排查|检查|进程|状态|问题/i.test(scope)) {
+    const lines = raw
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .slice(0, 6)
+
+    return limitHermesStructuredLines([
+      '📌 检查结果',
+      '',
+      ...lines,
+      '',
+      '👉 需要我继续下一步的话，直接告诉我。',
+    ].join('\n'))
+  }
+
+  return raw
 }
 
 function removeHermesVerboseTemplateLines(text) {
@@ -260,7 +445,7 @@ function removeHermesVerboseTemplateLines(text) {
   return compactHermesWhitespace(kept.join('\n'))
 }
 
-function compactHermesOrdinaryReply(text, { maxLength = 180 } = {}) {
+function compactHermesOrdinaryReply(text, { maxLength = 420, maxLines = 5 } = {}) {
   let next = compactHermesWhitespace(text)
   if (!next) return ''
 
@@ -268,7 +453,7 @@ function compactHermesOrdinaryReply(text, { maxLength = 180 } = {}) {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-    .slice(0, 5)
+    .slice(0, maxLines)
 
   next = compactHermesWhitespace(lines.join('\n'))
   if (next.length <= maxLength) return next
@@ -286,12 +471,29 @@ function applyHermesCleanReplyStyle(text, options = {}) {
     return HERMES_SHORT_IDENTITY_REPLY
   }
 
+  if (isBriefAllowedHermesQuestion(prompt)) {
+    next = removeHermesVerboseTemplateLines(next)
+    return compactHermesWhitespace(next)
+  }
+
+  if (shouldKeepHermesStructuredLength(prompt, next)) {
+    return formatHermesStructuredReply(next, prompt)
+  }
+
   if (!detailed) {
     next = removeHermesVerboseTemplateLines(next)
-    next = compactHermesOrdinaryReply(next, { maxLength: options.maxLength || 180 })
+    next = compactHermesOrdinaryReply(next, { maxLength: options.maxLength || 420, maxLines: 5 })
+  } else {
+    next = compactHermesOrdinaryReply(next, { maxLength: options.maxLength || 900, maxLines: 8 })
   }
 
   return compactHermesWhitespace(next)
+}
+
+export function enforceHermesReplyLength(text, userText = '') {
+  const styled = applyHermesCleanReplyStyle(tidyHermesMarkdown(normalizeHermesStreamText(text)), { userText })
+  if (isBriefAllowedHermesQuestion(userText)) return styled
+  return completeHermesReplyIfNeeded(styled, { userText })
 }
 
 export function tidyHermesMarkdown(text) {
@@ -302,19 +504,235 @@ export function tidyHermesMarkdown(text) {
     .trim()
 }
 
-export function formatHermesToolSummaryForUser({ userText = '', toolEvents = [] } = {}) {
+export function looksHermesReplyIncomplete(text) {
+  const s = String(text || '').trim()
+  if (!s) return true
+  if (/[:：,，;；]$/.test(s)) return true
+  if (/^\s*[-*]\s*$/.test(s)) return true
+  if (/```[^`]*$/.test(s)) return true
+  if (s.includes('|---') && /\|\s*$/.test(s)) return true
+  if (/(下一步|建议|结果|原因)\s*[:：]\s*$/.test(s)) return true
+  return false
+}
+
+export function completeHermesReplyIfNeeded(text, options = {}) {
+  const cleaned = tidyHermesMarkdown(text)
+  if (!looksHermesReplyIncomplete(cleaned)) return cleaned
+  const toolLike = Boolean(
+    options.toolResult
+    || (Array.isArray(options.toolEvents) && options.toolEvents.length)
+    || /工具|执行|结果|进度|排查/.test(String(options.userText || options.prompt || '')),
+  )
+  const tail = toolLike ? '以上是当前结果。' : '如果你要继续，我可以接着往下做。'
+  return tidyHermesMarkdown([cleaned, tail].filter(Boolean).join('\n'))
+}
+
+export function mapHermesErrorToUserMessage(error) {
+  let raw = ''
+  if (typeof error === 'string') raw = error
+  else {
+    try { raw = JSON.stringify(error || {}) } catch { raw = String(error || '') }
+  }
+
+  if (/invalid image detail:\s*auto|invalid params.*image detail/i.test(raw)) {
+    return '图片参数不兼容，已自动调整图片请求格式。请重新发送图片，或补充你想让我分析图片的哪一部分。'
+  }
+  if (/api key|unauthorized|permission|401|403/i.test(raw)) {
+    return '任务失败：模型或接口权限不可用，请检查当前模型配置。'
+  }
+  if (/timeout|timed out|超时/i.test(raw)) {
+    return '任务超时：当前请求没有在预期时间内完成，请稍后重试或换个问法。'
+  }
+  if (/unsupported|not support|不支持/i.test(raw)) {
+    return '当前模型暂不支持这个能力。你可以换个问法，或切换支持该能力的模型。'
+  }
+  return '任务失败：当前请求没有成功完成，请稍后重试。'
+}
+
+export function isHermesTaskStatusQuestion(text) {
+  return /执行完没有|完成了吗|现在怎么样|进展|工作进展|还在做吗|有没有结果|做完了吗|现在到哪了/i.test(String(text || ''))
+}
+
+export function getHermesTaskStatusSummary({ activeTask = null, toolEvents = [], failedTasks = [] } = {}) {
+  const task = activeTask || null
+  if (task?.status === 'running') {
+    const lastStep = stripHermesToolProcessText(task.lastStep) || '正在处理当前任务'
+    return `还在执行中。\n\n当前进度：${lastStep}\n\n我会在完成或失败时给你最终结果。`
+  }
+  if (task?.status === 'success') {
+    return `已经执行完成。\n\n结果：${task.summary || '任务已完成。'}\n\n如果你要继续，我可以接着处理下一步。`
+  }
+  if (task?.status === 'failed') {
+    return `任务失败。\n\n原因：${task.error || '当前任务没有成功完成。'}\n\n你可以换个问法，或让我重新执行。`
+  }
+
+  const toolSummary = formatHermesToolSummaryForUser({ toolEvents })
+  if (toolSummary) return toolSummary
+
+  const failures = Array.isArray(failedTasks) ? failedTasks : []
+  if (failures.length) {
+    const last = failures[failures.length - 1] || {}
+    return `上一轮任务失败。\n\n原因：${last.error || last.message || '未拿到明确错误。'}\n\n你可以让我重新执行。`
+  }
+
+  return '当前没有正在执行的 Hermes 任务。'
+}
+
+export function isHermesDebugToolsVisible() {
+  try {
+    return globalThis?.localStorage?.getItem('DEBUG_HERMES_TOOLS') === '1'
+  } catch {
+    return false
+  }
+}
+
+export function isHermesInternalToolText(text) {
+  const s = String(text || '').trim()
+  if (!s) return true
+
+  return (
+    /^execute_code\b/i.test(s)
+    || /^search_files\b/i.test(s)
+    || /^read_file\b/i.test(s)
+    || /^tool_result\b/i.test(s)
+    || /^tool[_\s-]?call\b/i.test(s)
+    || /^tool\s+tool$/i.test(s)
+    || /^\[TOOL_CALL\]/i.test(s)
+    || /HEARTBEAT_OK/i.test(s)
+    || /^\(?_?stopped_?\)?$/i.test(s)
+    || /_\((?:stopped|running|done)\)_/i.test(s)
+    || /toolCallId|tool_call_id|clientRequestId|runId|arguments/i.test(s)
+    || /^stdout\s*[:：]/i.test(s)
+    || /^stderr\s*[:：]/i.test(s)
+    || /^工具\s*[:：]/.test(s)
+    || /^参数\s*[:：]/.test(s)
+    || /结果已同步到/.test(s)
+    || /工具(?:执行|调用).*(?:中|完成|成功|失败)/.test(s)
+    || /调用了.*工具/.test(s)
+    || /正在调用工具|先检查|继续查|跑命令/.test(s)
+    || (/^[{[]/.test(s) && /[}\]]\s*$/.test(s))
+    || (/^[{[]/.test(s) && /(?:tool|arguments|args|stdout|stderr|result|provider)/i.test(s))
+  )
+}
+
+export function stripHermesToolProcessText(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .filter((line) => {
+      const s = line.trim()
+      if (!s) return false
+      if (isHermesInternalToolText(s)) return false
+      if (/^>\s*(execute_code|search_files|read_file|tool_result)/i.test(s)) return false
+      if (/^(execute_code|search_files|read_file|tool_result)\s*[:：]/i.test(s)) return false
+      if (/^(stdout|stderr)\s*[:：]/i.test(s)) return false
+      if (/^(工具|参数|执行过程|工作过程)\s*[:：]/.test(s)) return false
+      if (/^(raw json|tool args|provider error)\s*[:：]/i.test(s)) return false
+      return true
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function extractHermesToolVisibleText(event) {
+  if (!event) return ''
+  const failed = event.status === 'error' || event.toolStatus === 'error' || event.error
+  const raw = event.visibleText
+    ?? event.userVisibleText
+    ?? event.summary
+    ?? event.message
+    ?? event.text
+    ?? event.resultText
+    ?? event.output
+    ?? event.result
+    ?? event.content
+    ?? event.error
+    ?? ''
+
+  let text = ''
+  if (typeof raw === 'string') text = raw
+  else if (raw && typeof raw === 'object') {
+    text = raw.visibleText
+      || raw.userVisibleText
+      || raw.summary
+      || raw.message
+      || raw.text
+      || raw.resultText
+      || ''
+  } else {
+    text = String(raw || '')
+  }
+
+  text = stripHermesToolProcessText(text)
+  if (text) return text
+  return failed ? mapHermesErrorToUserMessage(event.error || raw || 'tool failed') : ''
+}
+
+export function summarizeHermesToolResultForUser({ userText = '', toolEvents = [] } = {}) {
   const list = Array.isArray(toolEvents) ? toolEvents.filter(Boolean) : []
   if (!list.length) return ''
 
   const failed = list.some(item => item.status === 'error' || item.toolStatus === 'error' || item.error)
+  const cleaned = []
+  for (const event of list) {
+    const text = extractHermesToolVisibleText(event)
+    if (text && !cleaned.includes(text)) cleaned.push(text)
+  }
+
+  const joined = cleaned.join('\n\n').trim()
+  const taskLike = /进程|状态|检查|排查|汇报|skills?|技能|能力|工具/i.test(String(userText || ''))
+  if (joined) {
+    if (taskLike) {
+      return tidyHermesMarkdown([
+        failed ? '任务遇到问题。' : '检查已完成。',
+        '',
+        joined,
+      ].join('\n'))
+    }
+    return tidyHermesMarkdown(joined)
+  }
+
+  if (taskLike) {
+    return failed
+      ? '检查失败：当前工具没有返回可展示的错误详情，请确认目标是否可访问后重试。'
+      : '检查已完成，但没有拿到可展示的详细结果。'
+  }
+  if (failed) return '任务失败：当前工具没有返回可展示的错误详情，请确认目标是否可访问后重试。'
+  return '任务已完成，但没有拿到可展示的详细结果。'
+}
+
+export function normalizeHermesUserVisibleAnswer({ text = '', userText = '', toolEvents = [] } = {}) {
+  let visible = stripHermesToolProcessText(text)
+  if (!visible && Array.isArray(toolEvents) && toolEvents.length) {
+    visible = summarizeHermesToolResultForUser({ userText, toolEvents })
+  }
+  return normalizeHermesVisibleReply(visible, { userText, prompt: userText, toolEvents })
+}
+
+export function formatHermesToolSummaryForUser({ userText = '', toolEvents = [] } = {}) {
+  const list = Array.isArray(toolEvents) ? toolEvents.filter(Boolean) : []
+  if (!list.length) return ''
+  return summarizeHermesToolResultForUser({ userText, toolEvents: list })
+
+  const failed = list.some(item => item.status === 'error' || item.toolStatus === 'error' || item.error)
   const names = [...new Set(list.map(item => item.toolName || item.tool || item.name || 'tool').filter(Boolean))]
     .slice(0, 3)
-    .join(' / ')
+  if (shouldKeepHermesStructuredLength(userText, names.join('\n'))) {
+    const skillLike = /skills?|技能|能力|工具列表|可用工具|你能做什么/i.test(userText)
+    const title = skillLike ? '📌 当前可用 Skills' : '📌 检查结果'
+    const body = names.length
+      ? names.map(name => `${name} — ${failed ? '调用遇到问题' : '已完成调用'}`).join('\n')
+      : failed ? '工具调用遇到问题。' : '工具调用已完成。'
+    const next = skillLike ? '👉 需要用哪个 Skill，直接告诉我。' : '👉 需要我继续下一步的话，直接告诉我。'
+    return limitHermesStructuredLines([title, '', body, '', next].join('\n'))
+  }
+
+  const nameText = names.join(' / ')
   const heading = failed
     ? '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898\u3002'
     : '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210\u3002'
-  const detail = names
-    ? `\u5de5\u5177\u7ed3\u679c\uff1a${names}\u3002`
+  const detail = nameText
+    ? `\u5de5\u5177\u7ed3\u679c\uff1a${nameText}\u3002`
     : '\u5de5\u5177\u7ed3\u679c\u5df2\u6574\u7406\u3002'
   const next = failed
     ? '\u9700\u8981\u6211\u7ee7\u7eed\u6392\u67e5\u5417\uff1f'
@@ -326,7 +744,7 @@ export function normalizeHermesVisibleReply(text, options = {}) {
   const raw = String(text || '')
   const { mediaLines, visibleText } = splitHermesMediaLines(raw)
   const imageTask = Boolean(options.imageTask || mediaLines.length)
-  let visible = stripHermesRawToolText(visibleText || raw)
+  let visible = stripHermesToolProcessText(stripHermesRawToolText(visibleText || raw))
 
   if (imageTask) {
     return sanitizeHermesImageReply([...mediaLines, visible].filter(Boolean).join('\n'), {
@@ -336,22 +754,28 @@ export function normalizeHermesVisibleReply(text, options = {}) {
   }
 
   visible = tidyHermesMarkdown(visible)
-  if (visible) return applyHermesCleanReplyStyle(visible, options)
-  return applyHermesCleanReplyStyle(formatHermesToolSummaryForUser({
+  if (visible) {
+    const styled = applyHermesCleanReplyStyle(visible, options)
+    return isBriefAllowedHermesQuestion(options.userText || options.prompt)
+      ? styled
+      : completeHermesReplyIfNeeded(styled, options)
+  }
+  const fallback = applyHermesCleanReplyStyle(formatHermesToolSummaryForUser({
     userText: options.userText || options.prompt || '',
     toolEvents: options.toolEvents || [],
   }), options)
+  return completeHermesReplyIfNeeded(fallback, { ...options, toolResult: true })
 }
 
 export function splitHermesVisibleAndDetails(rawText, toolEvents = []) {
   return {
     visible: normalizeHermesVisibleReply(rawText, { toolEvents }),
-    details: toolEvents.map(item => ({
+    details: isHermesDebugToolsVisible() ? toolEvents.map(item => ({
       name: item.toolName || item.tool || item.name || 'tool',
       args: stringifyHermesValue(item.args ?? item.arguments ?? item.input),
       result: stringifyHermesValue(item.result ?? item.output ?? item.content ?? item.error),
       status: item.status || item.toolStatus || (item.error ? 'error' : 'done'),
-    })),
+    })) : [],
   }
 }
 

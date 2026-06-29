@@ -81,3 +81,6 @@ for i, b64 in enumerate(images):
 1. 调用成功后 `ls -la <输出路径>` 确认文件存在
 2. 用 `vision_analyze` 加载生成的图，描述给用户确认是否满足需求
 3. 不满意 → 改 prompt 重生（最多 2-3 次，别无限循环）
+
+## 相关参考
+- 电商场景的"参考图 → 详情页批量配图"工作流见 `references/ecommerce-product-page.md`

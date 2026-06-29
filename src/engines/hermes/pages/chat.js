@@ -1642,6 +1642,7 @@ export function render() {
   }
 
   function renderToolMessage(m) {
+    if (!isHermesDebugToolsVisible()) return ''
     const expanded = expandedToolIds.has(m.id)
     const hasResult = m.toolResult != null && String(m.toolResult).trim() !== ''
     const missingResult = !hasResult && m.toolStatus !== 'running' && m.toolStatus !== 'error'
@@ -1691,6 +1692,14 @@ export function render() {
         ` : ''}
       </div>
     `
+  }
+
+  function isHermesDebugToolsVisible() {
+    try {
+      return localStorage.getItem('DEBUG_HERMES_TOOLS') === '1'
+    } catch {
+      return false
+    }
   }
 
   function renderMaterialBubble(material) {
@@ -1766,7 +1775,17 @@ export function render() {
 
   function renderCompactAssistantHtml(rawText, messageId = '') {
     const compact = compactChatMessage(rawText)
-    const detailText = compact.toolLines.join('\n')
+    const showDetails = isHermesDebugToolsVisible()
+    const detailText = showDetails ? compact.toolLines.join('\n') : ''
+    if (!showDetails) {
+      const visible = compact.content || compact.preview || rawText
+      const fullHtml = visible ? renderAgentMessageContent({ agent: 'hermes', content: visible, details: '' }) : ''
+      return `
+        <div class="assistant-compact-message" data-compact-key="${escAttr(String(messageId || ''))}">
+          <div class="assistant-compact-message__content assistant-compact-message__full">${fullHtml}</div>
+        </div>
+      `
+    }
     const previewHtml = compact.preview ? renderAgentMessageContent({ agent: 'hermes', content: compact.preview, details: detailText }) : ''
     const fullHtml = compact.content ? renderAgentMessageContent({ agent: 'hermes', content: compact.content, details: detailText }) : ''
     const canToggle = !!compact.collapsed
@@ -1788,7 +1807,7 @@ export function render() {
   }
 
   function renderMessage(m) {
-    if (m.role === 'tool') return shouldHideToolRow(m) ? '' : renderToolMessage(m)
+    if (m.role === 'tool') return (!isHermesDebugToolsVisible() || shouldHideToolRow(m)) ? '' : renderToolMessage(m)
     if (m.role === 'system') {
       return `
         <div class="hm-chat-msg hm-chat-msg--system sc-msg-row system" data-mid="${escAttr(m.id)}">
@@ -1953,7 +1972,9 @@ export function render() {
 
   function renderLiveTools() {
     if (!store.state.streaming) return ''
-    const tools = store.state.liveTools.filter(tc => !shouldHideToolRow(tc))
+    const tools = isHermesDebugToolsVisible()
+      ? store.state.liveTools.filter(tc => !shouldHideToolRow(tc))
+      : []
     return `
       <div class="hm-chat-streaming">
         <div class="hm-chat-streaming-mark">
@@ -3516,7 +3537,8 @@ export function render() {
     const attachments = pendingAttachments.slice()
     let text = inputValue.trim()
     if ((!text && !attachments.length) || store.state.streaming || hermesSendInFlight) return
-    if (!text && attachments.length) text = '请分析我刚刚上传或粘贴的图片。'
+    // Image-only messages are routed by the store. Do not turn them into
+    // "analyze this image" here; Hermes should ask the user what to do.
 
     // Local slash commands short-circuit before going to the agent.
     if (text === '/clear') {
