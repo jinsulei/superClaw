@@ -1,4 +1,5 @@
 import { api } from '../../../lib/tauri-api.js'
+import { stopAgentOnPageClose } from '../../../lib/agent-lifecycle.js'
 import { toast } from '../../../components/toast.js'
 import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, normalizeClaudeCodeMode, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
@@ -467,5 +468,14 @@ export async function render() {
   } else {
     setTimeout(() => openPanel(page), 0)
   }
+  const mountObserver = new MutationObserver(() => {
+    if (!page.isConnected) {
+      stopAgentOnPageClose('claudecode')
+      mountObserver.disconnect()
+    }
+  })
+  requestAnimationFrame(() => {
+    if (page.parentNode) mountObserver.observe(page.parentNode, { childList: true })
+  })
   return page
 }

@@ -102,24 +102,43 @@ function parseSse(body) {
 const server = fs.readFileSync(serverPath, "utf8");
 assert(server.includes("function isNativeRunWired"), "missing native run wiring gate");
 assert(server.includes("CLAUDE_PANEL_DISABLE_NATIVE_RUN"), "missing native run disable test switch");
+assert(server.includes("NATIVE_CLAUDE_REQUIRED"), "missing native required mode");
+assert(server.includes("CLAUDE_NATIVE_CLI_REQUIRED"), "missing native CLI required error code");
+assert(server.includes("CLAUDE_PANEL_ALLOW_RELAY_FALLBACK"), "missing explicit relay fallback opt-in");
 assert(server.includes("runWired: runMode.nativeClaude.runWired"), "status/meta must expose native runWired");
 assert(server.includes('executionBackend: "native-claude-cli"'), "native /api/run must mark native backend");
+assert(server.includes('"native-required"'), "native required status must not pretend relay");
 assert(server.includes('spawnedProcess: true'), "native /api/run must prove spawned process");
 assert(server.includes('relayCalled: false'), "native /api/run must prove relay was not called");
 assert(server.includes('executionBackend: "openai-relay"'), "relay /api/run must mark relay backend");
 assert(server.includes('spawnedProcess: false'), "relay /api/run must not claim spawned process");
-assert(server.includes('relayCalled: true'), "relay /api/run must mark relay call");
+assert(server.includes('relayCalled: runMode.effectiveMode === "CLAUDE_PANEL_RELAY"'), "relay calls must only be marked in relay mode");
 assert(server.includes("stripUnsupportedToolCallText(redacted)"), "pseudo tool calls must still be stripped");
 
 const noCliPort = 33301;
 const noCliPanel = startPanel(noCliPort, {
   CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE: "1",
+  CLAUDE_PANEL_ALLOW_RELAY_FALLBACK: "0",
+  CLAUDE_PANEL_FORCE_RELAY: "0",
   CLAUDE_CLI_PATH: path.join(os.tmpdir(), "missing-claude-no-disguise.cmd"),
 });
 try {
   const status = await waitForStatus(noCliPort);
-  assert(status.effectiveMode === "CLAUDE_PANEL_RELAY", "missing CLI must not report native mode");
+  assert(status.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI must require native configuration");
+  assert(status.nativeRequired === true, "missing CLI must expose nativeRequired");
   assert(status.nativeClaude?.available === false, "missing CLI must be unavailable");
+
+  const run = await request(noCliPort, "POST", "/api/run", {
+    prompt: "hello",
+    cwd: repoRoot,
+    toolProfile: "none",
+    permissionProfile: "default",
+    mode: "default",
+  });
+  assert(run.status === 409, "missing CLI run must return configuration error");
+  const body = JSON.parse(run.text);
+  assert(body.code === "CLAUDE_NATIVE_CLI_REQUIRED", "missing CLI run must not silently call relay");
+  assert(body.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI run must report native required mode");
 } finally {
   noCliPanel.kill("SIGTERM");
 }
@@ -131,15 +150,43 @@ const unwiredPort = 33302;
 const unwiredPanel = startPanel(unwiredPort, {
   CLAUDE_CLI_PATH: mockCommand,
   CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE: "1",
+  CLAUDE_PANEL_ALLOW_RELAY_FALLBACK: "0",
+  CLAUDE_PANEL_FORCE_RELAY: "0",
   CLAUDE_PANEL_DISABLE_NATIVE_RUN: "1",
 });
 try {
   const status = await waitForStatus(unwiredPort);
   assert(status.nativeClaude?.available === true, "mock CLI should be detected");
   assert(status.nativeClaude?.runWired === false, "unwired native run must be explicit");
-  assert(status.effectiveMode === "CLAUDE_PANEL_RELAY", "unwired CLI must not report native mode");
+  assert(status.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "unwired CLI must require native wiring");
+
+  const run = await request(unwiredPort, "POST", "/api/run", {
+    prompt: "hello",
+    cwd: repoRoot,
+    toolProfile: "none",
+    permissionProfile: "default",
+    mode: "default",
+  });
+  assert(run.status === 409, "unwired CLI run must return configuration error");
+  const body = JSON.parse(run.text);
+  assert(body.code === "CLAUDE_NATIVE_CLI_REQUIRED", "unwired CLI run must not silently call relay");
 } finally {
   unwiredPanel.kill("SIGTERM");
+}
+
+const fallbackPort = 33304;
+const fallbackPanel = startPanel(fallbackPort, {
+  CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE: "1",
+  CLAUDE_PANEL_ALLOW_RELAY_FALLBACK: "1",
+  CLAUDE_CLI_PATH: path.join(os.tmpdir(), "missing-claude-relay-opt-in.cmd"),
+});
+try {
+  const status = await waitForStatus(fallbackPort);
+  assert(status.effectiveMode === "CLAUDE_PANEL_RELAY", "explicit fallback opt-in may use relay");
+  assert(status.nativeRequired === false, "explicit fallback opt-in must disable native-required guard");
+  assert(status.nativeClaude?.available === false, "fallback opt-in does not fake native CLI");
+} finally {
+  fallbackPanel.kill("SIGTERM");
 }
 
 const wiredPort = 33303;
@@ -170,8 +217,9 @@ try {
   wiredPanel.kill("SIGTERM");
 }
 
-console.log("CLAUDE_NO_FALSE_NATIVE_WITHOUT_CLI: PASS");
-console.log("CLAUDE_NO_FALSE_NATIVE_WITH_UNWIRED_CLI: PASS");
+console.log("CLAUDE_NATIVE_REQUIRED_WITHOUT_CLI: PASS");
+console.log("CLAUDE_NATIVE_REQUIRED_WITH_UNWIRED_CLI: PASS");
+console.log("CLAUDE_RELAY_FALLBACK_REQUIRES_OPT_IN: PASS");
 console.log("CLAUDE_NATIVE_RUN_PROVES_SPAWN: PASS");
 console.log("CLAUDE_RELAY_NOT_MISLABELED: PASS");
 console.log("CLAUDE_TOOLCALL_NOT_EXECUTED_IN_RELAY: PASS");

@@ -377,6 +377,19 @@ function appendAuditLog(entry) {
   });
 }
 
+function appendPanelLog(fileName, text) {
+  const safeName = LOCAL_LOG_FILES.includes(fileName) ? fileName : "panel.log";
+  const line = String(text || "").trim();
+  if (!line) return;
+  try {
+    ensureAppConfigDir();
+    fs.appendFileSync(path.join(APP_CONFIG_DIR, safeName), `[${new Date().toISOString()}] ${line}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch {}
+}
+
 function readAnnouncement() {
   try {
     return fs.readFileSync(ANNOUNCEMENT_PATH, "utf8").trim();
@@ -982,23 +995,27 @@ async function handleOpenAiRelayRun(req, res, context) {
 }
 
 function buildClaudeCodeSystemPrompt(runtimeMode = "CLAUDE_PANEL_RELAY") {
+  const identityLines = [
+    "You are ClaudeCode Agent inside SuperClaw.",
+    "Your product identity is ClaudeCode Agent, a code collaboration agent for project analysis, coding, debugging, file inspection, terminal work, and cooperation with Hermes and OpenClaw.",
+    "When the user asks who you are, answer that you are ClaudeCode Agent.",
+    "You may mention that the underlying model service is supplied by the current system configuration, but never use the provider name as your identity.",
+    "Do not introduce yourself as MiniMax, OpenAI, ChatGPT, Claude, Anthropic, Tongyi, Doubao, or any other model provider unless the user explicitly asks about the underlying model provider.",
+  ];
   if (runtimeMode === "CLAUDE_PANEL_RELAY") {
     return [
-      "You are Claude Panel Relay inside SuperClaw.",
+      ...identityLines,
       "You are a code collaboration assistant running through Claude Panel with an OpenAI-compatible relay.",
       "You are not the full native Claude Code CLI in this mode.",
       "Do not claim that native Claude Code CLI tool execution is enabled.",
       "You may help the user reason about code, projects, debugging, and collaboration, but do not output fake tool_call XML or [TOOL_CALL] text.",
-      "When the user asks who you are, answer that you are Claude Panel Relay, a code collaboration assistant, and explain that native Claude Code CLI is a separate mode when available.",
+      "If the user asks about runtime mode, explain that this conversation is running through Claude Panel Relay and native Claude Code CLI is a separate mode when available.",
       "Do not claim to be Hermes or OpenClaw.",
     ].join("\n");
   }
   return [
-    "You are Claude Code inside SuperClaw.",
-    "Your identity is Claude Code, a coding and project automation agent.",
+    ...identityLines,
     "You help the user read projects, modify code, run safe terminal commands, inspect files, explain errors, create scripts, and cooperate with Hermes and OpenClaw.",
-    "When the user asks who you are, answer as Claude Code and describe your coding, terminal, project analysis, debugging, and collaboration capabilities.",
-    "Do not describe yourself as only the underlying model provider.",
     "Do not claim to be Hermes or OpenClaw.",
     "Use available tools when the task requires code, files, terminal commands, or project inspection.",
   ].join("\n");
@@ -1164,12 +1181,26 @@ function isRelayAvailable(settings = readClaudeSettings(), relay = publicRelayCo
   return Boolean(relay.baseUrl && relay.model && relay.apiKeyConfigured && settings.authConfigured);
 }
 
+function envFlag(name) {
+  return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").toLowerCase());
+}
+
 function isNativeModeDisabled() {
-  return ["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_FORCE_RELAY || "").toLowerCase());
+  return envFlag("CLAUDE_PANEL_FORCE_RELAY");
 }
 
 function isNativeRunWired() {
-  return !["1", "true", "yes"].includes(String(process.env.CLAUDE_PANEL_DISABLE_NATIVE_RUN || "").toLowerCase());
+  return !envFlag("CLAUDE_PANEL_DISABLE_NATIVE_RUN");
+}
+
+function isRelayFallbackAllowed() {
+  return envFlag("CLAUDE_PANEL_ALLOW_RELAY_FALLBACK") || envFlag("CLAUDE_PANEL_FORCE_RELAY");
+}
+
+function isNativeRequiredMode() {
+  if (envFlag("CLAUDE_PANEL_NATIVE_REQUIRED")) return true;
+  if (isRelayFallbackAllowed()) return false;
+  return true;
 }
 
 function getClaudeRunMode(settings = readClaudeSettings()) {
@@ -1178,11 +1209,22 @@ function getClaudeRunMode(settings = readClaudeSettings()) {
   const relayAvailable = isRelayAvailable(settings, relay);
   const nativeRunWired = isNativeRunWired();
   nativeClaude.runWired = nativeRunWired;
+  const nativeRequired = isNativeRequiredMode();
   const nativeAllowed = nativeClaude.usable && nativeRunWired && !isNativeModeDisabled();
-  const effectiveMode = nativeAllowed ? "NATIVE_CLAUDE_CODE" : "CLAUDE_PANEL_RELAY";
+  const effectiveMode = nativeAllowed
+    ? "NATIVE_CLAUDE_CODE"
+    : nativeRequired
+      ? "NATIVE_CLAUDE_REQUIRED"
+      : "CLAUDE_PANEL_RELAY";
   const reason = nativeAllowed
     ? "Native Claude CLI is available, /api/run is wired to spawn it, and native mode is selected."
-    : relayAvailable
+    : nativeRequired
+      ? nativeClaude.usable && !nativeRunWired
+        ? "Native Claude CLI is available, but /api/run native bridge is disabled; relay fallback is not allowed by default."
+        : nativeClaude.usable && isNativeModeDisabled()
+          ? "Native Claude CLI is disabled by CLAUDE_PANEL_FORCE_RELAY, but relay fallback is not allowed unless CLAUDE_PANEL_ALLOW_RELAY_FALLBACK=1."
+          : "Native Claude CLI is required for release mode; relay fallback is not used silently."
+      : relayAvailable
       ? nativeClaude.usable && !nativeRunWired
         ? "Claude CLI detected but /api/run native bridge is disabled; using Claude Panel Relay."
         : "Native Claude CLI is unavailable or disabled; using Claude Panel Relay."
@@ -1194,6 +1236,7 @@ function getClaudeRunMode(settings = readClaudeSettings()) {
   return {
     effectiveMode,
     reason,
+    nativeRequired,
     nativeClaude,
     relay,
     relayAvailable,
@@ -2617,7 +2660,22 @@ function isMostlyEnglishVisibleText(text) {
 }
 
 function isClaudeIdentityQuestion(text) {
-  return /(你是谁|你是什么|说明你的身份|who are you|what are you)/i.test(String(text || ""));
+  return /(你是谁|你是什么|你叫什么|你的身份|说明你的身份|介绍下自己|介绍一下自己|介绍一下你自己|自我介绍|你现在是什么|who are you|what are you|your identity|introduce yourself)/i.test(String(text || ""));
+}
+
+function hasClaudeProviderIdentityLeak(text) {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  return /我是\s*(MiniMax|minimax|OpenAI|ChatGPT|Claude|Anthropic|通义|豆包)|我叫\s*(MiniMax|minimax|OpenAI|ChatGPT|Claude|Anthropic|通义|豆包)|由\s*(MiniMax|minimax|OpenAI|Claude|Anthropic|通义|豆包)\s*(开发|创建|提供)|I\s+am\s+(MiniMax|OpenAI|ChatGPT|Claude|Anthropic)/i.test(value);
+}
+
+function safeClaudeCodeIdentityReply() {
+  return "我是 ClaudeCode Agent，是 SuperClaw 中用于代码分析、开发协作、项目检查和任务执行的代码协作助手。底层模型服务由当前系统配置提供。";
+}
+
+function guardClaudeCodeIdentityReply(prompt, reply) {
+  if (!isClaudeIdentityQuestion(prompt)) return reply;
+  return safeClaudeCodeIdentityReply();
 }
 
 function isPaymentCodeRequest(prompt, reply) {
@@ -2647,7 +2705,8 @@ function sanitizeModelOutput(text, options = {}) {
   const redacted = redact(text);
   const withoutPseudoToolCalls = stripUnsupportedToolCallText(redacted);
   const safeText = looksLikeProtectedSourceOutput(withoutPseudoToolCalls) ? SOURCE_GUARD_BLOCK_MESSAGE : withoutPseudoToolCalls;
-  return sanitizeVisibleReplyLanguage(safeText, options.prompt || "");
+  const prompt = options.prompt || "";
+  return sanitizeVisibleReplyLanguage(guardClaudeCodeIdentityReply(prompt, safeText), prompt);
 }
 
 function resolveCwd(input) {
@@ -3057,6 +3116,28 @@ async function handleRun(req, res) {
   }
   const runMode = getClaudeRunMode(settings);
 
+  if (runMode.effectiveMode === "NATIVE_CLAUDE_REQUIRED") {
+    appendAuditLog({
+      feature: "/api/run",
+      action: "blocked-native-claude-required",
+      permissionMode: payload.permissionProfile || mode,
+      toolProfile,
+      projectPath: cwd,
+      result: runMode.nativeClaude?.reason || runMode.reason,
+      source: req.socket.remoteAddress,
+    });
+    sendJson(res, 409, {
+      error: "ClaudeCode release 模式要求使用原生 Claude Code CLI。当前未检测到可用的原生 CLI，已停止请求；请安装并登录 Claude Code CLI，或由管理员显式设置 CLAUDE_PANEL_ALLOW_RELAY_FALLBACK=1 后再启用 Relay。",
+      code: "CLAUDE_NATIVE_CLI_REQUIRED",
+      runtimeMode: runMode.effectiveMode,
+      effectiveMode: runMode.effectiveMode,
+      modeReason: runMode.reason,
+      nativeRequired: runMode.nativeRequired,
+      nativeClaude: runMode.nativeClaude,
+    });
+    return;
+  }
+
   if (containsSensitiveFileName(prompt) && toolProfile !== "none" && !payload.sensitiveFileAccepted) {
     appendAuditLog({
       feature: "/api/run",
@@ -3345,7 +3426,11 @@ async function handleRun(req, res) {
     const lines = stderrBuffer.split(/\r?\n/);
     stderrBuffer = lines.pop() || "";
     for (const line of lines) {
-      if (line.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(line.trim(), { prompt }) });
+      const text = sanitizeModelOutput(line.trim(), { prompt });
+      if (text) {
+        appendPanelLog("panel.err.log", `[native-cli] ${text}`);
+        writeEvent(res, "stderr", { text });
+      }
     }
   });
 
@@ -3355,7 +3440,13 @@ async function handleRun(req, res) {
 
   child.on("close", (code) => {
     if (stdoutBuffer.trim()) handleJsonLine(stdoutBuffer.trim());
-    if (stderrBuffer.trim()) writeEvent(res, "stderr", { text: sanitizeModelOutput(stderrBuffer.trim(), { prompt }) });
+    if (stderrBuffer.trim()) {
+      const text = sanitizeModelOutput(stderrBuffer.trim(), { prompt });
+      if (text) {
+        appendPanelLog("panel.err.log", `[native-cli] ${text}`);
+        writeEvent(res, "stderr", { text });
+      }
+    }
     if (!closed) {
       writeEvent(res, "exit", { code });
       res.end();
@@ -3389,6 +3480,7 @@ function handleStatus(res) {
     effectiveMode: runMode.effectiveMode,
     runtimeMode: runMode.effectiveMode,
     modeReason: runMode.reason,
+    nativeRequired: runMode.nativeRequired,
     nativeClaude: {
       available: runMode.nativeClaude.available,
       usable: runMode.nativeClaude.usable,
@@ -3398,9 +3490,13 @@ function handleStatus(res) {
       reason: runMode.nativeClaude.reason,
       source: runMode.nativeClaude.source,
     },
-    executionBackend: runMode.effectiveMode === "NATIVE_CLAUDE_CODE" ? "native-claude-cli" : "openai-relay",
+    executionBackend: runMode.effectiveMode === "NATIVE_CLAUDE_CODE"
+      ? "native-claude-cli"
+      : runMode.effectiveMode === "NATIVE_CLAUDE_REQUIRED"
+        ? "native-required"
+        : "openai-relay",
     spawnedProcess: runMode.effectiveMode === "NATIVE_CLAUDE_CODE",
-    relayCalled: runMode.effectiveMode !== "NATIVE_CLAUDE_CODE",
+    relayCalled: runMode.effectiveMode === "CLAUDE_PANEL_RELAY",
     relay: {
       available: relayReady,
       mode: "OPENAI_RELAY",

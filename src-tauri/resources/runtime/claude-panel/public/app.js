@@ -1764,6 +1764,98 @@ function renderThinkingBlocks(thoughts, wrapper, options = {}) {
   wrapper.appendChild(details);
 }
 
+function maskAgentMessageSensitiveText(text) {
+  return String(text || "")
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-****")
+    .replace(/Bearer\s+[A-Za-z0-9._-]{12,}/gi, "Bearer ****")
+    .replace(/((?:api[_-]?key|token|secret|MINIMAX_API_KEY|OPENAI_API_KEY|CLAUDE_API_KEY)\s*[:=]\s*)[A-Za-z0-9._-]{8,}/gi, "$1****");
+}
+
+function chooseAgentMessageIcon(line, index, type) {
+  const text = String(line || "").toLowerCase();
+  if (/error|failed|失败|错误|报错|不可|不能|超时|风险|危险|警告|warning/.test(text)) return "⚠️";
+  if (/success|ok|pass|完成|成功|通过|已连接|正常|可以/.test(text)) return "✅";
+  if (/api key|apikey|token|secret|密钥|授权|登录|鉴权/.test(text)) return "🔑";
+  if (/https?:\/\/|localhost|127\.0\.0\.1|baseurl|base url|链接|地址|url/.test(text)) return "🔗";
+  if (/图片|图像|截图|生图|image|vision|ocr|media/.test(text)) return "🖼️";
+  if (/文件|目录|路径|config|env|配置|保存|本地/.test(text)) return "📁";
+  if (/测试|验证|检查|排查|诊断|smoke|build/.test(text)) return "🧪";
+  if (/工具|执行|修复|修改|处理|命令|shell|terminal|gateway|agent/.test(text)) return "🛠️";
+  if (/步骤|第一|第二|第三|然后|最后|下一步/.test(text)) return "👉";
+  if (type === "heading") return "📌";
+  if (type === "list") return "👉";
+  return index % 3 === 0 ? "💬" : (index % 3 === 1 ? "✅" : "🤖");
+}
+
+function stripAgentMessageMarkdownPrefix(line) {
+  return String(line || "")
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^[-*]\s+/, "")
+    .replace(/^\d+[.)、]\s+/, "")
+    .replace(/^>\s+/, "")
+    .trim();
+}
+
+function isAgentMessageHeadingLine(line) {
+  const value = String(line || "").trim();
+  return /^#{1,6}\s+/.test(value) || /^(结论|总结|结果|注意|警告|风险|原因|方案|建议|配置|设置|步骤|流程|下一步|示例)[:：]/.test(value);
+}
+
+function isAgentMessageListLine(line) {
+  const value = String(line || "").trim();
+  return /^[-*]\s+/.test(value) || /^\d+[.)、]\s+/.test(value);
+}
+
+function appendAgentMessageRow(parent, line, index, type = "paragraph") {
+  const row = document.createElement(type === "paragraph" ? "p" : "div");
+  row.className = `agent-message-row agent-message-${type}`;
+  const icon = document.createElement("span");
+  icon.className = "agent-message-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = chooseAgentMessageIcon(line, index, type);
+  const text = document.createElement("span");
+  text.className = "agent-message-text";
+  text.textContent = stripAgentMessageMarkdownPrefix(line);
+  row.append(icon, text);
+  parent.appendChild(row);
+}
+
+function renderClaudeAgentMessageContent(value, body, details = "") {
+  if (!body) return;
+  body.innerHTML = "";
+  const finalText = maskAgentMessageSensitiveText(String(value || "").trim());
+  const detailText = maskAgentMessageSensitiveText(String(details || "").trim());
+  if (finalText) {
+    const message = document.createElement("div");
+    message.className = "agent-message-content";
+    message.dataset.agent = "claude";
+    const messageBody = document.createElement("div");
+    messageBody.className = "agent-message-body";
+    let blockIndex = 0;
+    for (const rawLine of finalText.split("\n")) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (isAgentMessageHeadingLine(line)) appendAgentMessageRow(messageBody, line, blockIndex, "heading");
+      else if (isAgentMessageListLine(line)) appendAgentMessageRow(messageBody, line, blockIndex, "list");
+      else appendAgentMessageRow(messageBody, line, blockIndex, "paragraph");
+      blockIndex += 1;
+    }
+    message.appendChild(messageBody);
+    body.appendChild(message);
+  }
+  if (detailText) {
+    const detail = document.createElement("details");
+    detail.className = "agent-message-detail";
+    const summary = document.createElement("summary");
+    summary.innerHTML = "<span aria-hidden=\"true\">📝</span><span>查看分析详情</span>";
+    const panel = document.createElement("pre");
+    panel.className = "agent-message-detail-panel";
+    panel.textContent = detailText;
+    detail.append(summary, panel);
+    body.appendChild(detail);
+  }
+}
+
 function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   if (!body) return;
   const parsed = splitClaudeThinkingBlocks(rawText);
@@ -1775,12 +1867,15 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   wrapper.className = "assistant-compact-message";
   if (compact.collapsed) wrapper.classList.add("is-collapsed");
 
-  renderThinkingBlocks(parsed.thoughts, wrapper, options);
+  const detailText = [
+    ...(Array.isArray(parsed.thoughts) ? parsed.thoughts : []),
+    ...(Array.isArray(compact.toolLines) ? compact.toolLines : []),
+  ].join("\n\n");
 
   const content = document.createElement("div");
   content.className = "assistant-compact-message__content";
   const renderContent = (value) => {
-    content.textContent = value || "";
+    renderClaudeAgentMessageContent(value || "", content, detailText);
   };
   renderContent(compact.preview);
   if (compact.preview || compact.content) wrapper.appendChild(content);
@@ -1797,17 +1892,6 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
       renderContent(expanded ? compact.content : compact.preview);
     });
     wrapper.appendChild(toggle);
-  }
-
-  if (compact.toolLines.length > 0) {
-    const details = document.createElement("details");
-    details.className = "tool-log-summary";
-    const summary = document.createElement("summary");
-    summary.textContent = compact.toolSummary;
-    const pre = document.createElement("pre");
-    pre.textContent = compact.toolLines.join("\n");
-    details.append(summary, pre);
-    wrapper.appendChild(details);
   }
 
   body.appendChild(wrapper);
@@ -5403,9 +5487,7 @@ function handlePacket(packet) {
     appendAssistantText(payload.text || "");
   } else if (event === "stderr") {
     const text = payload.text || "";
-    if (!isRuntimeSummaryMessage("system", "运行信息", text)) {
-      addMessage("system", "运行信息", text);
-    }
+    if (text.trim()) console.warn("[ClaudeCode stderr]", text);
   } else if (event === "error") {
     flushAssistantTextBuffer();
     if (activeAssistantMessage?.body) {
@@ -5597,6 +5679,8 @@ async function startRun(prompt, overrides = {}) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         prompt: finalPrompt,
+        agentName: "claudecode",
+        agent_name: "claudecode",
         cwd: projectSelect.value,
         model: modelInput.value,
         mode: overrides.mode || permissionConfig.cliMode,

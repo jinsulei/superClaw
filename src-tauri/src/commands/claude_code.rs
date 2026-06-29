@@ -383,9 +383,11 @@ fn start_cli_impl() -> Result<Value, String> {
         .open(log_dir.join("panel.err.log"))
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = Command::new(node_cmd);
+    let panel_cwd = claude_panel_dir(&resources);
+    let node_cmd_display = node_cmd.display().to_string();
+    let mut cmd = Command::new(&node_cmd);
     cmd.arg(&server)
-        .current_dir(claude_panel_dir(&resources))
+        .current_dir(&panel_cwd)
         .stdout(stdout)
         .stderr(stderr);
     apply_panel_env(&mut cmd, &resources, &home, &projects);
@@ -396,6 +398,14 @@ fn start_cli_impl() -> Result<Value, String> {
     let child = cmd
         .spawn()
         .map_err(|e| format!("启动 Claude Code 面板失败：{e}"))?;
+    let child_pid = child.id();
+    crate::agent_lifecycle::register_managed_agent(
+        crate::agent_lifecycle::ManagedAgent::ClaudeCode,
+        child_pid,
+        panel_cwd.display().to_string(),
+        node_cmd_display,
+        Some(CLAUDE_PANEL_PORT),
+    );
     if let Ok(mut slot) = CLAUDE_PANEL_CHILD.lock() {
         *slot = Some(child);
     }
