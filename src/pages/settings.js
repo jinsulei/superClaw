@@ -41,6 +41,20 @@ function openclawInstallationIdentity(installation) {
     .toLowerCase()
 }
 
+function isBundledOpenclawCliPath(cliPath) {
+  const normalized = openclawInstallationIdentity({ path: cliPath }).replace(/\\/g, '/')
+  return !!normalized && normalized.includes('/runtime/openclaw/openclaw.cmd')
+}
+
+function resolveAutoManagedOpenclawCliPath(versionInfo, installations = []) {
+  const currentPath = String(versionInfo?.cli_path || '').trim()
+  if (isBundledOpenclawCliPath(currentPath)) return currentPath
+  const activeBundled = installations.find(inst => inst?.active && isBundledOpenclawCliPath(inst.path))
+  if (activeBundled?.path) return activeBundled.path
+  const anyBundled = installations.find(inst => isBundledOpenclawCliPath(inst.path))
+  return anyBundled?.path || ''
+}
+
 function dedupeOpenclawInstallations(list = []) {
   const map = new Map()
   const preferCmd = inst => /openclaw\.cmd$/i.test(String(inst?.path || ''))
@@ -667,9 +681,11 @@ async function loadCliBinding(page) {
   try {
     const version = await api.getVersionInfo()
     const cfg = await api.readPanelConfig()
-    const boundPath = cfg?.openclawCliPath || ''
+    const explicitBoundPath = cfg?.openclawCliPath || ''
     const installations = dedupeOpenclawInstallations(version.all_installations || [])
     const currentPath = version.cli_path || ''
+    const autoManagedPath = resolveAutoManagedOpenclawCliPath(version, installations)
+    const boundPath = explicitBoundPath || autoManagedPath
 
     const sourceLabel = (src) => ({
       standalone: t('dashboard.cliSourceStandalone'),

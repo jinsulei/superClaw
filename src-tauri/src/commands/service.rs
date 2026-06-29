@@ -1,4 +1,4 @@
-/// 服务管理命令
+﻿/// 服务管理命令
 ///
 /// 检测策略（跨平台统一）：
 ///   1. TCP 连 127.0.0.1:{port}，超时 1.5s
@@ -1686,7 +1686,6 @@ mod platform {
     }
 
     const GATEWAY_WINDOW_TITLE: &str = "OpenClaw Gateway";
-
     /// 在后台隐藏启动 Gateway，避免守护重试时不断弹出终端窗口
     pub async fn start_service_impl(_label: &str) -> Result<(), String> {
         if !is_cli_installed() {
@@ -1727,6 +1726,14 @@ mod platform {
 
         let child = cmd.spawn().map_err(|e| format!("启动 Gateway 失败: {e}"))?;
         let spawned_pid = child.id();
+        crate::agent_lifecycle::register_managed_agent(
+            crate::agent_lifecycle::ManagedAgent::OpenClaw,
+            spawned_pid,
+            crate::commands::openclaw_dir().display().to_string(),
+            crate::utils::resolve_openclaw_cli_path()
+                .unwrap_or_else(|| "openclaw".to_string()),
+            Some(crate::commands::gateway_listen_port()),
+        );
 
         // 记录活跃子进程 PID（用于 stop 时精确 kill）
         {

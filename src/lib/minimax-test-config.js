@@ -98,7 +98,7 @@ export function normalizeMiniMaxTestConfig(input = {}) {
 function ensureMiniMaxProvider(openclawConfig, config, apiKey) {
   const cfg = cloneConfig(openclawConfig)
   if (!cfg.models || typeof cfg.models !== 'object' || Array.isArray(cfg.models)) cfg.models = {}
-  cfg.models.mode = 'merge'
+  delete cfg.models.mode
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
@@ -109,6 +109,7 @@ function ensureMiniMaxProvider(openclawConfig, config, apiKey) {
     models,
   }
   if (apiKey) cfg.models.providers[PROVIDER_ID].apiKey = apiKey
+  delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
 

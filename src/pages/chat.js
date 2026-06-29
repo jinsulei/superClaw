@@ -3,9 +3,18 @@
  * 支持：流式响应、Markdown 渲染、会话管理、Agent 选择、快捷指令
  */
 import { api, invalidate, isTauriRuntime } from '../lib/tauri-api.js'
+import { stopAgentOnPageClose } from '../lib/agent-lifecycle.js'
+import {
+  assertAgentReadyBeforeSend,
+  getOpenClawGatewayCopy,
+  normalizeGatewayUiState,
+  probeAgentGateway,
+  waitForAgentGatewayReady,
+} from '../lib/agent-gateway-status.js'
 import { navigate } from '../router.js'
 import { wsClient, uuid } from '../lib/ws-client.js'
 import { renderMarkdown } from '../lib/markdown.js'
+import { renderAgentMessageContent, renderAgentMessageContentInto } from '../components/chat/agent-message-content.js'
 import { saveMessage, saveMessages, getLocalMessages, isStorageAvailable } from '../lib/message-db.js'
 import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
@@ -19,6 +28,11 @@ import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/gene
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
+import {
+  buildAgentIdentitySystemPrompt,
+  getSafeAgentIdentityReply,
+  guardAgentIdentityReply,
+} from '../shared/agent-identity-guard.js'
 import {
   loadModelVoiceConfig,
   modelVoiceInputReady,
@@ -42,6 +56,7 @@ const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
+  buildAgentIdentitySystemPrompt('openclaw'),
   '你是 SuperClaw 里的 OpenClaw。',
   '你的身份是 OpenClaw，是负责浏览器自动化、桌面控制、文件操作、截图、OCR 辅助操作、工作流执行和工具调用的执行 Agent。',
   '用户问你是谁时，先回答你是 OpenClaw；可以简短说明底层模型只是推理引擎，不要把自己说成只是 MiniMax-M3 或只是模型供应商。',
@@ -49,7 +64,17 @@ const OPENCLAW_IDENTITY_PRELUDE = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '需要真实操作时使用已注册工具和 skills，不要用普通聊天文本假装执行。',
 ].join('\n')
-const OPENCLAW_LOCAL_IDENTITY_ANSWER = '我是 OpenClaw，SuperClaw 里的执行智能体，负责浏览器、桌面、文件、截图/OCR 和自动化工具调用；需要真实操作时我会使用已注册工具，并在高风险动作前等待你的确认。'
+const OPENCLAW_LOCAL_IDENTITY_ANSWER = [
+  '简单介绍：',
+  '',
+  '- 名字：OpenClaw Agent',
+  '- 角色：SuperClaw 里的实时聊天、桌面协助和工具执行助手',
+  '- 能力：浏览器自动化、桌面控制、文件操作、截图/OCR、工作流执行和工具调用',
+  '- 工作方式：先理解任务，再调用合适工具；高风险操作会先确认',
+  '- 底层模型：由当前系统配置提供，不作为我的产品身份',
+  '',
+  '需要我做什么？',
+].join('\n')
 
 const COMMANDS = [
   { title: 'chat.cmdSession', commands: [
@@ -114,8 +139,10 @@ const _inFlightRequestIds = new Set()
 const _seenChatEventKeys = new Set()
 const _recentAssistantFinals = new Map()
 const _renderedMessageKeysBySession = new Map()
+const _chatViewSnapshotsBySession = new Map()
 const OPENCLAW_SEND_DEDUPE_WINDOW_MS = 1200
 const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
+const OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS = 5 * 60 * 1000
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
@@ -153,11 +180,19 @@ let _errorTimer = null, _lastErrorMsg = null
 let _responseWatchdog = null, _postFinalCheck = null
 let _ultimateTimer = null, _sendTimestamp = 0
 let _generationTimeoutManager = null, _manualStopRequested = false
+let _openClawPendingResponse = false, _openClawActiveRequestClosed = true
 let _attachments = []
 const _openClawMediaDataUrlCache = new Map()
 const OPENCLAW_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 let _pasteHandler = null
 let _hasEverConnected = false
+let _openClawGatewayUiState = 'stopped'
+let _openClawGatewayProbe = null
+let _openClawGatewayError = ''
+let _openClawGatewayActionBusy = false
+let _openClawGatewayAutoStartPromise = null
+let _openClawGatewayProgress = 0
+let _openClawGatewayLastReadyReason = ''
 let _availableModels = []
 let _primaryModel = ''
 let _selectedModel = ''
@@ -370,7 +405,7 @@ export async function render() {
           <div class="chat-connect-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"/></svg>
           </div>
-          <div class="chat-connect-title">${t('chat.gatewayNotReady')}</div>
+          <div class="chat-connect-title" id="chat-connect-title">Gateway 未启动</div>
           <div class="chat-connect-desc" id="chat-connect-desc">${t('chat.connectingGateway')}</div>
           <div class="chat-connect-actions">
             <button class="btn btn-primary btn-sm" id="btn-fix-connect">${t('chat.fixAndReconnect')}</button>
@@ -419,6 +454,10 @@ export async function render() {
   _workspaceSaveBtn = page.querySelector('#chat-workspace-save')
   _workspaceReloadBtn = page.querySelector('#chat-workspace-reload')
   _workspacePreviewBtn = page.querySelector('#chat-workspace-preview-toggle')
+  const snapshotSessionKey = resolveGatewaySessionKey(localStorage.getItem(STORAGE_SESSION_KEY) || wsClient.sessionKey || '')
+  if (snapshotSessionKey) {
+    restoreOpenClawChatSnapshot(snapshotSessionKey, 'render')
+  }
   page.querySelector('#chat-sidebar')?.classList.toggle('open', getSidebarOpen())
 
   bindEvents(page)
@@ -433,9 +472,12 @@ export async function render() {
 
   loadHostedDefaults().then(() => { loadHostedSessionConfig(); renderHostedPanel(); updateHostedBadge() })
   loadModelOptions()
+  setOpenClawGatewayUiState('starting', { error: '', progress: 5 })
   // 非阻塞：先返回 DOM，后台连接 Gateway
   startCollaborationDispatchWatcher()
-  connectGateway()
+  autoStartOpenClawGatewayOnEnter().catch(error => {
+    setOpenClawGatewayUiState('error', { error: error?.message || String(error) })
+  })
   return page
 }
 
@@ -1404,34 +1446,272 @@ async function applySelectedModel() {
 
 // ── 连接引导遮罩 ──
 
+function hasOpenClawGatewayReadySignal(probe) {
+  if (!probe) return false
+  const status = String(probe.status || probe.state || '').toLowerCase()
+  const healthStatus = String(probe.health?.status || probe.healthStatus || '').toLowerCase()
+  const healthReady = healthStatus === 'live'
+    || healthStatus === 'ready'
+    || probe.health?.live === true
+    || probe.health?.ready === true
+    || probe.healthLive === true
+  const portListening = probe.portListening === true || probe.listening === true
+  if (probe.needsSetup || status === 'stopped' || status === 'error') return false
+  if (probe.error && probe.ready !== true && probe.connected !== true && probe.verified !== true) return false
+  return probe.ready === true
+    || probe.connected === true
+    || probe.verified === true
+    || (portListening && healthReady)
+    || status === 'ready'
+    || status === 'connected'
+    || status === 'live'
+    || healthReady
+}
+
+async function probeOpenClawGatewayHealthForSend() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 1800)
+  try {
+    const res = await fetch('http://127.0.0.1:18789/health', {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    const text = await res.text()
+    let json = null
+    try { json = text ? JSON.parse(text) : null } catch { json = { raw: text } }
+    const status = String(json?.status || json?.state || '').toLowerCase()
+    const live = res.ok && (status === 'live' || status === 'ready' || json?.ok === true || json?.ready === true)
+    return {
+      ready: live,
+      connected: live,
+      verified: live,
+      portListening: true,
+      listening: true,
+      status: live ? 'live' : 'error',
+      healthStatus: status,
+      health: json || { status },
+      error: live ? null : (json?.error || json?.message || `HTTP ${res.status}`),
+    }
+  } catch (error) {
+    return {
+      ready: false,
+      connected: false,
+      verified: false,
+      portListening: false,
+      listening: false,
+      status: 'error',
+      healthStatus: 'error',
+      error: error?.message || String(error),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function markOpenClawGatewayReady(reason = 'ready', details = {}) {
+  _hasEverConnected = true
+  _openClawGatewayLastReadyReason = reason
+  setOpenClawGatewayUiState('ready', { ...details, error: '', progress: 100 })
+}
+
+function reconcileOpenClawGatewayAfterTransientStatus(reason = 'transient') {
+  probeAgentGateway('openclaw', { timeoutMs: 1500 }).then(probe => {
+    if (!_pageActive) return
+    if (hasOpenClawGatewayReadySignal(probe)) {
+      markOpenClawGatewayReady(`${reason}-probe-ready`, { probe })
+      return
+    }
+    const state = normalizeGatewayUiState(probe)
+    setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
+  }).catch(error => {
+    if (!_pageActive) return
+    setOpenClawGatewayUiState(_hasEverConnected ? 'error' : 'checking', {
+      error: error?.message || String(error),
+    })
+  })
+}
+
+function setOpenClawGatewayUiState(nextState, details = {}) {
+  const requestedState = nextState || 'stopped'
+  const readyByProbe = hasOpenClawGatewayReadySignal(details.probe)
+  const readyByWs = (requestedState === 'checking' || requestedState === 'starting')
+    && wsClient.connected
+    && wsClient.gatewayReady
+  _openClawGatewayUiState = readyByProbe || readyByWs ? 'ready' : requestedState
+  if (details.probe) _openClawGatewayProbe = details.probe
+  if (_openClawGatewayUiState === 'ready') {
+    _hasEverConnected = true
+    _openClawGatewayError = ''
+  } else if (details.error !== undefined) {
+    _openClawGatewayError = details.error || ''
+  }
+  if (details.progress !== undefined) {
+    _openClawGatewayProgress = Math.max(0, Math.min(100, Number(details.progress) || 0))
+  } else if (_openClawGatewayUiState === 'starting') {
+    _openClawGatewayProgress = Math.max(_openClawGatewayProgress, 20)
+  } else if (_openClawGatewayUiState === 'checking') {
+    _openClawGatewayProgress = Math.max(_openClawGatewayProgress, 65)
+  } else if (_openClawGatewayUiState === 'ready') {
+    _openClawGatewayProgress = 100
+  } else if (_openClawGatewayUiState === 'stopped' || _openClawGatewayUiState === 'needs_setup' || _openClawGatewayUiState === 'error') {
+    _openClawGatewayProgress = 0
+  }
+  updateOpenClawGatewayUi()
+  updateSendState()
+}
+
+function updateOpenClawGatewayUi() {
+  const detail = _openClawGatewayError || _openClawGatewayProbe?.message || _openClawGatewayProbe?.error || ''
+  const copy = getOpenClawGatewayCopy(_openClawGatewayUiState, detail)
+  const overlay = document.getElementById('chat-connect-overlay')
+  const title = document.getElementById('chat-connect-title')
+  const desc = document.getElementById('chat-connect-desc')
+  const bar = document.getElementById('chat-disconnect-bar')
+  const action = document.getElementById('btn-fix-connect')
+  const hint = document.querySelector('.chat-connect-hint')
+
+  const progressSuffix = (_openClawGatewayUiState === 'starting' || _openClawGatewayUiState === 'checking')
+    ? `（${Math.max(1, Math.min(99, _openClawGatewayProgress || 1))}%）`
+    : ''
+  const descText = _openClawGatewayUiState === 'error' && detail
+    ? copy.desc
+    : `${copy.desc}${progressSuffix}`
+
+  if (title) title.textContent = copy.title
+  if (desc) desc.textContent = descText
+  if (hint) {
+    if (_openClawGatewayUiState === 'stopped') hint.textContent = '点击“启动 Gateway”后，系统会自动检查服务是否真正可用。'
+    else if (_openClawGatewayUiState === 'starting' || _openClawGatewayUiState === 'checking') hint.textContent = '正在确认 Gateway 状态，请稍候。'
+    else if (_openClawGatewayUiState === 'needs_setup') hint.textContent = '请先完成 OpenClaw 模型或 Key 配置。'
+    else if (_openClawGatewayUiState === 'error') hint.textContent = '请重新启动 Gateway，系统会重新执行可用性检查。'
+    else hint.textContent = ''
+  }
+  if (action) {
+    action.textContent = _openClawGatewayActionBusy ? '启动中...' : copy.action || '重新检查'
+    action.disabled = _openClawGatewayActionBusy || _openClawGatewayUiState === 'ready'
+    action.style.display = !_openClawGatewayActionBusy && (copy.showStartButton || copy.showReconnectButton) ? '' : 'none'
+  }
+
+  if (_openClawGatewayUiState === 'ready') {
+    if (overlay) overlay.style.display = 'none'
+    if (bar) bar.style.display = 'none'
+    updateStatusDot('ready')
+    return
+  }
+
+  const shouldBlockChat = !_hasEverConnected
+    && (_openClawGatewayUiState === 'stopped'
+      || _openClawGatewayUiState === 'starting'
+      || _openClawGatewayUiState === 'checking'
+      || _openClawGatewayUiState === 'needs_setup'
+      || _openClawGatewayUiState === 'error')
+
+  if (overlay) overlay.style.display = shouldBlockChat ? 'flex' : 'none'
+  if (bar) {
+    bar.textContent = `${copy.title} —— ${descText}`
+    bar.style.display = 'flex'
+  }
+  updateStatusDot(_openClawGatewayUiState === 'starting' || _openClawGatewayUiState === 'checking' ? 'connecting' : 'offline')
+}
+
+async function refreshOpenClawGatewayUiState() {
+  const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
+  const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+  if (state === 'ready') markOpenClawGatewayReady('dev-status-ready', { probe })
+  else setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
+  return probe
+}
+
+async function finalizeOpenClawProgressReady() {
+  setOpenClawGatewayUiState('checking', { error: '', progress: 75 })
+  const probe = await waitForAgentGatewayReady('openclaw', { attempts: 14, delayMs: 600, timeoutMs: 2000 })
+  const nextState = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+  if (nextState === 'ready') markOpenClawGatewayReady('health-live', { probe })
+  else setOpenClawGatewayUiState(nextState, { probe, error: probe?.error || '', progress: 85 })
+  return { ok: nextState === 'ready', state: nextState, probe }
+}
+
+async function startOpenClawGateway() {
+  if (isTauriRuntime()) {
+    await api.startService('ai.openclaw.gateway')
+    return { ok: true, agent: 'openclaw', status: 'starting' }
+  }
+
+  const res = await fetch('/__api/dev/agents/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'openclaw' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data.ok === false) {
+    const err = new Error(data.error || data.message || data.code || 'OpenClaw Gateway 启动失败')
+    err.data = data
+    throw err
+  }
+  return data
+}
+
+async function startOrRepairOpenClawGateway() {
+  if (_openClawGatewayActionBusy) return false
+  _openClawGatewayActionBusy = true
+  setOpenClawGatewayUiState('starting', { error: '', progress: 20 })
+  try {
+    await startOpenClawGateway()
+    setOpenClawGatewayUiState('checking', { error: '', progress: 60 })
+    const result = await finalizeOpenClawProgressReady()
+    if (!result.ok) return false
+
+    wsClient.disconnect()
+    await connectGateway({ skipProbe: true })
+    await waitForOpenClawGatewayReady(15000)
+    markOpenClawGatewayReady('manual-start-ready', { probe: result.probe })
+    return true
+  } catch (error) {
+    const message = error?.message || String(error)
+    const state = error?.data?.status === 'needs_setup' ? 'needs_setup' : 'error'
+    setOpenClawGatewayUiState(state, { error: message, probe: error?.data?.current || null })
+    toast(message, 'error')
+    return false
+  } finally {
+    _openClawGatewayActionBusy = false
+    updateOpenClawGatewayUi()
+  }
+}
+
+async function autoStartOpenClawGatewayOnEnter() {
+  if (_openClawGatewayAutoStartPromise) return _openClawGatewayAutoStartPromise
+  _openClawGatewayAutoStartPromise = (async () => {
+    const probe = await refreshOpenClawGatewayUiState()
+    if (!_pageActive) return false
+    const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+    if (state === 'ready') {
+      await connectGateway({ skipProbe: true })
+      markOpenClawGatewayReady('auto-enter-ready', { probe })
+      return true
+    }
+    if (state === 'needs_setup') return false
+    if (state === 'checking') {
+      const result = await finalizeOpenClawProgressReady()
+      if (!result.ok || !_pageActive) return false
+      await connectGateway({ skipProbe: true })
+      markOpenClawGatewayReady('auto-enter-finalized', { probe: result.probe })
+      return true
+    }
+    return startOrRepairOpenClawGateway()
+  })().finally(() => {
+    _openClawGatewayAutoStartPromise = null
+  })
+  return _openClawGatewayAutoStartPromise
+}
+
 function bindConnectOverlay(page) {
   const fixBtn = page.querySelector('#btn-fix-connect')
-  const gwBtn = page.querySelector('#btn-goto-gateway')
 
   if (fixBtn) {
     fixBtn.addEventListener('click', async () => {
-      fixBtn.disabled = true
-      fixBtn.textContent = t('chat.fixing')
-      const desc = document.getElementById('chat-connect-desc')
-      try {
-        if (desc) desc.textContent = t('chat.writingConfig')
-        await api.autoPairDevice()
-        await api.reloadGateway()
-        if (desc) desc.textContent = t('chat.fixDoneReconnecting')
-        // 断开旧连接，重新发起
-        wsClient.disconnect()
-        setTimeout(() => connectGateway(), 3000)
-      } catch (e) {
-        if (desc) desc.textContent = `${t('chat.fixFailed')}${e.message || e}`
-      } finally {
-        fixBtn.disabled = false
-        fixBtn.textContent = t('chat.fixAndReconnect')
-      }
+      await startOrRepairOpenClawGateway()
     })
-  }
-
-  if (gwBtn) {
-    gwBtn.addEventListener('click', () => navigate('/gateway'))
   }
 }
 
@@ -1825,24 +2105,36 @@ async function runOcrForAttachmentData(att) {
   return result
 }
 
-async function connectGateway() {
+async function connectGateway(options = {}) {
   try {
     // 清理旧的订阅，避免重复监听
     if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
     if (_unsubReady) { _unsubReady(); _unsubReady = null }
     if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
 
+    if (!options.skipProbe) {
+      const probe = await refreshOpenClawGatewayUiState()
+      const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+      if (state === 'stopped' || state === 'needs_setup' || state === 'error') {
+        if (wsClient.connected || wsClient.connecting || wsClient.gatewayReady) wsClient.disconnect()
+        return
+      }
+      if (state === 'checking') {
+        const waited = await waitForAgentGatewayReady('openclaw', { attempts: 4, delayMs: 500, timeoutMs: 1500 })
+        const waitedState = hasOpenClawGatewayReadySignal(waited) ? 'ready' : normalizeGatewayUiState(waited)
+        if (waitedState === 'ready') markOpenClawGatewayReady('connect-wait-ready', { probe: waited })
+        else setOpenClawGatewayUiState(waitedState, { probe: waited, error: waited?.error || '' })
+        if (waitedState !== 'ready') return
+      }
+    }
+
     // 订阅状态变化（订阅式，返回 unsub）
     _unsubStatus = wsClient.onStatusChange((status, errorMsg) => {
       if (!_pageActive) return
       updateStatusDot(status)
       const bar = document.getElementById('chat-disconnect-bar')
-      const overlay = document.getElementById('chat-connect-overlay')
-      const desc = document.getElementById('chat-connect-desc')
       if (status === 'ready' || status === 'connected') {
-        _hasEverConnected = true
-        if (bar) bar.style.display = 'none'
-        if (overlay) overlay.style.display = 'none'
+        markOpenClawGatewayReady('ws-status-ready')
         // WS 已连接，主动刷新 Gateway 状态以消除顶部横条延迟
         import('../lib/app-state.js').then(m => {
           m.confirmGatewayRunningFromLiveConnection?.()
@@ -1851,17 +2143,10 @@ async function connectGateway() {
       } else if (status === 'error') {
         // 连接错误：显示引导遮罩而非底部条
         if (bar) bar.style.display = 'none'
-        if (overlay) {
-          overlay.style.display = 'flex'
-          if (desc) desc.textContent = errorMsg || t('chat.connectFailed')
-        }
+        setOpenClawGatewayUiState('error', { error: errorMsg || t('chat.connectFailed') })
       } else if (status === 'reconnecting' || status === 'disconnected') {
         // 首次连接或多次重连失败时，显示引导遮罩而非底部小条
-        if (!_hasEverConnected) {
-          if (overlay) { overlay.style.display = 'flex'; if (desc) desc.textContent = t('chat.connectingGateway') }
-        } else {
-          if (bar) { bar.textContent = t('chat.disconnected'); bar.style.display = 'flex' }
-        }
+        reconcileOpenClawGatewayAfterTransientStatus(`ws-${status}`)
       } else {
         if (bar) bar.style.display = 'none'
       }
@@ -1871,14 +2156,11 @@ async function connectGateway() {
       if (!_pageActive) return
       const overlay = document.getElementById('chat-connect-overlay')
       if (err?.error) {
-        if (overlay) {
-          overlay.style.display = 'flex'
-          const desc = document.getElementById('chat-connect-desc')
-          if (desc) desc.textContent = err.message || t('chat.connectFailed')
-        }
+        if (overlay) overlay.style.display = 'flex'
+        setOpenClawGatewayUiState('error', { error: err.message || t('chat.connectFailed') })
         return
       }
-      if (overlay) overlay.style.display = 'none'
+      markOpenClawGatewayReady('ws-ready')
       showTyping(false)  // Gateway 就绪后关闭加载动画
       // 重连后恢复：保留当前 sessionKey，不重复加载历史
       if (!_sessionKey) {
@@ -1901,7 +2183,7 @@ async function connectGateway() {
     // 如果已连接且 Gateway 就绪，直接复用
     if (wsClient.connected && wsClient.gatewayReady) {
       _sessionKey = resolveGatewaySessionKey(wsClient.sessionKey)
-      updateStatusDot('ready')
+      markOpenClawGatewayReady('reuse-existing-ws')
       showTyping(false)  // 确保关闭加载动画
       updateSessionTitle()
       loadHistory()
@@ -1965,17 +2247,47 @@ function waitForOpenClawGatewayReady(timeoutMs = OPENCLAW_GATEWAY_SEND_READY_TIM
 
 async function ensureOpenClawGatewayReadyForSend() {
   ensureReadySessionKey()
+  if (_openClawGatewayUiState === 'ready' && wsClient.gatewayReady && _sessionKey) {
+    markOpenClawGatewayReady('send-ws-ready')
+    return true
+  }
+  const statusProbe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
+  const healthProbe = hasOpenClawGatewayReadySignal(statusProbe)
+    ? statusProbe
+    : await probeOpenClawGatewayHealthForSend()
+  const readyProbe = hasOpenClawGatewayReadySignal(statusProbe) || hasOpenClawGatewayReadySignal(healthProbe)
+  if (readyProbe) {
+    markOpenClawGatewayReady('send-probe-ready', {
+      probe: hasOpenClawGatewayReadySignal(healthProbe) ? healthProbe : statusProbe,
+    })
+  }
+  const readyCheck = await assertAgentReadyBeforeSend('openclaw', { attempts: 2, delayMs: 300, timeoutMs: 1500 })
+  const readyCheckState = hasOpenClawGatewayReadySignal(readyCheck.state) ? 'ready' : normalizeGatewayUiState(readyCheck.state)
+  if (readyCheckState === 'ready') markOpenClawGatewayReady('send-ready-check', { probe: readyCheck.state })
+  else {
+    setOpenClawGatewayUiState(readyCheckState, {
+      probe: readyCheck.state,
+      error: readyCheck.state?.error || '',
+    })
+  }
+  if (!readyCheck.ok && !readyProbe && !hasOpenClawGatewayReadySignal(readyCheck.state)) {
+    toast(readyCheck.message || 'OpenClaw Gateway 尚未就绪。', 'warning')
+    return false
+  }
   if (wsClient.gatewayReady && _sessionKey) return true
-  toast('OpenClaw Gateway 正在启动，请稍候...', 'warning')
+  toast('Gateway 已启动，正在检查服务是否可用...', 'warning')
   showTyping(true)
   try {
-    await connectGateway()
+    if (!wsClient.gatewayReady && (wsClient.connected || wsClient.connecting)) wsClient.disconnect()
+    await connectGateway({ skipProbe: true })
     await waitForOpenClawGatewayReady()
+    markOpenClawGatewayReady('send-ready-wait')
     showTyping(false)
     return true
   } catch (error) {
     showTyping(false)
     const message = error?.message || 'OpenClaw Gateway 启动超时，请点击重新连接'
+    setOpenClawGatewayUiState('error', { error: message })
     appendSystemMessage(message)
     toast(message, 'error')
     return false
@@ -2194,6 +2506,7 @@ function parseSessionLabel(key) {
 async function switchSession(newKey, options = {}) {
   const { forceWorkspace = false } = options
   if (newKey === _sessionKey) return false
+  snapshotCurrentChatState('switch-session')
   _voicePlaybackController?.stop()
   syncMessageVoiceButtons(null)
   const nextAgentId = parseSessionAgent(newKey) || 'main'
@@ -2606,11 +2919,16 @@ function isOpenClawIdentityQuestion(input) {
   const text = raw.replace(/\s+/g, ' ')
   if (!text || text.length > 160) return false
   if (/```|执行包|当前仓库|禁止|报告|步骤|检查|目标[:：]|OpenClaw 全面自检指令/i.test(text)) return false
-  return /你是谁|你是誰|你是什么|你是什麼|你的身份|身份定位|who are you|what are you/i.test(text)
+  return /你是谁|你是誰|你叫什么|你叫什麼|你是什么|你是什麼|介绍下自己|介绍一下自己|介绍下你自己|介绍一下你自己|自我介绍|你的身份|身份定位|who are you|what are you|introduce yourself/i.test(text)
 }
 
 function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
   const now = Date.now()
+  const identityAnswer = guardAgentIdentityReply({
+    agentName: 'openclaw',
+    userText: text,
+    assistantText: OPENCLAW_LOCAL_IDENTITY_ANSWER || getSafeAgentIdentityReply('openclaw'),
+  })
   appendUserMessage(text, attachments)
   saveMessage({
     id: `openclaw-user-${clientRequestId}`,
@@ -2620,12 +2938,12 @@ function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequest
     timestamp: now,
     attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined,
   })
-  appendAiMessage(OPENCLAW_LOCAL_IDENTITY_ANSWER)
+  appendAiMessage(identityAnswer)
   saveMessage({
     id: `openclaw-local-identity-${clientRequestId}`,
     sessionKey: _sessionKey,
     role: 'assistant',
-    content: OPENCLAW_LOCAL_IDENTITY_ANSWER,
+    content: identityAnswer,
     timestamp: now + 1,
   })
 }
@@ -2719,7 +3037,10 @@ function getOpenClawToolDisplayText(tools = []) {
 }
 
 function getOpenClawDisplayFingerprint(message = {}) {
-  const text = normalizeOpenClawMessageText(message.text ?? message.content ?? '')
+  const role = (message.role === 'tool' || message.role === 'toolResult') ? 'assistant' : (message.role || '')
+  const rawText = message.text ?? message.content ?? ''
+  const visibleText = role === 'user' ? stripOpenClawIdentityPrelude(rawText) : rawText
+  const text = normalizeOpenClawMessageText(visibleText)
   const toolText = getOpenClawToolDisplayText(message.tools)
   const mediaSig = [
     message.images?.length || 0,
@@ -2935,6 +3256,8 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   if (_inFlightRequestIds.has(clientRequestId)) return
   _inFlightRequestIds.add(clientRequestId)
   _activeClientRequestId = clientRequestId
+  _openClawPendingResponse = true
+  _openClawActiveRequestClosed = false
   _lastVisibleUserText = text
   const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
   appendUserMessage(text, attachments)
@@ -2967,6 +3290,8 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
     }
     _inFlightRequestIds.delete(clientRequestId)
     if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
+    _openClawPendingResponse = false
+    _openClawActiveRequestClosed = true
     appendSystemMessage(`${t('chat.sendFailed')}${err.message}`)
   } finally {
     _isSending = false
@@ -3139,9 +3464,348 @@ function previewToolValue(value, maxLen = 180) {
   return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text
 }
 
+function normalizeOpenClawToolValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return stripAnsi(value)
+  return stripAnsi(safeStringify(value))
+}
+
+function collectOpenClawToolText(tools = [], fallbackText = '') {
+  const parts = []
+  const push = (value) => {
+    const text = normalizeOpenClawToolValue(value).trim()
+    if (text) parts.push(text)
+  }
+  ;(Array.isArray(tools) ? tools : []).forEach(tool => {
+    push(tool?.output)
+    push(tool?.result)
+    push(tool?.content)
+    push(tool?.error)
+    push(tool?.name)
+  })
+  push(fallbackText)
+  return parts.join('\n\n').trim()
+}
+
+function isInternalToolPlaceholderText(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return true
+  const compact = raw
+    .toLowerCase()
+    .replace(/[\s_*`~\[\](){}<>:：。，,.!?！？-]+/g, '')
+  if (['tool', 'tooltool', 'toolresult', 'toolcompleted', 'toolresultsynced', 'heartbeatok', 'heartbeat_ok'].includes(compact)) return true
+  if (/^\[?\s*tool_call\s*\]?$/i.test(raw)) return true
+  if (/^\s*Tool\s+tool(?:\s+(?:success|ok|completed|done))?\s*$/i.test(raw)) return true
+  if (/^\s*(?:success|ok|completed|done)\s*$/i.test(raw)) return true
+  if (/^\s*\u5de5\u5177(?:\u6267\u884c)?\u6210\u529f\s*$/i.test(raw)) return true
+  if (/^\s*\u5de5\u5177\u5df2\u5b8c\u6210\s*$/i.test(raw)) return true
+  if (/^\s*\u7ed3\u679c\u5df2\u540c\u6b65(?:\u5230\u4e0b\u65b9\u8be6\u60c5)?\s*$/i.test(raw)) return true
+  if (/^\s*\u7ed3\u679c\u5df2\u6536\u8d77\u5728\u5361\u7247\u4e2d\s*$/i.test(raw)) return true
+  return false
+}
+
+function getOpenClawToolDisplayName(tool = {}) {
+  const values = [
+    tool.displayName,
+    tool.title,
+    tool.label,
+    tool.name,
+    tool.toolName,
+    tool.tool_name,
+    tool.tool,
+    tool.id,
+    tool.tool_call_id,
+  ]
+  for (const value of values) {
+    const text = String(value || '').trim()
+    if (!text) continue
+    if (/^(tool|tool_call|tool_result|result|output|success|ok|done|completed)$/i.test(text)) continue
+    if (/^[a-z0-9_-]{16,}$/i.test(text)) continue
+    return text
+  }
+  return ''
+}
+
+function stripRawOpenClawToolText(text) {
+  const cleaned = []
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    let line = rawLine.trim()
+    if (!line) continue
+    if (isInternalToolPlaceholderText(line)) continue
+    line = line
+      .replace(/\bTool\s+tool\b/gi, '')
+      .replace(/\[?\s*tool_call\s*\]?/gi, '')
+      .replace(/\u5de5\u5177(?:\u6267\u884c)?\u6210\u529f[，,。.、\s]*/g, '')
+      .replace(/\u5de5\u5177\u5df2\u5b8c\u6210[，,。.、\s]*/g, '')
+      .replace(/\u7ed3\u679c\u5df2\u540c\u6b65(?:\u5230\u4e0b\u65b9\u8be6\u60c5)?[，,。.、\s]*/g, '')
+      .replace(/\u7ed3\u679c\u5df2\u6536\u8d77\u5728\u5361\u7247\u4e2d[，,。.、\s]*/g, '')
+      .replace(/\u5c55\u5f00\u8be6\u60c5/g, '')
+      .replace(/\u67e5\u770b\u5de5\u5177\u8be6\u60c5/g, '')
+      .trim()
+    if (!line) continue
+    if (/^(?:[·•|\s-]*\d{1,2}:\d{2}(?:\s*[·•|]\s*)?)?(?:⏱\s*)?\d+(?:\.\d+)?s?$/.test(line)) continue
+    if (/^\|?\s*-{2,}\s*(?:\|\s*-{2,}\s*)+\|?$/.test(line)) continue
+    if (/^\|.*\|$/.test(line)) continue
+    if (/^\s*(?:tool_result|tool result|tool_call|tool call|arguments|parameters|raw json|json|stdout|stderr)\s*[:=]/i.test(line)) continue
+    if (/^\s*[\[{]/.test(line)) continue
+    cleaned.push(line)
+  }
+  const value = cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  return value.length > 1200 ? `${value.slice(0, 1200)}...` : value
+}
+
+function extractOpenClawSkillsCount(text, skillNames = []) {
+  const raw = String(text || '')
+  const matches = [
+    raw.match(/\btotal\s*[:=]\s*(\d+)/i),
+    raw.match(/\bcount\s*[:=]\s*(\d+)/i),
+    raw.match(/\bskills?\s*[:=]\s*(\d+)/i),
+    raw.match(/\u5df2\u53d1\u73b0\s*(\d+)\s*\u4e2a\u6280\u80fd\u5305/),
+    raw.match(/\u5171\s*(\d+)\s*\u4e2a\u6280\u80fd\u5305/),
+  ].filter(Boolean)
+  for (const match of matches) {
+    const count = Number(match?.[1])
+    if (Number.isFinite(count) && count > 0) return count
+  }
+  return Array.isArray(skillNames) ? skillNames.length : 0
+}
+
+function isOpenClawSkillsToolResult(info = {}) {
+  const raw = String(info.rawText || '')
+  return Boolean(
+    info.skillNames?.length ||
+    /\b(skills?_?(?:list|check|search|view)|skill_manager|SKILL\.md)\b/i.test(raw) ||
+    /(?:^|[\\/])skills[\\/]/i.test(raw) ||
+    /\u6280\u80fd\u5305|\u6280\u80fd\u5217\u8868|Skills\s*\u67e5\u8be2/i.test(raw)
+  )
+}
+
+function formatOpenClawToolResultForUser(info = {}) {
+  if (info.failed) {
+    return '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898\uff0c\u8bf7\u5c55\u5f00\u67e5\u770b\u8be6\u7ec6\u4fe1\u606f\u3002'
+  }
+  if (isOpenClawSkillsToolResult(info)) {
+    const count = extractOpenClawSkillsCount(info.rawText, info.skillNames)
+    if (count > 0) {
+      return `Skills \u67e5\u8be2\u6210\u529f\u3002\u5df2\u53d1\u73b0 ${count} \u4e2a\u6280\u80fd\u5305\u3002\u4f60\u53ef\u4ee5\u5728 Skills \u9875\u9762\u67e5\u770b\u8be6\u60c5\uff0c\u6216\u7ee7\u7eed\u544a\u8bc9\u6211\u8981\u542f\u7528\u3001\u5220\u9664\u3001\u5378\u8f7d\u54ea\u4e2a Skill\u3002`
+    }
+    return 'Skills \u67e5\u8be2\u5df2\u5b8c\u6210\u3002\u7ed3\u679c\u5df2\u6574\u7406\u5230 Skills \u5217\u8868\uff0c\u8bf7\u5728 Skills \u9875\u9762\u67e5\u770b\u8be6\u60c5\u3002'
+  }
+  const name = info.toolDisplayName ? `${info.toolDisplayName} ` : ''
+  return `${name}\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210\u3002`
+}
+
+function normalizeOpenClawSkillName(value) {
+  let name = String(value || '')
+    .replace(/[`*_]/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/^[\s#|:：,，.;；\-]+|[\s#|:：,，.;；\-]+$/g, '')
+    .trim()
+  if (!name) return ''
+  name = name.replace(/\\/g, '/')
+  const skillPathMatch = name.match(/(?:^|\/)skills\/([^/\s|,，:：]+)(?:\/SKILL\.md)?$/i)
+    || name.match(/(?:^|\/)([^/\s|,，:：]+)\/SKILL\.md$/i)
+  if (skillPathMatch) name = skillPathMatch[1]
+  if (!name || name.length > 64) return ''
+  if (/^(id|no|name|title|skill|skills|path|status|ready|description|desc|total|tool|result|output|success|ok|true|false|null|undefined)$/i.test(name)) return ''
+  if (/^(openclaw|hermes|claude|superclaw)$/i.test(name)) return ''
+  if (/^\d+$/.test(name)) return ''
+  if (/^-+$/.test(name)) return ''
+  return name
+}
+
+function parseOpenClawSkillNamesFromToolText(text) {
+  const raw = String(text || '')
+  const names = []
+  const seen = new Set()
+  const add = (value) => {
+    const name = normalizeOpenClawSkillName(value)
+    if (!name) return
+    const key = name.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    names.push(name)
+  }
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (/^\|?\s*-{2,}/.test(trimmed)) continue
+    if (trimmed.includes('|')) {
+      const cells = trimmed.split('|').map(cell => cell.trim()).filter(Boolean)
+      if (!cells.length) continue
+      const candidates = cells.filter(cell => !/^\d+$/.test(cell) && !/^(id|no|name|title|skill|skills|path|status|ready|description|desc)$/i.test(cell))
+      if (candidates.length) add(candidates[0])
+      continue
+    }
+    const named = trimmed.match(/(?:name|title|skill|技能|技能包)\s*[:：=]\s*["']?([^"',，|]+)["']?/i)
+    if (named) {
+      add(named[1])
+      continue
+    }
+    const pathMatch = trimmed.match(/(?:^|[\\/])skills[\\/]+([^\\/|\s,，:：]+)(?:[\\/]|$)/i)
+    if (pathMatch) add(pathMatch[1])
+  }
+
+  for (const match of raw.matchAll(/["'](?:name|title|skill|id)["']\s*:\s*["']([^"']+)["']/gi)) {
+    add(match[1])
+  }
+
+  return names.slice(0, 80)
+}
+
+function getOpenClawToolResultInfo(tools = [], fallbackText = '') {
+  const list = Array.isArray(tools) ? tools.filter(Boolean) : []
+  const rawText = collectOpenClawToolText(list, fallbackText)
+  const failed = list.some(tool => tool?.status === 'error' || tool?.isError) || /\b(error|failed|exception|traceback)\b/i.test(rawText)
+  const skillNames = parseOpenClawSkillNamesFromToolText(rawText)
+  const last = list[list.length - 1] || {}
+  const toolDisplayName = getOpenClawToolDisplayName(last)
+  const looksLikeSkillResult = skillNames.length > 0
+    || /\b(skills?_?(?:list|check|search|view)|skill_manager|SKILL\.md)\b/i.test(rawText)
+    || /技能包|技能列表|已发现\s*\d+\s*个技能|total\s*[:=]\s*\d+/i.test(rawText)
+  return {
+    failed,
+    rawText,
+    safeRawText: stripRawOpenClawToolText(rawText),
+    skillNames,
+    isSkillsResult: looksLikeSkillResult,
+    toolCount: list.length,
+    skillCount: extractOpenClawSkillsCount(rawText, skillNames),
+    toolName: toolDisplayName,
+    toolDisplayName,
+  }
+}
+
+function shouldRenderOpenClawToolResultCard(tools = [], fallbackText = '') {
+  const info = getOpenClawToolResultInfo(tools, fallbackText)
+  if (info.toolCount > 0) return true
+  if (!info.rawText) return false
+  if (isInternalToolPlaceholderText(info.rawText)) return true
+  if (/\u5de5\u5177(?:\u6267\u884c|\u8c03\u7528)|\u7ed3\u679c\u5df2\u540c\u6b65|\u7ed3\u679c\u5df2\u6536\u8d77|Tool\s+tool|tool_result|tool result/i.test(info.rawText)) return true
+  if (/\bTool\s+tool\b|工具执行|工具返回|tool_result|tool result/i.test(info.rawText)) return true
+  if (/\b(skills?_?(?:list|check|search|view)|skill_manager|SKILL\.md)\b/i.test(info.rawText)) return true
+  if (/\|\s*[-\w./\\ ]+\s*\|/.test(info.rawText) && info.skillNames.length > 1) return true
+  if (/已发现\s*\d+\s*个技能|total\s*[:=]\s*\d+/i.test(info.rawText) && info.skillNames.length > 0) return true
+  return false
+}
+
+function ensureOpenClawToolResultCardStyles() {
+  if (document.getElementById('openclaw-tool-result-card-styles')) return
+  const style = document.createElement('style')
+  style.id = 'openclaw-tool-result-card-styles'
+  style.textContent = `
+    .openclaw-tool-result-card {
+      display: grid;
+      gap: 10px;
+      margin: 0 0 10px;
+      padding: 12px 14px;
+      border: 1px solid color-mix(in srgb, var(--border, #d6dee9) 78%, transparent);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--chat-assistant-bg, #fff8fb) 86%, var(--chat-page-bg, #eef4fa));
+      color: var(--text-primary);
+    }
+    .openclaw-tool-result-card__header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      font-weight: 800;
+      line-height: 1.4;
+    }
+    .openclaw-tool-result-card__icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent, #168c76);
+    }
+    .openclaw-tool-result-card__summary {
+      margin: 0;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .openclaw-tool-result-card__chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .openclaw-tool-result-card__chip {
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent, #168c76) 11%, transparent);
+      color: color-mix(in srgb, var(--accent, #168c76) 80%, var(--text-primary));
+      font-size: 12px;
+      line-height: 1.4;
+      font-weight: 650;
+    }
+    .openclaw-tool-result-card__details summary {
+      cursor: pointer;
+      color: var(--text-tertiary);
+      font-size: 12px;
+      user-select: none;
+    }
+    .openclaw-tool-result-card__details pre {
+      max-height: 280px;
+      overflow: auto;
+      margin: 8px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(80, 125, 190, 0.08);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      line-height: 1.55;
+    }
+  `
+  document.head.appendChild(style)
+}
+
+function renderOpenClawToolResultCard(container, tools = [], fallbackText = '') {
+  if (!container) return false
+  const info = getOpenClawToolResultInfo(tools, fallbackText)
+  if (!info.toolCount && !info.rawText) return false
+  ensureOpenClawToolResultCardStyles()
+  const title = info.failed
+    ? '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898'
+    : (isOpenClawSkillsToolResult(info) ? 'Skills \u67e5\u8be2\u6210\u529f' : '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210')
+  const count = info.skillNames.length
+  const summary = formatOpenClawToolResultForUser(info)
+  const card = document.createElement('div')
+  card.className = 'openclaw-tool-result-card'
+  const chips = count
+    ? `<div class="openclaw-tool-result-card__chips">${info.skillNames.slice(0, 24).map(name => `<span class="openclaw-tool-result-card__chip">${escapeHtml(name)}</span>`).join('')}${count > 24 ? `<span class="openclaw-tool-result-card__chip">+${count - 24}</span>` : ''}</div>`
+    : ''
+  const raw = info.safeRawText
+  const details = raw ? `
+    <details class="openclaw-tool-result-card__details">
+      <summary>\u5c55\u5f00\u8be6\u60c5</summary>
+      <pre>${escapeHtml(raw)}</pre>
+    </details>
+  ` : ''
+  card.innerHTML = `
+    <div class="openclaw-tool-result-card__header">
+      <span class="openclaw-tool-result-card__icon">${svgIcon(info.failed ? 'alert-triangle' : 'wrench', 14)}</span>
+      <span>${title}</span>
+    </div>
+    <p class="openclaw-tool-result-card__summary">${summary}</p>
+    ${chips}
+    ${details}
+  `
+  container.appendChild(card)
+  return true
+}
+
 function buildToolOnlyAssistantReply(tools = []) {
   const list = Array.isArray(tools) ? tools.filter(Boolean) : []
   if (!list.length) return ''
+  const toolInfo = getOpenClawToolResultInfo(list)
+  if (!toolInfo.failed) {
+    return formatOpenClawToolResultForUser(toolInfo)
+  }
   const last = list[list.length - 1] || {}
   const name = last.name || last.toolName || last.id || '工具'
   const failed = last.status === 'error' || last.isError
@@ -3224,6 +3888,75 @@ function hideOpenClawGenerationActions() {
   if (actions) actions.hidden = true
 }
 
+function hasOpenClawVisibleAssistantNode(node) {
+  if (!node || node.hidden) return false
+  if (node.querySelector?.('.openclaw-tool-result-card, .msg-tool, img, video, audio, .msg-file-card')) return true
+  const text = normalizeOpenClawMessageText(node.textContent || '')
+    .replace(/\bOpenClaw\b/g, '')
+    .replace(/\bTool\b/g, '')
+    .replace(/继续等待|停止生成|继续生成|回复等待时间较长|可能仍在生成/g, '')
+    .trim()
+  return !!text
+}
+
+function hasOpenClawAssistantVisibleContentForRequest(requestId = null) {
+  if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
+  if (hasOpenClawVisibleAssistantNode(_currentAiBubble?.closest?.('.msg') || _currentAiBubble)) return true
+  if (!_messagesEl) return false
+  const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai'))
+  let afterLastUser = false
+  let hasVisibleAssistant = false
+  for (const row of rows) {
+    if (row.classList.contains('msg-user')) {
+      afterLastUser = true
+      hasVisibleAssistant = false
+      continue
+    }
+    if (afterLastUser && row.classList.contains('msg-ai') && hasOpenClawVisibleAssistantNode(row)) {
+      hasVisibleAssistant = true
+    }
+  }
+  return hasVisibleAssistant
+}
+
+function clearOpenClawGenerationState(reason = 'completed', requestId = null) {
+  if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
+  _openClawPendingResponse = false
+  _openClawActiveRequestClosed = true
+  _isSending = false
+  _isStreaming = false
+  _manualStopRequested = reason === 'stopped' ? true : _manualStopRequested
+  _cancelResponseWatchdog()
+  clearGenerationTimeoutManager()
+  clearTimeout(_streamSafetyTimer)
+  if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
+  if (requestId) _inFlightRequestIds.delete(requestId)
+  _activeClientRequestId = null
+  _currentRunId = null
+  _sendTimestamp = 0
+  clearOpenClawGenerationNotice()
+  hideOpenClawGenerationActions()
+  showTyping(false)
+  updateSendState()
+  return true
+}
+
+function maybeShowOpenClawLongResponseWarning(message, requestId = null, options = {}) {
+  if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
+  if (_openClawActiveRequestClosed) return false
+  if (!_openClawPendingResponse && !_isSending && !_isStreaming) return false
+  if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
+    if (!_isStreaming || _currentAiTools.length) {
+      clearOpenClawGenerationState('assistant-visible', requestId)
+    }
+    return false
+  }
+  showOpenClawGenerationNotice(message)
+  showTyping(true, message)
+  if (options.actions) showOpenClawGenerationActions()
+  return true
+}
+
 function clearGenerationTimeoutManager() {
   if (_generationTimeoutManager) {
     _generationTimeoutManager.stop()
@@ -3237,14 +3970,13 @@ function clearGenerationTimeoutManager() {
 function startGenerationTimeoutManager() {
   clearGenerationTimeoutManager()
   _manualStopRequested = false
+  const requestId = _activeClientRequestId
   _generationTimeoutManager = createGenerationTimeoutManager({
     onFirstTokenSlow: ({ message }) => {
-      showOpenClawGenerationNotice(message)
-      showTyping(true, message)
+      maybeShowOpenClawLongResponseWarning(message, requestId)
     },
     onIdleTimeout: ({ message }) => {
-      showOpenClawGenerationNotice(message)
-      showOpenClawGenerationActions()
+      maybeShowOpenClawLongResponseWarning(message, requestId, { actions: true })
     },
     onClearNotice: () => {
       clearOpenClawGenerationNotice()
@@ -3264,9 +3996,10 @@ function markGenerationHeartbeat() {
 
 function stopGeneration() {
   _manualStopRequested = true
+  const requestId = _activeClientRequestId
   _generationTimeoutManager?.stop()
   if (_currentRunId) wsClient.chatAbort(_sessionKey, _currentRunId).catch(() => {})
-  showOpenClawGenerationNotice('本次回复已停止。你可以继续生成或重新发送。')
+  clearOpenClawGenerationState('stopped', requestId)
 }
 
 // ── 事件处理（参照 clawapp 实现） ──
@@ -3418,10 +4151,12 @@ function handleChatEvent(payload, eventId = '') {
 
   const { state } = payload
   const runId = payload.runId
+  const terminalRequestId = payload.clientRequestId || payload.idempotencyKey || _activeClientRequestId
 
   // 重复 run 过滤：跳过已完成的 runId 的后续事件（Gateway 可能对同一消息触发多个 run）
   if (runId && state === 'final' && _seenRunIds.has(runId)) {
     console.log('[chat] 跳过重复 final, runId:', runId)
+    clearOpenClawGenerationState('duplicate-final', terminalRequestId)
     return
   }
   if (runId && state === 'delta' && _seenRunIds.has(runId) && !_isStreaming) {
@@ -3430,6 +4165,7 @@ function handleChatEvent(payload, eventId = '') {
   }
 
   if (state === 'delta') {
+    markOpenClawGatewayReady('chat-delta')
     markGenerationProgress()
     _cancelResponseWatchdog()
     const c = extractChatContent(payload.message)
@@ -3454,6 +4190,7 @@ function handleChatEvent(payload, eventId = '') {
   }
 
   if (state === 'final') {
+    markOpenClawGatewayReady('chat-final')
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
@@ -3505,14 +4242,19 @@ function handleChatEvent(payload, eventId = '') {
     })
     if (!_currentAiBubble && assistantDedupeKey && hasRenderedOpenClawMessage(_sessionKey, assistantDedupeKey)) {
       console.log('[chat] skipped duplicate rendered assistant final:', assistantDedupeKey)
+      clearOpenClawGenerationState('duplicate-rendered-final', terminalRequestId)
       return
     }
     if (!_currentAiBubble && isDuplicateRecentAssistantFinal(assistantFingerprint)) {
       console.log('[chat] skipped duplicate assistant final')
+      clearOpenClawGenerationState('duplicate-assistant-final', terminalRequestId)
       return
     }
     // 忽略空 final（Gateway 会为一条消息触发多个 run，部分是空 final）
-    if (!_currentAiBubble && !hasContent) return
+    if (!_currentAiBubble && !hasContent) {
+      clearOpenClawGenerationState('empty-final', terminalRequestId)
+      return
+    }
     // 标记 runId 为已处理，防止重复
     if (runId) {
       _seenRunIds.add(runId)
@@ -3597,6 +4339,7 @@ function handleChatEvent(payload, eventId = '') {
         }
       }
     }
+    clearOpenClawGenerationState(finalTools.length || _currentAiTools.length ? 'tool-result-completed' : 'final-completed', terminalRequestId)
     resetStreamState()
     _schedulePostFinalCheck()
     processMessageQueue()
@@ -3623,11 +4366,8 @@ function handleChatEvent(payload, eventId = '') {
     if (/origin not allowed|NOT_PAIRED|PAIRING_REQUIRED|auth.*fail/i.test(errMsg)) {
       console.warn('[chat] 拦截连接级错误，不显示为聊天消息:', errMsg)
       const overlay = document.getElementById('chat-connect-overlay')
-      if (overlay) {
-        overlay.style.display = 'flex'
-        const desc = document.getElementById('chat-connect-desc')
-        if (desc) desc.textContent = t('chat.connectionRejected')
-      }
+      if (overlay) overlay.style.display = 'flex'
+      setOpenClawGatewayUiState('error', { error: t('chat.connectionRejected') })
       return
     }
 
@@ -3643,6 +4383,7 @@ function handleChatEvent(payload, eventId = '') {
     // 如果正在流式输出，说明消息已经部分成功，不显示错误
     if (_isStreaming || _currentAiBubble) {
       console.warn('[chat] 流式中收到错误，但消息已部分成功，忽略错误提示:', errMsg)
+      clearOpenClawGenerationState('error-after-visible-content', terminalRequestId)
       return
     }
 
@@ -3887,6 +4628,12 @@ function createOpenClawRoleLine(role = 'assistant') {
 
 function renderCompactAssistantContent(rawText, container) {
   if (!container) return
+  const existingToolCard = container.closest?.('.msg-bubble')?.querySelector('.openclaw-tool-result-card')
+  if (shouldRenderOpenClawToolResultCard([], rawText)) {
+    container.innerHTML = ''
+    if (!existingToolCard) renderOpenClawToolResultCard(container, [], rawText)
+    return
+  }
   const compact = compactChatMessage(rawText)
   const compactKey = container.dataset.compactKey || ''
   const canToggle = !!compact.collapsed
@@ -3899,13 +4646,19 @@ function renderCompactAssistantContent(rawText, container) {
 
   const content = document.createElement('div')
   content.className = 'assistant-compact-message__content'
-  const mergeShortSectionLines = (text) => String(text || '').replace(
-    /^([\u4e00-\u9fffA-Za-z0-9 +/&_-]{2,18})\n\n([^\n`|][^\n]{1,180})(?=\n\n|$)/gm,
-    (_, heading, body) => `${heading}\uFF1A${body.trim()}`,
-  )
+  const normalizeOpenClawReadableRows = (text) => String(text || '')
+    .replace(/\s+(?=(?:我能做什么|我的能力|主要能力|工作方式|底层模型|产品身份|需要我做什么)[：:])/g, '\n\n')
+    .replace(/([。！？；;])\s*(?=(?:🌐|🖥️?|💻|📁|📂|🔍|🧠|⚙️|🛠️?|📌|✅|🔑|🧭|💡|🖼️?|📝))/g, '$1\n')
+    .replace(/\s+(?=(?:🌐|🖥️?|💻|📁|📂|🔍|🧠|⚙️|🛠️?|📌|✅|🔑|🧭|💡|🖼️?|📝)\s*[\u4e00-\u9fffA-Za-z0-9][^：:\n]{0,18}[：:])/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 
   const renderContent = (text) => {
-    content.innerHTML = renderMarkdown(mergeShortSectionLines(text))
+    renderAgentMessageContentInto(content, {
+      agent: 'openclaw',
+      content: normalizeOpenClawReadableRows(text),
+      details: compact.toolLines.join('\n'),
+    })
   }
   renderContent(manualCollapsed ? compact.preview : compact.content)
   if (compact.preview || compact.content) wrapper.appendChild(content)
@@ -3923,18 +4676,6 @@ function renderCompactAssistantContent(rawText, container) {
       renderContent(expanded ? compact.content : compact.preview)
     })
     wrapper.appendChild(toggle)
-  }
-
-  if (compact.toolLines.length > 0) {
-    const details = document.createElement('details')
-    details.className = 'tool-log-summary'
-    const summary = document.createElement('summary')
-    summary.textContent = compact.toolSummary
-    const pre = document.createElement('pre')
-    pre.textContent = compact.toolLines.join('\n')
-    details.appendChild(summary)
-    details.appendChild(pre)
-    wrapper.appendChild(details)
   }
 
   container.appendChild(wrapper)
@@ -3971,18 +4712,18 @@ function _startResponseWatchdog() {
   clearTimeout(_responseWatchdog)
   _responseWatchdog = null
   _sendTimestamp = _sendTimestamp || Date.now()
+  const requestId = _activeClientRequestId
 
   // 首轮长时间无 chat 回复时只提示，不自动结束
   if (!_ultimateTimer) {
     _ultimateTimer = setTimeout(() => {
       _ultimateTimer = null
-      if (!_isStreaming && _sessionKey && _pageActive) {
+      if (_sessionKey && _pageActive) {
         console.warn('[chat] 长时间无 chat 回复，显示可恢复等待提示')
         const message = '回复等待时间较长，可能仍在生成。你可以继续等待，或手动停止后重试。'
-        showTyping(true, message)
-        showOpenClawGenerationNotice(message)
-        showOpenClawGenerationActions()
-        _startResponseWatchdog()
+        if (maybeShowOpenClawLongResponseWarning(message, requestId, { actions: true })) {
+          _startResponseWatchdog()
+        }
       }
     }, ULTIMATE_TIMEOUT)
   }
@@ -3990,7 +4731,11 @@ function _startResponseWatchdog() {
   _responseWatchdog = setTimeout(async () => {
     _responseWatchdog = null
     // 如果还在等待（未开始流式），强制刷新历史
-    if (!_isStreaming && _sessionKey && _messagesEl && _pageActive) {
+    if (!_openClawActiveRequestClosed && (_openClawPendingResponse || _isSending || _isStreaming) && _sessionKey && _messagesEl && _pageActive) {
+      if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
+        clearOpenClawGenerationState('watchdog-visible-assistant', requestId)
+        return
+      }
       const elapsed = Math.round((Date.now() - _sendTimestamp) / 1000)
       console.log(`[chat] 响应看门狗触发：${elapsed}s 无 delta，刷新历史`)
       const oldHash = _lastHistoryHash
@@ -3998,12 +4743,16 @@ function _startResponseWatchdog() {
       await loadHistory()
       // 如果历史有更新，关闭 typing 指示器
       if (_lastHistoryHash && _lastHistoryHash !== oldHash) {
-        showTyping(false)
-        _cancelUltimateTimer()
+        if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
+          clearOpenClawGenerationState('history-visible-assistant', requestId)
+        } else {
+          showTyping(false)
+          _cancelUltimateTimer()
+        }
       } else {
         // 历史没更新，更新 typing 提示显示已等待时间
         if (elapsed >= 30) {
-          showTyping(true, `${t('chat.stillWaiting')} (${t('chat.elapsedTime', { seconds: elapsed })})`)
+          maybeShowOpenClawLongResponseWarning(`${t('chat.stillWaiting')} (${t('chat.elapsedTime', { seconds: elapsed })})`, requestId)
         }
         // 继续等待，再设一轮看门狗
         _startResponseWatchdog()
@@ -4046,6 +4795,7 @@ function _schedulePostFinalCheck() {
 // ensureAiBubble 已被 createStreamBubble 替代
 
 function resetStreamState() {
+  _cancelResponseWatchdog()
   clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
   clearInterval(_typingElapsedInterval)
@@ -4071,6 +4821,8 @@ function resetStreamState() {
   _currentAiTools = []
   if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
   _activeClientRequestId = null
+  _openClawPendingResponse = false
+  _openClawActiveRequestClosed = true
   _currentRunId = null
   _isStreaming = false
   _streamStartTime = 0
@@ -4083,10 +4835,196 @@ function resetStreamState() {
 
 // ── 历史消息加载 ──
 
+function pruneOpenClawChatViewSnapshots() {
+  const now = Date.now()
+  for (const [key, snapshot] of _chatViewSnapshotsBySession) {
+    if (!snapshot?.timestamp || now - snapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
+      _chatViewSnapshotsBySession.delete(key)
+    }
+  }
+}
+
+function snapshotCurrentChatState(reason = '') {
+  if (!_sessionKey || !_messagesEl) return false
+  pruneOpenClawChatViewSnapshots()
+  const hasVisibleMessages = !!_messagesEl.querySelector('.msg-user, .msg-ai')
+  const hasDraft = !!(_currentAiText || _currentAiBubble || _isStreaming || _isSending || _messageQueue.length)
+  if (!hasVisibleMessages && !hasDraft) return false
+  const draftWrap = _currentAiBubble?.closest?.('.msg')
+  if (draftWrap?.dataset) draftWrap.dataset.openclawStreamingDraft = '1'
+  const html = Array.from(_messagesEl.children)
+    .filter(node => node?.id !== 'typing-indicator' && !node.classList?.contains('chat-page-guide'))
+    .map(node => node.outerHTML)
+    .join('')
+  if (!html && !hasDraft) return false
+  _chatViewSnapshotsBySession.set(_sessionKey, {
+    sessionKey: _sessionKey,
+    html,
+    currentAiText: _currentAiText,
+    currentAiImages: [...(_currentAiImages || [])],
+    currentAiVideos: [...(_currentAiVideos || [])],
+    currentAiAudios: [...(_currentAiAudios || [])],
+    currentAiFiles: [...(_currentAiFiles || [])],
+    currentAiTools: [...(_currentAiTools || [])],
+    currentRunId: _currentRunId,
+    isStreaming: _isStreaming,
+    isSending: _isSending,
+    messageQueue: [...(_messageQueue || [])],
+    streamStartTime: _streamStartTime,
+    lastRenderedAiText: _lastRenderedAiText,
+    lastHistoryHash: _lastHistoryHash,
+    timestamp: Date.now(),
+    reason,
+  })
+  return true
+}
+
+function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
+  const key = sessionKey || ''
+  if (!key || !_messagesEl || !_typingEl) return false
+  pruneOpenClawChatViewSnapshots()
+  const snapshot = _chatViewSnapshotsBySession.get(key)
+  if (!snapshot?.html) return false
+  if (_messagesEl.querySelector('.msg-user, .msg-ai')) return false
+  const holder = document.createElement('div')
+  holder.innerHTML = snapshot.html
+  Array.from(holder.children).forEach(node => _messagesEl.insertBefore(node, _typingEl))
+  _sessionKey = key
+  _currentAiText = snapshot.currentAiText || ''
+  _currentAiImages = [...(snapshot.currentAiImages || [])]
+  _currentAiVideos = [...(snapshot.currentAiVideos || [])]
+  _currentAiAudios = [...(snapshot.currentAiAudios || [])]
+  _currentAiFiles = [...(snapshot.currentAiFiles || [])]
+  _currentAiTools = [...(snapshot.currentAiTools || [])]
+  _currentRunId = snapshot.currentRunId || null
+  _isStreaming = !!snapshot.isStreaming
+  _isSending = !!snapshot.isSending
+  _messageQueue = [...(snapshot.messageQueue || [])]
+  _streamStartTime = snapshot.streamStartTime || 0
+  _lastRenderedAiText = snapshot.lastRenderedAiText || _currentAiText || ''
+  _lastHistoryHash = snapshot.lastHistoryHash || ''
+  _currentAiBubble = _messagesEl.querySelector('[data-openclaw-streaming-draft="1"] .msg-bubble') || null
+  updateSendState()
+  scrollToBottom(true)
+  console.debug('[chat] restored OpenClaw chat view snapshot:', { sessionKey: key, reason })
+  return true
+}
+
+function shouldProtectCurrentMessagesFromHistory(historyMessages = []) {
+  if (!_messagesEl) return false
+  if (_isStreaming || _isSending || _currentAiText || _currentAiBubble || _messageQueue.length > 0) return true
+  const displayedCount = countDisplayedChatMessages()
+  return displayedCount > 0 && Array.isArray(historyMessages) && historyMessages.length > 0 && displayedCount > historyMessages.length
+}
+
+function normalizeVisibleOpenClawText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim()
+}
+
+function hasVisibleOpenClawHistoryMessage(msg) {
+  if (!msg || !_messagesEl) return false
+  const dedupeKey = msg.displayDedupeKey || msg.dedupeKey
+  const sessionKey = msg.sessionKey || _sessionKey || ''
+  if (dedupeKey && hasRenderedOpenClawMessage(sessionKey, dedupeKey)) return true
+  const targetText = normalizeVisibleOpenClawText(msg.role === 'assistant'
+    ? sanitizeOpenClawVisibleReply(msg.text || '')
+    : stripOpenClawIdentityPrelude(msg.text || ''))
+  if (!targetText) return false
+  const selector = msg.role === 'assistant' ? '.msg-ai .msg-bubble' : '.msg-user .msg-bubble'
+  return Array.from(_messagesEl.querySelectorAll(selector)).some(node => normalizeVisibleOpenClawText(node.textContent) === targetText)
+}
+
+function appendOpenClawHistoryMessage(msg) {
+  if (!msg || !msg.role) return false
+  if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return false
+  const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
+  const dedupeKey = msg.displayDedupeKey || msg.dedupeKey
+  if (msg.role === 'user') {
+    const userAtts = msg.images?.length
+      ? msg.images.map(i => normalizeOpenClawAttachment({
+        category: 'image',
+        mimeType: i.mediaType || i.media_type || i.mimeType || 'image/png',
+        content: i.data || i.source?.data || '',
+        imageUrl: i.imageUrl || i.previewUrl || i.url || i.image_url?.url || i.source?.url || '',
+        mediaPath: i.mediaPath || '',
+        savedPath: i.savedPath || '',
+        localPath: i.localPath || '',
+        filePath: i.filePath || '',
+        path: i.path || '',
+        fileName: i.fileName || i.filename || i.name || '',
+      })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a))
+      : []
+    appendUserMessage(msg.text || '', userAtts, msgTime, { dedupeKey, sessionKey: msg.sessionKey || _sessionKey })
+    return true
+  }
+  if (msg.role === 'assistant') {
+    appendAiMessage(msg.text || '', msgTime, msg.images || [], msg.videos || [], msg.audios || [], msg.files || [], msg.tools || [], msg.screenshotCards || [], msg.confirmations || [], {
+      dedupeKey,
+      sessionKey: msg.sessionKey || _sessionKey,
+    })
+    return true
+  }
+  return false
+}
+
+function completeStreamingDraftFromHistory(msg) {
+  if (!_currentAiBubble || msg?.role !== 'assistant') return false
+  const sameRun = msg.runId && _currentRunId && msg.runId === _currentRunId
+  const currentText = normalizeVisibleOpenClawText(_currentAiText)
+  const finalText = normalizeVisibleOpenClawText(msg.text)
+  const looksLikeSameDraft = currentText && finalText && (finalText.startsWith(currentText) || currentText.startsWith(finalText))
+  if (!sameRun && !looksLikeSameDraft) return false
+  renderCompactAssistantContent(msg.text || _currentAiText || '', _currentAiBubble)
+  appendImagesToEl(_currentAiBubble, msg.images || [])
+  appendVideosToEl(_currentAiBubble, msg.videos || [])
+  appendAudiosToEl(_currentAiBubble, msg.audios || [])
+  appendFilesToEl(_currentAiBubble, msg.files || [])
+  appendToolsToEl(_currentAiBubble, msg.tools || [])
+  appendLifeAssistantCardsToEl(_currentAiBubble, msg.screenshotCards || [], msg.confirmations || [])
+  const wrap = _currentAiBubble.closest('.msg')
+  if (wrap?.dataset) delete wrap.dataset.openclawStreamingDraft
+  markRenderedOpenClawMessage(wrap, msg.sessionKey || _sessionKey, msg.displayDedupeKey || msg.dedupeKey)
+  const group = _currentAiBubble.closest('.sc-msg-group') || wrap
+  if (group && !Array.from(group.children).some(node => node.classList?.contains('msg-meta'))) {
+    const meta = document.createElement('div')
+    meta.className = 'msg-meta sc-msg-meta'
+    meta.innerHTML = `<span class="msg-time">${formatTime(msg.timestamp ? new Date(msg.timestamp) : new Date())}</span><button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
+    group.appendChild(meta)
+  }
+  _currentAiBubble = null
+  _currentAiText = ''
+  _currentAiImages = []
+  _currentAiVideos = []
+  _currentAiAudios = []
+  _currentAiFiles = []
+  _currentAiTools = []
+  _currentRunId = null
+  _isStreaming = false
+  _isSending = false
+  _messageQueue = []
+  updateSendState()
+  return true
+}
+
+function mergeHistoryIntoCurrentMessages(historyMessages = []) {
+  if (!_messagesEl) return 0
+  let merged = 0
+  for (const msg of historyMessages || []) {
+    if (completeStreamingDraftFromHistory(msg)) {
+      merged += 1
+      continue
+    }
+    if (hasVisibleOpenClawHistoryMessage(msg)) continue
+    if (appendOpenClawHistoryMessage(msg)) merged += 1
+  }
+  if (merged > 0) scrollToBottom()
+  return merged
+}
+
 async function loadHistory() {
   if (!_sessionKey || !_messagesEl) return
   _isLoadingHistory = true
-  const hasExisting = _messagesEl.querySelector('.msg')
+  let hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
   if (!hasExisting && isStorageAvailable()) {
     const local = await getLocalMessages(_sessionKey, 200)
     if (!_messagesEl) return
@@ -4115,6 +5053,7 @@ async function loadHistory() {
         }
       })
       scrollToBottom()
+      hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
     }
   }
   if (!wsClient.gatewayReady) { _isLoadingHistory = false; return }
@@ -4147,8 +5086,9 @@ async function loadHistory() {
     if (hash === _lastHistoryHash && hasExisting) return
     _lastHistoryHash = hash
 
-    // 正在发送/流式输出时不全量重绘，避免覆盖本地乐观渲染
-    if (hasExisting && (_isSending || _isStreaming || _messageQueue.length > 0)) {
+    // Same-session reloads merge history into the visible chat instead of repainting over drafts.
+    if (hasExisting || shouldProtectCurrentMessagesFromHistory(deduped)) {
+      mergeHistoryIntoCurrentMessages(deduped)
       saveMessages(result.messages.map(cachedHistoryMessage))
       _isLoadingHistory = false
       return
@@ -4349,6 +5289,7 @@ function mergeOpenClawHistoryMessage(prev, next) {
     tools,
     timestamp: prev.timestamp || next.timestamp,
     dedupeKey: prev.dedupeKey || next.dedupeKey,
+    displayDedupeKey: prev.displayDedupeKey || next.displayDedupeKey,
   }
 }
 
@@ -4774,11 +5715,14 @@ function collectToolsFromMessage(message, tools) {
 /** 渲染工具调用到消息气泡 */
 function appendToolsToEl(el, tools) {
   if (!el) return
-  const existing = el.querySelector?.('.msg-tool')
+  const existing = el.querySelector?.('.msg-tool, .openclaw-tool-result-card')
   if (!tools?.length) {
     if (existing) existing.remove()
     return
   }
+  if (existing) existing.remove()
+  renderOpenClawToolResultCard(el, tools)
+  return
   const container = document.createElement('div')
   container.className = 'msg-tool'
   tools.forEach(tool => {
@@ -4910,7 +5854,8 @@ function updateSendState() {
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
     _sendBtn.title = t('chat.cmdStopGen')
   } else {
-    _sendBtn.disabled = _sendInputLocked || _isSending || (!_textarea.value.trim() && !_attachments.length)
+    const gatewayCanSend = _openClawGatewayUiState === 'ready'
+    _sendBtn.disabled = _sendInputLocked || _isSending || _openClawGatewayUiState !== 'ready' || !gatewayCanSend || (!_textarea.value.trim() && !_attachments.length)
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
     _sendBtn.title = t('chat.send')
   }
@@ -5376,6 +6321,19 @@ function appendHostedOutput(text) {
 // ── 页面离开清理 ──
 
 export function cleanup() {
+  snapshotCurrentChatState('cleanup')
+
+  // OpenClaw Gateway is an app-level service.
+  // Regular route changes, page unmounts, and opening the dashboard must not stop it.
+  // Only real app exit or an explicit user stop action should stop the agent.
+  const shouldStopOpenClawGatewayOnCleanup =
+    window.__SUPERCLAW_APP_EXITING__ === true ||
+    window.__SUPERCLAW_EXPLICIT_STOP_OPENCLAW_GATEWAY__ === true ||
+    window.__SUPERCLAW_EXPLICIT_STOP_AGENT__ === true
+
+  if (shouldStopOpenClawGatewayOnCleanup) {
+    stopAgentOnPageClose('openclaw')
+  }
   _pageActive = false
   stopCollaborationDispatchWatcher()
   if (_pasteHandler) {

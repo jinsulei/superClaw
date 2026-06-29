@@ -779,10 +779,18 @@ function bindOpenClawRuntimeHooks() {
 function setupGatewayBanner() {
   const banner = document.getElementById('gw-banner')
   if (!banner) return
+  function isOpenClawChatRoute() {
+    const route = (window.location.hash || '#/dashboard').split('?')[0]
+    return getActiveEngineId() === 'openclaw' && route === '#/chat'
+  }
 
   function update(running, foreign) {
     // Hermes 模式不显示 OpenClaw Gateway 横幅
     if (getActiveEngineId() !== 'openclaw') {
+      banner.classList.add('gw-banner-hidden')
+      return
+    }
+    if (isOpenClawChatRoute()) {
       banner.classList.add('gw-banner-hidden')
       return
     }
@@ -900,6 +908,7 @@ function setupGatewayBanner() {
   onGatewayChange(update)
   // 引擎切换时刷新横幅（Hermes 模式隐藏，OpenClaw 模式按 Gateway 状态显示）
   onEngineChange(() => update(isGatewayRunning(), isGatewayForeign()))
+  window.addEventListener('hashchange', () => update(isGatewayRunning(), isGatewayForeign()))
 }
 
 function showGuardianRecovery() {

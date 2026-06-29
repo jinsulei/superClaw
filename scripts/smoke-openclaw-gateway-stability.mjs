@@ -34,6 +34,13 @@ assert(
 )
 
 assert(
+  main.includes('function isOpenClawChatRoute()') &&
+    main.includes("route === '#/chat'") &&
+    main.includes('window.addEventListener(\'hashchange\', () => update(isGatewayRunning(), isGatewayForeign()))'),
+  'OPENCLAW_CHAT_ROUTE_OWNS_GATEWAY_PROGRESS_UI',
+)
+
+assert(
   devApi.includes('probeOpenclawGatewayHealth') &&
     devApi.includes('waitForGatewayReady') &&
     devApi.includes('health_ready') &&
@@ -56,7 +63,8 @@ assert(
   chat.includes('OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000') &&
     chat.includes('waitForOpenClawGatewayReady') &&
     chat.includes('ensureOpenClawGatewayReadyForSend') &&
-    chat.includes('OpenClaw Gateway 正在启动，请稍候'),
+    chat.includes('Gateway 已启动，正在检查服务是否可用...') &&
+    chat.includes('await waitForOpenClawGatewayReady()'),
   'OPENCLAW_SEND_WAITS_FOR_GATEWAY_READY',
 )
 

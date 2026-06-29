@@ -1813,12 +1813,56 @@ fn strip_ui_fields(mut val: Value) -> Value {
         // 处理 models.providers.xxx.models 结构
         if let Some(models_val) = obj.get_mut("models") {
             if let Some(models_obj) = models_val.as_object_mut() {
+                models_obj.remove("mode");
+                models_obj.remove("default");
+                models_obj.remove("defaultProvider");
+                models_obj.remove("defaultModel");
                 if let Some(providers_val) = models_obj.get_mut("providers") {
                     if let Some(providers_obj) = providers_val.as_object_mut() {
-                        for (_provider_name, provider_val) in providers_obj.iter_mut() {
+                        for (provider_name, provider_val) in providers_obj.iter_mut() {
                             if let Some(provider_obj) = provider_val.as_object_mut() {
                                 // 清理 provider 级别的 UI-only 字段（openclaw schema 不承认 managed）
                                 provider_obj.remove("managed");
+                                if provider_name.eq_ignore_ascii_case("minimax") {
+                                    let legacy_model = provider_obj
+                                        .remove("model")
+                                        .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or_else(|| "MiniMax-M3".to_string());
+                                    provider_obj.remove("type");
+                                    if provider_obj
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.eq_ignore_ascii_case("minimax"))
+                                        .unwrap_or(false)
+                                    {
+                                        provider_obj.remove("name");
+                                    }
+                                    let has_models = provider_obj
+                                        .get("models")
+                                        .and_then(|v| v.as_array())
+                                        .map(|arr| !arr.is_empty())
+                                        .unwrap_or(false);
+                                    if !has_models {
+                                        let api = provider_obj
+                                            .get("api")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("openai-completions")
+                                            .to_string();
+                                        provider_obj.insert(
+                                            "models".into(),
+                                            json!([{
+                                                "id": legacy_model,
+                                                "name": legacy_model,
+                                                "api": api,
+                                                "reasoning": true,
+                                                "input": ["text"],
+                                                "contextWindow": 204800,
+                                                "maxTokens": 131072
+                                            }]),
+                                        );
+                                    }
+                                }
                                 if let Some(Value::Array(arr)) = provider_obj.get_mut("models") {
                                     for model in arr.iter_mut() {
                                         if let Some(mobj) = model.as_object_mut() {

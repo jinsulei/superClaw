@@ -10,6 +10,7 @@
 
 /* 页面布局 - 双栏 */
 .chat-page {
+  --agent-chat-edge-gap: clamp(12px, 1vw, 20px);
   --superclaw-chat-stage-max: 1480px;
   --superclaw-chat-stage-reserved: 320px;
   --superclaw-chat-stage-gutter: 48px;
@@ -2204,12 +2205,8 @@
 }
 
 .sc-chat-stage {
-  width: min(
-    var(--superclaw-chat-stage-max, 1480px),
-    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
-    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
-  );
-  max-width: var(--superclaw-chat-stage-max, 1480px);
+  width: calc(100% - (var(--agent-chat-edge-gap, clamp(12px, 1vw, 20px)) * 2));
+  max-width: none;
   margin-left: auto;
   margin-right: auto;
   display: flex;
@@ -2393,7 +2390,7 @@
 
 @media (max-width: 760px) {
   .sc-chat-stage {
-    width: min(100%, calc(100% - 24px));
+    width: calc(100% - (var(--agent-chat-edge-gap, 8px) * 2));
     gap: 12px;
   }
 
@@ -2444,12 +2441,8 @@
 }
 
 .openclaw-chat .chat-messages.sc-chat-stage {
-  width: min(
-    var(--agent-chat-column-max),
-    calc(100vw - var(--agent-chat-column-reserved)),
-    calc(100% - var(--agent-chat-column-gutter))
-  );
-  max-width: var(--agent-chat-column-max);
+  width: calc(100% - (var(--agent-chat-edge-gap, clamp(12px, 1vw, 20px)) * 2));
+  max-width: none;
   gap: 18px;
   padding: var(--space-md, 16px) 24px;
   background: var(--chat-page-bg, var(--bg-primary));
@@ -2647,8 +2640,12 @@
 }
 
 @media (max-width: 760px) {
+  .chat-page {
+    --agent-chat-edge-gap: 8px;
+  }
+
   .openclaw-chat .chat-messages.sc-chat-stage {
-    width: min(100%, calc(100% - 24px));
+    width: calc(100% - (var(--agent-chat-edge-gap, 8px) * 2));
     padding: 14px 12px;
     gap: 14px;
   }

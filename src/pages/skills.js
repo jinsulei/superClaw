@@ -409,18 +409,63 @@ function normalizePathForSkill(pathValue) {
   return String(pathValue || '').replace(/\\/g, '/').toLowerCase()
 }
 
+function normalizeSkillPath(skill) {
+  return String(
+    skill?.path
+      || skill?.dir
+      || skill?.directory
+      || skill?.root
+      || skill?.sourcePath
+      || skill?.installPath
+      || skill?.filePath
+      || skill?.fullPath
+      || ''
+  ).replace(/\\/g, '/').toLowerCase()
+}
+
+function isClaudeUserSkill(skill) {
+  const source = String(skill?.source || '').toLowerCase()
+  const path = normalizeSkillPath(skill)
+  return source.includes('claude') || path.includes('/.claude/skills/')
+}
+
 function isOpenClawBuiltinSkill(skill) {
   const source = String(skill?.source || '').toLowerCase()
-  if (skill?.bundled || source === 'openclaw-bundled' || source === 'openclaw-extra') return false
-  const filePath = normalizePathForSkill(skill?.filePath || skill?.fullPath || '')
-  return filePath.includes('/runtime/openclaw/skills/')
+  const path = normalizeSkillPath(skill)
+  return source === 'openclaw-bundled'
+    || path.includes('/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/skills/')
+    || path.includes('/src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/skills/')
+    || path.includes('/@qingchencloud/openclaw-zh/skills/')
+}
+
+function isOpenClawExtensionSkill(skill) {
+  const source = String(skill?.source || '').toLowerCase()
+  const path = normalizeSkillPath(skill)
+  return source === 'openclaw-extra'
+    || path.includes('/.openclaw/plugin-skills/')
+    || path.includes('/.openclaw/skills/')
+    || path.includes('/runtime/openclaw/extensions/')
+    || path.includes('/runtime/openclaw/plugin-skills/')
+    || path.includes('/runtime/openclaw/dist/extensions/')
+}
+
+function isOpenClawSkill(skill) {
+  return isOpenClawBuiltinSkill(skill) || isOpenClawExtensionSkill(skill)
 }
 
 function isCallableOpenClawSkill(skill) {
-  return !isOpenClawBuiltinSkill(skill)
+  return isOpenClawExtensionSkill(skill)
     && !!skill?.eligible
     && !skill?.disabled
     && !skill?.blockedByAllowlist
+}
+
+function canDeleteOpenClawSkill(skill, status) {
+  if (!skill || !isOpenClawSkill(skill)) return false
+  if (isClaudeUserSkill(skill)) return false
+  if (isOpenClawBuiltinSkill(skill) && !isOpenClawExtensionSkill(skill)) return false
+  return isOpenClawExtensionSkill(skill)
+    && ['eligible', 'missing', 'disabled', 'blocked'].includes(status)
 }
 
 function skillNameOf(skill) {
@@ -430,6 +475,9 @@ function skillNameOf(skill) {
 function getSkillSourceLabel(skill) {
   const source = String(skill?.source || '').trim()
   const normalized = source.toLowerCase()
+  if (isOpenClawBuiltinSkill(skill)) return 'OpenClaw 内置'
+  if (isOpenClawExtensionSkill(skill)) return 'OpenClaw 扩展'
+  if (isClaudeUserSkill(skill)) return 'Claude 用户技能'
   if (normalized === 'openclaw-bundled') return t('skills.bundled')
   if (normalized === 'openclaw-extra') return 'OpenClaw 扩展'
   if (skill?.bundled) return t('skills.bundled')
@@ -535,9 +583,11 @@ function renderSkills(el, data) {
   const cliAvailable = data?.cliAvailable !== false
   const source = data?.source || ''
   const cliDiag = data?.diagnostic?.cli || null
-  const installed = skills.filter(s => !isOpenClawBuiltinSkill(s))
+  const openclawSkills = skills.filter(isOpenClawSkill)
+  const claudeUserSkills = skills.filter(isClaudeUserSkill)
+  const installed = openclawSkills.filter(isOpenClawExtensionSkill)
   const installedNames = new Set(installed.map(skillNameOf).filter(Boolean))
-  const builtin = skills.filter(s => isOpenClawBuiltinSkill(s) && !installedNames.has(skillNameOf(s)))
+  const builtin = openclawSkills.filter(s => isOpenClawBuiltinSkill(s) && !installedNames.has(skillNameOf(s)))
   const available = installed.filter(isCallableOpenClawSkill)
   const eligible = available
   const missing = installed.filter(s => !s.eligible && !s.disabled && !s.blockedByAllowlist)
@@ -554,6 +604,8 @@ function renderSkills(el, data) {
 
     <div class="skills-overview-card">
       <div class="skills-overview-copy">
+        <div class="skills-overview-title">OpenClaw 分类 ${openclawSkills.length} 个 Skills：${builtin.length} 个内置，${installed.length} 个扩展；后端总数 ${skills.length}，已排除 Claude 用户技能 ${claudeUserSkills.length} 个。</div>
+        <div class="skills-overview-sub">OpenClaw 视图只展示 OpenClaw 内置和 OpenClaw 扩展；Claude 的 .claude/skills 不混入 OpenClaw 分类。</div>
         <div class="skills-overview-eyebrow">中文批注已开启</div>
         <div class="skills-overview-title">共 ${installed.length} 个已安装 Skills：${summary}</div>
         <div class="skills-overview-sub">每个 Skill 都会显示中文用途说明；新安装的技能也会根据名称和英文描述自动生成中文批注。</div>
@@ -646,6 +698,7 @@ function renderSkillCard(skill, status) {
   const missingEnv = skill.missing?.env || []
   const missingConfig = skill.missing?.config || []
   const installOpts = skill.install || []
+  const canDelete = canDeleteOpenClawSkill(skill, status)
 
   let statusBadge = ''
   if (status === 'eligible') statusBadge = `<span class="clawhub-badge installed">已启用</span><span class="clawhub-badge skill-state-note">可直接调用</span>`
@@ -695,7 +748,7 @@ function renderSkillCard(skill, status) {
       <div class="clawhub-item-actions">
         <button class="btn btn-secondary btn-sm" data-action="skill-info" data-name="${esc(name)}">${t('skills.detail')}</button>
         ${status === 'builtin' ? `<button class="btn btn-secondary btn-sm" data-action="skill-install-builtin" data-name="${esc(name)}">安装到 OpenClaw</button>` : ''}
-        ${!skill.bundled && !['openclaw-bundled', 'openclaw-extra'].includes(String(skill.source || '').toLowerCase()) ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}">${t('skills.uninstall')}</button>` : ''}
+        ${canDelete ? `<button class="btn btn-sm" style="color:var(--error);border:1px solid var(--error);background:transparent;font-size:var(--font-size-xs)" data-action="skill-uninstall" data-name="${esc(name)}" data-source="${esc(skill.source || '')}">删除</button>` : ''}
         ${statusBadge}
       </div>
     </div>
@@ -885,7 +938,7 @@ async function loadStore(page) {
     // 获取已安装列表用于标记
     try {
       const data = await api.skillsList(_selectedAgentId)
-      _installedNames = new Set((data?.skills || []).filter(s => !isOpenClawBuiltinSkill(s)).map(s => s.name))
+      _installedNames = new Set((data?.skills || []).filter(isOpenClawExtensionSkill).map(s => s.name))
     } catch { _installedNames = new Set() }
     renderStoreItems(results, _storeIndex)
   } catch (e) {
@@ -1020,19 +1073,19 @@ async function handleInstallBuiltin(page, btn) {
 async function handleSkillUninstall(page, btn) {
   const name = btn.dataset.name
   if (!name) return
-  if (!confirm(t('skills.confirmUninstall', { name }))) return
+  if (!confirm(`确认删除 OpenClaw Skill「${name}」吗？删除后需要重新安装才能使用。`)) return
   btn.disabled = true
-  btn.textContent = t('skills.uninstalling')
+  btn.textContent = '删除中...'
   try {
     await api.skillsUninstall(name, _selectedAgentId)
-    toast(t('skills.uninstalled', { name }), 'success')
+    toast(`OpenClaw Skill「${name}」已删除`, 'success')
     _installedNames.delete(name)
     await loadSkills(page)
     if (_storeIndex) renderStoreItems(page.querySelector('#store-results'), _storeIndex)
   } catch (e) {
     toast(`${t('skills.uninstallFailed')}: ${e?.message || e}`, 'error')
     btn.disabled = false
-    btn.textContent = t('skills.uninstall')
+    btn.textContent = '删除'
   }
 }
 
