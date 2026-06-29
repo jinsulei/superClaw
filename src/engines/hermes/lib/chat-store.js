@@ -24,6 +24,22 @@
 import { api, isTauriRuntime } from '../../../lib/tauri-api.js'
 import { selectStableActiveSession } from '../../../lib/agent-session-persistence.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
+import {
+  dedupeToolEvents,
+  stripInternalStatusText,
+} from '../../../shared/chat-output-guard.js'
+import {
+  buildAgentIdentitySystemPrompt,
+  guardAgentIdentityReply,
+} from '../../../shared/agent-identity-guard.js'
+import {
+  formatHermesToolSummaryForUser,
+  getHermesAssistantMessageId,
+  HermesResponseAssembler,
+  normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
+} from './hermes-response-assembler.js'
+
+const formatToolResultsForUser = formatHermesToolSummaryForUser
 
 // ---------- constants ----------
 
@@ -87,10 +103,13 @@ function safeRemove(key) {
 }
 
 function withHermesReplyStyleInstruction(instructions) {
+  const identityPrompt = buildAgentIdentitySystemPrompt('hermes')
   const base = typeof instructions === 'string' ? instructions.trim() : ''
-  if (!base) return HERMES_REPLY_STYLE_INSTRUCTION
-  if (base.includes(HERMES_REPLY_STYLE_INSTRUCTION)) return base
-  return `${base}\n\n${HERMES_REPLY_STYLE_INSTRUCTION}`
+  const parts = []
+  if (identityPrompt && !base.includes(identityPrompt)) parts.push(identityPrompt)
+  if (base) parts.push(base)
+  if (!base.includes(HERMES_REPLY_STYLE_INSTRUCTION)) parts.push(HERMES_REPLY_STYLE_INSTRUCTION)
+  return parts.join('\n\n')
 }
 
 function loadJson(key) {
@@ -569,6 +588,12 @@ function createStore() {
   }
 
   function summarizeToolOnlyReply(tools = []) {
+    const guarded = formatToolResultsForUser({
+      userText: currentVisibleUserPrompt(),
+      toolEvents: dedupeToolEvents(tools),
+    })
+    if (guarded.trim()) return guarded
+
     const list = Array.isArray(tools) ? tools.filter(Boolean) : []
     if (!list.length) return ''
     const last = list[list.length - 1] || {}
@@ -595,7 +620,17 @@ function createStore() {
   }
 
   function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
-    return sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
+    const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
+    const normalized = normalizeHermesVisibleReplyText(visible, {
+      prompt,
+      userText: prompt,
+      toolEvents: state.liveTools,
+    })
+    return guardAgentIdentityReply({
+      agentName: 'hermes',
+      userText: prompt,
+      assistantText: normalized,
+    })
   }
 
   /** Force an immediate, unbatched notification (used by deterministic tests). */
@@ -618,6 +653,8 @@ function createStore() {
   function needsImmediateSession(meta = {}) {
     return !!(
       meta.forceCreate
+      || meta.forceLocal
+      || meta.createEmpty
       || meta.title
       || meta.workFileName
       || meta.workFilePath
@@ -657,7 +694,7 @@ function createStore() {
     let msg = findAssistantMessage(session, clientRequestId)
     if (!msg) {
       msg = {
-        id: clientRequestId ? `assistant-${clientRequestId}` : uid(),
+        id: clientRequestId ? getHermesAssistantMessageId(clientRequestId) : uid(),
         role: 'assistant',
         content: '',
         timestamp: Date.now(),
@@ -974,8 +1011,12 @@ function createStore() {
 
   function createLocalSession(meta = {}) {
     const now = Date.now()
+    const id = meta.id || uid()
     const s = {
-      id: uid(),
+      id,
+      sessionId: id,
+      session_id: id,
+      profile: meta.profile || state.activeProfile || 'default',
       title: meta.title || meta.workFileName || '',
       source: '__local__',
       model: '',
@@ -987,11 +1028,16 @@ function createStore() {
       optimistic: Boolean(meta.optimistic || meta.clientRequestId),
       clientRequestId: meta.clientRequestId || '',
       pendingBackendIndexUntil: meta.clientRequestId ? now + FIRST_SEND_SESSION_HOLD_MS : 0,
+      forceEmptyHistoryOnce: Boolean(meta.createEmpty || meta.forceLocal),
+      preventBackendSessionAdoption: Boolean(meta.createEmpty || meta.forceLocal),
       workFileName: meta.workFileName || '',
       workFilePath: meta.workFilePath || '',
       workFileDir: meta.workFileDir || '',
       workFileDisplayPath: meta.workFileDisplayPath || '',
       messages: [],
+      pendingTools: {},
+      failedTasks: [],
+      toolEvents: [],
     }
     state.sessions.unshift(s)
     state.activeSessionId = s.id
@@ -1001,11 +1047,31 @@ function createStore() {
     return s
   }
 
+  function createEmptySession(meta = {}) {
+    if (state.streaming) return null
+    detachStreamListeners()
+    streamAbortController = null
+    activeResponseAssembler = null
+    state.runningSessionId = null
+    state.runningClientRequestId = null
+    state.pendingAssistantId = null
+    state.liveTools = []
+    assistantMessageByRequestId.clear()
+    return createLocalSession({
+      ...meta,
+      createEmpty: true,
+      forceLocal: true,
+      profile: meta.profile || state.activeProfile || 'default',
+      title: meta.title || '',
+    })
+  }
+
   function adoptBackendSessionId(currentId, backendSessionId) {
     const nextId = String(backendSessionId || '').trim()
     if (!currentId || !nextId || nextId === currentId) return currentId
     const current = state.sessions.find(s => s.id === currentId)
     if (!current) return currentId
+    if (current.preventBackendSessionAdoption) return currentId
 
     const existing = state.sessions.find(s => s.id === nextId)
     let target = current
@@ -1212,22 +1278,36 @@ function createStore() {
 
   const unlisteners = []
   let streamAbortController = null
+  let activeResponseAssembler = null
   const forceRemoteRefreshIds = new Set()
-  async function attachStreamListeners(runSessionId) {
+  async function attachStreamListeners(runSessionId, clientRequestId) {
     detachStreamListeners()
     let trackedSessionId = runSessionId
     const adoptEventSession = (payload = {}) => {
       const next = payload.session_id || payload.sessionId || payload.id || ''
       trackedSessionId = adoptBackendSessionId(trackedSessionId, next)
     }
+    const acceptRequestEvent = (payload = {}) => {
+      if (!state.streaming || !state.runningClientRequestId) return false
+      if (clientRequestId && state.runningClientRequestId !== clientRequestId) return false
+      if (!activeResponseAssembler) return true
+      if (payload.run_id || payload.runId) activeResponseAssembler.adoptRunId(payload.run_id || payload.runId)
+      return activeResponseAssembler.matches(payload)
+    }
     const runSession = () => state.sessions.find(x => x.id === trackedSessionId) || null
     const u0 = await tauriListen('hermes-run-started', (e) => {
-      adoptEventSession(e?.payload || {})
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      adoptEventSession(payload)
     })
     const u1 = await tauriListen('hermes-run-delta', (e) => {
-      const delta = e?.payload?.delta || ''
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      const accepted = activeResponseAssembler
+        ? activeResponseAssembler.accept({ ...payload, event: 'message.delta' })
+        : { text: payload.delta || '' }
+      const delta = accepted?.text || ''
       if (!delta) return
-      if (!state.streaming || !state.runningClientRequestId) return
       const s = runSession()
       if (!s) return
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
@@ -1236,7 +1316,7 @@ function createStore() {
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
       const evt = e?.payload || {}
-      if (!state.streaming || !state.runningClientRequestId) return
+      if (!acceptRequestEvent(evt)) return
       const evtType = evt.event || ''
       const toolName = evt.tool || evt.tool_name || evt.name || 'tool'
       const preview = evt.preview || evt.detail || evt.message || ''
@@ -1249,13 +1329,15 @@ function createStore() {
       if (evtType === 'tool.started') {
         const input = extract(evt, ['input', 'args', 'arguments', 'parameters', 'params', 'data'])
         state.liveTools.push({
-          id: uid(),
+          id: evt.toolCallId || evt.tool_call_id || uid(),
           name: toolName,
           status: 'running',
           preview,
           args: input,
           result: null,
           error: null,
+          clientRequestId: state.runningClientRequestId,
+          runId: evt.run_id || evt.runId || activeResponseAssembler?.runId || '',
         })
       } else if (evtType === 'tool.completed') {
         const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
@@ -1283,11 +1365,20 @@ function createStore() {
       notify()
     })
     const u3 = await tauriListen('hermes-run-done', (e) => {
-      adoptEventSession(e?.payload || {})
-      if (!state.streaming || !state.runningClientRequestId) return
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      adoptEventSession(payload)
       const s = runSession()
       if (!s) { cleanupAfterRun(); return }
-      const runTools = [...state.liveTools]
+      const accepted = activeResponseAssembler
+        ? activeResponseAssembler.accept({ ...payload, event: 'run.completed' })
+        : { output: payload.output || '' }
+      if (!accepted) return
+      if (accepted.text) {
+        const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+        msg.content = sanitizeHermesVisibleReply(msg.content + accepted.text)
+      }
+      const runTools = dedupeToolEvents([...state.liveTools])
 
       // Commit finished tool calls as messages in the transcript.
       if (runTools.length) {
@@ -1297,11 +1388,13 @@ function createStore() {
             role: 'tool',
             content: '',
             timestamp: Date.now(),
-            toolName: t.name,
+            toolName: t.name || t.toolName,
             toolPreview: t.preview || undefined,
             toolArgs: stringifyMaybe(t.args),
             toolResult: stringifyMaybe(t.result ?? t.error),
             toolStatus: t.error ? 'error' : 'done',
+            clientRequestId: t.clientRequestId || state.runningClientRequestId,
+            runId: t.runId || payload.run_id || payload.runId || '',
           })
         }
       }
@@ -1310,8 +1403,9 @@ function createStore() {
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
       if (msg) {
         delete msg.isStreaming
+        if (shouldPreferFinalOutput(msg.content, accepted.output || payload.output || '')) msg.content = accepted.output || payload.output || ''
         msg.content = sanitizeHermesVisibleReply(msg.content)
-        if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
+        if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
       }
 
       // Update session metadata.
@@ -1324,9 +1418,10 @@ function createStore() {
       cleanupAfterRun()
     })
     const u4 = await tauriListen('hermes-run-error', (e) => {
-      const err = e?.payload?.error || 'unknown error'
-      adoptEventSession(e?.payload || {})
-      if (!state.streaming || !state.runningClientRequestId) return
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      const err = payload.error || 'unknown error'
+      adoptEventSession(payload)
       const s = runSession()
       if (s) {
         s.messages.push({
@@ -1358,6 +1453,11 @@ function createStore() {
     notify()
   }
 
+  function acceptActiveStreamEvent(evt = {}) {
+    if (!activeResponseAssembler) return null
+    return activeResponseAssembler.accept(evt)
+  }
+
   function extractStreamValue(obj, keys) {
     for (const k of keys) {
       if (obj[k] != null && obj[k] !== '') return obj[k]
@@ -1366,19 +1466,22 @@ function createStore() {
   }
 
   function applyStreamToolEvent(evt) {
+    if (activeResponseAssembler && !activeResponseAssembler.matches(evt)) return
     const evtType = evt.event || ''
     const toolName = evt.tool || evt.tool_name || evt.name || 'tool'
     const preview = evt.preview || evt.detail || evt.message || ''
     if (evtType === 'tool.started') {
       const input = extractStreamValue(evt, ['input', 'args', 'arguments', 'parameters', 'params', 'data'])
       state.liveTools.push({
-        id: uid(),
+        id: evt.toolCallId || evt.tool_call_id || uid(),
         name: toolName,
         status: 'running',
         preview,
         args: input,
         result: null,
         error: null,
+        clientRequestId: state.runningClientRequestId,
+        runId: evt.run_id || evt.runId || activeResponseAssembler?.runId || '',
       })
     } else if (evtType === 'tool.completed') {
       const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
@@ -1409,7 +1512,7 @@ function createStore() {
   function completeStreamRun(runSessionId, output = '') {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) { cleanupAfterRun(); return }
-    const runTools = [...state.liveTools]
+      const runTools = dedupeToolEvents([...state.liveTools])
     if (runTools.length) {
       for (const t of runTools) {
         s.messages.push({
@@ -1417,11 +1520,13 @@ function createStore() {
           role: 'tool',
           content: '',
           timestamp: Date.now(),
-          toolName: t.name,
+          toolName: t.name || t.toolName,
           toolPreview: t.preview || undefined,
           toolArgs: stringifyMaybe(t.args),
           toolResult: stringifyMaybe(t.result ?? t.error),
           toolStatus: t.error ? 'error' : 'done',
+          clientRequestId: t.clientRequestId || state.runningClientRequestId,
+          runId: t.runId || activeResponseAssembler?.runId || '',
         })
       }
     }
@@ -1431,7 +1536,7 @@ function createStore() {
       delete msg.isStreaming
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
       msg.content = sanitizeHermesVisibleReply(msg.content)
-      if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '(empty)'
+      if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
     }
     s.updatedAt = Date.now()
     s.lastActiveAt = Date.now()
@@ -1473,7 +1578,8 @@ function createStore() {
 
   function handleStreamEvent(runSessionId, evt) {
     const eventType = evt?.event || ''
-    const effectiveSessionId = adoptBackendSessionId(runSessionId, evt?.session_id || evt?.sessionId || '')
+    const activeRunSessionId = state.runningSessionId || runSessionId
+    const effectiveSessionId = adoptBackendSessionId(activeRunSessionId, evt?.session_id || evt?.sessionId || '')
     if (eventType === 'run.started') {
       return
     }
@@ -1481,13 +1587,20 @@ function createStore() {
       return
     }
     if (eventType === 'message.delta') {
-      appendStreamDelta(effectiveSessionId, evt.delta || '')
+      const accepted = acceptActiveStreamEvent(evt)
+      if (accepted?.text) appendStreamDelta(effectiveSessionId, accepted.text)
     } else if (eventType === 'tool.started' || eventType === 'tool.completed' || eventType === 'tool.progress' || eventType === 'tool.error') {
       applyStreamToolEvent(evt)
     } else if (eventType === 'message.final') {
-      replaceStreamOutput(effectiveSessionId, evt.output || '')
+      const accepted = acceptActiveStreamEvent(evt)
+      if (!accepted) return
+      if (accepted.text) appendStreamDelta(effectiveSessionId, accepted.text)
+      else if (accepted.output) replaceStreamOutput(effectiveSessionId, accepted.output)
     } else if (eventType === 'run.completed') {
-      completeStreamRun(effectiveSessionId, evt.output || '')
+      const accepted = acceptActiveStreamEvent(evt)
+      if (!accepted) return
+      if (accepted.text) appendStreamDelta(effectiveSessionId, accepted.text)
+      completeStreamRun(effectiveSessionId, accepted.output || evt.output || '')
     } else if (eventType === 'run.failed') {
       failStreamRun(effectiveSessionId, evt.error || 'unknown error')
     }
@@ -1502,6 +1615,7 @@ function createStore() {
     state.pendingAssistantId = null
     state.liveTools = []
     streamAbortController = null
+    activeResponseAssembler = null
     detachStreamListeners()
     notify()
     refreshSessionsAfterRun()
@@ -1535,27 +1649,25 @@ function createStore() {
     if (streamAbortController) {
       try { streamAbortController.abort() } catch {}
     }
+    if (activeResponseAssembler) activeResponseAssembler.abort()
     const s = state.sessions.find(x => x.id === state.runningSessionId) || activeSession()
     if (s) {
       const msg = s.messages.find(m => m.id === state.pendingAssistantId)
       if (msg) {
         delete msg.isStreaming
-        if (!msg.content.trim()) {
-          msg.content = '_(stopped)_'
-        } else if (!msg.content.endsWith('(stopped)')) {
-          msg.content = msg.content.trimEnd() + ' _(stopped)_'
-        }
+        msg.content = stripInternalStatusText(msg.content)
+        if (!msg.content.trim()) msg.content = '已停止本轮回复。'
       }
       // Commit any finished tool calls we already know about so they aren't
       // lost when we detach listeners.
-      for (const t of state.liveTools) {
+      for (const t of dedupeToolEvents(state.liveTools)) {
         if (t.status === 'done' || t.status === 'error') {
           s.messages.push({
             id: uid(),
             role: 'tool',
             content: '',
             timestamp: Date.now(),
-            toolName: t.name,
+            toolName: t.name || t.toolName,
             toolPreview: t.preview || undefined,
             toolArgs: stringifyMaybe(t.args),
             toolResult: stringifyMaybe(t.result ?? t.error),
@@ -1661,13 +1773,26 @@ function createStore() {
     const text = (content || '').trim() || (attachments.length ? '请分析我刚刚上传或粘贴的图片。' : '')
     const runText = (opts.modelContent || text).trim()
     const displayText = (opts.displayContent || text).trim()
-    if ((!runText && !attachments.length) || state.streaming) return
+    if (!runText && !attachments.length) return
     const clientRequestId = String(opts.clientRequestId || uid())
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
     }
+    if (state.streaming) {
+      if (streamAbortController) {
+        try { streamAbortController.abort() } catch {}
+      }
+      if (activeResponseAssembler) activeResponseAssembler.abort()
+      state.streaming = false
+      state.runningSessionId = null
+      state.runningClientRequestId = null
+      state.pendingAssistantId = null
+      state.liveTools = []
+      detachStreamListeners()
+    }
     visibleUserPromptByRequestId.set(clientRequestId, displayText || runText)
     let s = activeSession()
+    let forceEmptyHistory = false
     if (!s) {
       s = createLocalSession({
         title: deriveSessionTitleFromText(displayText || runText),
@@ -1675,10 +1800,12 @@ function createStore() {
         clientRequestId,
       })
     } else {
+      forceEmptyHistory = Boolean(s.forceEmptyHistoryOnce)
       touchPendingSession(s, clientRequestId)
       if (isPlaceholderSessionTitle(s.title)) {
         s.title = deriveSessionTitleFromText(displayText || runText)
       }
+      if (forceEmptyHistory) s.forceEmptyHistoryOnce = false
     }
 
     const userMessage = {
@@ -1708,18 +1835,19 @@ function createStore() {
     state.runningClientRequestId = clientRequestId
     state.liveTools = []
     state.pendingAssistantId = assistantMessage.id
+    activeResponseAssembler = new HermesResponseAssembler({ clientRequestId })
     notify()
 
     const runPromise = Promise.resolve().then(async () => {
     try {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? opts.conversationHistory
-        : buildDefaultConversationHistory(s, userMessage.id)
+        : (forceEmptyHistory ? [] : buildDefaultConversationHistory(s, userMessage.id))
       const runInstructions = withHermesReplyStyleInstruction(opts.instructions)
 
       if (isTauriRuntime()) {
-        await attachStreamListeners(s.id)
-        await api.hermesAgentRun(runText, s.id, conversationHistory, runInstructions, attachments)
+        await attachStreamListeners(s.id, clientRequestId)
+        await api.hermesAgentRun(runText, s.id, conversationHistory, runInstructions, attachments, { clientRequestId, agentName: 'hermes' })
       } else {
         streamAbortController = new AbortController()
         await api.hermesAgentRunStream(
@@ -1729,7 +1857,7 @@ function createStore() {
           runInstructions,
           attachments,
           (evt) => handleStreamEvent(s.id, evt),
-          { signal: streamAbortController.signal },
+          { signal: streamAbortController.signal, clientRequestId, agentName: 'hermes' },
         )
       }
     } catch (e) {
@@ -1843,6 +1971,7 @@ function createStore() {
     refreshActiveMessages,
     switchSession,
     newChat,
+    createEmptySession,
     deleteSession,
     bulkDeleteSessions,
     renameSession,

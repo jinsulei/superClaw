@@ -227,7 +227,6 @@ try {
     "scripts\smoke-agent-slash-commands.mjs",
     "scripts\smoke-agent-background-tasks.mjs",
     "scripts\smoke-hermes-collaboration.mjs",
-    "scripts\smoke-hermes-image-generation.mjs",
     "scripts\smoke-openclaw-desktop-control.mjs"
   )
   foreach ($script in $optionalSmoke) {

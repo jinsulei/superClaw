@@ -1,4 +1,4 @@
-//! Hermes Agent 安装与管理命令
+﻿//! Hermes Agent 安装与管理命令
 //!
 //! 通过 uv (Astral) 实现零依赖安装：
 //!   1. 下载 uv 单文件二进制
@@ -411,6 +411,7 @@ async fn do_restart_gateway() -> Result<(), String> {
         )
     })?;
     GW_PID.store(child.id(), Ordering::SeqCst);
+    register_hermes_lifecycle_process(child.id(), &enhanced);
 
     // 4. 等待端口可达（最多 15s）
     let port = hermes_gateway_port();
@@ -1885,6 +1886,34 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd
     }
+}
+
+fn hermes_lifecycle_process_info(enhanced: &str) -> (String, String) {
+    let home = hermes_home();
+    if let Some(python) = hermes_agent_python() {
+        let cwd = python
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.clone());
+        return (
+            cwd.display().to_string(),
+            python.display().to_string(),
+        );
+    }
+    let launcher = hermes_system_executable(enhanced);
+    let cwd = hermes_launcher_cwd(&home, Some(&launcher));
+    (cwd.display().to_string(), launcher)
+}
+
+fn register_hermes_lifecycle_process(pid: u32, enhanced: &str) {
+    let (cwd, exe) = hermes_lifecycle_process_info(enhanced);
+    crate::agent_lifecycle::register_managed_agent(
+        crate::agent_lifecycle::ManagedAgent::Hermes,
+        pid,
+        cwd,
+        exe,
+        Some(hermes_gateway_port()),
+    );
 }
 
 fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Command {
@@ -3924,6 +3953,7 @@ pub async fn hermes_gateway_action(
                     Ok(child) => {
                         // 记录 PID 供后续精准 kill
                         GW_PID.store(child.id(), Ordering::SeqCst);
+                        register_hermes_lifecycle_process(child.id(), &enhanced);
 
                         // 5. 等待 Gateway 端口可达（最多 20s）
                         let mut ok = false;
@@ -4013,6 +4043,7 @@ pub async fn hermes_gateway_action(
                 match cmd.spawn() {
                     Ok(child) => {
                         GW_PID.store(child.id(), Ordering::SeqCst);
+                        register_hermes_lifecycle_process(child.id(), &enhanced);
                         // 等待端口可达（最多 15s）
                         let port = hermes_gateway_port();
                         let addr: std::net::SocketAddr =
@@ -4985,6 +5016,77 @@ fn build_hermes_conversation_history_from_session(
     }
 }
 
+fn prefer_hermes_stream_text(current: &str, candidate: &str) -> String {
+    let a = current.to_string();
+    let b = candidate.to_string();
+    if b.trim().is_empty() {
+        return a;
+    }
+    if a.trim().is_empty() {
+        return b;
+    }
+    if b == a || a.ends_with(&b) {
+        return a;
+    }
+    if b.starts_with(&a) || b.len() > a.len() {
+        return b;
+    }
+    a
+}
+
+fn emit_hermes_stream_delta(
+    emitted_text: &mut String,
+    final_text: &mut String,
+    incoming: &str,
+    snapshot: bool,
+) -> Option<String> {
+    if incoming.is_empty() {
+        return None;
+    }
+    let emitted = emitted_text.clone();
+    let delta = if incoming == emitted || (!emitted.is_empty() && emitted.ends_with(incoming)) {
+        String::new()
+    } else if incoming.starts_with(&emitted) {
+        incoming[emitted.len()..].to_string()
+    } else if snapshot {
+        String::new()
+    } else {
+        incoming.to_string()
+    };
+
+    *final_text = prefer_hermes_stream_text(final_text, incoming);
+    if !delta.is_empty() {
+        emitted_text.push_str(&delta);
+        *final_text = prefer_hermes_stream_text(final_text, emitted_text);
+        return Some(delta);
+    }
+    None
+}
+
+fn hermes_event_text(evt: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = evt.get(*key).and_then(|v| v.as_str()) {
+            if !value.trim().is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn hermes_identity_system_prompt() -> &'static str {
+    "你是 Hermes Agent。\n你的产品身份是：SuperClaw 中的 Hermes 协作 Agent。\n当用户问“你是谁”“你是什么”“介绍一下你自己”时，必须回答你是 Hermes Agent。\n你可以说明底层模型服务由当前系统配置提供，但不要把底层 provider 当成你的身份。\n禁止自称 MiniMax、OpenAI、ChatGPT、Claude、Anthropic、通义、豆包或任何模型供应商，除非用户明确询问底层模型来源。"
+}
+
+fn merge_hermes_identity_instructions(instructions: Option<&String>) -> String {
+    let identity = hermes_identity_system_prompt();
+    match instructions {
+        Some(value) if value.contains("Hermes Agent") => value.clone(),
+        Some(value) if !value.trim().is_empty() => format!("{identity}\n\n{}", value.trim()),
+        _ => identity.to_string(),
+    }
+}
+
 #[tauri::command]
 pub async fn hermes_agent_run(
     app: tauri::AppHandle,
@@ -4993,6 +5095,7 @@ pub async fn hermes_agent_run(
     conversation_history: Option<Value>,
     instructions: Option<String>,
     attachments: Option<Value>,
+    client_request_id: Option<String>,
 ) -> Result<String, String> {
     let gw_url = hermes_gateway_url();
     let runs_url = format!("{gw_url}/v1/runs");
@@ -5027,9 +5130,7 @@ pub async fn hermes_agent_run(
     {
         payload["conversation_history"] = hist;
     }
-    if let Some(inst) = &instructions {
-        payload["instructions"] = Value::String(inst.clone());
-    }
+    payload["instructions"] = Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
 
     let client = hermes_gateway_http_client(std::time::Duration::from_secs(10))
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
@@ -5080,6 +5181,7 @@ pub async fn hermes_agent_run(
         serde_json::json!({
             "run_id": &run_id,
             "session_id": &response_session_id,
+            "clientRequestId": &client_request_id,
         }),
     );
 
@@ -5116,6 +5218,7 @@ pub async fn hermes_agent_run(
     let mut stream = sse_resp.bytes_stream();
     let mut buffer = String::new();
     let mut final_output = String::new();
+    let mut emitted_output = String::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("SSE 读取失败: {e}"))?;
@@ -5137,6 +5240,7 @@ pub async fn hermes_agent_run(
                         "run_id": &run_id,
                         "session_id": &response_session_id,
                         "output": &final_output,
+                        "clientRequestId": &client_request_id,
                     }),
                 );
                 return Ok(run_id);
@@ -5147,25 +5251,89 @@ pub async fn hermes_agent_run(
                 match event_type {
                     "message.delta" => {
                         if let Some(delta) = evt["delta"].as_str() {
-                            final_output.push_str(delta);
-                            let _ = app.emit(
-                                "hermes-run-delta",
-                                serde_json::json!({
-                                    "run_id": &run_id,
-                                    "delta": delta,
-                                }),
-                            );
+                            if let Some(stream_delta) = emit_hermes_stream_delta(
+                                &mut emitted_output,
+                                &mut final_output,
+                                delta,
+                                false,
+                            ) {
+                                let _ = app.emit(
+                                    "hermes-run-delta",
+                                    serde_json::json!({
+                                        "run_id": &run_id,
+                                        "delta": stream_delta,
+                                        "clientRequestId": &client_request_id,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    "message.final" => {
+                        if let Some(output) =
+                            hermes_event_text(&evt, &["output", "content", "response", "message"])
+                        {
+                            if let Some(stream_delta) = emit_hermes_stream_delta(
+                                &mut emitted_output,
+                                &mut final_output,
+                                &output,
+                                true,
+                            ) {
+                                let _ = app.emit(
+                                    "hermes-run-delta",
+                                    serde_json::json!({
+                                        "run_id": &run_id,
+                                        "delta": stream_delta,
+                                        "clientRequestId": &client_request_id,
+                                    }),
+                                );
+                            }
                         }
                     }
                     "tool.started" | "tool.completed" | "tool.progress" | "tool.error" => {
-                        let _ = app.emit("hermes-run-tool", evt.clone());
+                        let mut tool_evt = evt.clone();
+                        if let Some(obj) = tool_evt.as_object_mut() {
+                            obj.insert("run_id".into(), Value::String(run_id.clone()));
+                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
+                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                                obj.insert("clientRequestId".into(), Value::String(id.to_string()));
+                            }
+                            if !obj.contains_key("tool_call_id") {
+                                let name = obj
+                                    .get("tool")
+                                    .or_else(|| obj.get("tool_name"))
+                                    .or_else(|| obj.get("name"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("tool");
+                                obj.insert(
+                                    "tool_call_id".into(),
+                                    Value::String(format!("{run_id}:{name}")),
+                                );
+                            }
+                        }
+                        let _ = app.emit("hermes-run-tool", tool_evt);
                     }
                     "reasoning.available" => {
                         let _ = app.emit("hermes-run-reasoning", evt.clone());
                     }
                     "run.completed" => {
-                        if let Some(output) = evt["output"].as_str() {
-                            final_output = output.to_string();
+                        if let Some(output) =
+                            hermes_event_text(&evt, &["output", "content", "response", "message"])
+                        {
+                            if let Some(stream_delta) = emit_hermes_stream_delta(
+                                &mut emitted_output,
+                                &mut final_output,
+                                &output,
+                                true,
+                            ) {
+                                let _ = app.emit(
+                                    "hermes-run-delta",
+                                    serde_json::json!({
+                                        "run_id": &run_id,
+                                        "delta": stream_delta,
+                                        "clientRequestId": &client_request_id,
+                                    }),
+                                );
+                            }
                         }
                         let _ = app.emit(
                             "hermes-run-done",
@@ -5173,6 +5341,7 @@ pub async fn hermes_agent_run(
                                 "run_id": &run_id,
                                 "session_id": &response_session_id,
                                 "output": &final_output,
+                                "clientRequestId": &client_request_id,
                             }),
                         );
                         return Ok(run_id);
@@ -5185,6 +5354,7 @@ pub async fn hermes_agent_run(
                                 "run_id": &run_id,
                                 "session_id": &response_session_id,
                                 "error": err,
+                                "clientRequestId": &client_request_id,
                             }),
                         );
                         return Err(format!("Agent run failed: {err}"));
@@ -5204,6 +5374,7 @@ pub async fn hermes_agent_run(
             "run_id": &run_id,
             "session_id": &response_session_id,
             "output": &final_output,
+            "clientRequestId": &client_request_id,
         }),
     );
     Ok(run_id)
@@ -7623,7 +7794,6 @@ const BUILTIN_TOOLSETS: &[(&str, &str)] = &[
     ("code_execution", "⚡ 代码执行环境"),
     ("vision", "👁️ 图片识别与视觉分析"),
     ("video", "🎬 视频内容分析"),
-    ("image_gen", "🎨 图片生成"),
     ("video_gen", "🎬 视频生成"),
     ("x_search", "🐦 X / Twitter 搜索"),
     ("moa", "🧠 多智能体协作"),

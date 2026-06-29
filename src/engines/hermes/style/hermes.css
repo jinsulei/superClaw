@@ -5173,12 +5173,25 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 
 /* ---- Messages area ---- */
 [data-engine="hermes"] {
+  --agent-chat-edge-gap: clamp(12px, 1vw, 20px);
   --superclaw-chat-stage-max: 1480px;
   --superclaw-chat-stage-reserved: 320px;
   --superclaw-chat-stage-gutter: 48px;
   --superclaw-chat-assistant-readable-max: 980px;
   --superclaw-chat-user-readable-max: 620px;
   --superclaw-chat-bubble-edge-room: 80px;
+}
+
+@media (max-width: 1024px) {
+  [data-engine="hermes"] {
+    --agent-chat-edge-gap: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  [data-engine="hermes"] {
+    --agent-chat-edge-gap: 8px;
+  }
 }
 
 [data-engine="hermes"] .hm-chat-messages {
@@ -8819,12 +8832,8 @@ body[data-active-engine="hermes"] .sidebar-footer .lang-switcher,
 }
 
 [data-engine="hermes"] .hm-chat-messages.sc-chat-stage {
-  width: min(
-    var(--superclaw-chat-stage-max, 1480px),
-    calc(100vw - var(--superclaw-chat-stage-reserved, 320px)),
-    calc(100% - var(--superclaw-chat-stage-gutter, 48px))
-  ) !important;
-  max-width: var(--superclaw-chat-stage-max, 1480px) !important;
+  width: calc(100% - (var(--agent-chat-edge-gap, clamp(12px, 1vw, 20px)) * 2)) !important;
+  max-width: none !important;
   margin-right: auto !important;
   margin-left: auto !important;
   padding-right: 24px !important;

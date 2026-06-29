@@ -15,8 +15,10 @@
  */
 import { t } from '../../../lib/i18n.js'
 import { api, invalidate, isTauriRuntime } from '../../../lib/tauri-api.js'
+import { stopAgentOnPageClose } from '../../../lib/agent-lifecycle.js'
 import { toast } from '../../../components/toast.js'
 import { showConfirm, showContentModal } from '../../../components/modal.js'
+import { renderAgentMessageContent } from '../../../components/chat/agent-message-content.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
 import { classifyHermesEcommerceWorkflowIntent } from '../lib/ecommerce-workflow-guard.js'
 import {
@@ -1579,11 +1581,10 @@ export function render() {
     const sessionsEmpty = store.state.sessions.length === 0
     const allIds = visibleSessionIds()
     const allSelected = selectionMode && allIds.length > 0 && allIds.every(id => selected.has(id))
+    const profileSwitcherMarkup = ''
     return `
       <aside class="hm-chat-sidebar ${sidebarOpen ? '' : 'is-collapsed'} ${selectionMode ? 'is-select-mode' : ''}">
-        <div class="hm-chat-sidebar-profile">
-          ${renderProfileSwitcher()}
-        </div>
+        ${profileSwitcherMarkup ? `<div class="hm-chat-sidebar-profile">${profileSwitcherMarkup}</div>` : ''}
         <div class="hm-chat-sidebar-head">
           <span class="hm-chat-sidebar-title">${escHtml(t('engine.chatSessions'))}</span>
           <div class="hm-chat-sidebar-head-actions">
@@ -1765,17 +1766,12 @@ export function render() {
 
   function renderCompactAssistantHtml(rawText, messageId = '') {
     const compact = compactChatMessage(rawText)
-    const previewHtml = compact.preview ? mdToHtml(compact.preview) : ''
-    const fullHtml = compact.content ? mdToHtml(compact.content) : ''
+    const detailText = compact.toolLines.join('\n')
+    const previewHtml = compact.preview ? renderAgentMessageContent({ agent: 'hermes', content: compact.preview, details: detailText }) : ''
+    const fullHtml = compact.content ? renderAgentMessageContent({ agent: 'hermes', content: compact.content, details: detailText }) : ''
     const canToggle = !!compact.collapsed
     const compactKey = String(messageId || '')
     const manualCollapsed = canToggle && isHermesManualCompactCollapsed(compactKey)
-    const toolHtml = compact.toolLines.length ? `
-      <details class="tool-log-summary">
-        <summary>${escHtml(compact.toolSummary)}</summary>
-        <pre>${escHtml(compact.toolLines.join('\n'))}</pre>
-      </details>
-    ` : ''
     const toggleHtml = canToggle ? `
       <button type="button" class="assistant-compact-message__toggle" data-compact-toggle>
         ${manualCollapsed ? '\u5c55\u5f00\u8be6\u60c5' : '\u6536\u8d77\u8be6\u60c5'}
@@ -1787,7 +1783,6 @@ export function render() {
         ${canToggle && previewHtml ? `<div class="assistant-compact-message__content assistant-compact-message__preview" ${manualCollapsed ? '' : 'hidden'}>${previewHtml}</div>` : ''}
         <div class="assistant-compact-message__content assistant-compact-message__full" ${manualCollapsed ? 'hidden' : ''}>${fullHtml}</div>
         ${toggleHtml}
-        ${toolHtml}
       </div>
     `
   }
@@ -2428,7 +2423,7 @@ export function render() {
   function bind() {
     // --- Sidebar header ---
     el.querySelector('.hm-chat-new-btn')?.addEventListener('click', () => {
-      handleNewWorkFileSession()
+      handleCreateHermesSession()
     })
     el.querySelector('#hm-chat-toggle-sidebar')?.addEventListener('click', () => {
       sidebarOpen = !sidebarOpen
@@ -2598,7 +2593,7 @@ export function render() {
 
     // --- Header actions ---
     el.querySelector('#hm-chat-new-chat')?.addEventListener('click', () => {
-      handleNewWorkFileSession()
+      handleCreateHermesSession()
     })
     el.querySelector('#hm-chat-collab-open')?.addEventListener('click', () => openCollaborationDialog())
     el.querySelector('#hm-chat-search-open')?.addEventListener('click', () => openSearch())
@@ -3006,6 +3001,42 @@ export function render() {
     const pos = Math.max(0, Math.min(caret || input.value.length, input.value.length))
     try { input.setSelectionRange(pos, pos) } catch {}
     autoResize(input)
+  }
+
+  function handleCreateHermesSession() {
+    if (store.state.streaming) {
+      toast(t('engine.chatProfileSwitchBlocked'), 'error')
+      return null
+    }
+    try {
+      const profile = store.state.activeProfile || 'default'
+      const session = typeof store.createEmptySession === 'function'
+        ? store.createEmptySession({ profile })
+        : (store.newChat({ profile, createEmpty: true, forceLocal: true }), store.activeSession?.())
+      const active = session || store.activeSession?.()
+      if (!active) throw new Error('Hermes session was not created')
+      profileMenuOpen = false
+      selectionMode = false
+      selected.clear()
+      sidebarOpen = true
+      forceScrollBottom = true
+      inputFocused = true
+      resetInput()
+      clearLiveTextareaDomValue()
+      draw()
+      requestAnimationFrame(() => {
+        const input = el.querySelector('#hm-chat-input')
+        if (input && !input.disabled) {
+          input.focus()
+          autoResize(input)
+        }
+      })
+      return active
+    } catch (err) {
+      console.error('[Hermes] create session failed', err)
+      toast(err?.message || 'Hermes new session failed', 'error')
+      return null
+    }
   }
 
   async function handleNewWorkFileSession() {
@@ -3493,8 +3524,8 @@ export function render() {
       resetInput(); draw(); return
     }
     if (text === '/new') {
-      store.newChat()
-      resetInput(); draw(); return
+      handleCreateHermesSession()
+      return
     }
     if (text === '/help') {
       store.pushLocalUser(text)
@@ -3830,6 +3861,7 @@ export function render() {
   // MutationObserver watches our parent; when `el` is detached, we run the
   // full teardown (stream listeners, subscription, search modal, keydown).
   const teardown = () => {
+    stopAgentOnPageClose('hermes')
     document.removeEventListener('keydown', onGlobalKey)
     document.removeEventListener('click', onGlobalClick)
     document.removeEventListener('paste', onPasteImage, true)

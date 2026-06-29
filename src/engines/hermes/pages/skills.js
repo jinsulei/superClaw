@@ -291,7 +291,6 @@ const SKILL_DESC_TRANSLATIONS_ZH = {
   'ascii-art': '生成 ASCII 艺术、字符画和图片转字符效果。',
   'ascii-video': '把视频或音频转换成彩色 ASCII 视频/GIF。',
   'claude-design': '为 CLI/API 智能体设计一次性 HTML 页面、原型或方案。',
-  comfyui: '用 ComfyUI 生成图片、视频和音频。',
   humanizer: '把文本改得更自然、更像真人表达。',
   ideation: '用约束和发散方法生成项目创意。',
   p5js: '制作 p5.js 草图、生成艺术和交互视觉。',
@@ -432,6 +431,31 @@ function normalizeSkillKey(text) {
     .toLowerCase()
 }
 
+const HERMES_DISABLED_IMAGE_GENERATION_SKILLS = new Set([
+  'comfyui',
+  'image-gen',
+  'image-generation',
+  'image_gen',
+  'stable-diffusion',
+])
+
+function isHermesImageGenerationSkill(skill = {}) {
+  const candidates = [
+    skill.slug,
+    skill.name,
+    skill.file,
+    skill.path,
+  ].map(value => normalizeSkillKey(value)).filter(Boolean)
+  return candidates.some(key => HERMES_DISABLED_IMAGE_GENERATION_SKILLS.has(key))
+}
+
+function withoutHermesImageGenerationSkills(list = []) {
+  return (list || []).map(cat => ({
+    ...cat,
+    skills: (cat.skills || []).filter(skill => !isHermesImageGenerationSkill(skill)),
+  })).filter(cat => (cat.skills || []).length > 0)
+}
+
 function cleanSkillDescription(desc) {
   const text = String(desc || '').trim()
   if (!text || /^[-—_]+$/.test(text)) return ''
@@ -532,7 +556,6 @@ const TOOLSET_DESCRIPTIONS_ZH = {
   code_execution: '⚡ 代码执行环境',
   vision: '👁️ 图片识别与视觉分析',
   video: '🎬 视频内容分析',
-  image_gen: '🎨 图片生成',
   video_gen: '🎬 视频生成',
   x_search: '🐦 X / Twitter 搜索',
   moa: '🧠 多智能体协作',
@@ -645,6 +668,7 @@ export function render() {
       // Use [^\s] explicitly because emoji/multi-codepoint description part needs greedy tail.
       const m = line.match(/^\s*([✓✗])\s+(enabled|disabled)\s+(\S+)\s+(.+?)\s*$/u)
       if (!m) continue
+      if (m[3] === 'image_gen') continue
       out.push({
         name: m[3],
         enabled: m[1] === '✓' || m[2] === 'enabled',
@@ -743,9 +767,10 @@ export function render() {
   // ============================================================ derived
 
   function filteredCategories() {
-    if (!searchQuery) return categories
+    const visibleCategories = withoutHermesImageGenerationSkills(categories)
+    if (!searchQuery) return visibleCategories
     const q = searchQuery.toLowerCase()
-    return categories.map(cat => ({
+    return visibleCategories.map(cat => ({
       ...cat,
       skills: cat.skills.filter(s => {
         const d = skillDisplay(s, cat.category)
@@ -767,11 +792,11 @@ export function render() {
   }
 
   function totalSkillCount() {
-    return categories.reduce((sum, cat) => sum + cat.skills.length, 0)
+    return withoutHermesImageGenerationSkills(categories).reduce((sum, cat) => sum + cat.skills.length, 0)
   }
 
   function enabledSkillCount() {
-    return categories.reduce(
+    return withoutHermesImageGenerationSkills(categories).reduce(
       (sum, cat) => sum + cat.skills.filter(s => s.enabled !== false).length,
       0,
     )
