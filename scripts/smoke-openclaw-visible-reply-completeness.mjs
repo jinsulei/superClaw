@@ -1,5 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  ensureCompleteVisibleReply,
+  looksIncompleteVisibleReply,
+} from '../src/shared/chat-output-guard.js'
 
 const root = process.cwd()
 const chatPath = path.join(root, 'src', 'pages', 'chat.js')
@@ -11,6 +15,7 @@ function assert(condition, message) {
 
 const requiredTerms = [
   'function sanitizeOpenClawVisibleReply',
+  'function completeOpenClawVisibleReply',
   'function hasOpenClawRenderableContent',
   'function removeCurrentOpenClawStreamBubbleIfEmpty',
   'const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || \'\')',
@@ -29,8 +34,8 @@ const appendAiFn = source.slice(appendAiStart, appendAiEnd)
 
 assert(appendAiStart >= 0, 'appendAiMessage function not found')
 assert(
-  appendAiFn.includes('text = sanitizeOpenClawVisibleReply(text || \'\')'),
-  'appendAiMessage must sanitize OpenClaw assistant text before rendering',
+  appendAiFn.includes('text = completeOpenClawVisibleReply(text || \'\')'),
+  'appendAiMessage must complete OpenClaw assistant text before rendering',
 )
 assert(
   appendAiFn.includes('if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return'),
@@ -65,5 +70,30 @@ assert(
   finalBlock.includes("clearOpenClawGenerationState('empty-final'"),
   'empty final must close generation state without rendering a blank assistant bubble',
 )
+
+const halfTable = [
+  '| 你想做的事 | 怎么拼 |',
+  '| ----- | --- |',
+  '|       |     |',
+].join('\n')
+
+assert(looksIncompleteVisibleReply(halfTable) === true, 'half markdown table must be detected')
+const ecommerce = ensureCompleteVisibleReply(halfTable, {
+  agent: 'openclaw',
+  userText: '介绍你的电商功能？',
+  maxChars: 760,
+})
+assert(/OpenClaw/.test(ecommerce), 'OpenClaw ecommerce repair keeps agent identity')
+assert(/电商/.test(ecommerce), 'OpenClaw ecommerce repair mentions ecommerce')
+assert(/可以协助/.test(ecommerce), 'OpenClaw ecommerce repair keeps complete capability section')
+assert(!/\|/.test(ecommerce), 'OpenClaw ecommerce repair must not output markdown table pipes')
+assert(!/[:：,，;；、|]$/.test(ecommerce), 'OpenClaw ecommerce repair must not end with punctuation fragment')
+assert(!/raw json|tool args|tool_call/i.test(ecommerce), 'OpenClaw ecommerce repair must not leak raw tool content')
+
+const incompleteSentence = ensureCompleteVisibleReply('可以协助：', {
+  agent: 'openclaw',
+  userText: '你能做什么？',
+})
+assert(!/[:：,，;；、|]$/.test(incompleteSentence), 'OpenClaw incomplete sentence must be repaired')
 
 console.log('SMOKE_OPENCLAW_VISIBLE_REPLY_COMPLETENESS_PASS')

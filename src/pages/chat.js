@@ -28,6 +28,7 @@ import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/gene
 import { buildOpenClawEcommerceVisibleReply } from '../engines/openclaw/lib/openclaw-ecommerce-assist.js'
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
+import { ensureCompleteVisibleReply } from '../shared/chat-output-guard.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
 import {
   buildAgentIdentitySystemPrompt,
@@ -2950,7 +2951,7 @@ function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequest
 }
 
 function appendOpenClawLocalEcommerceAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
-  const reply = buildOpenClawEcommerceVisibleReply(text)
+  const reply = completeOpenClawVisibleReply(buildOpenClawEcommerceVisibleReply(text), text)
   if (!reply) return false
   const now = Date.now()
   appendUserMessage(text, attachments)
@@ -3020,6 +3021,14 @@ function stripOpenClawIdentityPrelude(text) {
 
 function sanitizeOpenClawVisibleReply(text) {
   return sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, { agent: 'openclaw' })
+}
+
+function completeOpenClawVisibleReply(text, userText = _lastVisibleUserText) {
+  return ensureCompleteVisibleReply(sanitizeOpenClawVisibleReply(text), {
+    agent: 'openclaw',
+    userText,
+    maxChars: 760,
+  })
 }
 
 function getOpenClawSendFingerprint(text, attachments = []) {
@@ -4330,6 +4339,9 @@ function handleChatEvent(payload, eventId = '') {
     if (finalTools.length) _currentAiTools = finalTools
     if (!finalText && !_currentAiText && finalTools.length) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
+    }
+    if (_currentAiText) {
+      _currentAiText = completeOpenClawVisibleReply(_currentAiText)
     }
     const visibleFinalText = _currentAiText || finalText
     const hasContent = hasOpenClawRenderableContent({
@@ -5677,7 +5689,7 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
 
 function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
-  text = sanitizeOpenClawVisibleReply(text || '')
+  text = completeOpenClawVisibleReply(text || '')
   if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return

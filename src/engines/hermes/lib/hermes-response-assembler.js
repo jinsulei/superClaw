@@ -1,4 +1,4 @@
-import { sanitizeMediaVisibleText, splitMediaProtocol } from '../../../shared/chat-output-guard.js'
+import { ensureCompleteVisibleReply, sanitizeMediaVisibleText, splitMediaProtocol } from '../../../shared/chat-output-guard.js'
 
 export function normalizeHermesStreamText(value) {
   if (value == null) return ''
@@ -493,7 +493,11 @@ function applyHermesCleanReplyStyle(text, options = {}) {
 export function enforceHermesReplyLength(text, userText = '') {
   const styled = applyHermesCleanReplyStyle(tidyHermesMarkdown(normalizeHermesStreamText(text)), { userText })
   if (isBriefAllowedHermesQuestion(userText)) return styled
-  return completeHermesReplyIfNeeded(styled, { userText })
+  return ensureCompleteVisibleReply(completeHermesReplyIfNeeded(styled, { userText }), {
+    agent: 'hermes',
+    userText,
+    maxChars: 760,
+  })
 }
 
 export function tidyHermesMarkdown(text) {
@@ -754,17 +758,32 @@ export function normalizeHermesVisibleReply(text, options = {}) {
   }
 
   visible = tidyHermesMarkdown(visible)
+  if (!visible && raw) {
+    const repaired = ensureCompleteVisibleReply(raw, {
+      agent: 'hermes',
+      userText: options.userText || options.prompt || '',
+      maxChars: options.maxLength || 760,
+    })
+    if (repaired) return repaired
+  }
   if (visible) {
     const styled = applyHermesCleanReplyStyle(visible, options)
-    return isBriefAllowedHermesQuestion(options.userText || options.prompt)
-      ? styled
-      : completeHermesReplyIfNeeded(styled, options)
+    if (isBriefAllowedHermesQuestion(options.userText || options.prompt)) return styled
+    return ensureCompleteVisibleReply(completeHermesReplyIfNeeded(styled, options), {
+      agent: 'hermes',
+      userText: options.userText || options.prompt || '',
+      maxChars: options.maxLength || 760,
+    })
   }
   const fallback = applyHermesCleanReplyStyle(formatHermesToolSummaryForUser({
     userText: options.userText || options.prompt || '',
     toolEvents: options.toolEvents || [],
   }), options)
-  return completeHermesReplyIfNeeded(fallback, { ...options, toolResult: true })
+  return ensureCompleteVisibleReply(completeHermesReplyIfNeeded(fallback, { ...options, toolResult: true }), {
+    agent: 'hermes',
+    userText: options.userText || options.prompt || '',
+    maxChars: options.maxLength || 760,
+  })
 }
 
 export function splitHermesVisibleAndDetails(rawText, toolEvents = []) {

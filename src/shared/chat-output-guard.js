@@ -173,3 +173,108 @@ export function normalizeAssistantVisibleText({ text = '', userText = '', toolEv
   if (cleaned) return cleaned
   return formatToolResultsForUser({ userText, toolEvents, fallback: cleaned })
 }
+
+export function looksIncompleteVisibleReply(text = '') {
+  const s = String(text || '').trim()
+  if (!s) return true
+
+  if (/[:：,，;；、]$/.test(s)) return true
+  if (/^\s*[-*]\s*$/.test(s)) return true
+  if (/\n\s*[-*]\s*$/.test(s)) return true
+  if (/^#{1,6}\s*$/.test(s)) return true
+  if (/(下一步|建议|结果|原因|怎么拼|能做什么)\s*[:：]\s*$/.test(s)) return true
+
+  const codeFenceCount = (s.match(/```/g) || []).length
+  if (codeFenceCount % 2 === 1) return true
+
+  if (/\|\s*$/.test(s)) return true
+
+  const lines = s.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const header = lines[i]
+    const sep = lines[i + 1]
+    const isTableHeader = /^\|.+\|$/.test(header)
+    const isTableSep = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(sep)
+    if (isTableHeader && isTableSep) {
+      const dataRows = lines.slice(i + 2).filter(line => /^\|.+\|$/.test(line) && !/^\|\s*\|?\s*$/.test(line))
+      if (!dataRows.length) return true
+    }
+  }
+
+  return false
+}
+
+export function trimAtSafeSentenceBoundary(text = '', maxChars = 520) {
+  const s = String(text || '').trim()
+  if (!s || s.length <= maxChars) return s
+
+  const clipped = s.slice(0, Math.max(1, maxChars))
+  const idx = Math.max(
+    clipped.lastIndexOf('。'),
+    clipped.lastIndexOf('！'),
+    clipped.lastIndexOf('？'),
+    clipped.lastIndexOf('\n'),
+  )
+
+  if (idx > 120) return clipped.slice(0, idx + 1).trim()
+  return `${clipped.replace(/[，,；;：:\s|]*$/, '').trim()}。`
+}
+
+function isEcommerceVisibleReplyContext(text = '') {
+  return /电商|外卖|美团|饿了么|热词|店铺|商品|订单|评论|发布|上下架|抖音|抖店|快手|小红书|淘宝|天猫|拼多多|ecommerce|shop|order/i.test(String(text || ''))
+}
+
+function repairIncompleteVisibleReply(text = '', { agent = '', userText = '' } = {}) {
+  const s = String(text || '').trim()
+  const context = `${userText}\n${s}`
+
+  if (isEcommerceVisibleReplyContext(context)) {
+    if (/openclaw/i.test(agent)) {
+      return [
+        'OpenClaw 不是电商平台本身，但可以作为执行层 Agent，配合现有工具处理电商相关任务。',
+        '',
+        '可以协助：',
+        '- 热词、关键词、店铺、商品、订单、评论等页面信息检查。',
+        '- 读取页面、截图、整理可见内容并生成结构化摘要。',
+        '- 生成商品文案、评论回复、公屏回复、操作建议等草稿。',
+        '- 配合浏览器或桌面操作完成可控的页面协助任务。',
+        '',
+        '安全边界：付款、下单、发布、上下架、登录、删除、自动评论或私信，都需要你确认并手动完成。',
+        '',
+        '你告诉我要处理的平台和目标，我再继续。',
+      ].join('\n')
+    }
+
+    if (/hermes/i.test(agent)) {
+      return [
+        'Hermes 可以负责电商任务的理解、拆解和监督，但不会自动替你付款或发布高风险内容。',
+        '',
+        '可以协助：',
+        '- 根据截图、链接或文字拆解电商问题。',
+        '- 整理热词、素材、文案、评论回复和操作思路。',
+        '- 给 OpenClaw 生成安全的执行指令，并检查结果是否符合目标。',
+        '- 外卖或页面协助会停在付款、发布、删除等高风险动作之前。',
+        '',
+        '你告诉我要处理的平台和目标，我再继续。',
+      ].join('\n')
+    }
+  }
+
+  const safe = trimAtSafeSentenceBoundary(s, 520)
+  if (!safe || looksIncompleteVisibleReply(safe)) {
+    return '这次回复没有完整生成。请你再发一次问题，我会重新整理成完整结论。'
+  }
+  return safe
+}
+
+export function ensureCompleteVisibleReply(text = '', options = {}) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+
+  let next = trimAtSafeSentenceBoundary(raw, Number(options.maxChars || 680))
+  if (looksIncompleteVisibleReply(next)) {
+    next = repairIncompleteVisibleReply(next, options)
+  }
+
+  return String(next || '').replace(/\n{3,}/g, '\n\n').trim()
+}
