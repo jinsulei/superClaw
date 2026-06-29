@@ -55,10 +55,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
-$MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
-$MiniMaxTestModel = "MiniMax-M3"
-
 function Step([string]$Message) {
   Write-Host ""
   Write-Host "[SuperClaw] $Message" -ForegroundColor Cyan
@@ -81,23 +77,15 @@ function Set-SanitizedTestBuildEnv {
   if (-not $SanitizedTest) { return @{} }
   $keys = @(
     "VITE_ENABLE_ECOMMERCE_ASSISTANT",
-    "VITE_SUPERCLAW_TEST_BUILD",
-    "VITE_SUPERCLAW_FORCE_PROVIDER",
-    "VITE_SUPERCLAW_DISABLE_YYAPI",
-    "VITE_SUPERCLAW_MINIMAX_BASE_URL",
-    "VITE_SUPERCLAW_MINIMAX_MODEL"
+    "VITE_SUPERCLAW_DISABLE_YYAPI"
   )
   $previous = @{}
   foreach ($key in $keys) {
     $previous[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
   }
   [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "true", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "true", "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $MiniMaxTestBaseUrl, "Process")
-  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $MiniMaxTestModel, "Process")
-  Ok "Sanitized test frontend flags: ecommerce=true, provider=minimax, YYAPI disabled"
+  Ok "Sanitized frontend flags: ecommerce=true, YYAPI disabled, model config remains runtime-only"
   return $previous
 }
 
@@ -437,25 +425,22 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
 
   $providers = [ordered]@{
     minimax = [ordered]@{
-      baseUrl = $MiniMaxTestBaseUrl
-      apiKey = '${MINIMAX_API_KEY}'
+      baseUrl = ""
+      apiKey = ""
       api = "openai-completions"
-      models = @(
-        [ordered]@{
-          id = $MiniMaxTestModel
-          name = $MiniMaxTestModel
-          api = "openai-completions"
-          reasoning = $true
-          input = @("text")
-          contextWindow = 204800
-          maxTokens = 131072
-        }
-      )
+      models = @()
+      needsSetup = $true
+    }
+    "openai-compatible" = [ordered]@{
+      baseUrl = ""
+      apiKey = ""
+      api = "openai-completions"
+      models = @()
+      needsSetup = $true
     }
   }
-  $defaultModelRef = "minimax/$MiniMaxTestModel"
+  $defaultModelRef = ""
   $defaultModels = [ordered]@{}
-  $defaultModels[$defaultModelRef] = [ordered]@{}
 
   $config = [ordered]@{
     '$schema' = "https://openclaw.ai/schema/config.json"
@@ -572,10 +557,11 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
   $agentModels = [ordered]@{
     providers = $providers
     defaults = [ordered]@{
-      provider = "minimax"
-      model = $MiniMaxTestModel
+      provider = ""
+      model = ""
       modelRef = $defaultModelRef
     }
+    needsSetup = $true
   }
   Write-Utf8NoBom (Join-Path $agentModelDir "models.json") ($agentModels | ConvertTo-Json -Depth 20)
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)
@@ -591,7 +577,6 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
   if ($SanitizedTestMode) {
     $config.sanitizedTestMode = $true
     $config.noUserSystem = $true
-    $config.forceProvider = "minimax"
   }
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "clawpanel.json") ($config | ConvertTo-Json -Depth 10)
 }
@@ -599,53 +584,29 @@ function Write-PortablePanelConfig([string]$OpenClawDataDir, [bool]$SanitizedTes
 function Write-PortableClaudePanelRelayConfig([string]$ClaudePanelDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $ClaudePanelDataDir -Force | Out-Null
   $configPath = Join-Path $ClaudePanelDataDir "relay-config.json"
-  $models = @($MiniMaxTestModel)
   $config = [ordered]@{
-    enabled = $true
+    enabled = $false
     interfaceType = "relay"
-    name = "MiniMax"
-    provider = "openai-compatible"
-    defaultProvider = "minimax"
-    baseUrl = $MiniMaxTestBaseUrl
-    model = $models[0]
-    models = $models
-    branchModels = $models
-    apiKey = "YOUR_API_KEY"
-    managedBy = "superclaw-minimax-test"
+    name = ""
+    provider = ""
+    defaultProvider = ""
+    baseUrl = ""
+    model = ""
+    models = @()
+    branchModels = @()
+    apiKey = ""
+    needsSetup = $true
+    managedBy = "runtime-config"
     updatedAt = (Get-Date).ToUniversalTime().ToString("o")
   }
   Write-Utf8NoBom $configPath ($config | ConvertTo-Json -Depth 10)
 }
 
-function Repair-HermesConfig([string]$HermesDataDir, [bool]$SanitizedTestMode = $false) {
+function Prepare-HermesRuntimeConfigDirectory([string]$HermesDataDir, [bool]$SanitizedTestMode = $false) {
   New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
-  $configPath = Join-Path $HermesDataDir "config.yaml"
-  $envPath = Join-Path $HermesDataDir ".env"
-
-  Set-Content -Path $configPath -Encoding UTF8 -Value @"
-# Hermes Agent configuration (managed by SuperClaw)
-# Rewritten during portable packaging to avoid leaking local provider state.
-model:
-  default: $MiniMaxTestModel
-  provider: minimax
-  api_mode: chat_completions
-  base_url: $MiniMaxTestBaseUrl
-platform_toolsets:
-  api_server:
-    - hermes-api-server
-terminal:
-  backend: local
-platforms:
-  api_server:
-    enabled: true
-api_server:
-  host: 127.0.0.1
-  port: 8642
-skills:
-  disabled: []
-"@
-
-  Remove-IfExists $envPath
+  foreach ($name in @("config.yaml", ".env", ".env.local")) {
+    Remove-IfExists (Join-Path $HermesDataDir $name)
+  }
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -760,7 +721,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   Copy-OpenClawWorkspaceIdentity $ResourcesDir $DataRoot
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
   Write-PortableClaudePanelRelayConfig $ClaudePanelData $SanitizedTestMode
-  Repair-HermesConfig $HermesData $SanitizedTestMode
+  Prepare-HermesRuntimeConfigDirectory $HermesData $SanitizedTestMode
 }
 
 function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
@@ -883,13 +844,96 @@ function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
   }
 }
 
+function Remove-PackagedRuntimeState([string]$PackageDir) {
+  if (-not (Test-Path $PackageDir -PathType Container)) {
+    return
+  }
+
+  foreach ($pattern in @("config.yaml", ".env", ".env.local", "user-memory.json")) {
+    Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -File -Filter $pattern -ErrorAction SilentlyContinue |
+      Remove-Item -Force -ErrorAction SilentlyContinue
+  }
+
+  $runtimeDirPatterns = @(
+    "\\resources\\data\\claude-code\\home\\claude-config\\projects($|\\)",
+    "\\resources\\data\\hermes\\memory($|\\)",
+    "\\resources\\data\\[^\\]+\\logs($|\\)",
+    "\\resources\\data\\[^\\]+\\history($|\\)",
+    "\\resources\\data\\[^\\]+\\cache($|\\)"
+  )
+
+  Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+    Where-Object {
+      $full = $_.FullName
+      foreach ($pattern in $runtimeDirPatterns) {
+        if ($full -match $pattern) { return $true }
+      }
+      return $false
+    } |
+    Sort-Object FullName -Descending |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+function Assert-CleanPackageForRelease([string]$PackageDir) {
+  if (-not (Test-Path $PackageDir -PathType Container)) {
+    Fail "Package directory does not exist: $PackageDir"
+  }
+
+  $blockedFiles = @("config.yaml", ".env", ".env.local", "user-memory.json")
+  foreach ($blocked in $blockedFiles) {
+    $hit = Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -File -Filter $blocked -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($hit) {
+      Fail "Package contains blocked runtime/config file: $($hit.FullName)"
+    }
+  }
+
+  $blockedDirPatterns = @(
+    "\\resources\\data\\claude-code\\home\\claude-config\\projects($|\\)",
+    "\\resources\\data\\hermes\\memory($|\\)"
+  )
+  $blockedDir = Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+    Where-Object {
+      $full = $_.FullName
+      foreach ($pattern in $blockedDirPatterns) {
+        if ($full -match $pattern) { return $true }
+      }
+      return $false
+    } |
+    Select-Object -First 1
+  if ($blockedDir) {
+    Fail "Package contains blocked runtime directory: $($blockedDir.FullName)"
+  }
+
+  $blockedTextPatterns = @(
+    "124\.222\.21\.44",
+    "sk-[A-Za-z0-9_-]{20,}",
+    "Bearer\s+[A-Za-z0-9._-]{20,}",
+    "release-user-package",
+    "SuperClaw-1\.0\.4",
+    "电商1\.0\.2"
+  )
+  $textExtensions = @(".cmd", ".bat", ".ps1", ".sh", ".js", ".mjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".html", ".css")
+  $textHit = Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -File -ErrorAction SilentlyContinue |
+    Where-Object { $textExtensions -contains $_.Extension.ToLowerInvariant() } |
+    Select-String -Pattern $blockedTextPatterns -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if ($textHit) {
+    Fail "Package contains blocked sensitive/legacy text: $($textHit.Path):$($textHit.LineNumber)"
+  }
+
+  Ok "Release package has no runtime model config, env files, user memory, or legacy sensitive markers"
+}
+
 function Clear-PackagedForbiddenFiles([string]$PackageRoot) {
   if (-not (Test-Path $PackageRoot -PathType Container)) {
     return
   }
 
+  Remove-PackagedRuntimeState $PackageRoot
+
   Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @(".env", ".env.local", "user-memory.json") -or $_.Name -like "backup-*.patch" } |
+    Where-Object { $_.Name -in @("config.yaml", ".env", ".env.local", "user-memory.json") -or $_.Name -like "backup-*.patch" } |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
   Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -Directory -Filter ".git" -ErrorAction SilentlyContinue |
@@ -899,7 +943,7 @@ function Clear-PackagedForbiddenFiles([string]$PackageRoot) {
 function Assert-NoForbiddenPackageFiles([string]$PackageRoot) {
   $found = Get-ChildItem -LiteralPath $PackageRoot -Recurse -Force -ErrorAction SilentlyContinue |
     Where-Object {
-      $_.Name -in @(".env", ".env.local", "user-memory.json") -or
+      $_.Name -in @("config.yaml", ".env", ".env.local", "user-memory.json") -or
       $_.Name -like "backup-*.patch" -or
       ($_.PSIsContainer -and $_.Name -eq ".git") -or
       ($_.PSIsContainer -and $_.FullName -match "\\hermes\\memory($|\\)")
@@ -909,7 +953,7 @@ function Assert-NoForbiddenPackageFiles([string]$PackageRoot) {
     $names = ($found | ForEach-Object { $_.FullName.Replace($PackageRoot, "").TrimStart("\") }) -join ", "
     Fail "Forbidden files remain in package: $names"
   }
-  Ok "No .env, .env.local, user-memory.json, backup patch, or .git files in package"
+  Ok "No config.yaml, .env, .env.local, user-memory.json, backup patch, or .git files in package"
 }
 
 function Scrub-PackagedPathExamples([string]$PackageRoot) {
@@ -1042,7 +1086,7 @@ Write-Host ("Project: " + $Root)
 Write-Host ("Mode:    " + $(if ($Debug) { "debug" } else { "release" }))
 Write-Host ("Output:  " + $OutDir)
 if ($SanitizedTest) {
-  Write-Host "Package: MiniMax-only test build without customer user system" -ForegroundColor Yellow
+  Write-Host "Package: sanitized runtime-config build without bundled model credentials" -ForegroundColor Yellow
 }
 if ($PackageOnly) {
   Write-Host "Build:   PackageOnly (using existing executable)" -ForegroundColor Yellow
@@ -1200,12 +1244,12 @@ Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
 
 if ($SanitizedTest) {
   $SanitizedReadmeLines = @(
-    "SuperClaw MiniMax-only test package",
+    "SuperClaw sanitized runtime-config package",
     "",
     "1. Customer login, registration, activation, claim, and profile pages are not part of this test package.",
     "2. No real API key or local customer session is bundled.",
-    "3. OpenClaw, Hermes, and Claude Panel default to MiniMax. Fill the MiniMax API Key from the local Models page before chat testing.",
-    "4. Hermes starts in the normal dashboard/chat flow, not the first-run install wizard.",
+    "3. Model providers, base URLs, API keys, and model names must be configured at runtime before chat testing.",
+    "4. Hermes starts in the normal dashboard/chat flow and reports needs_setup until runtime model configuration is provided.",
     "5. This is a USB test package, not a customer delivery package."
   )
   $SanitizedReadme = $SanitizedReadmeLines -join [Environment]::NewLine
@@ -1247,8 +1291,10 @@ Step "Final packaged runtime cleanup"
 Stop-PackagedProcesses $OutDir
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 Clear-PackagedMachineSpecificPaths $PackagedResources
+Remove-PackagedRuntimeState $OutDir
 Clear-PackagedForbiddenFiles $OutDir
 Scrub-PackagedPathExamples $OutDir
+Assert-CleanPackageForRelease $OutDir
 Ok "Removed logs, locks, and pid files created during package verification"
 
 Step "Verifying package"
@@ -1281,6 +1327,7 @@ Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.trainedd
 Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
 Assert-NoForbiddenPackageFiles $OutDir
+Assert-CleanPackageForRelease $OutDir
 Assert-NoPackagedUserState (Join-Path $PackagedResources "data")
 Ok "No user sessions, usage records, logs, locks, or local project state in package data"
 
