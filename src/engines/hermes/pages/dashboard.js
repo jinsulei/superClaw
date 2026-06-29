@@ -10,6 +10,7 @@ import {
   loadHermesProviders,
   inferProviderByBaseUrl,
 } from '../lib/providers.js'
+import { openHermesTerminalLauncher } from '../lib/hermes-terminal-launcher.js'
 
 const ICONS = {
   running: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--success, #22c55e)" stroke-width="2.5" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`,
@@ -634,7 +635,17 @@ export function render() {
       actionBusy = false; await refresh()
     })
     el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', () => {
-      window.location.hash = '#/h/chat'
+      openHermesTerminalLauncher({
+        info,
+        health,
+        notify: (message, type) => {
+          showGwMsg(message, type === 'warning' || type === 'error')
+          toast(message, type || 'info', { duration: 5000 })
+        },
+        navigate: route => {
+          window.location.hash = `#${route}`
+        },
+      })
     })
     // Quick links
     el.querySelectorAll('.hm-dash-link').forEach(btn => {
