@@ -13,7 +13,6 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
     });
 
-
 pub mod agent;
 pub mod assistant;
 pub mod claude_code;
@@ -500,7 +499,13 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             tools.insert("profile".into(), serde_json::json!("minimal"));
             changed = true;
         }
-        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec", "process"]);
+        let allow = serde_json::json!([
+            "browser",
+            "desktop_control",
+            "skill_manager",
+            "exec",
+            "process"
+        ]);
         if tools.get("alsoAllow") != Some(&allow) {
             tools.insert("alsoAllow".into(), allow);
             changed = true;

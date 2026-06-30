@@ -122,8 +122,55 @@ fn claude_compatible_minimax_env(resources: &Path) -> Option<(String, String)> {
     Some((key, base))
 }
 
-fn apply_minimax_env(cmd: &mut Command, resources: &Path) {
-    if let Some((key, base)) = claude_compatible_minimax_env(resources) {
+fn claude_relay_model_env(resources: &Path) -> Option<(String, String, String)> {
+    let relay = fs::read_to_string(claude_relay_config_path(resources))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())?;
+    if relay
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .is_some_and(|enabled| !enabled)
+    {
+        return None;
+    }
+    let key = relay
+        .get("apiKey")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && !v.contains("${") && !v.contains("***"))?
+        .to_string();
+    let base = relay
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && !v.contains("${"))?
+        .trim_end_matches('/')
+        .to_string();
+    let provider = relay
+        .get("defaultProvider")
+        .or_else(|| relay.get("provider"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("openai-compatible")
+        .to_string();
+    Some((key, base, provider))
+}
+
+fn apply_claude_model_env(cmd: &mut Command, resources: &Path) {
+    if let Some((key, base, provider)) = claude_relay_model_env(resources) {
+        cmd.env("ANTHROPIC_API_KEY", &key)
+            .env("ANTHROPIC_AUTH_TOKEN", &key)
+            .env("ANTHROPIC_BASE_URL", &base)
+            .env("OPENAI_API_KEY", &key)
+            .env("OPENAI_BASE_URL", &base);
+        if provider.to_ascii_lowercase().contains("minimax") {
+            cmd.env("MINIMAX_API_KEY", &key)
+                .env("MINIMAX_CN_API_KEY", &key)
+                .env("MINIMAX_BASE_URL", &base)
+                .env("MINIMAX_CN_BASE_URL", &base);
+        }
+    } else if let Some((key, base)) = claude_compatible_minimax_env(resources) {
         cmd.env("MINIMAX_API_KEY", &key)
             .env("MINIMAX_BASE_URL", &base)
             .env("ANTHROPIC_API_KEY", &key)
@@ -160,7 +207,7 @@ fn apply_portable_env(cmd: &mut Command, resources: &Path, home: &Path, projects
         .stdin(Stdio::null())
         .stderr(Stdio::piped())
         .stdout(Stdio::piped());
-    apply_minimax_env(cmd, resources);
+    apply_claude_model_env(cmd, resources);
 }
 
 #[cfg(target_os = "windows")]
@@ -178,9 +225,8 @@ fn panel_status_ready(port: u16) -> bool {
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
-    let request = format!(
-        "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
@@ -247,7 +293,7 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
         .env("LOCALAPPDATA", localappdata)
         .env("PATH", next_path)
         .stdin(Stdio::null());
-    apply_minimax_env(cmd, resources);
+    apply_claude_model_env(cmd, resources);
 }
 
 fn panel_running_info(resources: &Path) -> Value {
@@ -444,7 +490,13 @@ fn write_native_launcher(
     let config_dir = home.join("claude-config");
     let launcher = home.join("run-claude-native.cmd");
     let claude_dir = claude.parent().unwrap_or_else(|| Path::new(""));
-    let minimax_env = claude_compatible_minimax_env(resources);
+    let model_env = claude_relay_model_env(resources).or_else(|| {
+        claude_compatible_minimax_env(resources)
+            .map(|(key, base)| (key, base, "minimax".to_string()))
+    });
+    let model_env_is_minimax = model_env
+        .as_ref()
+        .is_some_and(|(_, _, provider)| provider.to_ascii_lowercase().contains("minimax"));
     let lines = vec![
         "@echo off".to_string(),
         "chcp 65001 >nul".to_string(),
@@ -457,25 +509,33 @@ fn write_native_launcher(
         format!("set \"CLAUDE_CONFIG_DIR={}\"", config_dir.display()),
         format!("set \"CLAUDE_CODE_PROJECTS_DIR={}\"", projects.display()),
         "set \"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\"".to_string(),
-        minimax_env
+        if model_env_is_minimax {
+            model_env
+                .as_ref()
+                .map(|(key, _, _)| format!("set \"{}={}\"", "MINIMAX_API_KEY", key))
+                .unwrap_or_else(|| "rem MINIMAX_API_KEY not configured".to_string())
+        } else {
+            "rem MINIMAX_API_KEY not configured".to_string()
+        },
+        if model_env_is_minimax {
+            model_env
+                .as_ref()
+                .map(|(_, base, _)| format!("set \"{}={}\"", "MINIMAX_BASE_URL", base))
+                .unwrap_or_else(|| "rem MINIMAX_BASE_URL not configured".to_string())
+        } else {
+            "rem MINIMAX_BASE_URL not configured".to_string()
+        },
+        model_env
             .as_ref()
-            .map(|(key, _)| format!("set \"{}={}\"", "MINIMAX_API_KEY", key))
-            .unwrap_or_else(|| "rem MINIMAX_API_KEY not configured".to_string()),
-        minimax_env
-            .as_ref()
-            .map(|(_, base)| format!("set \"{}={}\"", "MINIMAX_BASE_URL", base))
-            .unwrap_or_else(|| "rem MINIMAX_BASE_URL not configured".to_string()),
-        minimax_env
-            .as_ref()
-            .map(|(key, _)| format!("set \"ANTHROPIC_API_KEY={}\"", key))
+            .map(|(key, _, _)| format!("set \"ANTHROPIC_API_KEY={}\"", key))
             .unwrap_or_else(|| "rem ANTHROPIC_API_KEY not configured".to_string()),
-        minimax_env
+        model_env
             .as_ref()
-            .map(|(key, _)| format!("set \"ANTHROPIC_AUTH_TOKEN={}\"", key))
+            .map(|(key, _, _)| format!("set \"ANTHROPIC_AUTH_TOKEN={}\"", key))
             .unwrap_or_else(|| "rem ANTHROPIC_AUTH_TOKEN not configured".to_string()),
-        minimax_env
+        model_env
             .as_ref()
-            .map(|(_, base)| format!("set \"ANTHROPIC_BASE_URL={}\"", base))
+            .map(|(_, base, _)| format!("set \"ANTHROPIC_BASE_URL={}\"", base))
             .unwrap_or_else(|| "rem ANTHROPIC_BASE_URL not configured".to_string()),
         format!("set \"PATH={};%PATH%\"", claude_dir.display()),
         quote_cmd(claude),
@@ -536,7 +596,7 @@ fn start_native_impl(cwd: Option<String>) -> Result<Value, String> {
             .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
             .env("CLAUDE_CODE_PROJECTS_DIR", &projects)
             .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
-        apply_minimax_env(&mut cmd, &resources);
+        apply_claude_model_env(&mut cmd, &resources);
         launcher_path = Some(launcher);
         cmd.spawn()
             .map_err(|e| format!("启动 Claude Code 原生终端失败：{e}"))?;
@@ -662,7 +722,11 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
     let managed = existing
         .get("managedBy")
         .and_then(|v| v.as_str())
-        .is_some_and(|v| v == "superclaw-minimax-test");
+        .is_some_and(|v| {
+            v == "superclaw-minimax-test"
+                || v == "superclaw-yyapi"
+                || v.starts_with("superclaw-provider-profile:")
+        });
     let has_existing_user_config = existing
         .get("enabled")
         .and_then(|v| v.as_bool())
@@ -715,7 +779,7 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("MiniMax");
+        .unwrap_or("Claude Code Relay");
     let relay_provider = config
         .get("provider")
         .and_then(|v| v.as_str())
@@ -727,13 +791,13 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("minimax");
+        .unwrap_or("openai-compatible");
     let managed_by = config
         .get("managedBy")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("superclaw-minimax-test");
+        .unwrap_or("superclaw-managed");
 
     let mut branch_models = config
         .get("branchModels")
@@ -762,7 +826,8 @@ pub async fn configure_claude_code_relay(config: Value) -> Result<Value, String>
         "defaultProvider": default_provider,
         "baseUrl": base_url,
         "model": model,
-        "branchModels": branch_models,
+        "branchModels": branch_models.clone(),
+        "models": branch_models,
         "apiKey": api_key,
         "managedBy": managed_by,
         "updatedAt": format!("{:?}", std::time::SystemTime::now())

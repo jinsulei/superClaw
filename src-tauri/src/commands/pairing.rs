@@ -9,6 +9,21 @@ const REQUIRED_SCOPES: &[&str] = &[
     "operator.write",
 ];
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn random_token() -> String {
+    use base64::Engine;
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 #[tauri::command]
 pub fn auto_pair_device() -> Result<String, String> {
     // 无论是否已配对，都确保 gateway.controlUi.allowedOrigins 已写入
@@ -74,10 +89,7 @@ pub fn auto_pair_device() -> Result<String, String> {
     }
 
     // 添加设备到配对列表
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let now_ms = now_ms();
 
     paired[&device_id] = serde_json::json!({
         "deviceId": device_id,
@@ -90,7 +102,19 @@ pub fn auto_pair_device() -> Result<String, String> {
         "roles": ["operator"],
         "scopes": REQUIRED_SCOPES,
         "approvedScopes": REQUIRED_SCOPES,
-        "tokens": {},
+        "tokens": {
+            "operator": {
+                "token": random_token(),
+                "role": "operator",
+                "scopes": REQUIRED_SCOPES,
+                "issuer": {
+                    "kind": "clawpanel-local-pairing",
+                    "generation": random_token()
+                },
+                "createdAtMs": now_ms,
+                "rotatedAtMs": now_ms
+            }
+        },
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms
     });
@@ -151,8 +175,46 @@ fn patch_existing_pairing_record(record: &mut serde_json::Value, os_platform: &s
         changed = true;
     }
 
-    if let Some(tokens) = obj.get_mut("tokens").and_then(|v| v.as_object_mut()) {
-        for token in tokens.values_mut() {
+    let current_ms = now_ms();
+    let tokens = obj.entry("tokens").or_insert_with(|| serde_json::json!({}));
+    if !tokens.is_object() {
+        *tokens = serde_json::json!({});
+        changed = true;
+    }
+    if let Some(tokens_obj) = tokens.as_object_mut() {
+        let operator = tokens_obj.entry("operator").or_insert_with(|| {
+            changed = true;
+            serde_json::json!({
+                "token": random_token(),
+                "role": "operator",
+                "scopes": REQUIRED_SCOPES,
+                "issuer": {
+                    "kind": "clawpanel-local-pairing",
+                    "generation": random_token()
+                },
+                "createdAtMs": current_ms,
+                "rotatedAtMs": current_ms
+            })
+        });
+        if let Some(token_obj) = operator.as_object_mut() {
+            if token_obj
+                .get("token")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+            {
+                token_obj.insert("token".into(), serde_json::Value::String(random_token()));
+                changed = true;
+            }
+            if token_obj.get("role").and_then(|v| v.as_str()) != Some("operator") {
+                token_obj.insert("role".into(), serde_json::Value::String("operator".into()));
+                changed = true;
+            }
+            if ensure_string_array_contains(token_obj, "scopes", REQUIRED_SCOPES) {
+                changed = true;
+            }
+        }
+        for token in tokens_obj.values_mut() {
             if let Some(token_obj) = token.as_object_mut() {
                 if ensure_string_array_contains(token_obj, "scopes", REQUIRED_SCOPES) {
                     changed = true;

@@ -1,4 +1,4 @@
-﻿mod agent_lifecycle;
+mod agent_lifecycle;
 mod commands;
 mod models;
 mod tray;
@@ -6,7 +6,8 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
-    hermes_providers, logs, memory, messaging, ocr, pairing, service, shared_memory, skills, update,
+    hermes_providers, logs, memory, messaging, ocr, pairing, service, shared_memory, skills,
+    update,
 };
 use tauri::Manager;
 

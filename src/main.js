@@ -10,7 +10,7 @@ window._jsLoaded = true
 import { initRouter, navigate, registerRoute, setDefaultRoute } from './router.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
-import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
+import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange, refreshGatewayStatus } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
 import { api, checkBackendHealth, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
@@ -23,7 +23,7 @@ import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
 import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
-import { isLoggedIn, navigateTo } from './lib/user-api.js'
+import { isAppActivated, isLoggedIn, navigateTo } from './lib/user-api.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
@@ -102,7 +102,7 @@ async function checkRemoteAuth() {
 function getInitialAuthRoute() {
   const route = (window.location.hash.slice(1) || '').split('?')[0]
   if (route === '/register' || route === '/login' || route === '/claim') return route
-  if (sessionStorage.getItem('superclaw_activation_code')) return '/register'
+  if (isAppActivated()) return '/login'
   return '/activate'
 }
 
@@ -782,6 +782,7 @@ async function boot() {
   initRouter(content)
   window.addEventListener('hashchange', () => {
     try { renderSidebar(sidebar) } catch (e) { console.warn('[main] route-change renderSidebar 失败', e) }
+    ensureOpenClawWebSocketConnected('hashchange')
   })
 
   // 移动端顶栏（汉堡菜单 + 标题）
@@ -840,6 +841,7 @@ async function boot() {
       setTimeout(async () => {
         await detectOpenclawStatus().catch(() => {})
         if (isGatewayRunning()) autoConnectWebSocket()
+        ensureOpenClawWebSocketConnected('engine-change')
       }, 500)
     }
   })
@@ -918,11 +920,13 @@ async function boot() {
         if (isGatewayRunning()) {
           autoConnectWebSocket()
         }
+        ensureOpenClawWebSocketConnected('boot')
 
         // 监听 Gateway 状态变化，自动连接/断开 WebSocket
         onGatewayChange((running) => {
           if (running) {
             autoConnectWebSocket()
+            ensureOpenClawWebSocketConnected('gateway-change')
             // 正向时机：Gateway 启动成功，延迟弹社区引导
           } else {
             wsClient.disconnect()
@@ -954,6 +958,7 @@ async function boot() {
           wsClient.disconnect()
           await detectOpenclawStatus()
           if (isGatewayRunning()) autoConnectWebSocket()
+          ensureOpenClawWebSocketConnected('instance-change')
         })
       }
     }
@@ -1072,6 +1077,28 @@ async function autoConnectWebSocket() {
   }
 }
 
+let _openClawWsEnsureTimer = null
+
+function ensureOpenClawWebSocketConnected(reason = 'route-change') {
+  if (getActiveEngineId() !== 'openclaw') return
+  if (wsClient.gatewayReady || wsClient.connecting) return
+  clearTimeout(_openClawWsEnsureTimer)
+  _openClawWsEnsureTimer = setTimeout(async () => {
+    _openClawWsEnsureTimer = null
+    if (getActiveEngineId() !== 'openclaw') return
+    if (wsClient.gatewayReady || wsClient.connecting) return
+    try {
+      const ready = await refreshGatewayStatus()
+      if (ready && !wsClient.gatewayReady && !wsClient.connecting) {
+        console.log(`[main] ensure OpenClaw WebSocket after ${reason}`)
+        autoConnectWebSocket()
+      }
+    } catch (e) {
+      console.warn('[main] ensure OpenClaw WebSocket failed:', e)
+    }
+  }, 120)
+}
+
 let _openclawRuntimeHooksBound = false
 
 function bindOpenClawRuntimeHooks() {
@@ -1140,11 +1167,27 @@ function setupGatewayBanner() {
       banner.classList.add('gw-banner-hidden')
       return
     }
+    if (wsClient.gatewayReady) {
+      banner.classList.add('gw-banner-hidden')
+      return
+    }
     if (running || sessionStorage.getItem('gw-banner-dismissed')) {
       banner.classList.add('gw-banner-hidden')
       return
     }
-    banner.classList.remove('gw-banner-hidden')
+    banner.classList.add('gw-banner-hidden')
+    refreshGatewayStatus()
+      .then((ready) => {
+        if (ready) banner.classList.add('gw-banner-hidden')
+        else if (getActiveEngineId() === 'openclaw' && !isOpenClawChatRoute() && !sessionStorage.getItem('gw-banner-dismissed')) {
+          banner.classList.remove('gw-banner-hidden')
+        }
+      })
+      .catch(() => {
+        if (getActiveEngineId() === 'openclaw' && !isOpenClawChatRoute() && !sessionStorage.getItem('gw-banner-dismissed')) {
+          banner.classList.remove('gw-banner-hidden')
+        }
+      })
 
     if (foreign) {
       // Gateway 在运行但属于外部实例 —— 显示认领按钮
@@ -1252,6 +1295,7 @@ function setupGatewayBanner() {
 
   update(isGatewayRunning(), isGatewayForeign())
   onGatewayChange(update)
+  wsClient.onStatusChange(() => update(isGatewayRunning(), isGatewayForeign()))
   // 引擎切换时刷新横幅（Hermes 模式隐藏，OpenClaw 模式按 Gateway 状态显示）
   onEngineChange(() => update(isGatewayRunning(), isGatewayForeign()))
   window.addEventListener('hashchange', () => update(isGatewayRunning(), isGatewayForeign()))

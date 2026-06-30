@@ -134,6 +134,7 @@ let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _last
 let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false
 let _isLoadingHistory = false
 let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
+let _openClawGatewayRestartedHandler = null
 let _seenRunIds = new Set()
 let _pageActive = false
 let _sendInputLocked = false
@@ -2117,6 +2118,21 @@ async function connectGateway(options = {}) {
     if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
     if (_unsubReady) { _unsubReady(); _unsubReady = null }
     if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
+    if (_openClawGatewayRestartedHandler) {
+      window.removeEventListener('superclaw:openclaw-gateway-restarted', _openClawGatewayRestartedHandler)
+      _openClawGatewayRestartedHandler = null
+    }
+    _openClawGatewayRestartedHandler = async () => {
+      if (!_pageActive) return
+      setOpenClawGatewayUiState('checking', { error: '', progress: 70 })
+      try {
+        wsClient.disconnect()
+        await connectGateway({ skipProbe: true })
+      } catch (e) {
+        setOpenClawGatewayUiState('error', { error: e?.message || String(e) })
+      }
+    }
+    window.addEventListener('superclaw:openclaw-gateway-restarted', _openClawGatewayRestartedHandler)
 
     if (!options.skipProbe) {
       const probe = await refreshOpenClawGatewayUiState()
@@ -6834,6 +6850,10 @@ export function cleanup() {
   if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
   if (_unsubReady) { _unsubReady(); _unsubReady = null }
   if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
+  if (_openClawGatewayRestartedHandler) {
+    window.removeEventListener('superclaw:openclaw-gateway-restarted', _openClawGatewayRestartedHandler)
+    _openClawGatewayRestartedHandler = null
+  }
   clearTimeout(_streamSafetyTimer)
   if (_scrollFrame) {
     cancelAnimationFrame(_scrollFrame)

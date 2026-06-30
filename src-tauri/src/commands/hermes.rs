@@ -1,4 +1,4 @@
-﻿//! Hermes Agent 安装与管理命令
+//! Hermes Agent 安装与管理命令
 //!
 //! 通过 uv (Astral) 实现零依赖安装：
 //!   1. 下载 uv 单文件二进制
@@ -499,10 +499,7 @@ fn hermes_home() -> PathBuf {
 }
 
 fn ensure_yyapi_hermes_provider_profile(home: &Path) -> Result<(), String> {
-    let provider_dir = home
-        .join("plugins")
-        .join("model-providers")
-        .join("yyapi");
+    let provider_dir = home.join("plugins").join("model-providers").join("yyapi");
     std::fs::create_dir_all(&provider_dir)
         .map_err(|e| format!("创建 YYAPI provider 目录失败: {e}"))?;
 
@@ -625,7 +622,10 @@ fn uv_tool_dir() -> PathBuf {
     if new_path.exists() {
         return new_path;
     }
-    let new_path = app_root_dir().join("resources").join("runtime").join("uv-tools");
+    let new_path = app_root_dir()
+        .join("resources")
+        .join("runtime")
+        .join("uv-tools");
     if new_path.exists() {
         return new_path;
     }
@@ -665,7 +665,10 @@ fn uv_python_dir() -> PathBuf {
     if new_path.exists() {
         return new_path;
     }
-    let new_path = app_root_dir().join("resources").join("runtime").join("uv-python");
+    let new_path = app_root_dir()
+        .join("resources")
+        .join("runtime")
+        .join("uv-python");
     if new_path.exists() {
         return new_path;
     }
@@ -1936,10 +1939,7 @@ fn hermes_lifecycle_process_info(enhanced: &str) -> (String, String) {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| home.clone());
-        return (
-            cwd.display().to_string(),
-            python.display().to_string(),
-        );
+        return (cwd.display().to_string(), python.display().to_string());
     }
     let launcher = hermes_system_executable(enhanced);
     let cwd = hermes_launcher_cwd(&home, Some(&launcher));
@@ -4900,10 +4900,9 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
             }
             let mut image_url = serde_json::Map::new();
             image_url.insert("url".to_string(), Value::String(url));
-            if let Some(detail) = normalize_image_detail(Some(json_string_field(
-                item,
-                &["detail", "imageDetail"],
-            ))) {
+            if let Some(detail) =
+                normalize_image_detail(Some(json_string_field(item, &["detail", "imageDetail"])))
+            {
                 image_url.insert("detail".to_string(), Value::String(detail));
             }
             parts.push(serde_json::json!({
@@ -5204,7 +5203,8 @@ pub async fn hermes_agent_run(
     {
         payload["conversation_history"] = hist;
     }
-    payload["instructions"] = Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
+    payload["instructions"] =
+        Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
 
     let client = hermes_gateway_http_client(std::time::Duration::from_secs(10))
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
@@ -5367,8 +5367,13 @@ pub async fn hermes_agent_run(
                         let mut tool_evt = evt.clone();
                         if let Some(obj) = tool_evt.as_object_mut() {
                             obj.insert("run_id".into(), Value::String(run_id.clone()));
-                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
-                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                            obj.insert(
+                                "session_id".into(),
+                                Value::String(response_session_id.clone()),
+                            );
+                            if let Some(id) =
+                                client_request_id.as_ref().filter(|s| !s.trim().is_empty())
+                            {
                                 obj.insert("clientRequestId".into(), Value::String(id.to_string()));
                             }
                             if !obj.contains_key("tool_call_id") {

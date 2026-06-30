@@ -80,6 +80,7 @@ export class WsClient {
     this._initRetryCount = 0       // Gateway 初始化中重试计数器
     this._password = ''
     this._serverVersion = null
+    this._connectSeq = 0
 
     // 增强状态追踪
     this._lastConnectedAt = null
@@ -138,25 +139,53 @@ export class WsClient {
     return () => { this._readyCallbacks = this._readyCallbacks.filter(cb => cb !== fn) }
   }
 
+  async _resolveConnectToken(gatewayToken, gatewayPassword) {
+    try {
+      await api.autoPairDevice()
+    } catch {}
+    try {
+      const frame = await api.createConnectFrame('', gatewayToken || '', gatewayPassword || '')
+      const token = frame?.params?.auth?.token
+      if (typeof token === 'string' && token.trim()) return token.trim()
+    } catch (e) {
+      console.warn('[ws] resolve device token failed, fallback to gateway token:', e)
+    }
+    return gatewayToken || ''
+  }
+
+  _buildUrl(host, token, opts = {}) {
+    const proto = opts.secure ?? (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws'
+    return `${proto}://${host}/ws?token=${encodeURIComponent(token || '')}`
+  }
+
   connect(host, token, opts = {}) {
     this._intentionalClose = false
     this._autoPairAttempts = 0
-    this._token = token || ''
+    const requestedToken = token || ''
     this._password = opts.password || ''
     // 自动检测协议：如果页面通过 HTTPS 加载（反代场景），使用 wss://
-    const proto = opts.secure ?? (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws'
-    const nextUrl = `${proto}://${host}/ws?token=${encodeURIComponent(this._token)}`
+    const seq = ++this._connectSeq
+    this._setConnected(false, 'connecting')
+    this._resolveConnectToken(requestedToken, this._password).then((resolvedToken) => {
+      if (seq !== this._connectSeq || this._intentionalClose) return
+      const nextUrl = this._buildUrl(host, resolvedToken, opts)
     if (this._connecting || this._handshaking || this._gatewayReady) {
       if (this._url === nextUrl) return
     }
-    if (this._ws && (this._ws.readyState === WebSocket.OPEN || this._ws.readyState === WebSocket.CONNECTING)) return
-    this._url = nextUrl
-    this._lastConnectedAt = Date.now()
-    this._doConnect()
+      if (this._ws && (this._ws.readyState === WebSocket.OPEN || this._ws.readyState === WebSocket.CONNECTING)) return
+      this._token = resolvedToken
+      this._url = nextUrl
+      this._lastConnectedAt = Date.now()
+      this._doConnect()
+    }).catch((e) => {
+      console.error('[ws] prepare connection failed:', e)
+      if (seq === this._connectSeq) this._setConnected(false, 'error', e?.message || String(e))
+    })
   }
 
   disconnect() {
     this._intentionalClose = true
+    this._connectSeq++
     this._stopPing()
     this._stopHeartbeat()
     this._clearReconnectTimer()
@@ -555,9 +584,10 @@ export class WsClient {
       const config = await api.readOpenclawConfig()
       const newToken = config?.gateway?.auth?.token || ''
       const newPassword = config?.gateway?.auth?.password || ''
-      if ((newToken && newToken !== this._token) || (newPassword && newPassword !== this._password)) {
+      const resolvedToken = await this._resolveConnectToken(newToken, newPassword)
+      if ((resolvedToken && resolvedToken !== this._token) || (newPassword && newPassword !== this._password)) {
         console.log('[ws] 检测到凭据变更，使用新凭据重连')
-        this._token = newToken
+        this._token = resolvedToken
         this._password = newPassword
         const base = this._url.split('?')[0]
         this._url = `${base}?token=${encodeURIComponent(this._token)}`

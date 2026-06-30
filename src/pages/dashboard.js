@@ -10,8 +10,10 @@ import { t } from '../lib/i18n.js'
 import { wsClient } from '../lib/ws-client.js'
 
 let _unsubGw = null
+let _unsubWs = null
 let _loadInFlight = false
 let _lastGwChangeLoad = 0
+let _wsEnsureInFlight = false
 
 export async function render() {
   const page = document.createElement('div')
@@ -63,12 +65,18 @@ export async function render() {
     _lastGwChangeLoad = now
     loadDashboardData(page)
   })
+  if (_unsubWs) _unsubWs()
+  _unsubWs = wsClient.onStatusChange(() => {
+    const el = page.querySelector('#dashboard-ws-status')
+    if (el) el.outerHTML = renderWsStatus()
+  })
 
   return page
 }
 
 export function cleanup() {
   if (_unsubGw) { _unsubGw(); _unsubGw = null }
+  if (_unsubWs) { _unsubWs(); _unsubWs = null }
 }
 
 function openclawInstallationIdentity(installation) {
@@ -160,6 +168,7 @@ async function _loadDashboardDataInner(page, fullRefresh) {
   const panelConfig = panelConfigRes.status === 'fulfilled' ? panelConfigRes.value : null
   const gw = services.find(s => s.label === 'ai.openclaw.gateway')
   const shouldLoadStatusSummary = gw?.running === true
+  ensureDashboardWebSocketConnected(config).catch(() => {})
   if (!shouldLoadStatusSummary) {
     _dashboardStatusSummaryCache = null
   }
@@ -492,7 +501,7 @@ function renderWsStatus() {
   }
 
   return `
-    <div class="config-section" style="margin-top:16px">
+    <div class="config-section" id="dashboard-ws-status" style="margin-top:16px">
       <div class="config-section-title" style="display:flex;align-items:center;gap:8px">
         <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor}"></span>
         WebSocket ${statusLabel}
@@ -502,6 +511,24 @@ function renderWsStatus() {
 }
 
 const CHANNEL_ICONS = { qqbot: '🐧', qq: '🐧', feishu: '🪶', dingtalk: '📌', telegram: '✈️', discord: '🎮', slack: '💬', weixin: '💚', wechat: '💚', webchat: '🌐', whatsapp: '📱', line: '🟢', teams: '👥', matrix: '🔗' }
+
+async function ensureDashboardWebSocketConnected(config = null) {
+  if (wsClient.gatewayReady || wsClient.connecting || _wsEnsureInFlight) return
+  _wsEnsureInFlight = true
+  try {
+    const portReady = await api.probeGatewayPort().catch(() => false)
+    if (!portReady || wsClient.gatewayReady || wsClient.connecting) return
+    const cfg = config || await api.readOpenclawConfig()
+    const port = cfg?.gateway?.port || 18789
+    const rawToken = cfg?.gateway?.auth?.token
+    const token = (typeof rawToken === 'string') ? rawToken : ''
+    const rawPassword = cfg?.gateway?.auth?.password
+    const password = (typeof rawPassword === 'string') ? rawPassword : ''
+    wsClient.connect(`127.0.0.1:${port}`, token, { password })
+  } finally {
+    setTimeout(() => { _wsEnsureInFlight = false }, 1000)
+  }
+}
 
 function renderChannelsOverview(channels) {
   if (!channels || channels.length === 0) return ''
