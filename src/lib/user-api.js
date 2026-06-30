@@ -11,6 +11,8 @@ import {
 } from './yyapi-config.js'
 
 const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
+const APP_ACTIVATED_KEY = 'superclaw_app_activated'
+const APP_ACTIVATED_AT_KEY = 'superclaw_app_activated_at'
 
 function getBaseUrl() {
   return getUserApiBaseUrl()
@@ -27,6 +29,21 @@ export function navigateTo(path) {
 
 export function navigateToAuth(path) {
   window.location.hash = '#/' + String(path || '').replace(/^\/+/, '')
+}
+
+export function markAppActivated() {
+  localStorage.setItem(APP_ACTIVATED_KEY, '1')
+  localStorage.setItem(APP_ACTIVATED_AT_KEY, new Date().toISOString())
+}
+
+export function isAppActivated() {
+  if (localStorage.getItem(APP_ACTIVATED_KEY) === '1') return true
+  try {
+    const state = JSON.parse(localStorage.getItem('superclaw_auth_state') || '{}')
+    return Boolean(state?.activated)
+  } catch {
+    return false
+  }
 }
 
 export function getToken() {

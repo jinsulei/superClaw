@@ -2,7 +2,7 @@
  * 激活页面 — 永久一次激活
  * 输入 32 位激活码，验证后进入注册
  */
-import { activateCode, navigateTo, navigateToAuth } from '../lib/user-api.js'
+import { activateCode, isAppActivated, markAppActivated, navigateToAuth } from '../lib/user-api.js'
 import { icon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { prepareActivationBinding } from '../lib/license-binding.js'
@@ -10,6 +10,12 @@ import { prepareActivationBinding } from '../lib/license-binding.js'
 export async function render() {
   const page = document.createElement('div')
   page.className = 'auth-page'
+  if (isAppActivated()) {
+    setTimeout(() => {
+      navigateToAuth('login')
+    }, 0)
+    return page
+  }
 
   page.innerHTML = `
     <div class="auth-container">
@@ -84,12 +90,10 @@ function bindActivateEvents(page) {
         throw new Error(binding.blockingError)
       }
       const result = await activateCode(code, binding.options)
-      // 保存激活码到 sessionStorage，供注册页面使用
-      sessionStorage.setItem('superclaw_activation_code', code)
-      sessionStorage.setItem('superclaw_activation_amount', String(result.amount || 0))
-      if (binding.context) {
-        sessionStorage.setItem('superclaw_activation_usb_context', JSON.stringify(binding.context))
-      }
+      markAppActivated()
+      sessionStorage.removeItem('superclaw_activation_code')
+      sessionStorage.removeItem('superclaw_activation_amount')
+      sessionStorage.removeItem('superclaw_activation_usb_context')
 
       // 显示成功状态
       statusEl.style.display = 'block'
