@@ -25,7 +25,11 @@ import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDel
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
-import { buildOpenClawEcommerceVisibleReply } from '../engines/openclaw/lib/openclaw-ecommerce-assist.js'
+import {
+  buildOpenClawEcommerceVisibleReply,
+  classifyOpenClawEcommerceRequest,
+  shouldAnswerOpenClawEcommerceCapability,
+} from '../engines/openclaw/lib/openclaw-ecommerce-assist.js'
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
 import { ensureCompleteVisibleReply } from '../shared/chat-output-guard.js'
@@ -2950,10 +2954,154 @@ function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequest
   })
 }
 
-function appendOpenClawLocalEcommerceAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
-  const reply = completeOpenClawVisibleReply(buildOpenClawEcommerceVisibleReply(text), text)
+function isOpenClawDirectHighRiskText(text) {
+  return /(?:\u4ed8\u6b3e|\u652f\u4ed8|\u4e0b\u5355|\u63d0\u4ea4\u8ba2\u5355|\u786e\u8ba4\u652f\u4ed8|\u76f4\u63a5\u4ed8|\u76f4\u63a5\u4e0b\u5355|\u626b\u7801\u652f\u4ed8|\u81ea\u52a8\u4ed8|\u81ea\u52a8\u4e0b\u5355|pay|payment|purchase|submit\s+order)/i.test(String(text || ''))
+}
+
+function isOpenClawBrowserScreenshotIntent(text) {
+  return /(?:\u622a\u56fe|\u8bfb\u53d6|\u6293\u53d6|\u6253\u5f00|\u9875\u9762|\u6296\u5e97|\u6296\u97f3|\u5c0f\u7ea2\u4e66|\u516c\u4f17\u53f7|\u6d4f\u89c8\u5668|screenshot|browser|web\s?page|crawl|scrape)/i.test(String(text || ''))
+}
+
+function isOpenClawBrowserAutomationTraceText(text) {
+  return /(?:\u6211\u6765\u64cd\u4f5c\u6d4f\u89c8\u5668|\u542f\u52a8\u6d4f\u89c8\u5668|\u5df2\u6253\u5f00\u6296\u5e97|\u6d4f\u89c8\u5668\u5df2\u8d77\u6765|CDP|tabs?|navigate|browser|screenshot|Douyin|DouDian|\u6296\u5e97|\u7b49\u9875\u9762\u6e32\u67d3|\u7136\u540e\u622a\u56fe)/i.test(String(text || ''))
+}
+
+function buildOpenClawToolUnavailableReply(userText = '') {
+  if (!isOpenClawBrowserScreenshotIntent(userText)) return ''
+  return [
+    '\u6211\u73b0\u5728\u6ca1\u6709\u62ff\u5230\u53ef\u7528\u7684\u6d4f\u89c8\u5668\u6216\u622a\u56fe\u5de5\u5177\u7ed3\u679c\uff0c\u6240\u4ee5\u4e0d\u4f1a\u5047\u88c5\u5df2\u7ecf\u8bfb\u53d6\u6216\u622a\u56fe\u3002',
+    '\u5982\u679c\u4f60\u8981\u6211\u5904\u7406\u6296\u5e97\u3001\u5c0f\u7ea2\u4e66\u3001\u516c\u4f17\u53f7\u7b49\u9875\u9762\uff0c\u8bf7\u5148\u786e\u8ba4\u6d4f\u89c8\u5668\u81ea\u52a8\u5316\u6216\u622a\u56fe\u80fd\u529b\u5df2\u542f\u7528\uff1b\u5426\u5219\u53ef\u4ee5\u76f4\u63a5\u4e0a\u4f20\u622a\u56fe\u7ed9\u6211\u5206\u6790\u3002',
+  ].join('\n\n')
+}
+
+function buildOpenClawHighRiskSafetyReply() {
+  return [
+    '\u8fd9\u7c7b\u64cd\u4f5c\u5c5e\u4e8e\u9ad8\u98ce\u9669\u52a8\u4f5c\uff0c\u6211\u4e0d\u4f1a\u4ee3\u4f60\u81ea\u52a8\u4ed8\u6b3e\u3001\u4e0b\u5355\u6216\u63d0\u4ea4\u8ba2\u5355\u3002',
+    '\u6211\u53ef\u4ee5\u5e2e\u4f60\u68c0\u67e5\u9875\u9762\u4fe1\u606f\u3001\u6574\u7406\u5546\u54c1\u6216\u8ba2\u5355\u8981\u70b9\uff0c\u4f46\u6700\u7ec8\u652f\u4ed8\u548c\u63d0\u4ea4\u5fc5\u987b\u7531\u4f60\u624b\u52a8\u786e\u8ba4\u3002',
+  ].join('\n\n')
+}
+
+function isOpenClawCapabilitySummaryQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 80) return false
+  if (/(?:\u7535\u5546|\u8d22\u52a1|\u4ed8\u6b3e|\u652f\u4ed8|\u4e0b\u5355|\u622a\u56fe|\u8bfb\u53d6|\u6253\u5f00|\u9875\u9762)/i.test(value)) return false
+  return /(?:\u4f60\u6709\u4ec0\u4e48\u6280\u80fd|\u6709\u54ea\u4e9b\u6280\u80fd|\u53ef\u7528\u7684\s*skills?|\u6280\u80fd\u5217\u8868|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u6709\u4ec0\u4e48\u80fd\u529b|what can you do|skills?)/i.test(value)
+}
+
+function isOpenClawFinanceCapabilityQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 80) return false
+  return /(?:\u8d22\u52a1|\u8d26\u5355|\u62a5\u8868|\u5bf9\u8d26|\u53d1\u7968).{0,20}(?:\u5e2e|\u80fd\u505a|\u80fd\u7ed9|\u80fd\u5e72|\u80fd\u529b)|(?:\u5e2e|\u80fd\u505a|\u80fd\u7ed9|\u80fd\u5e72).{0,20}(?:\u8d22\u52a1|\u8d26\u5355|\u62a5\u8868|\u5bf9\u8d26|\u53d1\u7968)/i.test(value)
+}
+
+function buildOpenClawFinanceCapabilityReply() {
+  return [
+    '\u8d22\u52a1\u4e0a\uff0c\u6211\u53ef\u4ee5\u5e2e\u4f60\u505a\u6570\u636e\u8bfb\u53d6\u3001\u6574\u7406\u548c\u5bf9\u8d26\u7c7b\u5de5\u4f5c\u3002',
+    '\u4f8b\u5982\uff1a\u8bfb\u53d6\u8d26\u5355\u6216\u9875\u9762\u4fe1\u606f\u3001\u6574\u7406 Excel/CSV\u3001\u5bf9\u6bd4\u6536\u652f\u3001\u68c0\u67e5\u53d1\u7968\u548c\u751f\u6210\u62a5\u8868\u8349\u7a3f\u3002',
+    '\u6d89\u53ca\u767b\u5f55\u3001\u4ed8\u6b3e\u3001\u63d0\u4ea4\u6216\u5220\u9664\u7684\u52a8\u4f5c\uff0c\u6211\u4f1a\u5148\u505c\u4e0b\u6765\u8ba9\u4f60\u624b\u52a8\u786e\u8ba4\u3002',
+  ].join('\n\n')
+}
+
+function buildOpenClawCapabilitySummaryReply() {
+  return [
+    '\u6211\u662f OpenClaw Agent\uff0c\u4e3b\u8981\u8d1f\u8d23\u6d4f\u89c8\u5668\u3001\u684c\u9762\u548c\u5de5\u5177\u6267\u884c\u7c7b\u4efb\u52a1\u3002',
+    '\u5e38\u7528\u80fd\u529b\u5305\u62ec\uff1a\u7f51\u9875\u8bfb\u53d6\u548c\u622a\u56fe\u3001\u684c\u9762\u534f\u52a9\u3001OCR \u8bc6\u522b\u3001\u6587\u4ef6/\u8868\u683c\u6574\u7406\u3001Skills \u548c\u63d2\u4ef6\u6267\u884c\u3001\u7535\u5546\u9875\u9762\u534f\u52a9\u3002',
+    '\u4ed8\u6b3e\u3001\u4e0b\u5355\u3001\u53d1\u5e03\u3001\u767b\u5f55\u3001\u5220\u9664\u7b49\u9ad8\u98ce\u9669\u64cd\u4f5c\uff0c\u6211\u4f1a\u5148\u505c\u4e0b\u6765\u8ba9\u4f60\u624b\u52a8\u786e\u8ba4\u3002',
+  ].join('\n\n')
+}
+
+function maybeHandleOpenClawLocalAnswer(text) {
+  const value = String(text || '').trim()
+  if (!value) return { handled: false }
+  const ecommerce = classifyOpenClawEcommerceRequest(value)
+  if (ecommerce.blocked || isOpenClawDirectHighRiskText(value)) {
+    return {
+      handled: true,
+      kind: 'safety',
+      reply: buildOpenClawEcommerceVisibleReply(value) || buildOpenClawHighRiskSafetyReply(),
+    }
+  }
+  if (shouldAnswerOpenClawEcommerceCapability(value)) {
+    return {
+      handled: true,
+      kind: 'ecommerce',
+      reply: buildOpenClawEcommerceVisibleReply(value),
+    }
+  }
+  if (isOpenClawFinanceCapabilityQuestion(value)) {
+    return {
+      handled: true,
+      kind: 'finance',
+      reply: buildOpenClawFinanceCapabilityReply(),
+    }
+  }
+  if (isOpenClawCapabilitySummaryQuestion(value)) {
+    return {
+      handled: true,
+      kind: 'capability',
+      reply: buildOpenClawCapabilitySummaryReply(),
+    }
+  }
+  return { handled: false }
+}
+
+function clearOpenClawRuntimeForLocalAnswer(clientRequestId = '') {
+  showTyping(false)
+  _cancelResponseWatchdog()
+  clearGenerationTimeoutManager()
+  clearTimeout(_streamSafetyTimer)
+  _openClawPendingResponse = false
+  _openClawActiveRequestClosed = true
+  _isSending = false
+  _isStreaming = false
+  _manualStopRequested = false
+  if (clientRequestId) _inFlightRequestIds.delete(clientRequestId)
+  if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
+  _currentAiBubble = null
+  _currentAiText = ''
+  _currentAiImages = []
+  _currentAiVideos = []
+  _currentAiAudios = []
+  _currentAiFiles = []
+  _currentAiTools = []
+  _currentAiBubbleRequestId = ''
+  _currentRunId = null
+  _sendTimestamp = 0
+  updateSendState()
+}
+
+function scheduleOpenClawBrowserToolFallback(clientRequestId = '', userText = '') {
+  if (!isOpenClawBrowserScreenshotIntent(userText)) return
+  clearTimeout(_streamSafetyTimer)
+  _streamSafetyTimer = setTimeout(() => {
+    if (clientRequestId && _activeClientRequestId && _activeClientRequestId !== clientRequestId) return
+    if (!_openClawPendingResponse && !_isSending && !_isStreaming) return
+    if (hasOpenClawAssistantVisibleContentForRequest(clientRequestId)) return
+    const fallback = buildOpenClawToolUnavailableReply(userText)
+    if (!fallback) return
+    appendAiMessage(fallback, new Date(), [], [], [], [], [], [], [], {
+      dedupeKey: `openclaw-browser-tool-fallback-${clientRequestId || Date.now()}`,
+      sessionKey: _sessionKey,
+    })
+    saveMessage({
+      id: `openclaw-browser-tool-fallback-${clientRequestId || uuid()}`,
+      sessionKey: _sessionKey,
+      role: 'assistant',
+      content: fallback,
+      timestamp: Date.now(),
+    })
+    clearOpenClawGenerationState('browser-tool-unavailable-fallback', clientRequestId)
+    resetStreamState()
+    processMessageQueue()
+  }, 12000)
+}
+
+function appendOpenClawLocalAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId(), local = {}) {
+  const reply = completeOpenClawVisibleReply(local.reply || '', text)
   if (!reply) return false
   const now = Date.now()
+  clearOpenClawRuntimeForLocalAnswer(clientRequestId)
+  _lastVisibleUserText = text
   appendUserMessage(text, attachments)
   saveMessage({
     id: `openclaw-user-${clientRequestId}`,
@@ -2963,18 +3111,24 @@ function appendOpenClawLocalEcommerceAnswer(text, attachments = [], clientReques
     timestamp: now,
     attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined,
   })
-  appendAiMessage(reply, now + 1, [], [], [], [], [], [], [], {
-    dedupeKey: `openclaw-ecommerce-${clientRequestId}`,
+  appendAiMessage(reply, new Date(now + 1), [], [], [], [], [], [], [], {
+    dedupeKey: `openclaw-local-${local.kind || 'answer'}-${clientRequestId}`,
     sessionKey: _sessionKey,
   })
   saveMessage({
-    id: `openclaw-local-ecommerce-${clientRequestId}`,
+    id: `openclaw-local-${local.kind || 'answer'}-${clientRequestId}`,
     sessionKey: _sessionKey,
     role: 'assistant',
     content: reply,
     timestamp: now + 1,
   })
   return true
+}
+
+function appendOpenClawLocalEcommerceAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
+  const local = maybeHandleOpenClawLocalAnswer(text)
+  if (!local.handled) return false
+  return appendOpenClawLocalAnswer(text, attachments, clientRequestId, local)
 }
 
 function appendHermesDelegationCapabilityAnswer(text, attachments = []) {
@@ -3019,16 +3173,96 @@ function stripOpenClawIdentityPrelude(text) {
     .trim()
 }
 
+function stripOpenClawInternalProcessText(text) {
+  const cleaned = []
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    let line = rawLine.trim()
+    if (!line) continue
+    if (isInternalToolPlaceholderText(line)) continue
+    if (/^(?:_?\(?stopped\)?_?|HEARTBEAT_OK|heartbeat_ok)$/i.test(line)) continue
+    if (/(?:\u5185\u90e8\u63a8\u7406|\u98ce\u9669\u5206\u6790|\u6267\u884c\u8fc7\u7a0b|\u5de5\u5177\u8c03\u7528\u8fc7\u7a0b).{0,12}(?:\u5df2\u9690\u85cf|\u4e0d\u5c55\u793a)/.test(line)) continue
+    if (/(?:\u5c55\u5f00\u8be6\u60c5|\u6536\u8d77\u8be6\u60c5|\u7ed3\u679c\u5df2\u540c\u6b65|\u5df2\u540c\u6b65\u5230\u4e0b\u65b9\u8be6\u60c5|\u56de\u590d\u7b49\u5f85\u65f6\u95f4\u8f83\u957f|\u53ef\u80fd\u4ecd\u5728\u751f\u6210|\u672c\u6b21\u56de\u590d\u5df2\u505c\u6b62|\u751f\u6210\u5df2\u505c\u6b62)/.test(line)) continue
+    line = line
+      .replace(/(?:\u5c55\u5f00\u8be6\u60c5|\u6536\u8d77\u8be6\u60c5|\u7ed3\u679c\u5df2\u540c\u6b65(?:\u5230\u4e0b\u65b9\u8be6\u60c5)?)/g, '')
+      .replace(/\bTool\s+tool\b/gi, '')
+      .replace(/\bHEARTBEAT_OK\b/gi, '')
+      .trim()
+    if (!line) continue
+    cleaned.push(line)
+  }
+  return cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function isOpenClawFriendlyToolSummaryText(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return /^(?:Skills\s*\u67e5\u8be2(?:\u6210\u529f|\u5df2\u5b8c\u6210)|[\s\S]{0,40}\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210)[\s\S]{0,360}$/i.test(value)
+}
+
+function isOpenClawPlainCapabilitySummaryText(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return /OpenClaw Agent/.test(value) &&
+    /\u4e3b\u8981\u8d1f\u8d23(?:\u6d4f\u89c8\u5668|\u684c\u9762|\u5de5\u5177)/.test(value) &&
+    /\u5e38\u7528\u80fd\u529b\u5305\u62ec/.test(value)
+}
+
+function isOpenClawToolOnlySummaryText(text) {
+  const value = String(text || '').trim()
+  if (!value) return true
+  if (isOpenClawPlainCapabilitySummaryText(value)) return false
+  if (isOpenClawFriendlyToolSummaryText(value)) return true
+  if (isInternalToolPlaceholderText(value)) return true
+  return /(?:\u7ed3\u679c\u5df2\u540c\u6b65|\u5de5\u5177(?:\u6267\u884c|\u8c03\u7528)?\u6210\u529f|Tool\s+tool|tool_result|tool call|raw json|stdout|stderr)/i.test(value)
+}
+
 function sanitizeOpenClawVisibleReply(text) {
-  return sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, { agent: 'openclaw' })
+  return stripOpenClawInternalProcessText(
+    sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, { agent: 'openclaw' })
+  )
 }
 
 function completeOpenClawVisibleReply(text, userText = _lastVisibleUserText) {
-  return ensureCompleteVisibleReply(sanitizeOpenClawVisibleReply(text), {
+  const reply = ensureCompleteVisibleReply(sanitizeOpenClawVisibleReply(text), {
     agent: 'openclaw',
     userText,
-    maxChars: 760,
+    maxChars: 520,
   })
+  return repairIncompleteOpenClawVisibleReply(reply, userText)
+}
+
+function isOpenClawInternalReasoningLeak(text) {
+  return /^(?:The user wants|User wants|I need to|I should|We need to|Need to)\b/i.test(String(text || '').trim())
+}
+
+function looksIncompleteOpenClawVisibleReply(text) {
+  const value = String(text || '').trim()
+  if (!value) return true
+  if (/[、，,：:；;]$/.test(value)) return true
+  if (/(?:包括|例如|如下|生成|导出|整理|读取|截图|利润表|资产负债表|现金流量表|工具|页面)$/.test(value)) return true
+  if (/\([^)]*$/.test(value)) return true
+  if (/^\|.+\|$/.test(value.split(/\r?\n/).pop() || '')) return true
+  return false
+}
+
+function repairIncompleteOpenClawVisibleReply(text, userText = _lastVisibleUserText) {
+  const value = String(text || '').trim()
+  const incomplete = looksIncompleteOpenClawVisibleReply(value)
+  const reasoningLeak = isOpenClawInternalReasoningLeak(value)
+  if (!incomplete && !reasoningLeak) return value
+  const unavailable = buildOpenClawToolUnavailableReply(userText)
+  if (unavailable) return unavailable
+  const base = value
+    .replace(/[、，,：:；;\s]+$/, '。')
+    .trim()
+  if (!base) {
+    return '这次没有拿到完整的可用结果，我不会把半截内容当成已完成。请你再发一次问题，我会重新整理成完整结论。'
+  }
+  return [
+    base,
+    '',
+    '如果你给我具体页面、文件或目标，我可以继续按步骤整理；涉及登录、付款、提交或删除等高风险动作时，我会先停下来让你确认。',
+  ].join('\n')
 }
 
 function getOpenClawSendFingerprint(text, attachments = []) {
@@ -3076,7 +3310,7 @@ function getOpenClawToolDisplayText(tools = []) {
 function getOpenClawDisplayFingerprint(message = {}) {
   const role = (message.role === 'tool' || message.role === 'toolResult') ? 'assistant' : (message.role || '')
   const rawText = message.text ?? message.content ?? ''
-  const visibleText = role === 'user' ? stripOpenClawIdentityPrelude(rawText) : rawText
+  const visibleText = role === 'user' ? stripOpenClawIdentityPrelude(rawText) : sanitizeOpenClawVisibleReply(rawText)
   const text = normalizeOpenClawMessageText(visibleText)
   const toolText = getOpenClawToolDisplayText(message.tools)
   const mediaSig = [
@@ -3214,9 +3448,29 @@ async function sendMessage(event) {
   }, 350)
   let text = _textarea.value.trim()
   if (!text && !_attachments.length) return
+  const attachments = [..._attachments]
+  const clientRequestId = createOpenClawClientRequestId()
+  const slashLikeInput = String(text || '').trimStart().startsWith('/')
+  const localAnswer = !attachments.length && !slashLikeInput ? maybeHandleOpenClawLocalAnswer(text) : { handled: false }
+  if (localAnswer.handled) {
+    const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
+    const now = Date.now()
+    if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
+      return
+    }
+    _lastSendFingerprint = sendFingerprint
+    _lastSendAt = now
+    hideCmdPanel()
+    _textarea.value = ''
+    _textarea.style.height = 'auto'
+    updateSendState()
+    _attachments = []
+    renderAttachments()
+    appendOpenClawLocalAnswer(text, attachments, clientRequestId, localAnswer)
+    return
+  }
   if (!(await ensureOpenClawGatewayReadyForSend())) return
   hideCmdPanel()
-  const attachments = [..._attachments]
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
   const now = Date.now()
   if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
@@ -3224,7 +3478,6 @@ async function sendMessage(event) {
   }
   _lastSendFingerprint = sendFingerprint
   _lastSendAt = now
-  const clientRequestId = createOpenClawClientRequestId()
   _textarea.value = ''
   _textarea.style.height = 'auto'
   updateSendState()
@@ -3309,6 +3562,7 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   _isSending = true
   _startResponseWatchdog()
   startGenerationTimeoutManager()
+  scheduleOpenClawBrowserToolFallback(clientRequestId, text)
   try {
     await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined, {
       idempotencyKey: clientRequestId,
@@ -3718,6 +3972,8 @@ function getOpenClawToolResultInfo(tools = [], fallbackText = '') {
 }
 
 function shouldRenderOpenClawToolResultCard(tools = [], fallbackText = '') {
+  if ((!tools || tools.length === 0) && isOpenClawPlainCapabilitySummaryText(fallbackText)) return false
+  if ((!tools || tools.length === 0) && isOpenClawFriendlyToolSummaryText(fallbackText)) return false
   const info = getOpenClawToolResultInfo(tools, fallbackText)
   if (info.toolCount > 0) return true
   if (!info.rawText) return false
@@ -3843,6 +4099,10 @@ function buildToolOnlyAssistantReply(tools = []) {
   const list = Array.isArray(tools) ? tools.filter(Boolean) : []
   if (!list.length) return ''
   const toolInfo = getOpenClawToolResultInfo(list)
+  const unavailableReply = buildOpenClawToolUnavailableReply(_lastVisibleUserText)
+  if (unavailableReply && (toolInfo.failed || !toolInfo.safeRawText)) {
+    return unavailableReply
+  }
   if (!toolInfo.failed) {
     return formatOpenClawToolResultForUser(toolInfo)
   }
@@ -3988,6 +4248,25 @@ function getOpenClawStableStreamId(event = {}, fallback = '') {
     event.message?.id ||
     ''
   )
+}
+
+function hasOpenClawExplicitRequestId(event = {}) {
+  return Boolean(event.clientRequestId || event.requestId || event.idempotencyKey)
+}
+
+function shouldIgnoreOpenClawUnboundChatEvent(event = {}, state = '', incomingText = '') {
+  if (!['delta', 'final', 'aborted', 'error'].includes(String(state || ''))) return false
+  if (hasOpenClawExplicitRequestId(event)) return false
+  const expectingResponse = !_openClawActiveRequestClosed || _openClawPendingResponse || _isSending || _isStreaming
+  if (!expectingResponse && !_activeClientRequestId) return true
+  if (
+    _activeClientRequestId &&
+    isOpenClawBrowserAutomationTraceText(incomingText) &&
+    !isOpenClawBrowserScreenshotIntent(_lastVisibleUserText)
+  ) {
+    return true
+  }
+  return false
 }
 
 function isOpenClawStreamIdMismatch(stableStreamId = '') {
@@ -4248,6 +4527,11 @@ function handleChatEvent(payload, eventId = '') {
   const { state } = payload
   const runId = payload.runId
   const terminalRequestId = payload.clientRequestId || payload.idempotencyKey || _activeClientRequestId
+  const incomingEventText = getChatEventText(payload)
+  if (shouldIgnoreOpenClawUnboundChatEvent(payload, state, incomingEventText)) {
+    console.log('[chat] skipped unbound stale OpenClaw event:', state, runId || eventId || '')
+    return
+  }
 
   // 重复 run 过滤：跳过已完成的 runId 的后续事件（Gateway 可能对同一消息触发多个 run）
   if (runId && state === 'final' && _seenRunIds.has(runId)) {
@@ -4273,6 +4557,9 @@ function handleChatEvent(payload, eventId = '') {
     if (c?.files?.length) _currentAiFiles = c.files
     if (c?.tools?.length) _currentAiTools = c.tools
     const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || '')
+    if (isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) && isOpenClawBrowserAutomationTraceText(visibleDeltaText)) {
+      return
+    }
     if (!hasOpenClawRenderableContent({ visibleText: visibleDeltaText })) {
       removeCurrentOpenClawStreamBubbleIfEmpty()
       return
@@ -4339,6 +4626,14 @@ function handleChatEvent(payload, eventId = '') {
     if (finalTools.length) _currentAiTools = finalTools
     if (!finalText && !_currentAiText && finalTools.length) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
+    }
+    if (
+      isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) &&
+      !_currentAiImages.length &&
+      !_currentAiVideos.length &&
+      !finalScreenshotCards.length
+    ) {
+      _currentAiText = buildOpenClawToolUnavailableReply(_lastVisibleUserText) || _currentAiText
     }
     if (_currentAiText) {
       _currentAiText = completeOpenClawVisibleReply(_currentAiText)
@@ -4432,7 +4727,7 @@ function handleChatEvent(payload, eventId = '') {
       appendVideosToEl(_currentAiBubble, _currentAiVideos)
       appendAudiosToEl(_currentAiBubble, _currentAiAudios)
       appendFilesToEl(_currentAiBubble, _currentAiFiles)
-      appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
+      if (!visibleFinalText) appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
       appendLifeAssistantCardsToEl(_currentAiBubble, finalScreenshotCards, finalConfirmations)
     }
     // 添加时间戳 + 耗时 + token 消耗
@@ -4504,8 +4799,32 @@ function handleChatEvent(payload, eventId = '') {
     if (_currentAiBubble && _currentAiText) {
       renderCompactAssistantContent(_currentAiText, _currentAiBubble)
       _lastRenderedAiText = _currentAiText
+      clearOpenClawGenerationState('aborted-after-visible-content', terminalRequestId)
+      resetStreamState()
+      processMessageQueue()
+      return
+    }
+    if (!_manualStopRequested) {
+      const fallback = buildOpenClawToolUnavailableReply(_lastVisibleUserText) ||
+        '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230\u5b8c\u6574\u7684\u53ef\u7528\u7ed3\u679c\uff0c\u6211\u4e0d\u4f1a\u628a\u5b83\u5047\u88c5\u6210\u5df2\u5b8c\u6210\u3002\u8bf7\u91cd\u8bd5\uff0c\u6216\u5148\u68c0\u67e5 OpenClaw Gateway \u548c\u76f8\u5173\u5de5\u5177\u662f\u5426\u53ef\u7528\u3002'
+      appendAiMessage(fallback, new Date(), [], [], [], [], [], [], [], {
+        dedupeKey: `openclaw-aborted-fallback-${terminalRequestId || Date.now()}`,
+        sessionKey: _sessionKey,
+      })
+      saveMessage({
+        id: `openclaw-aborted-fallback-${terminalRequestId || uuid()}`,
+        sessionKey: _sessionKey,
+        role: 'assistant',
+        content: fallback,
+        timestamp: Date.now(),
+      })
+      clearOpenClawGenerationState('aborted-fallback', terminalRequestId)
+      resetStreamState()
+      processMessageQueue()
+      return
     }
     appendSystemMessage(t('chat.generationStopped'))
+    clearOpenClawGenerationState('stopped', terminalRequestId)
     resetStreamState()
     processMessageQueue()
     return
@@ -5141,7 +5460,7 @@ function completeStreamingDraftFromHistory(msg) {
   appendVideosToEl(_currentAiBubble, msg.videos || [])
   appendAudiosToEl(_currentAiBubble, msg.audios || [])
   appendFilesToEl(_currentAiBubble, msg.files || [])
-  appendToolsToEl(_currentAiBubble, msg.tools || [])
+  if (!sanitizeOpenClawVisibleReply(msg.text || _currentAiText || '')) appendToolsToEl(_currentAiBubble, msg.tools || [])
   appendLifeAssistantCardsToEl(_currentAiBubble, msg.screenshotCards || [], msg.confirmations || [])
   const wrap = _currentAiBubble.closest('.msg')
   if (wrap?.dataset) delete wrap.dataset.openclawStreamingDraft
@@ -5431,10 +5750,19 @@ function mergeOpenClawUniqueMedia(a = [], b = []) {
 function mergeOpenClawHistoryMessage(prev, next) {
   if (!prev) return next
   if (!next) return prev
-  const sameText = normalizeOpenClawMessageText(prev.text) === normalizeOpenClawMessageText(next.text)
-  const text = sameText
-    ? (prev.text || next.text || '')
-    : [prev.text, next.text].filter(Boolean).join('\n')
+  const prevVisible = sanitizeOpenClawVisibleReply(prev.text || '')
+  const nextVisible = sanitizeOpenClawVisibleReply(next.text || '')
+  let text = ''
+  if (prevVisible && nextVisible && isOpenClawToolOnlySummaryText(nextVisible) && !isOpenClawToolOnlySummaryText(prevVisible)) {
+    text = prev.text || prevVisible
+  } else if (prevVisible && nextVisible && isOpenClawToolOnlySummaryText(prevVisible) && !isOpenClawToolOnlySummaryText(nextVisible)) {
+    text = next.text || nextVisible
+  } else {
+    const sameText = normalizeOpenClawMessageText(prevVisible || prev.text) === normalizeOpenClawMessageText(nextVisible || next.text)
+    text = sameText
+      ? (prev.text || next.text || '')
+      : [prev.text, next.text].filter(Boolean).join('\n')
+  }
   const tools = [...(prev.tools || [])]
   ;(next.tools || []).forEach(t => upsertTool(tools, t))
   return {
@@ -5700,7 +6028,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   group.className = 'sc-msg-group assistant'
   const bubble = document.createElement('div')
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
-  appendToolsToEl(bubble, tools)
+  if (!sanitizeOpenClawVisibleReply(text || '')) appendToolsToEl(bubble, tools)
   appendLifeAssistantCardsToEl(bubble, screenshotCards, confirmations)
   const textEl = document.createElement('div')
   textEl.className = 'msg-text'
