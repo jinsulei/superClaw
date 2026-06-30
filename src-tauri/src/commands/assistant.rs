@@ -62,7 +62,12 @@ fn hermes_media_roots() -> Vec<PathBuf> {
         roots.push(resources.join("data").join("hermes").join("image_cache"));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join("src-tauri").join("resources").join("data").join("generated"));
+        roots.push(
+            cwd.join("src-tauri")
+                .join("resources")
+                .join("data")
+                .join("generated"),
+        );
         roots.push(cwd.join("resources").join("data").join("generated"));
     }
     roots

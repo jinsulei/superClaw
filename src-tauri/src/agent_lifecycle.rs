@@ -55,9 +55,7 @@ pub fn parse_managed_agent(name: &str) -> Result<ManagedAgent, String> {
     match name.to_ascii_lowercase().as_str() {
         "hermes" => Ok(ManagedAgent::Hermes),
         "openclaw" => Ok(ManagedAgent::OpenClaw),
-        "claudecode" | "claude_code" | "claude-code" | "claude" => {
-            Ok(ManagedAgent::ClaudeCode)
-        }
+        "claudecode" | "claude_code" | "claude-code" | "claude" => Ok(ManagedAgent::ClaudeCode),
         other => Err(format!("unsupported agent: {other}")),
     }
 }
@@ -309,7 +307,13 @@ fn process_details(pid: u32) -> Option<ProcessDetails> {
             "$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; if($p){{[Console]::WriteLine($p.ExecutablePath); [Console]::WriteLine($p.CommandLine)}}"
         );
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;

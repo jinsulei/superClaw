@@ -76,6 +76,20 @@ fn base64_url_encode(data: &[u8]) -> String {
 }
 
 /// hex 编码（ed25519_dalek 不自带 hex）
+fn paired_operator_token(device_id: &str) -> Option<String> {
+    let path = super::openclaw_dir().join("devices").join("paired.json");
+    let content = fs::read_to_string(path).ok()?;
+    let json: Value = serde_json::from_str(&content).ok()?;
+    json.get(device_id)?
+        .get("tokens")?
+        .get("operator")?
+        .get("token")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 mod hex {
     pub fn encode(data: impl AsRef<[u8]>) -> String {
         data.as_ref().iter().map(|b| format!("{b:02x}")).collect()
@@ -114,8 +128,10 @@ pub fn create_connect_frame(
     let min_protocol_version = 3;
     let max_protocol_version = 4;
     let signature_payload_version = 3;
-    let auth_secret = if !gateway_token.is_empty() {
-        &gateway_token
+    let device_token = paired_operator_token(&device_id);
+    let auth_token = device_token.as_deref().unwrap_or(gateway_token.as_str());
+    let auth_secret = if !auth_token.is_empty() {
+        auth_token
     } else {
         gateway_password.as_deref().unwrap_or("")
     };
@@ -133,8 +149,8 @@ pub fn create_connect_frame(
 
     // 构建 auth 对象：根据有无 token/password 选择填充字段
     let password = gateway_password.unwrap_or_default();
-    let auth = if !gateway_token.is_empty() {
-        serde_json::json!({ "token": gateway_token })
+    let auth = if !auth_token.is_empty() {
+        serde_json::json!({ "token": auth_token })
     } else if !password.is_empty() {
         serde_json::json!({ "password": password })
     } else {

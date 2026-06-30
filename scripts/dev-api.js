@@ -1572,20 +1572,12 @@ async function createDevAgentStatus(agent) {
 
   if (agent === 'openclaw') {
     try {
-      const minimaxConfig = openclawMiniMaxGatewayConfig()
-      if (!minimaxConfig.apiKey) {
-        return {
-          ...base,
-          needsSetup: true,
-          status: 'needs_setup',
-          message: 'OpenClaw 模型或 Key 未配置，请先完成配置。',
-          error: 'OPENCLAW_MINIMAX_API_KEY_REQUIRED',
-        }
-      }
+      requireOpenClawMiniMaxGatewayConfig()
     } catch (error) {
       return {
         ...base,
-        status: 'error',
+        needsSetup: isOpenClawGatewayNeedsSetupError(error),
+        status: isOpenClawGatewayNeedsSetupError(error) ? 'needs_setup' : 'error',
         message: error?.message || 'OpenClaw 模型配置检查失败。',
         error: error?.code || error?.message || String(error),
       }
@@ -2716,11 +2708,20 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
   const agentModelsPath = path.join(safeDataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json')
   const openclaw = readJsonFileRelaxed(openclawPath) || {}
   const agentModels = readJsonFileRelaxed(agentModelsPath) || {}
+  const provider = openclaw.models?.providers?.minimax || {}
+  const providerModel =
+    provider.models?.[0]?.id ||
+    provider.models?.[0]?.model ||
+    provider.model ||
+    MINIMAX_TEST_DEFAULTS.model
   const apiKey = pickOpenClawMiniMaxApiKey(
     process.env.OPENCLAW_MINIMAX_API_KEY,
     process.env.MINIMAX_CN_API_KEY,
     process.env.MINIMAX_API_KEY,
     process.env.OPENAI_API_KEY,
+    provider.apiKey,
+    provider.api_key,
+    provider.key,
     openclaw.providers?.minimax?.apiKey,
     openclaw.models?.providers?.minimax?.apiKey,
     openclaw.modelProviders?.minimax?.apiKey,
@@ -2734,8 +2735,8 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
 
   return {
     provider: 'minimax',
-    baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl,
-    model: MINIMAX_TEST_DEFAULTS.model,
+    baseUrl: provider.baseUrl || provider.base_url || MINIMAX_TEST_DEFAULTS.baseUrl,
+    model: providerModel,
     apiKey,
     paths: { openclaw: openclawPath, openclawAgent: agentModelsPath },
   }
@@ -2791,6 +2792,9 @@ function requireOpenClawMiniMaxGatewayConfig() {
     error.code = minimaxConfig.effective?.code || 'YYAPI_MODEL_CONFIG_REQUIRED'
     error.details = minimaxConfig.effective
     throw error
+  }
+  if (minimaxConfig.effective?.modelSource === 'yyapi') {
+    return minimaxConfig
   }
   if (!minimaxConfig.apiKey) {
     const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
@@ -2876,7 +2880,8 @@ function sanitizeOpenClawGatewayProviders(providers = {}) {
 function isOpenClawGatewayNeedsSetupError(error) {
   const code = error?.code || ''
   return code === 'OPENCLAW_MINIMAX_API_KEY_REQUIRED' ||
-    code === 'OPENCLAW_MODEL_PROVIDER_REQUIRED'
+    code === 'OPENCLAW_MODEL_PROVIDER_REQUIRED' ||
+    code === 'YYAPI_MODEL_CONFIG_REQUIRED'
 }
 
 function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
@@ -7391,23 +7396,54 @@ const handlers = {
     const payload = config || {}
     const baseUrl = cleanMiniMaxBaseUrl(payload.baseUrl)
     const apiKey = cleanMiniMaxValue(payload.apiKey)
-    const model = cleanMiniMaxValue(payload.model || MINIMAX_TEST_DEFAULTS.model)
+    const model = cleanMiniMaxValue(payload.model)
+    const target = miniMaxDataPath('claude-panel', 'relay-config.json')
     if (!baseUrl || !apiKey || !model) {
       return {
         configured: false,
         skipped: true,
         reason: 'missing-base-url-api-key-or-model',
-        path: miniMaxDataPath('claude-panel', 'relay-config.json'),
+        path: target,
       }
     }
-    return writeMiniMaxClaudeRelay({
-      ...payload,
+    const current = readJsonFileRelaxed(target) || {}
+    const force = !!payload.force
+    const managedByCurrent = cleanMiniMaxValue(current.managedBy)
+    const managed = managedByCurrent === 'superclaw-minimax-test'
+      || managedByCurrent === 'superclaw-yyapi'
+      || managedByCurrent.startsWith('superclaw-provider-profile:')
+    const hasExistingUserConfig = current.enabled === true
+      && !!cleanMiniMaxValue(current.baseUrl)
+      && !!cleanMiniMaxValue(current.apiKey)
+    if (hasExistingUserConfig && !managed && !force) {
+      return {
+        configured: false,
+        skipped: true,
+        reason: 'existing-user-relay-config',
+        path: target,
+      }
+    }
+    const branchModels = (Array.isArray(payload.branchModels) ? payload.branchModels : (Array.isArray(payload.models) ? payload.models : [model]))
+      .map(item => cleanMiniMaxValue(item))
+      .filter(Boolean)
+    const next = {
+      ...current,
+      enabled: true,
+      interfaceType: cleanMiniMaxValue(payload.interfaceType) || 'relay',
+      name: cleanMiniMaxValue(payload.name) || 'Claude Code Relay',
+      provider: cleanMiniMaxValue(payload.provider) || 'openai-compatible',
+      defaultProvider: cleanMiniMaxValue(payload.defaultProvider) || 'openai-compatible',
       baseUrl,
-      apiKey,
       model,
-      branchModels: Array.isArray(payload.branchModels) ? payload.branchModels : (Array.isArray(payload.models) ? payload.models : [model]),
-      managedBy: cleanMiniMaxValue(payload.managedBy) || 'superclaw-minimax-test',
-    })
+      branchModels: branchModels.length ? branchModels : [model],
+      models: branchModels.length ? branchModels : [model],
+      apiKey,
+      managedBy: cleanMiniMaxValue(payload.managedBy) || 'superclaw-managed',
+      updatedAt: new Date().toISOString(),
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    return { configured: true, skipped: false, provider: next.provider, model: next.model, path: target }
   },
 
   claude_code_native_stop() {

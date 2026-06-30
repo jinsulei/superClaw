@@ -22,6 +22,7 @@ import { api } from './tauri-api.js'
 
 const DEFAULT_DELAY_MS = 3000
 const RESCHEDULE_DELAY_MS = 500
+const OPENCLAW_GATEWAY_RESTARTED_EVENT = 'superclaw:openclaw-gateway-restarted'
 
 let _pendingTimer = null
 let _scheduledAt = 0
@@ -157,18 +158,62 @@ async function _waitGatewayPortReady() {
   return false
 }
 
+async function _prepareOpenClawGatewayRestart() {
+  try {
+    await api.autoPairDevice()
+  } catch (e) {
+    console.warn('[gateway-restart] autoPairDevice failed before restart:', e)
+  }
+  try {
+    const running = await api.probeGatewayPort()
+    if (running) await api.claimGateway()
+  } catch (e) {
+    console.warn('[gateway-restart] claimGateway failed before restart:', e)
+  }
+}
+
+async function _notifyOpenClawGatewayRestarted(result) {
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(OPENCLAW_GATEWAY_RESTARTED_EVENT, {
+        detail: { reason: _currentReason, result },
+      }))
+    }
+  } catch (_) {}
+
+  try {
+    const mod = await import('./ws-client.js')
+    mod?.wsClient?.disconnect?.()
+  } catch (e) {
+    console.warn('[gateway-restart] wsClient disconnect after restart failed:', e)
+  }
+
+  try {
+    await api.autoPairDevice()
+  } catch (e) {
+    console.warn('[gateway-restart] autoPairDevice failed after restart:', e)
+  }
+  try {
+    await api.claimGateway()
+  } catch (e) {
+    console.warn('[gateway-restart] claimGateway failed after restart:', e)
+  }
+}
+
 async function runRestart() {
   _pendingTimer = null
   _inflight = true
   emit('started')
 
   try {
+    await _prepareOpenClawGatewayRestart()
     const result = await api.restartGateway()
     // ⚠ 关键修复：restart_service 返回 Ok 不代表 Gateway 真正在监听端口。
     // 必须 probe 端口确认它真起来了，才能 emit('succeeded')。
     // 否则用户会在"已重启"的假象下继续操作，但实际 WS 连不上。
     const portReady = await _waitGatewayPortReady()
     if (portReady) {
+      await _notifyOpenClawGatewayRestarted(result)
       emit('succeeded', { result })
     } else {
       emit('failed', {
