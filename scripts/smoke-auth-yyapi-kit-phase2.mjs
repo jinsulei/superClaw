@@ -102,7 +102,8 @@ function runStaticIntegrationCheck() {
     "registerRoute('/login'",
     "registerRoute('/register'",
     "registerRoute('/activate'",
-    'fetchAuthStatus',
+    "from './lib/user-api.js'",
+    'isLoggedIn',
     'checkRemoteAuth',
   ])
   console.log('AUTH_KIT_PHASE2_STATIC_INTEGRATION_PASS')

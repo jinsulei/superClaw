@@ -72,13 +72,13 @@ function escapeHtml(value) {
 function getPaymentLoadErrorMessage(err) {
   const message = String(err?.message || '')
   if (err?.code === PAYMENT_NOT_CONFIGURED || /PAYMENT_API_NOT_CONFIGURED|PAYMENT_API_BASE_URL|base\s*url/i.test(message)) {
-    return 'Payment service is not configured. Set PAYMENT_API_BASE_URL or VITE_PAYMENT_API_BASE_URL.'
+    return '充值服务暂未接通，请确认已登录并稍后重试。'
   }
   if (/unauthorized|forbidden|invalid\s*token|HTTP\s*401|401|403/i.test(message)) {
-    return 'Payment service rejected the request. This test build will not redirect to login or activation.'
+    return '登录状态已失效或无充值权限，请重新登录后再试。'
   }
   if (/Failed to fetch|NetworkError|abort|timeout|timed?\s*out|超时/i.test(message)) {
-    return 'Payment service is unreachable. Check the independent payment API service and retry.'
+    return '充值服务暂时无法连接，请检查网络或稍后重试。'
   }
   return escapeHtml(t('payment.loadError') || 'Failed to load payment configuration')
 }
