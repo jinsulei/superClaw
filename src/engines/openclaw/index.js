@@ -134,6 +134,7 @@ export default {
     }, {
       section: '',
       items: [
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
         // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },
@@ -148,6 +149,7 @@ export default {
       { path: '/dashboard', loader: () => import('../../pages/dashboard.js') },
       { path: '/chat', loader: () => import('../../pages/chat.js') },
       { path: '/chat-debug', loader: () => import('../../pages/chat-debug.js') },
+      { path: '/profile', loader: () => import('../../pages/profile.js') },
       { path: '/services', loader: () => import('../../pages/services.js') },
       { path: '/logs', loader: () => import('../../pages/logs.js') },
       { path: '/models', loader: () => import('../../pages/models.js') },
