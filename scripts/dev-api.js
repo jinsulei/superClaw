@@ -1400,14 +1400,16 @@ async function startDevAgent(agentInput) {
     minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
   } catch (error) {
     const code = error?.code || 'OPENCLAW_GATEWAY_CONFIG_ERROR'
-    const status = code === 'OPENCLAW_MINIMAX_API_KEY_REQUIRED' ? 'needs_setup' : 'error'
+    const status = isOpenClawGatewayNeedsSetupError(error) ? 'needs_setup' : 'error'
     return {
       ok: false,
       agent,
       started: false,
+      ready: false,
       status,
       needsSetup: status === 'needs_setup',
       code,
+      message: error?.message || String(error),
       error: error?.message || String(error),
     }
   }
@@ -1445,6 +1447,19 @@ async function startDevAgent(agentInput) {
       current: ready,
     }
   } catch (error) {
+    if (isOpenClawGatewayNeedsSetupError(error)) {
+      return {
+        ok: false,
+        agent,
+        started: false,
+        ready: false,
+        status: 'needs_setup',
+        needsSetup: true,
+        code: error?.code || 'OPENCLAW_MODEL_PROVIDER_REQUIRED',
+        message: error?.message || String(error),
+        error: error?.message || String(error),
+      }
+    }
     const latest = await createDevAgentStatus(agent).catch(() => null)
     return {
       ok: false,
@@ -2798,6 +2813,72 @@ function openclawEnvSecretRef(name) {
   return { source: 'env', provider: 'default', id: name }
 }
 
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function normalizeProviderModelList(models) {
+  if (!Array.isArray(models)) return []
+  return models
+    .map(item => {
+      if (typeof item === 'string') return item.trim()
+      if (item && typeof item === 'object') {
+        return String(item.id || item.name || item.model || '').trim()
+      }
+      return ''
+    })
+    .filter(Boolean)
+}
+
+function hasOpenClawGatewaySecret(value) {
+  if (isNonEmptyString(value)) return true
+  if (!value || typeof value !== 'object') return false
+  return isNonEmptyString(value.id) || isNonEmptyString(value.name) || isNonEmptyString(value.env)
+}
+
+function isValidOpenClawProviderConfig(providerName, provider = {}) {
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
+  if (provider.needsSetup === true || provider.needs_setup === true) return false
+
+  const name = String(providerName || '').trim().toLowerCase()
+  const baseUrl = provider.baseUrl || provider.base_url || provider.endpoint || ''
+  const apiKey = provider.apiKey || provider.api_key || provider.key || ''
+  const models = normalizeProviderModelList(provider.models || provider.modelList || [])
+  const model = String(provider.model || provider.modelId || provider.model_id || '').trim()
+  const modelCount = models.length + (model ? 1 : 0)
+
+  if (name === 'openai-compatible' || name === 'openai_compatible') {
+    return isNonEmptyString(baseUrl) && modelCount > 0
+  }
+
+  if (name === 'minimax' || name === 'minimax-cn' || name === 'minimax_cn') {
+    return hasOpenClawGatewaySecret(apiKey) && modelCount > 0
+  }
+
+  return isNonEmptyString(baseUrl) || hasOpenClawGatewaySecret(apiKey) || modelCount > 0
+}
+
+function sanitizeOpenClawGatewayProviders(providers = {}) {
+  const clean = {}
+  for (const [name, provider] of Object.entries(providers || {})) {
+    if (!isValidOpenClawProviderConfig(name, provider)) continue
+    const copy = { ...provider }
+    delete copy.needsSetup
+    delete copy.needs_setup
+    for (const key of Object.keys(copy)) {
+      if (copy[key] === '') delete copy[key]
+    }
+    clean[name] = copy
+  }
+  return clean
+}
+
+function isOpenClawGatewayNeedsSetupError(error) {
+  const code = error?.code || ''
+  return code === 'OPENCLAW_MINIMAX_API_KEY_REQUIRED' ||
+    code === 'OPENCLAW_MODEL_PROVIDER_REQUIRED'
+}
+
 function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
   const source = input && typeof input === 'object' ? input : {}
   const id = String(source.id || source.model || defaults.model || 'MiniMax-M3').trim() || 'MiniMax-M3'
@@ -2884,6 +2965,14 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = requireOpenClawMiniM
   delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
+  cfg.models.providers = sanitizeOpenClawGatewayProviders(cfg.models.providers)
+  if (!Object.keys(cfg.models.providers).length) {
+    const error = new Error('OpenClaw has no usable model provider. Configure provider/base_url/api_key/model first.')
+    error.code = 'OPENCLAW_MODEL_PROVIDER_REQUIRED'
+    error.status = 'needs_setup'
+    error.needsSetup = true
+    throw error
+  }
 
   const dir = openclawGatewayLaunchConfigDir()
   fs.mkdirSync(dir, { recursive: true })
@@ -14133,6 +14222,9 @@ export {
   isHermesSmokeOrFixtureSession,
   normalizeHermesStreamText,
   rememberHermesDeletedSession,
+  normalizeProviderModelList,
+  isValidOpenClawProviderConfig,
+  sanitizeOpenClawGatewayProviders,
   sanitizeHermesImageReply,
   isHermesDeletedSessionId,
 }
