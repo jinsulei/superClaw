@@ -92,7 +92,13 @@ export async function activateAuth(input = {}) {
     method: 'POST',
     body: JSON.stringify(input),
   })
-  if (payload.status) savePublicStatus(payload.status)
+  const current = publicLocalStatus()
+  savePublicStatus({
+    ...current,
+    ...(payload.status || {}),
+    authRequired: payload.status?.authRequired ?? true,
+    activated: true,
+  })
   return payload
 }
 

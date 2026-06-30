@@ -25,6 +25,10 @@ export function render() {
   const errorEl = page.querySelector('#auth-activate-error')
 
   fetchAuthStatus().then(status => {
+    if (status.activated) {
+      navigate(status.loggedIn ? '/dashboard' : '/login')
+      return
+    }
     if (status.user?.name) desc.textContent = `当前用户：${status.user.name}。请输入激活码完成正式模式校验。`
   }).catch(() => {})
 
