@@ -136,7 +136,7 @@ async function resetHermesManagedModelConfig(api) {
   if (!isYyapiBaseUrl(current?.base_url || '')) return
 
   await api.configureHermes(
-    'custom',
+    YYAPI_PROVIDER_KEY,
     '',
     LOGOUT_MODEL_PLACEHOLDER,
     yyapiBaseUrl,

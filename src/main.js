@@ -656,7 +656,7 @@ async function syncDefaultModelSettings() {
       ? hermesSaved
       : (yyapiModelIds.includes(hermesCurrent) ? hermesCurrent : profile.defaultModel)
 
-    await api.configureHermes('custom', profile.apiKey, hermesModel, profile.baseUrl)
+    await api.configureHermes(YYAPI_PROVIDER_KEY, profile.apiKey, hermesModel, profile.baseUrl)
     saveHermesPrimary(hermesModel)
 
     if (openclawSelection.managed && typeof api.configureClaudeCodeRelay === 'function') {
