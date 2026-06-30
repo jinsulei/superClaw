@@ -497,6 +497,47 @@ fn hermes_home() -> PathBuf {
     }
 }
 
+fn ensure_yyapi_hermes_provider_profile(home: &Path) -> Result<(), String> {
+    let provider_dir = home
+        .join("plugins")
+        .join("model-providers")
+        .join("yyapi");
+    std::fs::create_dir_all(&provider_dir)
+        .map_err(|e| format!("创建 YYAPI provider 目录失败: {e}"))?;
+
+    let init_path = provider_dir.join("__init__.py");
+    let init_content = r#""""YYAPI OpenAI-compatible provider profile."""
+
+from providers import register_provider
+from providers.base import ProviderProfile
+
+yyapi = ProviderProfile(
+    name="yyapi",
+    aliases=("yaoyao", "yaoyao-ai", "superclaw-yyapi"),
+    display_name="YYAPI",
+    description="SuperClaw default OpenAI-compatible relay",
+    env_vars=("YYAPI_API_KEY", "OPENAI_API_KEY", "CUSTOM_API_KEY", "YYAPI_BASE_URL", "OPENAI_BASE_URL"),
+    base_url="http://124.222.21.44:3002/v1",
+    supports_vision=True,
+)
+
+register_provider(yyapi)
+"#;
+    if std::fs::read_to_string(&init_path).unwrap_or_default() != init_content {
+        std::fs::write(&init_path, init_content)
+            .map_err(|e| format!("写入 YYAPI provider 入口失败: {e}"))?;
+    }
+
+    let manifest_path = provider_dir.join("plugin.yaml");
+    let manifest_content = "name: yyapi-provider\nkind: model-provider\nversion: 1.0.0\ndescription: SuperClaw default YYAPI OpenAI-compatible relay\nauthor: SuperClaw\n";
+    if std::fs::read_to_string(&manifest_path).unwrap_or_default() != manifest_content {
+        std::fs::write(&manifest_path, manifest_content)
+            .map_err(|e| format!("写入 YYAPI provider manifest 失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
 #[cfg(debug_assertions)]
 fn ensure_dev_hermes_home(dev_home: &Path) {
     let _ = std::fs::create_dir_all(dev_home);
@@ -3114,6 +3155,7 @@ pub async fn configure_hermes(
 ) -> Result<String, String> {
     let home = hermes_home();
     std::fs::create_dir_all(&home).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    ensure_yyapi_hermes_provider_profile(&home)?;
 
     // 创建子目录
     for dir in &[
@@ -3240,6 +3282,10 @@ platforms:
     if let Some(env) = key_env {
         if !api_key.trim().is_empty() {
             new_pairs.push((env.into(), api_key.trim().into()));
+            if provider == "yyapi" {
+                new_pairs.push(("OPENAI_API_KEY".into(), api_key.trim().into()));
+                new_pairs.push(("CUSTOM_API_KEY".into(), api_key.trim().into()));
+            }
         }
     } else if !api_key.trim().is_empty() {
         // OAuth provider 传了 api_key —— 记日志，不落盘
@@ -3250,6 +3296,9 @@ platforms:
         let u = url.trim();
         if !u.is_empty() {
             new_pairs.push((env.into(), u.into()));
+            if provider == "yyapi" {
+                new_pairs.push(("OPENAI_BASE_URL".into(), u.into()));
+            }
         }
     }
 
@@ -3820,6 +3869,7 @@ pub async fn hermes_gateway_action(
     let enhanced = hermes_enhanced_path();
     match action.as_str() {
         "start" => {
+            ensure_yyapi_hermes_provider_profile(&hermes_home())?;
 
             // Guardian: ensure platforms.api_server.enabled:true is present
             // before every start. Auto-heal if missing (with a .bak backup).

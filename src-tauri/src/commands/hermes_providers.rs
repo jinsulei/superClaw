@@ -163,6 +163,20 @@ const P_OPENAI_API: HermesProvider = HermesProvider {
     cli_auth_hint: "",
 };
 
+const P_YYAPI: HermesProvider = HermesProvider {
+    id: "yyapi",
+    name: "YYAPI",
+    auth_type: AUTH_API_KEY,
+    base_url: "http://124.222.21.44:3002/v1",
+    base_url_env_var: "YYAPI_BASE_URL",
+    api_key_env_vars: &["YYAPI_API_KEY", "OPENAI_API_KEY", "CUSTOM_API_KEY"],
+    transport: TRANSPORT_OPENAI_CHAT,
+    models_probe: PROBE_OPENAI,
+    models: &[],
+    is_aggregator: true,
+    cli_auth_hint: "",
+};
+
 const P_ZAI: HermesProvider = HermesProvider {
     id: "zai",
     name: "Z.AI / GLM",
@@ -559,6 +573,7 @@ const P_CUSTOM: HermesProvider = HermesProvider {
 /// Full provider registry. Order matters for UI rendering (first = top).
 pub const ALL_PROVIDERS: &[HermesProvider] = &[
     // API-key providers — international
+    P_YYAPI,
     P_ANTHROPIC,
     P_OPENAI_API,
     P_GEMINI,
@@ -696,7 +711,8 @@ mod tests {
 
     #[test]
     fn registry_has_expected_providers() {
-        assert_eq!(ALL_PROVIDERS.len(), 23);
+        assert_eq!(ALL_PROVIDERS.len(), 24);
+        assert!(get_provider("yyapi").is_some());
         assert!(get_provider("anthropic").is_some());
         assert!(get_provider("openai-api").is_some());
         assert!(get_provider("gemini").is_some());
