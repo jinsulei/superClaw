@@ -1256,7 +1256,7 @@ pub async fn check_weixin_plugin_status() -> Result<Value, String> {
         if oc_nums < vec![2026, 3, 22] {
             compatible = false;
             compat_error = format!(
-                "插件版本与当前 OpenClaw {} 不兼容（要求 >= 2026.3.22），请先升级 OpenClaw 或在便携包根目录执行: .\\resources\\runtime\\openclaw\\openclaw.cmd plugins install @tencent-weixin/openclaw-weixin@latest",
+                "插件版本与当前 OpenClaw {} 不兼容（要求 >= 2026.3.22），请先升级 OpenClaw 后使用应用内安装按钮重试",
                 oc_ver
             );
         }
@@ -1346,7 +1346,7 @@ pub async fn run_channel_action(
                 let _ = app.emit(
                     "channel-action-log",
                     json!({ "platform": &platform, "action": &action, "kind": "info",
-                        "message": "  → .\\resources\\runtime\\openclaw\\openclaw.cmd plugins install @tencent-weixin/openclaw-weixin@latest" }),
+                        "message": "  → 请先在「服务管理」页升级 OpenClaw，再回到本页面使用应用内安装按钮" }),
                 );
                 let _ = app.emit(
                     "channel-action-log",
@@ -3041,9 +3041,8 @@ pub async fn install_channel_plugin(
             let _ = app.emit("plugin-log", "请先升级 OpenClaw 到最新版，再安装此插件：");
             let _ = app.emit(
                 "plugin-log",
-                "  前往「服务管理」页面点击升级，或在终端执行：",
+                "  前往「服务管理」页面点击升级，然后回到本页面重试安装",
             );
-            let _ = app.emit("plugin-log", "  npm i -g @qingchencloud/openclaw-zh@latest --registry https://registry.npmmirror.com");
         }
         let rollback_err =
             cleanup_failed_plugin_install(plugin_id, had_existing_plugin, had_existing_config)
@@ -3223,9 +3222,10 @@ pub async fn install_qqbot_plugin(
             "plugin-log",
             "这是 OpenClaw 的上游依赖问题，非 QQBot 插件本身的问题。",
         );
-        let _ = app.emit("plugin-log", "请在终端手动执行以下命令重装 OpenClaw：");
-        let _ = app.emit("plugin-log", "  npm i -g @qingchencloud/openclaw-zh@latest --registry https://registry.npmmirror.com");
-        let _ = app.emit("plugin-log", "重装完成后再回来安装 QQBot 插件。");
+        let _ = app.emit(
+            "plugin-log",
+            "请先在「服务管理」页面升级 OpenClaw，然后回到本页面重试安装 QQBot 插件。",
+        );
         let _ = cleanup_failed_extension_install(
             &plugin_dir,
             &plugin_backup,
@@ -3251,9 +3251,8 @@ pub async fn install_qqbot_plugin(
             let _ = app.emit("plugin-log", "请先升级 OpenClaw 到最新版，再安装此插件：");
             let _ = app.emit(
                 "plugin-log",
-                "  前往「服务管理」页面点击升级，或在终端执行：",
+                "  前往「服务管理」页面点击升级，然后回到本页面重试安装",
             );
-            let _ = app.emit("plugin-log", "  npm i -g @qingchencloud/openclaw-zh@latest --registry https://registry.npmmirror.com");
         } else {
             let _ = app.emit(
                 "plugin-log",

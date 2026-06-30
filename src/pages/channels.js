@@ -1198,28 +1198,9 @@ function getManualCommandSpecs(pid, reg) {
 }
 
 function buildManualCommandPanel(commandSpecs) {
-  if (!commandSpecs.length) return ''
-
-  return `
-    <div style="margin-top:var(--space-md);padding:12px 14px;background:var(--bg-tertiary);border-radius:var(--radius-md)">
-      <div style="font-weight:600;font-size:var(--font-size-sm);margin-bottom:6px">${t('channels.manualCommands')}</div>
-      <div style="font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.7;margin-bottom:10px">${t('channels.manualCommandsHint')}</div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        ${commandSpecs.map(spec => `
-          <div style="background:var(--bg-secondary);border:1px solid var(--border-primary);border-radius:var(--radius-md);padding:10px 12px">
-            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
-              <div style="min-width:0;flex:1">
-                <div style="font-weight:600;font-size:var(--font-size-sm)">${spec.title}</div>
-                <div style="font-size:var(--font-size-xs);color:var(--text-secondary);line-height:1.6;margin-top:4px">${spec.hint}</div>
-              </div>
-              <button type="button" class="btn btn-xs btn-secondary" data-manual-copy="${escapeAttr(spec.id)}">${t('common.copy')}</button>
-            </div>
-            <pre style="margin:8px 0 0;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap;word-break:break-all;color:var(--text-primary)">${escapeAttr(spec.command)}</pre>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `
+  // Portable builds must run channel setup through the app's internal OpenClaw
+  // command bridge. Do not expose copyable terminal commands in the channel UI.
+  return ''
 }
 
 async function copyTextToClipboard(text) {
@@ -1241,26 +1222,7 @@ async function copyTextToClipboard(text) {
 }
 
 function bindManualCommandCopy(root, commandSpecs) {
-  if (!root || !commandSpecs.length) return
-
-  const commandMap = new Map(commandSpecs.map(spec => [spec.id, spec.command]))
-  root.querySelectorAll('[data-manual-copy]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const command = commandMap.get(btn.dataset.manualCopy)
-      if (!command) return
-      const prev = btn.textContent
-      try {
-        await copyTextToClipboard(command)
-        btn.textContent = t('common.copied')
-        toast(t('common.copied'), 'success')
-        setTimeout(() => {
-          btn.textContent = prev
-        }, 1200)
-      } catch (e) {
-        toast(t('channels.copyCommandFailed') + ': ' + e, 'error')
-      }
-    })
-  })
+  return
 }
 
 /** QQ：展示后端完整诊断（凭证 + Gateway + 插件 + chatCompletions）；可选一键修复插件 */
