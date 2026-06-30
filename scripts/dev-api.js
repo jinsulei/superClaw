@@ -1359,6 +1359,35 @@ async function startDevAgent(agentInput) {
   const agent = normalizeAgentName(agentInput)
   if (!agent) return { ok: false, started: false, status: 'error', reason: 'unsupported-agent' }
 
+  if (agent === 'hermes') {
+    const current = await createDevAgentStatus(agent)
+    if (current.ready) return { ok: true, agent, started: false, status: 'ready', current }
+    try {
+      await handlers._hermesEnsureGatewayReady()
+      const ready = await waitForDevAgentReady(agent, { attempts: 20, delayMs: 500 })
+      return {
+        ok: Boolean(ready.ready),
+        agent,
+        started: true,
+        status: ready.status || (ready.ready ? 'ready' : 'checking'),
+        pid: ready.pid || null,
+        current: ready,
+        error: ready.ready ? undefined : (ready.error || ready.message || 'Hermes Gateway started but is not ready yet.'),
+      }
+    } catch (error) {
+      const latest = await createDevAgentStatus(agent).catch(() => null)
+      return {
+        ok: false,
+        agent,
+        started: false,
+        status: latest?.status || 'error',
+        error: error?.message || String(error),
+        code: error?.code || undefined,
+        current: latest,
+      }
+    }
+  }
+
   if (agent !== 'openclaw') {
     return { ok: false, agent, started: false, status: 'error', reason: 'start-not-implemented' }
   }
