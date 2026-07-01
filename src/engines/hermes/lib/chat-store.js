@@ -50,6 +50,12 @@ import {
   buildHermesMemoryContext,
   handleHermesMemoryCommand,
 } from './hermes-memory-store.js'
+import {
+  buildHermesImageCapabilityStatus,
+  formatHermesImageCapabilityReply,
+  formatHermesImageCapabilityReadFailureReply,
+  isHermesImageCapabilityQuestion,
+} from './hermes-image-capability.js'
 
 const formatToolResultsForUser = formatHermesToolSummaryForUser
 
@@ -1923,6 +1929,47 @@ function createStore() {
       .filter(Boolean)
   }
 
+  function envEntriesToObject(entries) {
+    const out = {}
+    if (!Array.isArray(entries)) return out
+    for (const item of entries) {
+      if (Array.isArray(item)) out[item[0]] = item[1]
+      else if (item && typeof item === 'object') out[item.key || item.name] = item.value
+    }
+    return out
+  }
+
+  async function buildHermesImageCapabilityLocalReply() {
+    const settled = await Promise.allSettled([
+      api.getEffectiveModelConfig ? api.getEffectiveModelConfig('hermes') : Promise.resolve(null),
+      api.hermesReadConfig(),
+      api.hermesListProviders(),
+      api.hermesSkillsList(),
+      api.hermesEnvReadUnmanaged(),
+    ])
+
+    const valueAt = (index, fallback) => (
+      settled[index]?.status === 'fulfilled' ? settled[index].value : fallback
+    )
+
+    const effectiveModelConfig = valueAt(0, {}) || {}
+    const hermesConfig = valueAt(1, {}) || {}
+    const providersRaw = valueAt(2, [])
+    const skillsRaw = valueAt(3, [])
+    const envRaw = valueAt(4, [])
+    const providers = Array.isArray(providersRaw?.value) ? providersRaw.value : providersRaw
+    const skills = Array.isArray(skillsRaw?.value) ? skillsRaw.value : skillsRaw
+
+    const status = buildHermesImageCapabilityStatus({
+      effectiveModelConfig,
+      hermesConfig,
+      providers,
+      skills,
+      env: envEntriesToObject(envRaw),
+    })
+    return formatHermesImageCapabilityReply(status)
+  }
+
   async function sendMessage(content, opts = {}) {
     const attachments = normalizeAttachments(opts.attachments || [])
     const rawText = (content || '').trim()
@@ -1934,6 +1981,47 @@ function createStore() {
     const clientRequestId = String(opts.clientRequestId || uid())
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
+    }
+    if (isHermesImageCapabilityQuestion(rawText)) {
+      let imageCapabilitySession = activeSession()
+      if (!imageCapabilitySession) {
+        imageCapabilitySession = createLocalSession({
+          title: deriveSessionTitleFromText(displayText || runText || rawText),
+          optimistic: false,
+          clientRequestId,
+        })
+      }
+      const userMessage = {
+        id: `user-${clientRequestId}`,
+        role: 'user',
+        content: displayText || rawText,
+        timestamp: Date.now(),
+        clientRequestId,
+      }
+      if (!imageCapabilitySession.messages.some(m => m.id === userMessage.id)) {
+        imageCapabilitySession.messages.push(userMessage)
+      }
+      let reply = ''
+      try {
+        reply = await buildHermesImageCapabilityLocalReply()
+      } catch {
+        reply = formatHermesImageCapabilityReadFailureReply()
+      }
+      imageCapabilitySession.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: reply,
+        timestamp: Date.now(),
+        clientRequestId,
+      })
+      updateSessionTitleFromFirstUser(imageCapabilitySession)
+      imageCapabilitySession.updatedAt = Date.now()
+      imageCapabilitySession.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return Promise.resolve({ status: 'success', reason: 'image-capability-check' })
     }
     const memoryCommandReply = handleHermesMemoryCommand(rawText)
     if (memoryCommandReply) {

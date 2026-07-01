@@ -506,6 +506,7 @@ export const api = {
   ocrGetConfig: () => cachedInvoke('ocr_get_config', {}, 10000),
   ocrSetEnabled: (enabled) => { invalidate('ocr_get_config'); return invoke('ocr_set_enabled', { enabled }) },
   ocrExtractText: (request) => invoke('ocr_extract_text', request || {}),
+  getEffectiveModelConfig: (agentName) => invoke('get_effective_model_config', { agentName }),
 
   // Hermes Agent 管理
   checkPython: () => cachedInvoke('check_python', {}, 60000),
