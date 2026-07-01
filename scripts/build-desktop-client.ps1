@@ -423,22 +423,9 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
     Copy-Directory $RuntimeSkills $PortableSkills
   }
 
-  $providers = [ordered]@{
-    minimax = [ordered]@{
-      baseUrl = ""
-      apiKey = ""
-      api = "openai-completions"
-      models = @()
-      needsSetup = $true
-    }
-    "openai-compatible" = [ordered]@{
-      baseUrl = ""
-      apiKey = ""
-      api = "openai-completions"
-      models = @()
-      needsSetup = $true
-    }
-  }
+  # OpenClaw rejects empty provider placeholders during schema validation.
+  # Runtime setup state is inferred from the absence of configured providers.
+  $providers = [ordered]@{}
   $defaultModelRef = ""
   $defaultModels = [ordered]@{}
 
@@ -561,7 +548,6 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       model = ""
       modelRef = $defaultModelRef
     }
-    needsSetup = $true
   }
   Write-Utf8NoBom (Join-Path $agentModelDir "models.json") ($agentModels | ConvertTo-Json -Depth 20)
   Write-Utf8NoBom (Join-Path $OpenClawDataDir "exec-approvals.json") (([ordered]@{ version = 1; defaults = [ordered]@{ security = "full"; ask = "off"; askFallback = "full" } }) | ConvertTo-Json -Depth 5)

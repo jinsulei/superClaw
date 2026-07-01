@@ -1,7 +1,7 @@
 use crate::utils::openclaw_command;
 /// 配置读写命令
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs;
 #[cfg(target_os = "windows")]
@@ -839,7 +839,7 @@ pub fn write_openclaw_config(config: Value) -> Result<(), String> {
     fs::write(&path, &json).map_err(|e| format!("写入失败: {e}"))?;
 
     // 同步 provider 配置到所有 agent 的 models.json（运行时注册表）
-    sync_providers_to_agent_models(&config);
+    sync_providers_to_agent_models(&cleaned);
 
     Ok(())
 }
@@ -1637,6 +1637,12 @@ fn sync_providers_to_agent_models(config: &Value) {
 
         let mut changed = false;
 
+        if let Some(root) = models_json.as_object_mut() {
+            if root.remove("needsSetup").is_some() || root.remove("needs_setup").is_some() {
+                changed = true;
+            }
+        }
+
         if models_json
             .get("providers")
             .and_then(|p| p.as_object())
@@ -1676,6 +1682,13 @@ fn sync_providers_to_agent_models(config: &Value) {
                 for (provider_name, src_provider) in src.iter() {
                     if let Some(dst_provider) = dst_providers.get_mut(provider_name) {
                         if let Some(dst_obj) = dst_provider.as_object_mut() {
+                            if dst_obj.remove("managed").is_some()
+                                || dst_obj.remove("needsSetup").is_some()
+                                || dst_obj.remove("needs_setup").is_some()
+                            {
+                                changed = true;
+                            }
+                            remove_empty_provider_strings(dst_obj);
                             // 同步连接信息
                             for field in ["baseUrl", "apiKey", "api"] {
                                 if let Some(src_val) =
@@ -1773,6 +1786,79 @@ fn has_ui_fields(val: &Value) -> bool {
     false
 }
 
+fn has_non_empty_string(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Object(obj)) => obj.values().any(|v| {
+            v.as_str()
+                .map(|text| !text.trim().is_empty())
+                .unwrap_or(false)
+        }),
+        _ => false,
+    }
+}
+
+fn provider_has_models(provider: &Map<String, Value>) -> bool {
+    provider
+        .get("models")
+        .and_then(|v| v.as_array())
+        .map(|models| {
+            models.iter().any(|model| match model {
+                Value::String(id) => !id.trim().is_empty(),
+                Value::Object(obj) => ["id", "name", "model"].iter().any(|key| {
+                    obj.get(*key)
+                        .and_then(|v| v.as_str())
+                        .map(|text| !text.trim().is_empty())
+                        .unwrap_or(false)
+                }),
+                _ => false,
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn remove_empty_provider_strings(provider: &mut Map<String, Value>) {
+    for key in [
+        "baseUrl", "base_url", "endpoint", "apiKey", "api_key", "key",
+    ] {
+        let should_remove = provider
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(|text| text.trim().is_empty())
+            .unwrap_or(false);
+        if should_remove {
+            provider.remove(key);
+        }
+    }
+}
+
+fn should_remove_provider(provider_name: &str, provider: &Map<String, Value>) -> bool {
+    let normalized_name = provider_name.trim().to_ascii_lowercase();
+    let has_base_url = has_non_empty_string(
+        provider
+            .get("baseUrl")
+            .or_else(|| provider.get("base_url"))
+            .or_else(|| provider.get("endpoint")),
+    );
+    let has_api_key = has_non_empty_string(
+        provider
+            .get("apiKey")
+            .or_else(|| provider.get("api_key"))
+            .or_else(|| provider.get("key")),
+    );
+    let has_models = provider_has_models(provider);
+
+    if matches!(
+        normalized_name.as_str(),
+        "openai-compatible" | "openai_compatible"
+    ) && !has_base_url
+    {
+        return true;
+    }
+
+    !has_base_url && !has_api_key && !has_models
+}
+
 /// 清理 ClawPanel 内部字段，避免污染 openclaw.json 导致 Gateway 启动失败
 /// Issue #89: version info 字段被写入 openclaw.json → Unknown config keys
 /// Issue #127: 增强清理逻辑，保留 OpenClaw 合法的配置字段
@@ -1819,71 +1905,91 @@ fn strip_ui_fields(mut val: Value) -> Value {
                 models_obj.remove("defaultModel");
                 if let Some(providers_val) = models_obj.get_mut("providers") {
                     if let Some(providers_obj) = providers_val.as_object_mut() {
-                        for (provider_name, provider_val) in providers_obj.iter_mut() {
-                            if let Some(provider_obj) = provider_val.as_object_mut() {
-                                // 清理 provider 级别的 UI-only 字段（openclaw schema 不承认 managed）
-                                provider_obj.remove("managed");
-                                if provider_name.eq_ignore_ascii_case("minimax") {
-                                    let legacy_model = provider_obj
-                                        .remove("model")
-                                        .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or_else(|| "MiniMax-M3".to_string());
-                                    provider_obj.remove("type");
-                                    if provider_obj
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.eq_ignore_ascii_case("minimax"))
-                                        .unwrap_or(false)
-                                    {
-                                        provider_obj.remove("name");
-                                    }
-                                    let has_models = provider_obj
-                                        .get("models")
-                                        .and_then(|v| v.as_array())
-                                        .map(|arr| !arr.is_empty())
-                                        .unwrap_or(false);
-                                    if !has_models {
-                                        let api = provider_obj
-                                            .get("api")
+                        let provider_names: Vec<String> = providers_obj.keys().cloned().collect();
+                        for provider_name in provider_names {
+                            let remove_provider = if let Some(provider_val) =
+                                providers_obj.get_mut(&provider_name)
+                            {
+                                if let Some(provider_obj) = provider_val.as_object_mut() {
+                                    provider_obj.remove("managed");
+                                    provider_obj.remove("needsSetup");
+                                    provider_obj.remove("needs_setup");
+                                    remove_empty_provider_strings(provider_obj);
+
+                                    if provider_name.eq_ignore_ascii_case("minimax") {
+                                        let legacy_model = provider_obj
+                                            .remove("model")
+                                            .and_then(|v| v.as_str().map(|s| s.trim().to_string()))
+                                            .filter(|s| !s.is_empty())
+                                            .unwrap_or_else(|| "MiniMax-M3".to_string());
+                                        provider_obj.remove("type");
+                                        if provider_obj
+                                            .get("name")
                                             .and_then(|v| v.as_str())
-                                            .unwrap_or("openai-completions")
-                                            .to_string();
-                                        provider_obj.insert(
-                                            "models".into(),
-                                            json!([{
-                                                "id": legacy_model,
-                                                "name": legacy_model,
-                                                "api": api,
-                                                "reasoning": true,
-                                                "input": ["text"],
-                                                "contextWindow": 204800,
-                                                "maxTokens": 131072
-                                            }]),
-                                        );
+                                            .map(|s| s.eq_ignore_ascii_case("minimax"))
+                                            .unwrap_or(false)
+                                        {
+                                            provider_obj.remove("name");
+                                        }
+                                        let has_models = provider_obj
+                                            .get("models")
+                                            .and_then(|v| v.as_array())
+                                            .map(|arr| !arr.is_empty())
+                                            .unwrap_or(false);
+                                        if !has_models {
+                                            let api = provider_obj
+                                                .get("api")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("openai-completions")
+                                                .to_string();
+                                            provider_obj.insert(
+                                                "models".into(),
+                                                json!([{
+                                                    "id": legacy_model,
+                                                    "name": legacy_model,
+                                                    "api": api,
+                                                    "reasoning": true,
+                                                    "input": ["text"],
+                                                    "contextWindow": 204800,
+                                                    "maxTokens": 131072
+                                                }]),
+                                            );
+                                        }
                                     }
-                                }
-                                if let Some(Value::Array(arr)) = provider_obj.get_mut("models") {
-                                    for model in arr.iter_mut() {
-                                        if let Some(mobj) = model.as_object_mut() {
-                                            mobj.remove("lastTestAt");
-                                            mobj.remove("latency");
-                                            mobj.remove("testStatus");
-                                            mobj.remove("testError");
-                                            // 保留 input 等合法模型字段不变
-                                            if !mobj.contains_key("name") {
-                                                if let Some(id) =
-                                                    mobj.get("id").and_then(|v| v.as_str())
-                                                {
-                                                    mobj.insert(
-                                                        "name".into(),
-                                                        Value::String(id.to_string()),
-                                                    );
+
+                                    if let Some(Value::Array(arr)) =
+                                        provider_obj.get_mut("models")
+                                    {
+                                        for model in arr.iter_mut() {
+                                            if let Some(mobj) = model.as_object_mut() {
+                                                mobj.remove("lastTestAt");
+                                                mobj.remove("latency");
+                                                mobj.remove("testStatus");
+                                                mobj.remove("testError");
+                                                if !mobj.contains_key("name") {
+                                                    if let Some(id) =
+                                                        mobj.get("id").and_then(|v| v.as_str())
+                                                    {
+                                                        mobj.insert(
+                                                            "name".into(),
+                                                            Value::String(id.to_string()),
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+
+                                    should_remove_provider(&provider_name, provider_obj)
+                                } else {
+                                    false
                                 }
+                            } else {
+                                false
+                            };
+
+                            if remove_provider {
+                                providers_obj.remove(&provider_name);
                             }
                         }
                     }

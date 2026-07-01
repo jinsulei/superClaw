@@ -4,6 +4,9 @@ import path from 'node:path'
 const root = process.cwd()
 const scriptPath = path.join(root, 'scripts', 'build-desktop-client.ps1')
 const script = fs.readFileSync(scriptPath, 'utf8')
+const openclawConfigStart = script.indexOf('function Write-PortableOpenClawConfig')
+const openclawConfigEnd = script.indexOf('function Write-PortablePanelConfig')
+const openclawConfigBlock = script.slice(openclawConfigStart, openclawConfigEnd)
 
 function assert(condition, message) {
   if (!condition) {
@@ -42,9 +45,9 @@ assertIncludes(
 )
 assertIncludes(script, '\\\\resources\\\\data\\\\hermes\\\\memory', 'sanitizer blocks Hermes memory runtime directory')
 
-assertIncludes(script, 'minimax = [ordered]@{', 'MiniMax provider adapter template remains available')
-assertIncludes(script, '"openai-compatible" = [ordered]@{', 'OpenAI-compatible provider adapter template remains available')
-assertIncludes(script, 'needsSetup = $true', 'runtime model config starts in needs_setup state')
+assertIncludes(openclawConfigBlock, '$providers = [ordered]@{}', 'OpenClaw config starts with no invalid provider placeholders')
+assertNotIncludes(openclawConfigBlock, 'needsSetup = $true', 'OpenClaw config does not write UI-only needsSetup fields')
+assertNotIncludes(openclawConfigBlock, '"openai-compatible" = [ordered]@{', 'OpenClaw config does not ship empty openai-compatible provider')
 
 assertNotIncludes(script, '$MiniMaxTestBaseUrl', 'desktop build script no longer carries fixed MiniMax base URL constant')
 assertNotIncludes(script, '$MiniMaxTestModel', 'desktop build script no longer carries fixed MiniMax model constant')
