@@ -230,6 +230,7 @@ function Get-PackagedPythonRoots([string]$PackagedResources) {
 function Get-PackagedHermesToolRoots([string]$PackagedResources) {
   @(
     (Join-Path $PackagedResources "runtime\hermes-agent"),
+    (Join-Path $PackagedResources "runtime\uv-tools\hermes-agent"),
     (Join-Path $PackagedResources "uv-tools\hermes-agent")
   )
 }
@@ -250,6 +251,14 @@ function Find-PackagedHermesToolRoot([string]$PackagedResources) {
     }
   }
   return (Join-Path $PackagedResources "runtime\hermes-agent")
+}
+
+function Get-PortableRelativePath([string]$FromDir, [string]$ToPath) {
+  $FromFull = [System.IO.Path]::GetFullPath($FromDir).TrimEnd('\') + '\'
+  $ToFull = [System.IO.Path]::GetFullPath($ToPath)
+  $FromUri = [Uri]$FromFull
+  $ToUri = [Uri]$ToFull
+  return [Uri]::UnescapeDataString($FromUri.MakeRelativeUri($ToUri).ToString()).Replace('/', '\')
 }
 
 function Ensure-PackagedPythonRuntime([string]$PackagedResources) {
@@ -790,36 +799,54 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
 }
 
 function Clear-PackagedMachineSpecificPaths([string]$PackagedResources) {
-  $HermesTool = Find-PackagedHermesToolRoot $PackagedResources
-  $HermesScripts = Join-Path $HermesTool "Scripts"
+  $HermesToolRoots = @(
+    Get-PackagedHermesToolRoots $PackagedResources |
+      Where-Object { Test-Path $_ -PathType Container }
+  )
 
-  # uv writes install receipts and non-Windows activation scripts with the build
-  # machine path. SuperClaw launches Hermes directly via python.exe, so these are
-  # not needed in the Windows portable client and should not be shipped.
-  foreach ($rel in @(
-    "uv-receipt.toml",
-    "Scripts\activate",
-    "Scripts\activate.csh",
-    "Scripts\activate.fish",
-    "Scripts\activate.nu"
-  )) {
-    Remove-IfExists (Join-Path $HermesTool $rel)
-  }
+  foreach ($HermesTool in $HermesToolRoots) {
+    $HermesScripts = Join-Path $HermesTool "Scripts"
 
-  $ActivateBat = Join-Path $HermesScripts "activate.bat"
-  if (Test-Path $ActivateBat) {
-    (Get-Content -Raw $ActivateBat) -replace 'C:\\Users\\.*?hermes-agent', '%%~dp0..' |
-      Set-Content -Path $ActivateBat -Encoding UTF8
-  }
+    # uv writes install receipts and non-Windows activation scripts with the build
+    # machine path. SuperClaw launches Hermes directly via python.exe, so these are
+    # not needed in the Windows portable client and should not be shipped.
+    foreach ($rel in @(
+      "uv-receipt.toml",
+      "Scripts\activate",
+      "Scripts\activate.csh",
+      "Scripts\activate.fish",
+      "Scripts\activate.nu"
+    )) {
+      Remove-IfExists (Join-Path $HermesTool $rel)
+    }
 
-  $ActivatePs1 = Join-Path $HermesScripts "activate.ps1"
-  if (Test-Path $ActivatePs1) {
-    (Get-Content -Raw $ActivatePs1) -replace 'C:\\Users\\.*?hermes-agent', '$PSScriptRoot\..' |
-      Set-Content -Path $ActivatePs1 -Encoding UTF8
+    $ActivateBat = Join-Path $HermesScripts "activate.bat"
+    if (Test-Path $ActivateBat) {
+      (Get-Content -Raw $ActivateBat) -replace 'C:\\Users\\.*?hermes-agent', '%%~dp0..' |
+        Set-Content -Path $ActivateBat -Encoding UTF8
+    }
+
+    $ActivatePs1 = Join-Path $HermesScripts "activate.ps1"
+    if (Test-Path $ActivatePs1) {
+      (Get-Content -Raw $ActivatePs1) -replace 'C:\\Users\\.*?hermes-agent', '$PSScriptRoot\..' |
+        Set-Content -Path $ActivatePs1 -Encoding UTF8
+    }
+
+    $PyVenvCfg = Join-Path $HermesTool "pyvenv.cfg"
+    if (Test-Path $PyVenvCfg) {
+      $PackagedPythonRoot = Find-PackagedPythonRoot $PackagedResources
+      $PythonExeForVenv = Find-PackagedPythonExe $PackagedPythonRoot
+      if ($PythonExeForVenv) {
+        $PythonHomeForVenv = Split-Path -Parent $PythonExeForVenv
+        $PortableHome = Get-PortableRelativePath $HermesTool $PythonHomeForVenv
+        (Get-Content -Raw $PyVenvCfg) -replace '(?m)^home = .*$', "home = $PortableHome" |
+          Set-Content -Path $PyVenvCfg -Encoding UTF8
+      }
+    }
   }
 
   $CleanupRoots = @()
-  $CleanupRoots += Get-PackagedHermesToolRoots $PackagedResources
+  $CleanupRoots += $HermesToolRoots
   $CleanupRoots += Get-PackagedPythonRoots $PackagedResources
   foreach ($root in $CleanupRoots) {
     if (Test-Path $root -PathType Container) {
