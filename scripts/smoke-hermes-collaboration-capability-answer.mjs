@@ -27,15 +27,16 @@ assert.equal(isHermesCollaborationCapabilityQuestion('你是谁？请用一句�
 assert.equal(isHermesCollaborationCapabilityQuestion('今天怎么协作写文档？'), false)
 
 const reply = formatHermesCollaborationCapabilityReply()
+const mojibakePattern = /(?:\u951f|\u8119|\u8117|\u8292\u9207)/
 for (const required of [
   /Hermes/,
   /主脑|调度/,
   /OpenClaw/,
   /ClaudeCode/,
-  /拆.*需求|任务.*分配|分配.*任务|拆成可执行步骤/,
+  /拆成可执行步骤|分配给不同执行端|任务分配/,
   /验收/,
   /回传|汇总/,
-  /继续.*派发|返工|重新执行|重新分配/,
+  /继续.*OpenClaw|继续.*ClaudeCode|返工|重新执行/,
 ]) {
   assert.match(reply, required)
 }
@@ -48,7 +49,7 @@ for (const forbidden of [
   /null/,
   /\[object Object\]/,
   /124\.222\.21\.44/,
-  /锟|脙|脗|芒鈧/,
+  mojibakePattern,
 ]) {
   assert.doesNotMatch(reply, forbidden)
 }
@@ -62,6 +63,7 @@ assert.equal(session.messages[0].role, 'user')
 assert.equal(session.messages[1].role, 'assistant')
 assert.equal(session.messages[1].id, 'collab-capability-1-assistant')
 assert.equal(session.messages[1].content, reply)
-assert.doesNotMatch(session.messages[1].content, /yyapi|undefined|null|\[object Object\]|124\.222\.21\.44|锟|脙|脗|芒鈧/i)
+assert.doesNotMatch(session.messages[1].content, /yyapi|undefined|null|\[object Object\]|124\.222\.21\.44/i)
+assert.doesNotMatch(session.messages[1].content, mojibakePattern)
 
 console.log('HERMES_COLLABORATION_CAPABILITY_ANSWER: PASS')

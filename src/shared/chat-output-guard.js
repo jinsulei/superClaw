@@ -87,12 +87,11 @@ export function formatHermesCollaborationCapabilityReply() {
     '',
     '1. OpenClaw 负责执行操作，例如浏览器自动化、页面读取、数据采集、桌面操作和流程执行。',
     '2. ClaudeCode 负责代码、脚本、测试、监督、验收和报告。',
-    '3. 执行或监督结果会回传给我，我负责最终验收；如果结果不达标，我会继续让 OpenClaw 或 ClaudeCode 返工、补充或重新执行。',
+    '3. 执行结果或监督结果会回传给我，我负责最终验收；如果结果不达标，我会继续让 OpenClaw 或 ClaudeCode 返工、补充或重新执行。',
     '',
     '简单说：Hermes 负责规划、调度和最终验收，OpenClaw 负责动手执行，ClaudeCode 负责技术处理和监督验收。',
   ].join('\n')
 }
-
 export function detectReportIntent(text) {
   const value = String(text || '')
   if (/查看图片|看图|图片里|截图里|分析图片|识别图片|图片内容/.test(value)) return 'image_inspect'
