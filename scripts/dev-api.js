@@ -1227,6 +1227,20 @@ function localDevAgentFeature(agent) {
   return []
 }
 
+function localDevAgentRuntimeSignature(agent) {
+  if (agent === 'hermes') return [
+    'src-tauri\\resources\\runtime\\uv-python',
+    'src-tauri\\resources\\runtime\\hermes-agent',
+  ]
+  if (agent === 'openclaw') return [
+    'src-tauri\\resources\\runtime\\openclaw',
+  ]
+  if (agent === 'claudecode') return [
+    'src-tauri\\resources\\runtime\\claude-panel',
+  ]
+  return []
+}
+
 function getManagedDevChild(agent) {
   if (agent === 'hermes') return _hermesGwProcess || null
   if (agent === 'claudecode') return _claudePanelChild || null
@@ -1246,8 +1260,15 @@ function getPortProcessDetails(port) {
     const script = [
       `$c=Get-NetTCPConnection -LocalPort ${targetPort} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
       'if($c){',
-      '  $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)"',
-      '  [pscustomobject]@{pid=$c.OwningProcess; executablePath=$p.ExecutablePath; commandLine=$p.CommandLine} | ConvertTo-Json -Compress',
+      '  $p=$null',
+      '  try { $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction Stop } catch {}',
+      '  $gp=$null',
+      '  try { $gp=Get-Process -Id $c.OwningProcess -ErrorAction Stop } catch {}',
+      '  $exe=$p.ExecutablePath',
+      '  if(-not $exe -and $gp){ $exe=$gp.Path }',
+      '  $cmd=$p.CommandLine',
+      '  if(-not $cmd -and $exe){ $cmd=$exe }',
+      '  [pscustomobject]@{pid=$c.OwningProcess; executablePath=$exe; commandLine=$cmd} | ConvertTo-Json -Compress',
       '}',
     ].join('; ')
     const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
@@ -1287,8 +1308,14 @@ function isVerifiedDevAgentProcess(agent, details) {
   if (!details?.pid) return false
   const repoRoot = normalizeForCompare(appRootDir())
   const text = normalizeForCompare(`${details.executablePath || ''}\n${details.commandLine || ''}`)
-  if (!repoRoot || !text.includes(repoRoot)) return false
-  return localDevAgentFeature(agent).some(feature => text.includes(normalizeForCompare(feature)))
+  const featureMatch = localDevAgentFeature(agent).some(feature => text.includes(normalizeForCompare(feature)))
+  if (!featureMatch) return false
+
+  const repoMatch = !!repoRoot && text.includes(repoRoot)
+  const bundledRuntimeMatch = localDevAgentRuntimeSignature(agent).some(signature => (
+    text.includes(normalizeForCompare(signature))
+  ))
+  return repoMatch || bundledRuntimeMatch
 }
 
 function stopVerifiedDevPid(agent, details) {

@@ -3933,7 +3933,15 @@ export function render() {
   // MutationObserver watches our parent; when `el` is detached, we run the
   // full teardown (stream listeners, subscription, search modal, keydown).
   const teardown = () => {
-    stopAgentOnPageClose('hermes')
+    // Hermes Gateway is an app-level service; switching to OpenClaw should not drop it.
+    const shouldStopHermesGatewayOnCleanup =
+      window.__SUPERCLAW_APP_EXITING__ === true ||
+      window.__SUPERCLAW_EXPLICIT_STOP_HERMES_GATEWAY__ === true ||
+      window.__SUPERCLAW_EXPLICIT_STOP_AGENT__ === true
+
+    if (shouldStopHermesGatewayOnCleanup) {
+      stopAgentOnPageClose('hermes')
+    }
     document.removeEventListener('keydown', onGlobalKey)
     document.removeEventListener('click', onGlobalClick)
     document.removeEventListener('paste', onPasteImage, true)
