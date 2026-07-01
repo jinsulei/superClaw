@@ -581,9 +581,53 @@ function routeForTarget(target) {
   return '/'
 }
 
+function isSafeAppBaseUrl(url) {
+  if (!url) return false
+  if (url.protocol === 'tauri:') return true
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  const host = String(url.hostname || '').toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
+  try {
+    const currentHost = String(window?.location?.hostname || '').toLowerCase()
+    return !!currentHost && host === currentHost
+  } catch {
+    return false
+  }
+}
+
+function normalizeAppBaseUrl(rawBase) {
+  if (!rawBase) return ''
+  try {
+    const fallbackHref = window?.location?.href || 'http://127.0.0.1:1420/'
+    const url = new URL(String(rawBase), fallbackHref)
+    url.hash = ''
+    if (!isSafeAppBaseUrl(url)) return ''
+    return `${url.origin}${url.pathname || '/'}${url.search || ''}`
+  } catch {
+    return ''
+  }
+}
+
+function currentAppBaseUrl() {
+  try {
+    const loc = window?.location
+    const params = new URLSearchParams(loc?.search || '')
+    const delegatedBase = normalizeAppBaseUrl(params.get('superclawBase'))
+    if (delegatedBase) return delegatedBase
+    if (params.has('superclawBase')) {
+      params.delete('superclawBase')
+      const search = params.toString()
+      return `${loc?.origin || ''}${loc?.pathname || '/'}${search ? `?${search}` : ''}`
+    }
+    return `${loc?.origin || ''}${loc?.pathname || '/'}${loc?.search || ''}`
+  } catch {
+    return ''
+  }
+}
+
 function appUrlForRoute(route) {
   const cleanRoute = String(route || '/').startsWith('/') ? route : `/${route}`
-  const base = `${window.location.origin || ''}${window.location.pathname || '/'}${window.location.search || ''}`
+  const base = currentAppBaseUrl()
   return `${base}#${cleanRoute}`
 }
 
