@@ -2434,7 +2434,7 @@
 }
 
 /* OpenClaw chat visual parity with Hermes. Scoped to OpenClaw only. */
-.chat-page.openclaw-chat {
+.openclaw-chat {
   --agent-chat-column-max: var(--superclaw-chat-stage-max, 1480px);
   --agent-chat-column-reserved: var(--superclaw-chat-stage-reserved, 320px);
   --agent-chat-column-gutter: var(--superclaw-chat-stage-gutter, 48px);
@@ -2455,11 +2455,11 @@
 }
 
 .openclaw-chat .sc-msg-group.user {
-  max-width: min(var(--superclaw-chat-user-readable-max, 620px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
+  max-width: min(520px, 46vw);
 }
 
 .openclaw-chat .sc-msg-group.assistant {
-  max-width: min(var(--superclaw-chat-assistant-readable-max, 980px), calc(100% - var(--superclaw-chat-bubble-edge-room, 80px)));
+  max-width: min(980px, 72vw);
 }
 
 .openclaw-chat .sc-msg-bubble {
@@ -2602,12 +2602,8 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: min(
-    var(--agent-chat-column-max),
-    calc(100vw - var(--agent-chat-column-reserved)),
-    calc(100% - var(--agent-chat-column-gutter))
-  );
-  max-width: var(--agent-chat-column-max);
+  width: min(760px, calc(100% - 48px));
+  max-width: 760px;
   margin-inline: auto;
   box-sizing: border-box;
 }
@@ -2640,7 +2636,7 @@
 }
 
 @media (max-width: 760px) {
-  .chat-page {
+  .openclaw-chat {
     --agent-chat-edge-gap: 8px;
   }
 
