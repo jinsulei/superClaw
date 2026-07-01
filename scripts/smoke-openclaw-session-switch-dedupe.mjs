@@ -29,7 +29,10 @@ includesAll(chat, [
   'function mergeOpenClawHistoryMessage(prev, next)',
   'function hasRenderedOpenClawMessage(sessionKey, dedupeKey)',
   'markRenderedOpenClawMessage(wrap, sessionKey, meta.dedupeKey)',
-  'createStreamBubble({ dedupeKey: assistantDedupeKey, sessionKey: _sessionKey })',
+  'const assistantDedupeKey = getOpenClawMessageDedupeKey({',
+  'createStreamBubble({',
+  'dedupeKey: assistantDedupeKey',
+  'sessionKey: _sessionKey',
   'skipped duplicate rendered assistant final',
 ], 'OpenClaw session-switch dedupe implementation')
 

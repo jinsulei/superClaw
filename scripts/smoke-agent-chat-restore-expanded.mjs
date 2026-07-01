@@ -38,7 +38,7 @@ assertContains('Hermes chat', hermesChat, 'isHermesManualCompactCollapsed(compac
 assertContains('Hermes chat', hermesChat, "manualCollapsed ? 'is-collapsed' : 'is-expanded'")
 assertContains('Hermes chat', hermesChat, 'data-compact-key')
 assertContains('Hermes chat', hermesChat, 'setHermesManualCompactCollapsed(compactKey, !expanded)')
-assertContains('Hermes chat', hermesChat, 'renderCompactAssistantHtml(m.content, m.id)')
+assertContains('Hermes chat', hermesChat, 'renderCompactAssistantHtml(visibleContent, m.id)')
 assertNotContains('Hermes chat', hermesChat, "canToggle ? 'is-collapsed' : ''")
 
 console.log('HERMES_RESTORED_LONG_TEXT_EXPANDED: PASS')

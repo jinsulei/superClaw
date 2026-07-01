@@ -87,6 +87,15 @@ function startPanel(port, extraEnv = {}) {
   return { child, getStderr: () => stderr };
 }
 
+function hasPortableClaudeCli() {
+  const candidates = [
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude.exe"),
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude.cmd"),
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude"),
+  ];
+  return candidates.some((candidate) => fs.existsSync(candidate));
+}
+
 async function withPanel(port, env, action) {
   const panel = startPanel(port, env);
   try {
@@ -102,13 +111,25 @@ assert(server.includes("effectiveMode"), "server status must expose effectiveMod
 assert(server.includes("nativeClaude"), "server status must expose nativeClaude");
 assert(server.includes("CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE"), "server must support no-cli smoke mode");
 
+const portableClaudeExists = hasPortableClaudeCli();
+
 await withPanel(33201, {
   CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE: "1",
   CLAUDE_CLI_PATH: path.join(os.tmpdir(), "missing-claude-command.exe"),
 }, async (status) => {
   assert(status.status === 200, "status HTTP failed");
-  assert(status.data.nativeClaude?.available === false, "native should be unavailable when CLI disabled");
-  assert(status.data.effectiveMode === "CLAUDE_PANEL_RELAY", "no-cli mode should report relay");
+  if (portableClaudeExists) {
+    assert(status.data.nativeClaude?.available === true, "portable native should be available when bundled CLI exists");
+    assert(status.data.effectiveMode === "NATIVE_CLAUDE_CODE", "invalid configured path should fall back to portable native Claude CLI");
+    assert(status.data.executionBackend === "native-claude-cli", "portable fallback should still use native backend");
+    assert(status.data.spawnedProcess === true, "portable fallback must expose spawned native process");
+    assert(status.data.relayCalled === false, "portable fallback must not call relay");
+    assert(status.data.nativeClaude?.source === "portable-runtime", "portable fallback source should be reported");
+  } else {
+    assert(status.data.nativeClaude?.available === false, "native should be unavailable when all CLI sources are disabled");
+    assert(status.data.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI mode should require native configuration");
+    assert(status.data.nativeRequired === true, "missing CLI mode should expose nativeRequired");
+  }
   assert(!JSON.stringify(status.data).includes("sk-"), "status leaked a key-like value");
 });
 
@@ -124,7 +145,9 @@ await withPanel(33202, {
   assert(String(status.data.nativeClaude.path).includes(path.basename(mockCommand)), "mock native path not reported");
 });
 
-console.log("CLAUDE_NATIVE_DETECTION_NO_CLI: PASS");
+console.log(portableClaudeExists
+  ? "CLAUDE_NATIVE_DETECTION_PORTABLE_FALLBACK: PASS"
+  : "CLAUDE_NATIVE_DETECTION_NO_CLI: PASS");
 console.log("CLAUDE_NATIVE_DETECTION_WITH_MOCK: PASS");
 console.log("CLAUDE_STATUS_MODE_EXPLICIT: PASS");
 console.log("CLAUDE_STATUS_NO_KEY_LEAK: PASS");

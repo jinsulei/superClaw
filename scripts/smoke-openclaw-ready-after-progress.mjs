@@ -28,9 +28,9 @@ const finalizeBlock = finalizeMatch?.[0] || ''
 
 assert(/finalizeOpenClawProgressReady/.test(chat), 'finalizeOpenClawProgressReady exists')
 assert(
-  chat.includes("setOpenClawGatewayUiState('starting', { error: '', progress: 5 })") &&
-    chat.indexOf("setOpenClawGatewayUiState('starting', { error: '', progress: 5 })") < chat.indexOf('autoStartOpenClawGatewayOnEnter().catch'),
-  'OpenClaw page enters startup progress before auto-start'
+  chat.includes("setOpenClawGatewayUiState('checking', { error: '', progress: 5 })") &&
+    chat.indexOf("setOpenClawGatewayUiState('checking', { error: '', progress: 5 })") < chat.indexOf('autoStartOpenClawGatewayOnEnter().catch'),
+  'OpenClaw page enters checking progress before auto-start'
 )
 assert(/setOpenClawGatewayUiState\(\s*['"]checking['"]/.test(finalizeBlock), 'finalize starts with checking state')
 assert(/waitForAgentGatewayReady\(\s*['"]openclaw['"]/.test(finalizeBlock), 'finalize performs a real OpenClaw ready probe')
@@ -41,6 +41,7 @@ const startMatch = chat.match(/async function startOrRepairOpenClawGateway\(\) \
 const startBlock = startMatch?.[0] || ''
 
 assert(/setOpenClawGatewayUiState\(\s*['"]starting['"]/.test(startBlock), 'start handler enters starting state')
+assert(startBlock.includes("setOpenClawGatewayUiState('starting', { error: '', progress: 20 })"), 'start handler begins at current startup progress')
 assert(/finalizeOpenClawProgressReady\(\)/.test(startBlock), 'start handler delegates completion to final ready probe')
 assert(!/setOpenClawGatewayUiState\(\s*['"]ready['"][\s\S]{0,120}api\.startService/.test(startBlock), 'start handler does not mark ready immediately after startService')
 

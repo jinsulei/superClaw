@@ -20,13 +20,15 @@ function functionBlock(source, name) {
 }
 
 const spawnOpenclawBlock = functionBlock(devApi, 'spawnOpenclaw')
-assert.match(spawnOpenclawBlock, /windowsHide:\s*true/)
-assert.match(spawnOpenclawBlock, /stdio:\s*\[\s*['"]ignore['"]\s*,\s*['"]pipe['"]\s*,\s*['"]pipe['"]\s*\]/)
+assert.match(devApi, /function automaticAgentSpawnOptions/)
+assert.match(devApi, /windowsHide:\s*true/)
+assert.match(devApi, /detached:\s*false/)
+assert.match(devApi, /normalizeBackgroundStdio\(options\.stdio\)/)
+assert.match(spawnOpenclawBlock, /automaticAgentSpawnOptions\(rest\)/)
 console.log('OPENCLAW_TERMINAL_BACKGROUND: PASS')
 
 const spawnOpenclawSyncBlock = functionBlock(devApi, 'spawnOpenclawSync')
-assert.match(spawnOpenclawSyncBlock, /windowsHide:\s*true/)
-assert.match(spawnOpenclawSyncBlock, /stdio:\s*\[\s*['"]ignore['"]\s*,\s*['"]pipe['"]\s*,\s*['"]pipe['"]\s*\]/)
+assert.match(spawnOpenclawSyncBlock, /automaticAgentSpawnOptions\(rest\)/)
 
 const nativeClaudeBlock = functionBlock(devApi, 'startNativeClaudeTerminal')
 assert.equal(/spawn\(\s*['"]cmd\.exe['"][\s\S]{0,160}['"]start['"][\s\S]{0,160}['"]cmd\.exe['"][\s\S]{0,160}['"]\/k['"]/.test(nativeClaudeBlock), false)
@@ -39,9 +41,9 @@ assert.match(devApi, /logs['"],\s*['"]agent-tools/)
 assert.match(devApi, /redactAgentToolText/)
 console.log('TOOL_LOG_WRITTEN: PASS')
 
-assert.match(hermesChat, /assistant-compact-message \$\{canToggle \? 'is-collapsed' : ''\}/)
-assert.match(hermesChat, /assistant-compact-message__full" \$\{canToggle \? 'hidden' : ''\}/)
-assert.equal(/assistant-compact-message \$\{canToggle \? 'is-expanded' : ''\}/.test(hermesChat), false)
+assert.match(hermesChat, /assistant-compact-message \$\{canToggle \? \(manualCollapsed \? 'is-collapsed' : 'is-expanded'\) : ''\}/)
+assert.match(hermesChat, /assistant-compact-message__full" \$\{manualCollapsed \? 'hidden' : ''\}/)
+assert.equal(/assistant-compact-message \$\{canToggle \? 'is-collapsed' : ''\}/.test(hermesChat), false)
 console.log('HERMES_TERMINAL_BACKGROUND: PASS')
 
 const openclawToolBlock = functionBlock(openclawChat, 'appendToolsToEl')

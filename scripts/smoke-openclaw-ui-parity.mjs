@@ -78,10 +78,10 @@ assert(
 assert(
   'OPENCLAW_COMPOSER_WIDTH_ALIGNED',
   css.includes('.openclaw-chat .openclaw-composer-row') &&
-    css.includes('width: min(760px, calc(100% - 48px))') &&
-    css.includes('max-width: 760px') &&
+    css.includes('width: min(1160px, 100%)') &&
+    css.includes('max-width: 1160px') &&
     css.includes('box-sizing: border-box'),
-  'OpenClaw composer width is not aligned with the Hermes 760px composer column.',
+  'OpenClaw composer width is not aligned with the confirmed 1160px composer row.',
 )
 
 assert(

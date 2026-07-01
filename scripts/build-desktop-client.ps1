@@ -77,7 +77,9 @@ function Set-SanitizedTestBuildEnv {
   if (-not $SanitizedTest) { return @{} }
   $keys = @(
     "VITE_ENABLE_ECOMMERCE_ASSISTANT",
-    "VITE_SUPERCLAW_DISABLE_YYAPI"
+    "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_TEST_BUILD",
+    "VITE_SUPERCLAW_FORCE_PROVIDER"
   )
   $previous = @{}
   foreach ($key in $keys) {
@@ -85,7 +87,9 @@ function Set-SanitizedTestBuildEnv {
   }
   [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "true", "Process")
-  Ok "Sanitized frontend flags: ecommerce=true, YYAPI disabled, model config remains runtime-only"
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
+  Ok "Sanitized frontend flags: ecommerce=true, YYAPI disabled, test build enabled, provider smoke=minimax, model config remains runtime-only"
   return $previous
 }
 

@@ -13,6 +13,7 @@ const openclawRuntimeDir = path.join(
 const openclawCmd = path.join(openclawRuntimeDir, process.platform === 'win32' ? 'openclaw.cmd' : 'openclaw')
 const openclawNode = path.join(openclawRuntimeDir, process.platform === 'win32' ? 'node.exe' : 'node')
 const openclawEntrypoints = [
+  path.join(openclawRuntimeDir, 'openclaw.mjs'),
   path.join(openclawRuntimeDir, 'node_modules', '@qingchencloud', 'openclaw-zh', 'openclaw.mjs'),
   path.join(openclawRuntimeDir, 'node_modules', 'openclaw', 'openclaw.mjs'),
 ]
