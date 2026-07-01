@@ -99,6 +99,34 @@ function parseSse(body) {
   return { events, text: textParts.join("") };
 }
 
+function assertClaudeNativeNoDisguise(result, label = "claude native") {
+  assert(result && typeof result === "object", `${label}: expected object result`);
+
+  const effectiveMode = String(result.effectiveMode || result.runtimeMode || result.mode || "");
+  const executionBackend = String(result.executionBackend || result.backend || "");
+  const spawnedProcess = result.spawnedProcess === true;
+  const relayCalled = result.relayCalled === true;
+
+  if (effectiveMode === "NATIVE_CLAUDE_CODE") {
+    assert(spawnedProcess, `${label}: native mode must spawn a real Claude process`);
+    assert(!relayCalled, `${label}: native mode must not call relay`);
+    assert(!executionBackend || executionBackend === "native-claude-cli", `${label}: native mode must use native-claude-cli backend`);
+  }
+
+  assert(!(relayCalled && effectiveMode === "NATIVE_CLAUDE_CODE"), `${label}: relay must not be disguised as native Claude Code`);
+}
+
+function hasPortableClaudeCli() {
+  const candidates = [
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude.exe"),
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude.cmd"),
+    path.join(repoRoot, "src-tauri", "resources", "runtime", "claude-code", "bin", "claude"),
+  ];
+  return candidates.some((candidate) => fs.existsSync(candidate));
+}
+
+const portableClaudeExists = hasPortableClaudeCli();
+
 const server = fs.readFileSync(serverPath, "utf8");
 assert(server.includes("function isNativeRunWired"), "missing native run wiring gate");
 assert(server.includes("CLAUDE_PANEL_DISABLE_NATIVE_RUN"), "missing native run disable test switch");
@@ -124,21 +152,36 @@ const noCliPanel = startPanel(noCliPort, {
 });
 try {
   const status = await waitForStatus(noCliPort);
-  assert(status.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI must require native configuration");
-  assert(status.nativeRequired === true, "missing CLI must expose nativeRequired");
-  assert(status.nativeClaude?.available === false, "missing CLI must be unavailable");
+  assertClaudeNativeNoDisguise(status, "invalid CLAUDE_CLI_PATH case");
 
-  const run = await request(noCliPort, "POST", "/api/run", {
-    prompt: "hello",
-    cwd: repoRoot,
-    toolProfile: "none",
-    permissionProfile: "default",
-    mode: "default",
-  });
-  assert(run.status === 409, "missing CLI run must return configuration error");
-  const body = JSON.parse(run.text);
-  assert(body.code === "CLAUDE_NATIVE_CLI_REQUIRED", "missing CLI run must not silently call relay");
-  assert(body.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI run must report native required mode");
+  if (portableClaudeExists) {
+    assert(status.effectiveMode === "NATIVE_CLAUDE_CODE", "invalid CLAUDE_CLI_PATH with portable CLI present should use portable native Claude CLI");
+    assert(status.executionBackend === "native-claude-cli", "portable fallback must still use native-claude-cli");
+    assert(status.spawnedProcess === true, "portable fallback must expose spawned native process");
+    assert(status.relayCalled === false, "portable fallback must not call relay");
+    assert(status.nativeClaude?.source === "portable-runtime", "portable fallback should report portable runtime source");
+    console.log("CLAUDE_INVALID_CONFIGURED_PATH_PORTABLE_FALLBACK_NATIVE: PASS");
+    console.log("CLAUDE_NO_NATIVE_CLI_REQUIRES_CONFIG: SKIPPED_PORTABLE_CLI_PRESENT");
+  } else {
+    assert(status.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI must require native configuration");
+    assert(status.nativeRequired === true, "missing CLI must expose nativeRequired");
+    assert(status.nativeClaude?.available === false, "missing CLI must be unavailable");
+
+    const run = await request(noCliPort, "POST", "/api/run", {
+      prompt: "hello",
+      cwd: repoRoot,
+      toolProfile: "none",
+      permissionProfile: "default",
+      mode: "default",
+    });
+    assert(run.status === 409, "missing CLI run must return configuration error");
+    const body = JSON.parse(run.text);
+    assert(body.code === "CLAUDE_NATIVE_CLI_REQUIRED", "missing CLI run must not silently call relay");
+    assert(body.effectiveMode === "NATIVE_CLAUDE_REQUIRED", "missing CLI run must report native required mode");
+    assert(body.spawnedProcess !== true, "missing CLI run must not claim spawned process");
+    assert(body.relayCalled !== true, "missing CLI run must not call relay");
+    console.log("CLAUDE_NO_NATIVE_CLI_REQUIRES_CONFIG: PASS");
+  }
 } finally {
   noCliPanel.kill("SIGTERM");
 }
@@ -178,13 +221,17 @@ const fallbackPort = 33304;
 const fallbackPanel = startPanel(fallbackPort, {
   CLAUDE_PANEL_DISABLE_GLOBAL_CLAUDE: "1",
   CLAUDE_PANEL_ALLOW_RELAY_FALLBACK: "1",
+  CLAUDE_PANEL_DISABLE_NATIVE_RUN: "1",
   CLAUDE_CLI_PATH: path.join(os.tmpdir(), "missing-claude-relay-opt-in.cmd"),
 });
 try {
   const status = await waitForStatus(fallbackPort);
   assert(status.effectiveMode === "CLAUDE_PANEL_RELAY", "explicit fallback opt-in may use relay");
   assert(status.nativeRequired === false, "explicit fallback opt-in must disable native-required guard");
-  assert(status.nativeClaude?.available === false, "fallback opt-in does not fake native CLI");
+  assert(status.executionBackend === "openai-relay", "explicit fallback opt-in must report relay backend");
+  assert(status.spawnedProcess === false, "explicit fallback opt-in must not claim spawned process");
+  assert(status.relayCalled === true, "explicit fallback opt-in must mark relay calls");
+  assert(status.nativeClaude?.runWired === false, "explicit fallback opt-in must make native bridge unavailable for the relay case");
 } finally {
   fallbackPanel.kill("SIGTERM");
 }
@@ -217,7 +264,6 @@ try {
   wiredPanel.kill("SIGTERM");
 }
 
-console.log("CLAUDE_NATIVE_REQUIRED_WITHOUT_CLI: PASS");
 console.log("CLAUDE_NATIVE_REQUIRED_WITH_UNWIRED_CLI: PASS");
 console.log("CLAUDE_RELAY_FALLBACK_REQUIRES_OPT_IN: PASS");
 console.log("CLAUDE_NATIVE_RUN_PROVES_SPAWN: PASS");
