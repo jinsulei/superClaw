@@ -4849,15 +4849,17 @@ function calibrateOpenclawConfig(mode = 'inherit') {
   }
   inheritedKeys = [...new Set(inheritedKeys)].sort()
   calibrated = stripUiFields(normalizeCalibratedConfig(calibrated))
-  const serialized = JSON.stringify(calibrated, null, 2)
-  fs.writeFileSync(CONFIG_PATH, serialized)
-  fs.writeFileSync(CONFIG_PATH + '.bak', serialized)
+  const writeResult = writeOpenclawConfigFile(calibrated, { preserveExisting: false })
+  if (writeResult.written) {
+    fs.writeFileSync(CONFIG_PATH + '.bak', `${JSON.stringify(calibrated, null, 2)}\n`, 'utf8')
+  }
   return {
     mode: normalizedMode,
     source,
     backup: preBackup,
     inheritedKeys,
     warnings,
+    configUnchanged: !writeResult.written,
     message: normalizedMode === 'inherit' ? '配置已按继承模式校准' : '配置已按完全初始化修复模式校准',
   }
 }
@@ -5011,6 +5013,42 @@ function mergeConfigsPreservingFields(existing, next) {
   return merged
 }
 
+function cloneJsonValue(value) {
+  if (value == null) return value
+  return JSON.parse(JSON.stringify(value))
+}
+
+function stableJsonStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function normalizeOpenClawConfigForCompare(config) {
+  const normalized = cloneJsonValue(config || {})
+  if (normalized?.meta && typeof normalized.meta === 'object' && !Array.isArray(normalized.meta)) {
+    delete normalized.meta.lastTouchedAt
+  }
+  const origins = normalized?.gateway?.controlUi?.allowedOrigins
+  if (Array.isArray(origins)) {
+    normalized.gateway.controlUi.allowedOrigins = [...new Set(origins.filter(Boolean))].sort()
+  }
+  return normalized
+}
+
+function shouldWriteOpenClawConfig(nextConfig) {
+  if (!fs.existsSync(CONFIG_PATH)) return true
+  try {
+    const current = JSON.parse(decodeJsonFileContent(CONFIG_PATH))
+    return stableJsonStringify(normalizeOpenClawConfigForCompare(current)) !==
+      stableJsonStringify(normalizeOpenClawConfigForCompare(nextConfig))
+  } catch {
+    return true
+  }
+}
+
 function writeOpenclawConfigFile(config, options = {}) {
   if (!fs.existsSync(OPENCLAW_DIR)) fs.mkdirSync(OPENCLAW_DIR, { recursive: true })
   ensureOpenClawExecApprovalsFile()
@@ -5033,8 +5071,12 @@ function writeOpenclawConfigFile(config, options = {}) {
     delete cleaned.models.defaultModel
   }
   normalizeOpenClawMiniMaxModel(cleaned)
+  if (!options.force && !shouldWriteOpenClawConfig(cleaned)) {
+    return { written: false, configUnchanged: true, path: CONFIG_PATH }
+  }
   if (fs.existsSync(CONFIG_PATH)) fs.copyFileSync(CONFIG_PATH, CONFIG_PATH + '.bak')
   fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(cleaned, null, 2)}\n`, 'utf8')
+  return { written: true, configUnchanged: false, path: CONFIG_PATH }
 }
 
 function ensureOpenClawExecApprovalsFile() {

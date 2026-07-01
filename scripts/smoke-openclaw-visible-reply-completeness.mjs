@@ -16,6 +16,8 @@ function assert(condition, message) {
 const requiredTerms = [
   'function sanitizeOpenClawVisibleReply',
   'function completeOpenClawVisibleReply',
+  'function isOpenClawExactLiteralReplyRequest',
+  'function isOpenClawSafeShortLiteralReply',
   'function hasOpenClawRenderableContent',
   'function removeCurrentOpenClawStreamBubbleIfEmpty',
   'const visibleDeltaText = sanitizeOpenClawVisibleReply',
@@ -109,5 +111,20 @@ assert(source.includes('buildOpenClawCapabilitySummaryFallback(userText, value)'
 assert(source.includes('当前可用：浏览器/桌面协助'), 'OpenClaw capability fallback must be a Chinese summary')
 assert(source.includes('当前具备 OCR 相关能力'), 'OpenClaw OCR fallback must be a concise Chinese summary')
 assert(source.includes('_currentAiText = _currentAiText || finalText'), 'OpenClaw final branch must not overwrite repaired visible text with raw final text')
+assert(
+  source.includes('payload?.runId || payload?.clientRequestId || payload?.idempotencyKey'),
+  'OpenClaw final fingerprint must include run/request id so repeated short replies are not swallowed',
+)
+assert(
+  !/String\(text \|\| ''\)\.trim\(\),\s*\n\s*payload\?\.message\?\.id \|\| ''/.test(source),
+  'OpenClaw final fingerprint must not dedupe only by visible text plus optional message id',
+)
+assert(source.includes('allowEnglish: isOpenClawExactLiteralReplyRequest(_lastVisibleUserText)'), 'OpenClaw must allow exact short literal replies like "只回复 OK"')
+assert(source.includes('isOpenClawSafeShortLiteralReply(text)'), 'OpenClaw must preserve safe short literal replies like OK')
+assert(source.includes('const preserveShortLiteral = isOpenClawSafeShortLiteralReply(text)'), 'OpenClaw internal cleaner must detect whole-message safe short literals')
+assert(source.includes('isInternalToolPlaceholderText(line, { allowShortLiteral: preserveShortLiteral })'), 'OpenClaw internal cleaner must not strip whole-message OK replies')
+assert(source.includes('function isInternalToolPlaceholderText(value, options = {})'), 'OpenClaw tool placeholder filter must accept short-literal options')
+assert(source.includes('options.allowShortLiteral !== true && /^\\s*(?:success|ok|completed|done)\\s*$/i.test(raw)'), 'OpenClaw tool placeholder filter must preserve OK only when explicitly allowed')
+assert(source.includes('only\\s+reply') && source.includes('\\u53ea\\u9700') && source.includes('\\u56de\\u590d'), 'OpenClaw exact literal detector must cover English and Chinese literal requests')
 
 console.log('SMOKE_OPENCLAW_VISIBLE_REPLY_COMPLETENESS_PASS')

@@ -313,13 +313,41 @@ async function ensureOpenClawGatewayBeforeConsoleSwitch(route) {
   if (!isOpenClawSuperclawRoute(route)) return { skipped: true };
 
   const base = resolveSuperclawBase();
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 15000);
+  let startResult = null;
   try {
-    const resp = await fetch(`${base}/__api/dev/agents/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent: "openclaw" }),
+    startResult = await startOpenClawGatewayFromSuperclaw(base);
+  } catch (error) {
+    startResult = {
+      ok: false,
+      error: error?.name === "AbortError" ? "timeout" : (error?.message || String(error)),
+    };
+  }
+
+  const readyResult = await waitForOpenClawGatewayReadyFromSuperclaw(base, {
+    timeoutMs: 30000,
+    intervalMs: 600,
+  });
+  if (readyResult.ok) {
+    return {
+      ok: true,
+      start: startResult,
+      ready: readyResult,
+    };
+  }
+  return {
+    ok: false,
+    start: startResult,
+    ready: readyResult,
+    error: readyResult.error || startResult?.error || "openclaw_not_ready",
+  };
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      ...options,
       cache: "no-store",
       signal: controller.signal,
     });
@@ -327,19 +355,100 @@ async function ensureOpenClawGatewayBeforeConsoleSwitch(route) {
     try {
       data = await resp.json();
     } catch {}
-    return {
-      ok: resp.ok && data?.ok !== false,
-      status: resp.status,
-      data,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error?.name === "AbortError" ? "timeout" : (error?.message || String(error)),
-    };
+    return { ok: resp.ok, status: resp.status, data };
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+async function startOpenClawGatewayFromSuperclaw(base) {
+  const resp = await fetchJsonWithTimeout(`${base}/__api/dev/agents/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent: "openclaw" }),
+  }, 15000);
+  return {
+    ok: resp.ok && resp.data?.ok !== false,
+    status: resp.status,
+    data: resp.data,
+  };
+}
+
+function isOpenClawGatewayReadyStatus(data) {
+  if (!data || typeof data !== "object") return false;
+  return data.ready === true ||
+    data.connected === true ||
+    data.verified === true ||
+    String(data.status || "").toLowerCase() === "ready" ||
+    data.health?.ready === true ||
+    String(data.health?.status || "").toLowerCase() === "live";
+}
+
+async function probeOpenClawGatewayReady(base) {
+  try {
+    const status = await fetchJsonWithTimeout(`${base}/__api/dev/agents/status?agent=openclaw`, {}, 2500);
+    if (status.ok && isOpenClawGatewayReadyStatus(status.data)) {
+      return { ok: true, source: "dev-status", data: status.data };
+    }
+  } catch (error) {
+    // Health below is a fallback; ignore transient status failures.
+  }
+  try {
+    const health = await fetchJsonWithTimeout("http://127.0.0.1:18789/health", {}, 2500);
+    if (health.ok && (health.data?.ready === true || String(health.data?.status || "").toLowerCase() === "live")) {
+      return { ok: true, source: "health", data: health.data };
+    }
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+  return { ok: false, error: "openclaw_not_ready" };
+}
+
+function waitMs(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+async function waitForOpenClawGatewayReadyFromSuperclaw(base, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 30000);
+  const intervalMs = Number(options.intervalMs || 600);
+  const startedAt = Date.now();
+  let last = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    last = await probeOpenClawGatewayReady(base);
+    if (last.ok) return last;
+    await waitMs(intervalMs);
+  }
+  return {
+    ok: false,
+    error: "OpenClaw is starting but did not become ready in time.",
+    last,
+  };
+}
+
+function setConsoleSwitchError(overlay, message) {
+  setConsoleSwitchProgress(overlay, 100);
+  const meta = overlay?.querySelector(".console-switch-progress-meta");
+  if (meta) meta.textContent = message;
+  const title = overlay?.querySelector(".console-switch-progress-title");
+  if (title) title.textContent = "OpenClaw 暂未 ready";
+}
+
+function openClawConsoleSwitchErrorMessage(result) {
+  if (result?.error === "timeout") return "OpenClaw 启动超时，请稍后重试。";
+  if (result?.error) return `OpenClaw 正在启动但未 ready：${result.error}`;
+  return "OpenClaw 正在启动但未 ready，请稍后重试。";
+}
+
+async function navigateAfterOpenClawReady(route, href, overlay) {
+  const startResult = await ensureOpenClawGatewayBeforeConsoleSwitch(route);
+  if (startResult?.ok === false) {
+    console.warn("[claude-panel] OpenClaw pre-start before console switch failed:", startResult);
+    setConsoleSwitchError(overlay, openClawConsoleSwitchErrorMessage(startResult));
+    return false;
+  }
+  setConsoleSwitchProgress(overlay, 100);
+  window.location.assign(href);
+  return true;
 }
 
 function setConsoleSwitchProgress(overlay, value) {
@@ -416,12 +525,7 @@ function handleSuperclawConsoleLinkClick(event) {
   const overlay = showConsoleSwitchProgress(route);
   consoleSwitchProgressTimer = setTimeout(async () => {
     setConsoleSwitchProgress(overlay, 92);
-    const startResult = await ensureOpenClawGatewayBeforeConsoleSwitch(route);
-    if (startResult?.ok === false) {
-      console.warn("[claude-panel] OpenClaw pre-start before console switch failed:", startResult);
-    }
-    setConsoleSwitchProgress(overlay, 100);
-    window.location.assign(href);
+    await navigateAfterOpenClawReady(route, href, overlay);
   }, 920);
 }
 

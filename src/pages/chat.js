@@ -62,6 +62,7 @@ const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
 const OPENCLAW_EMPTY_REPLY_FALLBACK = 'OpenClaw \u6ca1\u6709\u6536\u5230\u6709\u6548\u56de\u590d\uff0c\u8bf7\u91cd\u8bd5\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u3002'
 const OPENCLAW_TOOL_ONLY_FALLBACK = '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210\uff0c\u4f46\u6ca1\u6709\u751f\u6210\u53ef\u5c55\u793a\u7684\u56de\u7b54\u3002'
 const OPENCLAW_TOOL_FAILED_FALLBACK = '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898\uff0c\u672a\u751f\u6210\u53ef\u5c55\u793a\u7684\u56de\u7b54\u3002'
+const OPENCLAW_ASSISTANT_FAILED_PLACEHOLDER = '[assistant turn failed before producing content]'
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
@@ -144,6 +145,8 @@ let _lastSendFingerprint = ''
 let _lastSendAt = 0
 let _lastVisibleUserText = ''
 const _inFlightRequestIds = new Set()
+const _activeOpenClawSendFingerprints = new Set()
+const _requestFingerprintById = new Map()
 const _seenChatEventKeys = new Set()
 const _recentAssistantFinals = new Map()
 const _renderedMessageKeysBySession = new Map()
@@ -189,6 +192,8 @@ let _responseWatchdog = null, _postFinalCheck = null
 let _ultimateTimer = null, _sendTimestamp = 0
 let _generationTimeoutManager = null, _manualStopRequested = false
 let _openClawPendingResponse = false, _openClawActiveRequestClosed = true
+let _lastOpenClawTransientRecoveryAt = 0
+let _openClawTransientRecoveryTimer = null
 let _attachments = []
 const _openClawMediaDataUrlCache = new Map()
 const OPENCLAW_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -1515,18 +1520,38 @@ async function probeOpenClawGatewayHealthForSend() {
   }
 }
 
+function clearOpenClawTransientConnectionUi() {
+  const bar = document.getElementById('chat-disconnect-bar')
+  if (bar) {
+    bar.style.display = 'none'
+    bar.textContent = ''
+  }
+  const overlay = document.getElementById('chat-connect-overlay')
+  if (overlay) overlay.style.display = 'none'
+}
+
 function markOpenClawGatewayReady(reason = 'ready', details = {}) {
   _hasEverConnected = true
   _openClawGatewayLastReadyReason = reason
   setOpenClawGatewayUiState('ready', { ...details, error: '', progress: 100 })
+  clearOpenClawTransientConnectionUi()
 }
 
 function reconcileOpenClawGatewayAfterTransientStatus(reason = 'transient') {
-  probeAgentGateway('openclaw', { timeoutMs: 1500 }).then(probe => {
+  probeAgentGateway('openclaw', { timeoutMs: 1500 }).then(async probe => {
     if (!_pageActive) return
     if (hasOpenClawGatewayReadySignal(probe)) {
       markOpenClawGatewayReady(`${reason}-probe-ready`, { probe })
       return
+    }
+    const transientText = `${probe?.error || ''} ${probe?.message || ''}`
+    if (_hasEverConnected || isOpenClawGatewayAbortErrorText(transientText)) {
+      const health = await probeOpenClawGatewayHealthForSend().catch(() => null)
+      if (!_pageActive) return
+      if (hasOpenClawGatewayReadySignal(health)) {
+        markOpenClawGatewayReady(`${reason}-health-ready`, { probe: health })
+        return
+      }
     }
     const state = normalizeGatewayUiState(probe)
     setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
@@ -1552,7 +1577,11 @@ function setOpenClawGatewayUiState(nextState, details = {}) {
   const readyByWs = (requestedState === 'checking' || requestedState === 'starting')
     && wsClient.connected
     && wsClient.gatewayReady
-  _openClawGatewayUiState = readyByProbe || readyByWs ? 'ready' : requestedState
+  const detailText = `${details.error || ''} ${details.probe?.error || ''} ${details.probe?.message || ''}`
+  const recoverableAbortError = requestedState === 'error'
+    && isOpenClawGatewayAbortErrorText(detailText)
+    && (wsClient.connected || wsClient.gatewayReady)
+  _openClawGatewayUiState = readyByProbe || readyByWs || recoverableAbortError ? 'ready' : requestedState
   if (details.probe) _openClawGatewayProbe = details.probe
   if (_openClawGatewayUiState === 'ready') {
     _hasEverConnected = true
@@ -1608,8 +1637,7 @@ function updateOpenClawGatewayUi() {
   }
 
   if (_openClawGatewayUiState === 'ready') {
-    if (overlay) overlay.style.display = 'none'
-    if (bar) bar.style.display = 'none'
+    clearOpenClawTransientConnectionUi()
     updateStatusDot('ready')
     return
   }
@@ -1708,16 +1736,32 @@ function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
     const timer = setTimeout(() => {
       _openClawGatewayConvergenceTimers = _openClawGatewayConvergenceTimers.filter(item => item !== timer)
       if (!_pageActive || _page !== pageRef || !pageRef?.isConnected) return
-      if (delay === 0 && _openClawGatewayUiState !== 'ready') {
-        setOpenClawGatewayUiState('checking', { error: '', progress: 5 })
-      } else {
-        updateOpenClawGatewayUi()
-        updateSendState()
-      }
-      autoStartOpenClawGatewayOnEnter().catch(error => {
-        if (!_pageActive || _page !== pageRef || _openClawGatewayUiState === 'ready') return
-        setOpenClawGatewayUiState('error', { error: error?.message || String(error) })
-      })
+      ;(async () => {
+        const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
+        if (!_pageActive || _page !== pageRef || !pageRef?.isConnected) return
+        if (hasOpenClawGatewayReadySignal(healthProbe)) {
+          markOpenClawGatewayReady(`${reason}-health-converged-ready`, { probe: healthProbe })
+          updateSendState()
+          return
+        }
+        const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 }).catch(() => null)
+        if (!_pageActive || _page !== pageRef || !pageRef?.isConnected) return
+        if (hasOpenClawGatewayReadySignal(probe)) {
+          markOpenClawGatewayReady(`${reason}-converged-ready`, { probe })
+          updateSendState()
+          return
+        }
+        if (delay === 0 && _openClawGatewayUiState !== 'ready') {
+          setOpenClawGatewayUiState('checking', { error: '', progress: 5 })
+        } else {
+          updateOpenClawGatewayUi()
+          updateSendState()
+        }
+        autoStartOpenClawGatewayOnEnter().catch(error => {
+          if (!_pageActive || _page !== pageRef || _openClawGatewayUiState === 'ready') return
+          setOpenClawGatewayUiState('error', { error: error?.message || String(error) })
+        })
+      })()
     }, delay)
     _openClawGatewayConvergenceTimers.push(timer)
   }
@@ -1727,6 +1771,13 @@ function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
 async function autoStartOpenClawGatewayOnEnter() {
   if (_openClawGatewayAutoStartPromise) return _openClawGatewayAutoStartPromise
   _openClawGatewayAutoStartPromise = (async () => {
+    const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
+    if (!_pageActive) return false
+    if (hasOpenClawGatewayReadySignal(healthProbe)) {
+      await connectGateway({ skipProbe: true })
+      markOpenClawGatewayReady('auto-enter-health-ready', { probe: healthProbe })
+      return true
+    }
     const probe = await refreshOpenClawGatewayUiState()
     if (!_pageActive) return false
     const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
@@ -2203,6 +2254,7 @@ async function connectGateway(options = {}) {
         })
       } else if (status === 'reconnecting' || status === 'disconnected') {
         // 首次连接或多次重连失败时，显示引导遮罩而非底部小条
+        scheduleOpenClawTransientRecovery(`ws-${status}`, { notify: false })
         reconcileOpenClawGatewayAfterTransientStatus(`ws-${status}`)
       } else {
         if (bar) bar.style.display = 'none'
@@ -2226,6 +2278,7 @@ async function connectGateway(options = {}) {
         loadHistory()
       } else {
         syncWorkspaceContext(false)
+        loadHistory()
       }
       // 始终刷新会话列表（无论是否有 sessionKey）
       refreshSessionList()
@@ -3220,15 +3273,10 @@ function createOpenClawClientRequestId() {
 
 function withOpenClawIdentityPrelude(prompt) {
   const body = String(prompt || '').trim()
-  if (!body || body.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return body
-  return [
-    OPENCLAW_IDENTITY_CONTEXT_START,
-    OPENCLAW_IDENTITY_PRELUDE,
-    OPENCLAW_IDENTITY_CONTEXT_END,
-    '',
-    'User:',
-    body,
-  ].join('\n')
+  // Keep regular OpenClaw requests clean. Identity questions are answered locally,
+  // and injecting this hidden context into every Gateway request bloats history and
+  // can pollute the runtime prompt when legacy text is not decoded correctly.
+  return body
 }
 
 function stripOpenClawIdentityPrelude(text) {
@@ -3243,11 +3291,12 @@ function stripOpenClawIdentityPrelude(text) {
 }
 
 function stripOpenClawInternalProcessText(text) {
+  const preserveShortLiteral = isOpenClawSafeShortLiteralReply(text)
   const cleaned = []
   for (const rawLine of String(text || '').split(/\r?\n/)) {
     let line = rawLine.trim()
     if (!line) continue
-    if (isInternalToolPlaceholderText(line)) continue
+    if (isInternalToolPlaceholderText(line, { allowShortLiteral: preserveShortLiteral })) continue
     if (/^(?:_?\(?stopped\)?_?|HEARTBEAT_OK|heartbeat_ok)$/i.test(line)) continue
     if (/(?:\u5185\u90e8\u63a8\u7406|\u98ce\u9669\u5206\u6790|\u6267\u884c\u8fc7\u7a0b|\u5de5\u5177\u8c03\u7528\u8fc7\u7a0b).{0,12}(?:\u5df2\u9690\u85cf|\u4e0d\u5c55\u793a)/.test(line)) continue
     if (/(?:\u5c55\u5f00\u8be6\u60c5|\u6536\u8d77\u8be6\u60c5|\u7ed3\u679c\u5df2\u540c\u6b65|\u5df2\u540c\u6b65\u5230\u4e0b\u65b9\u8be6\u60c5|\u56de\u590d\u7b49\u5f85\u65f6\u95f4\u8f83\u957f|\u53ef\u80fd\u4ecd\u5728\u751f\u6210|\u672c\u6b21\u56de\u590d\u5df2\u505c\u6b62|\u751f\u6210\u5df2\u505c\u6b62)/.test(line)) continue
@@ -3328,9 +3377,27 @@ function isOpenClawToolOnlySummaryText(text) {
   return /(?:\u7ed3\u679c\u5df2\u540c\u6b65|\u5de5\u5177(?:\u6267\u884c|\u8c03\u7528)?\u6210\u529f|Tool\s+tool|tool_result|tool call|raw json|stdout|stderr)/i.test(value)
 }
 
+function isOpenClawExactLiteralReplyRequest(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return /^(?:only\s+reply|reply\s+only|just\s+reply|respond\s+only)\s+["'`]?[A-Za-z0-9_.-]{1,40}["'`]?[.!?]?\s*$/i.test(value)
+    || /^(?:\u53ea|\u4ec5|\u53ea\u9700|\u4ec5\u9700|\u53ea\u8981|\u53ea\u9700\u8981)?\s*(?:\u56de\u590d|\u56de\u7b54|\u8f93\u51fa)\s*["'`]?[A-Za-z0-9_.-]{1,40}["'`]?[。.!?？]?\s*$/.test(value)
+}
+
+function isOpenClawSafeShortLiteralReply(text) {
+  return /^(?:OK|YES|NO|DONE|PASS|FAIL|READY|SUCCESS|ERROR|SKIPPED)$/i.test(String(text || '').trim())
+}
+
+function isOpenClawAssistantFailurePlaceholderText(text) {
+  return String(text || '').trim() === OPENCLAW_ASSISTANT_FAILED_PLACEHOLDER
+}
+
 function sanitizeOpenClawVisibleReply(text) {
   return stripOpenClawInternalProcessText(
-    sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, { agent: 'openclaw' })
+    sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, {
+      agent: 'openclaw',
+      allowEnglish: isOpenClawExactLiteralReplyRequest(_lastVisibleUserText) || isOpenClawSafeShortLiteralReply(text),
+    })
   )
 }
 
@@ -3356,12 +3423,22 @@ function extractOpenClawTextPart(value) {
   if (typeof value.text === 'string') return value.text
   if (typeof value.content === 'string') return value.content
   if (typeof value.value === 'string') return value.value
+  if (typeof value.output === 'string') return value.output
+  if (typeof value.output_text === 'string') return value.output_text
+  if (typeof value.outputText === 'string') return value.outputText
+  if (typeof value.reply === 'string') return value.reply
+  if (typeof value.response === 'string') return value.response
+  if (typeof value.result === 'string') return value.result
+  if (typeof value.finalText === 'string') return value.finalText
   if (value.type === 'text' && typeof value.text === 'string') return value.text
   if (value.type === 'output_text' && typeof value.text === 'string') return value.text
   if (Array.isArray(value.content)) return extractOpenClawTextPart(value.content)
+  if (Array.isArray(value.output)) return extractOpenClawTextPart(value.output)
+  if (Array.isArray(value.result)) return extractOpenClawTextPart(value.result)
   if (Array.isArray(value.parts)) return extractOpenClawTextPart(value.parts)
   if (value.message) return extractOpenClawTextPart(value.message)
   if (value.delta) return extractOpenClawTextPart(value.delta)
+  if (value.data) return extractOpenClawTextPart(value.data)
   return ''
 }
 
@@ -3378,17 +3455,26 @@ function extractOpenClawAssistantText(payload) {
     payload.reply,
     payload.response,
     payload.result,
-    payload.message,
-    payload.message?.content,
-    payload.message?.text,
+    payload.assistantTexts,
+    payload.data?.assistantTexts,
+    payload.artifacts?.assistantTexts,
+    payload.data?.artifacts?.assistantTexts,
+    payload.trace?.assistantTexts,
+    payload.trace?.artifacts?.assistantTexts,
+    payload.message?.assistantTexts,
+    payload.message?.data?.assistantTexts,
+    payload.message?.artifacts?.assistantTexts,
     payload.delta,
     payload.delta?.content,
     payload.delta?.text,
-    payload.data,
+    payload.message,
+    payload.message?.content,
+    payload.message?.text,
     payload.data?.content,
     payload.data?.text,
     payload.data?.message,
     payload.data?.message?.content,
+    payload.data,
     payload.event,
     payload.event?.content,
     payload.event?.text,
@@ -3403,6 +3489,7 @@ function extractOpenClawAssistantText(payload) {
 
   for (const candidate of candidates) {
     const text = extractOpenClawTextPart(candidate).trim()
+    if (isOpenClawAssistantFailurePlaceholderText(text)) continue
     if (text) return text
   }
   return ''
@@ -3558,6 +3645,117 @@ function getOpenClawSendFingerprint(text, attachments = []) {
   return `${String(text || '').trim()}::${attSig}`
 }
 
+function getOpenClawRequestFingerprint(text, attachments = []) {
+  const session = _sessionKey || wsClient.sessionKey || 'agent:main:main'
+  return `openclaw:${session}:${getOpenClawSendFingerprint(text, attachments)}`
+}
+
+function hasQueuedOpenClawRequestFingerprint(fingerprint) {
+  if (!fingerprint) return false
+  return _messageQueue.some(item => {
+    if (typeof item === 'string') return getOpenClawRequestFingerprint(item, []) === fingerprint
+    return item?.requestFingerprint === fingerprint ||
+      getOpenClawRequestFingerprint(item?.text || '', item?.attachments || []) === fingerprint
+  })
+}
+
+function isOpenClawDuplicatePendingRequest(fingerprint) {
+  return Boolean(fingerprint && (
+    _activeOpenClawSendFingerprints.has(fingerprint) ||
+    hasQueuedOpenClawRequestFingerprint(fingerprint)
+  ))
+}
+
+function rememberOpenClawRequestFingerprint(requestId, fingerprint) {
+  if (!requestId || !fingerprint) return
+  _requestFingerprintById.set(requestId, fingerprint)
+  _activeOpenClawSendFingerprints.add(fingerprint)
+}
+
+function releaseOpenClawRequestFingerprint(requestId = null) {
+  if (requestId) {
+    const fingerprint = _requestFingerprintById.get(requestId)
+    if (fingerprint) _activeOpenClawSendFingerprints.delete(fingerprint)
+    _requestFingerprintById.delete(requestId)
+    return
+  }
+  if (_activeClientRequestId) releaseOpenClawRequestFingerprint(_activeClientRequestId)
+}
+
+function purgeQueuedOpenClawRequestFingerprint(fingerprint) {
+  if (!fingerprint || !_messageQueue.length) return
+  _messageQueue = _messageQueue.filter(item => {
+    if (typeof item === 'string') return getOpenClawRequestFingerprint(item, []) !== fingerprint
+    const itemFingerprint = item?.requestFingerprint ||
+      getOpenClawRequestFingerprint(item?.text || '', item?.attachments || [])
+    return itemFingerprint !== fingerprint
+  })
+}
+
+function isOpenClawGenerationActive() {
+  return Boolean(
+    _openClawPendingResponse ||
+    _isSending ||
+    _isStreaming ||
+    _activeClientRequestId ||
+    _currentAiBubble
+  )
+}
+
+function isOpenClawGatewayAbortErrorText(value) {
+  return /signal is aborted|aborted without reason|websocket.*(?:abort|close)|gateway.*(?:restart|reload|disconnect)|connection.*(?:abort|closed|reset)/i.test(String(value || ''))
+}
+
+function isOpenClawActiveRunErrorText(value) {
+  return /ReplyRunAlreadyActiveError|reply run already active|run already active|already active for agent/i.test(String(value || ''))
+}
+
+function clearOpenClawTransientRecoveryTimer() {
+  if (!_openClawTransientRecoveryTimer) return
+  clearTimeout(_openClawTransientRecoveryTimer)
+  _openClawTransientRecoveryTimer = null
+}
+
+function scheduleOpenClawTransientRecovery(reason = 'transient-disconnect', options = {}) {
+  if (!isOpenClawGenerationActive()) return false
+  clearOpenClawTransientRecoveryTimer()
+  const delayMs = Math.max(1000, Number(options.delayMs || 8000))
+  _openClawTransientRecoveryTimer = setTimeout(() => {
+    _openClawTransientRecoveryTimer = null
+    if (!isOpenClawGenerationActive()) return
+    recoverOpenClawGenerationAfterTransientDisconnect(reason, options).catch(error => {
+      console.warn('[chat] OpenClaw delayed transient recovery failed:', error)
+    })
+  }, delayMs)
+  return true
+}
+
+async function recoverOpenClawGenerationAfterTransientDisconnect(reason = 'transient-disconnect', options = {}) {
+  if (!isOpenClawGenerationActive()) return false
+  clearOpenClawTransientRecoveryTimer()
+  const requestId = _activeClientRequestId
+  const fingerprint = requestId ? _requestFingerprintById.get(requestId) : null
+  if (fingerprint) purgeQueuedOpenClawRequestFingerprint(fingerprint)
+  const now = Date.now()
+  const shouldNotify = options.notify !== false && now - _lastOpenClawTransientRecoveryAt > 5000
+  _lastOpenClawTransientRecoveryAt = now
+  clearOpenClawGenerationState(reason, requestId)
+  resetStreamState()
+  if (shouldNotify) {
+    toast(options.message || 'OpenClaw 连接中断，已恢复发送状态；如果回复没有完整显示，请重试或继续。', 'warning')
+  }
+  if (_sessionKey && _messagesEl && _pageActive) {
+    try {
+      _lastHistoryHash = ''
+      await loadHistory()
+    } catch (error) {
+      console.warn('[chat] OpenClaw transient recovery history merge failed:', error)
+    }
+  }
+  updateSendState()
+  return true
+}
+
 function rememberBounded(set, key, limit = 400) {
   if (!key) return
   set.add(key)
@@ -3632,7 +3830,7 @@ function getOpenClawHistoryDisplayDedupeKey(message = {}, sessionKey = _sessionK
   const display = getOpenClawDisplayFingerprint(message)
   if (!session || !role || !display) return ''
   const ts = normalizeTime(message.timestamp || message.createdAt || message.created_at || 0)
-  const bucket = ts ? Math.floor(ts / 60000) : 'no-ts'
+  const bucket = ts ? Math.floor(ts / 1000) : 'no-ts'
   return `${session}|history-display:${role}:${display}:${bucket}`
 }
 
@@ -3646,11 +3844,48 @@ function hasRenderedOpenClawMessage(sessionKey, dedupeKey) {
   if (!dedupeKey) return false
   const set = _renderedMessageKeysBySession.get(sessionKey || '')
   if (set?.has(dedupeKey)) return true
-  if (!_messagesEl) return false
+  return hasVisibleRenderedOpenClawMessage(sessionKey, dedupeKey)
+}
+
+function hasVisibleRenderedOpenClawMessage(sessionKey, dedupeKey) {
+  if (!dedupeKey || !_messagesEl) return false
   return Array.from(_messagesEl.querySelectorAll('[data-openclaw-message-key]')).some(node => (
     node.dataset.openclawSessionKey === (sessionKey || '') &&
     node.dataset.openclawMessageKey === dedupeKey
   ))
+}
+
+function getOpenClawDedupeKeyParts(dedupeKey = '') {
+  const raw = String(dedupeKey || '')
+  if (!raw) return {}
+  const session = raw.includes('|') ? raw.slice(0, raw.indexOf('|')) : ''
+  let match = raw.match(/\|history-display:([^:|]+):(.+):([^:|]+)$/)
+  if (match) return { session, role: match[1], display: match[2] }
+  match = raw.match(/\|display:([^:|]+):(.+):([^:|]+)$/)
+  if (match) return { session, role: match[1], display: match[2] }
+  match = raw.match(/\|run:[^|]+\|display:(.+)$/)
+  if (match) return { session, role: 'assistant', display: match[1] }
+  match = raw.match(/\|run:[^:|]+:([^:|]+):(.+)$/)
+  if (match) return { session, role: match[1], display: match[2] }
+  return { session }
+}
+
+function hasVisibleOpenClawAssistantAfterLastUserWithDisplay(sessionKey, displayKey) {
+  if (!displayKey || !_messagesEl) return false
+  const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai, [data-openclaw-message-key]'))
+  let afterLastUser = false
+  for (const row of rows) {
+    if (row.classList?.contains('msg-user')) {
+      afterLastUser = true
+      continue
+    }
+    if (!afterLastUser || !row.classList?.contains('msg-ai')) continue
+    if (row.dataset?.openclawSessionKey !== (sessionKey || '')) continue
+    const rowDisplay = row.dataset.openclawDisplayKey || getOpenClawDedupeKeyParts(row.dataset.openclawMessageKey).display || ''
+    const rowRole = row.dataset.openclawMessageRole || getOpenClawDedupeKeyParts(row.dataset.openclawMessageKey).role || 'assistant'
+    if (rowRole === 'assistant' && rowDisplay === displayKey) return true
+  }
+  return false
 }
 
 function markRenderedOpenClawMessage(wrap, sessionKey, dedupeKey) {
@@ -3660,6 +3895,9 @@ function markRenderedOpenClawMessage(wrap, sessionKey, dedupeKey) {
   if (wrap?.dataset) {
     wrap.dataset.openclawSessionKey = sessionKey || ''
     wrap.dataset.openclawMessageKey = dedupeKey
+    const parts = getOpenClawDedupeKeyParts(dedupeKey)
+    if (parts.display) wrap.dataset.openclawDisplayKey = parts.display
+    if (parts.role) wrap.dataset.openclawMessageRole = parts.role
   }
 }
 
@@ -3693,8 +3931,8 @@ function getAssistantFinalFingerprint(payload, text, tools = []) {
   const toolSig = (tools || []).map(t => t.id || t.name || '').join(',')
   return [
     payload?.sessionKey || _sessionKey || '',
+    payload?.runId || payload?.clientRequestId || payload?.idempotencyKey || payload?.requestId || payload?.message?.id || '',
     String(text || '').trim(),
-    payload?.message?.id || '',
     toolSig,
   ].join('|')
 }
@@ -3754,7 +3992,13 @@ async function sendMessage(event) {
   if (!(await ensureOpenClawGatewayReadyForSend())) return
   hideCmdPanel()
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
+  const requestFingerprint = getOpenClawRequestFingerprint(text, attachments)
   const now = Date.now()
+  if (isOpenClawDuplicatePendingRequest(requestFingerprint)) {
+    toast('同一会话里已有相同请求正在处理，请等待当前回复完成。', 'warning')
+    updateSendState()
+    return
+  }
   if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
     return
   }
@@ -3822,20 +4066,33 @@ async function sendMessage(event) {
     appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)
     return
   }
-  if (_isSending || _isStreaming) { _messageQueue.push({ text, attachments, clientRequestId }); return }
-  doSend(text, attachments, clientRequestId)
+  if (_openClawPendingResponse || _isSending || _isStreaming) {
+    if (!hasQueuedOpenClawRequestFingerprint(requestFingerprint)) {
+      _messageQueue.push({ text, attachments, clientRequestId, requestFingerprint })
+    }
+    return
+  }
+  doSend(text, attachments, clientRequestId, requestFingerprint)
 }
 
-async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId()) {
+async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId(), requestFingerprint = getOpenClawRequestFingerprint(text, attachments)) {
   if (!(await ensureOpenClawGatewayReadyForSend())) return
+  if (isOpenClawDuplicatePendingRequest(requestFingerprint)) {
+    updateSendState()
+    return
+  }
   if (_inFlightRequestIds.has(clientRequestId)) return
   _inFlightRequestIds.add(clientRequestId)
+  rememberOpenClawRequestFingerprint(clientRequestId, requestFingerprint)
   _activeClientRequestId = clientRequestId
   _openClawPendingResponse = true
   _openClawActiveRequestClosed = false
   _lastVisibleUserText = text
   const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
-  appendUserMessage(text, attachments)
+  appendUserMessage(text, attachments, undefined, {
+    dedupeKey: `openclaw-user-${clientRequestId}`,
+    sessionKey: _sessionKey,
+  })
   saveMessage({
     id: `openclaw-user-${clientRequestId}`, sessionKey: _sessionKey, role: 'user', content: text, timestamp: Date.now(),
     attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined
@@ -3865,10 +4122,16 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
       renderAttachments()
     }
     _inFlightRequestIds.delete(clientRequestId)
+    releaseOpenClawRequestFingerprint(clientRequestId)
     if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
     _openClawPendingResponse = false
     _openClawActiveRequestClosed = true
-    appendSystemMessage(`${t('chat.sendFailed')}${err.message}`)
+    const message = err?.message || String(err)
+    if (/ReplyRunAlreadyActiveError|run already active|already active/i.test(message)) {
+      appendSystemMessage('OpenClaw 已有任务正在执行，已阻止重复发送。请等待当前任务完成或稍后重试。')
+    } else {
+      appendSystemMessage(`${t('chat.sendFailed')}${message}`)
+    }
   } finally {
     _isSending = false
     updateSendState()
@@ -3960,10 +4223,10 @@ function ensureReadySessionKey() {
 }
 
 function processMessageQueue() {
-  if (_messageQueue.length === 0 || _isSending || _isStreaming) return
+  if (_messageQueue.length === 0 || _openClawPendingResponse || _isSending || _isStreaming) return
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
-  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId())
+  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId(), msg.requestFingerprint)
 }
 
 function currentCollaborationTask() {
@@ -4063,7 +4326,7 @@ function collectOpenClawToolText(tools = [], fallbackText = '') {
   return parts.join('\n\n').trim()
 }
 
-function isInternalToolPlaceholderText(value) {
+function isInternalToolPlaceholderText(value, options = {}) {
   const raw = String(value || '').trim()
   if (!raw) return true
   const compact = raw
@@ -4072,7 +4335,7 @@ function isInternalToolPlaceholderText(value) {
   if (['tool', 'tooltool', 'toolresult', 'toolcompleted', 'toolresultsynced', 'heartbeatok', 'heartbeat_ok'].includes(compact)) return true
   if (/^\[?\s*tool_call\s*\]?$/i.test(raw)) return true
   if (/^\s*Tool\s+tool(?:\s+(?:success|ok|completed|done))?\s*$/i.test(raw)) return true
-  if (/^\s*(?:success|ok|completed|done)\s*$/i.test(raw)) return true
+  if (options.allowShortLiteral !== true && /^\s*(?:success|ok|completed|done)\s*$/i.test(raw)) return true
   if (/^\s*\u5de5\u5177(?:\u6267\u884c)?\u6210\u529f\s*$/i.test(raw)) return true
   if (/^\s*\u5de5\u5177\u5df2\u5b8c\u6210\s*$/i.test(raw)) return true
   if (/^\s*\u7ed3\u679c\u5df2\u540c\u6b65(?:\u5230\u4e0b\u65b9\u8be6\u60c5)?\s*$/i.test(raw)) return true
@@ -4484,6 +4747,27 @@ function hasOpenClawVisibleAssistantNode(node) {
   return !!text
 }
 
+function isOpenClawTransientFallbackText(text = '') {
+  const value = normalizeOpenClawMessageText(text)
+  if (!value) return false
+  return value === normalizeOpenClawMessageText(OPENCLAW_EMPTY_REPLY_FALLBACK) ||
+    value === normalizeOpenClawMessageText(OPENCLAW_TOOL_ONLY_FALLBACK) ||
+    value === normalizeOpenClawMessageText(OPENCLAW_TOOL_FAILED_FALLBACK) ||
+    value.includes('这次没有拿到完整的可用结果') ||
+    value.includes('没有收到有效回复') ||
+    value.includes('没有生成可展示的回答')
+}
+
+function hasOpenClawMeaningfulAssistantNode(node) {
+  if (!hasOpenClawVisibleAssistantNode(node)) return false
+  const text = normalizeOpenClawMessageText(node?.textContent || '')
+    .replace(/\bOpenClaw\b/g, '')
+    .replace(/\bTool\b/g, '')
+    .trim()
+  if (isOpenClawTransientFallbackText(text)) return false
+  return true
+}
+
 function hasOpenClawRenderableContent(input = {}) {
   return !!(
     String(input.visibleText || '').trim() ||
@@ -4571,7 +4855,7 @@ function isOpenClawStreamIdMismatch(stableStreamId = '') {
 
 function hasOpenClawAssistantVisibleContentForRequest(requestId = null) {
   if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
-  if (hasOpenClawVisibleAssistantNode(_currentAiBubble?.closest?.('.msg') || _currentAiBubble)) return true
+  if (hasOpenClawMeaningfulAssistantNode(_currentAiBubble?.closest?.('.msg') || _currentAiBubble)) return true
   if (!_messagesEl) return false
   const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai'))
   let afterLastUser = false
@@ -4582,11 +4866,32 @@ function hasOpenClawAssistantVisibleContentForRequest(requestId = null) {
       hasVisibleAssistant = false
       continue
     }
-    if (afterLastUser && row.classList.contains('msg-ai') && hasOpenClawVisibleAssistantNode(row)) {
+    if (afterLastUser && row.classList.contains('msg-ai') && hasOpenClawMeaningfulAssistantNode(row)) {
       hasVisibleAssistant = true
     }
   }
   return hasVisibleAssistant
+}
+
+function waitOpenClawMs(ms = 0) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+}
+
+async function recoverOpenClawAssistantFromHistoryBeforeFallback(reason = 'history-recovery', requestId = null, options = {}) {
+  const attempts = Math.max(1, Number(options.attempts || 4))
+  const delayMs = Math.max(0, Number(options.delayMs || 900))
+  for (let index = 0; index < attempts; index += 1) {
+    _lastHistoryHash = ''
+    await loadHistory()
+    if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
+      clearOpenClawGenerationState(`${reason}-history-visible`, requestId)
+      resetStreamState()
+      processMessageQueue()
+      return true
+    }
+    if (index < attempts - 1) await waitOpenClawMs(delayMs)
+  }
+  return false
 }
 
 function clearOpenClawGenerationState(reason = 'completed', requestId = null) {
@@ -4599,6 +4904,9 @@ function clearOpenClawGenerationState(reason = 'completed', requestId = null) {
   _cancelResponseWatchdog()
   clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
+  clearOpenClawTransientRecoveryTimer()
+  if (requestId) releaseOpenClawRequestFingerprint(requestId)
+  else releaseOpenClawRequestFingerprint()
   if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
   if (requestId) _inFlightRequestIds.delete(requestId)
   _activeClientRequestId = null
@@ -4842,6 +5150,7 @@ function handleChatEvent(payload, eventId = '') {
 
   if (state === 'delta') {
     markOpenClawGatewayReady('chat-delta')
+    clearOpenClawTransientRecoveryTimer()
     markGenerationProgress()
     _cancelResponseWatchdog()
     const c = extractChatContent(payload.message)
@@ -4852,7 +5161,8 @@ function handleChatEvent(payload, eventId = '') {
     if (c?.audios?.length) _currentAiAudios = c.audios
     if (c?.files?.length) _currentAiFiles = c.files
     if (c?.tools?.length) _currentAiTools = c.tools
-    const visibleDeltaText = sanitizeOpenClawVisibleReply(extractOpenClawAssistantText(payload) || c?.text || '')
+    const visibleDeltaFallbackText = isOpenClawAssistantFailurePlaceholderText(c?.text) ? '' : (c?.text || '')
+    const visibleDeltaText = sanitizeOpenClawVisibleReply(extractOpenClawAssistantText(payload) || visibleDeltaFallbackText)
     if (isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) && isOpenClawBrowserAutomationTraceText(visibleDeltaText)) {
       return
     }
@@ -4892,13 +5202,15 @@ function handleChatEvent(payload, eventId = '') {
 
   if (state === 'final') {
     markOpenClawGatewayReady('chat-final')
+    clearOpenClawTransientRecoveryTimer()
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
     const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
     if (isOpenClawStreamIdMismatch(stableStreamId)) return
     const normalizedFinal = normalizeOpenClawVisibleAssistantText(payload, { fallback: '' })
-    const rawFinalText = normalizedFinal.usedFallback ? (c?.text || '') : normalizedFinal.text
+    const visibleFinalFallbackText = isOpenClawAssistantFailurePlaceholderText(c?.text) ? '' : (c?.text || '')
+    const rawFinalText = normalizedFinal.usedFallback ? visibleFinalFallbackText : normalizedFinal.text
     if (rawFinalText) {
       _currentAiText = sanitizeOpenClawVisibleReply(rawFinalText)
     } else if (_currentAiText) {
@@ -4947,9 +5259,14 @@ function handleChatEvent(payload, eventId = '') {
       confirmations: finalConfirmations,
     })
     if (!hasContent && shouldUseOpenClawEmptyReplyFallback(terminalRequestId)) {
-      _currentAiText = OPENCLAW_EMPTY_REPLY_FALLBACK
-      visibleFinalText = _currentAiText
-      hasContent = true
+      removeCurrentOpenClawStreamBubbleIfEmpty()
+      recoverOpenClawAssistantFromHistoryBeforeFallback('history-visible-assistant-after-empty-final', terminalRequestId).then(recovered => {
+        if (!recovered) _startResponseWatchdog()
+      }).catch(error => {
+        console.warn('[chat] empty final history recovery failed:', error)
+        _startResponseWatchdog()
+      })
+      return
     }
     const assistantFingerprint = getAssistantFinalFingerprint(payload, finalText || _currentAiText, finalTools.length ? finalTools : _currentAiTools)
     const assistantDedupeKey = getOpenClawMessageDedupeKey({
@@ -5107,22 +5424,30 @@ function handleChatEvent(payload, eventId = '') {
       return
     }
     if (!_manualStopRequested) {
-      const fallback = buildOpenClawToolUnavailableReply(_lastVisibleUserText) ||
-        '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230\u5b8c\u6574\u7684\u53ef\u7528\u7ed3\u679c\uff0c\u6211\u4e0d\u4f1a\u628a\u5b83\u5047\u88c5\u6210\u5df2\u5b8c\u6210\u3002\u8bf7\u91cd\u8bd5\uff0c\u6216\u5148\u68c0\u67e5 OpenClaw Gateway \u548c\u76f8\u5173\u5de5\u5177\u662f\u5426\u53ef\u7528\u3002'
-      appendAiMessage(fallback, new Date(), [], [], [], [], [], [], [], {
-        dedupeKey: `openclaw-aborted-fallback-${terminalRequestId || Date.now()}`,
-        sessionKey: _sessionKey,
+      removeCurrentOpenClawStreamBubbleIfEmpty()
+      recoverOpenClawAssistantFromHistoryBeforeFallback('aborted-before-fallback', terminalRequestId).then(recovered => {
+        if (recovered) return
+        const fallback = buildOpenClawToolUnavailableReply(_lastVisibleUserText) ||
+          '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230\u5b8c\u6574\u7684\u53ef\u7528\u7ed3\u679c\uff0c\u6211\u4e0d\u4f1a\u628a\u5b83\u5047\u88c5\u6210\u5df2\u5b8c\u6210\u3002\u8bf7\u91cd\u8bd5\uff0c\u6216\u5148\u68c0\u67e5 OpenClaw Gateway \u548c\u76f8\u5173\u5de5\u5177\u662f\u5426\u53ef\u7528\u3002'
+        appendAiMessage(fallback, new Date(), [], [], [], [], [], [], [], {
+          dedupeKey: `openclaw-aborted-fallback-${terminalRequestId || Date.now()}`,
+          sessionKey: _sessionKey,
+        })
+        clearOpenClawGenerationState('aborted-fallback', terminalRequestId)
+        resetStreamState()
+        processMessageQueue()
+      }).catch(error => {
+        console.warn('[chat] aborted history recovery failed:', error)
+        const fallback = buildOpenClawToolUnavailableReply(_lastVisibleUserText) ||
+          '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230\u5b8c\u6574\u7684\u53ef\u7528\u7ed3\u679c\uff0c\u6211\u4e0d\u4f1a\u628a\u5b83\u5047\u88c5\u6210\u5df2\u5b8c\u6210\u3002\u8bf7\u91cd\u8bd5\uff0c\u6216\u5148\u68c0\u67e5 OpenClaw Gateway \u548c\u76f8\u5173\u5de5\u5177\u662f\u5426\u53ef\u7528\u3002'
+        appendAiMessage(fallback, new Date(), [], [], [], [], [], [], [], {
+          dedupeKey: `openclaw-aborted-fallback-${terminalRequestId || Date.now()}`,
+          sessionKey: _sessionKey,
+        })
+        clearOpenClawGenerationState('aborted-fallback', terminalRequestId)
+        resetStreamState()
+        processMessageQueue()
       })
-      saveMessage({
-        id: `openclaw-aborted-fallback-${terminalRequestId || uuid()}`,
-        sessionKey: _sessionKey,
-        role: 'assistant',
-        content: fallback,
-        timestamp: Date.now(),
-      })
-      clearOpenClawGenerationState('aborted-fallback', terminalRequestId)
-      resetStreamState()
-      processMessageQueue()
       return
     }
     appendSystemMessage(t('chat.generationStopped'))
@@ -5134,6 +5459,19 @@ function handleChatEvent(payload, eventId = '') {
 
   if (state === 'error') {
     const errMsg = payload.errorMessage || payload.error?.message || t('common.error')
+
+    if (isOpenClawGatewayAbortErrorText(errMsg) || isOpenClawActiveRunErrorText(errMsg)) {
+      recoverOpenClawGenerationAfterTransientDisconnect('chat-error-recovery', {
+        notify: isOpenClawGatewayAbortErrorText(errMsg),
+        message: 'OpenClaw 连接中断，已恢复发送状态；如果回复没有完整显示，请重试或继续。',
+      }).catch(error => {
+        console.warn('[chat] OpenClaw chat error recovery failed:', error)
+      })
+      if (isOpenClawActiveRunErrorText(errMsg)) {
+        appendSystemMessage('OpenClaw 已有任务正在执行，已阻止重复发送。请等待当前任务完成或稍后重试。')
+      }
+      return
+    }
 
     // 连接级错误（origin/pairing/auth）拦截，不作为聊天消息显示
     if (/origin not allowed|NOT_PAIRED|PAIRING_REQUIRED|auth.*fail/i.test(errMsg)) {
@@ -5526,8 +5864,8 @@ function _startResponseWatchdog() {
         if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
           clearOpenClawGenerationState('history-visible-assistant', requestId)
         } else {
-          showTyping(false)
-          _cancelUltimateTimer()
+          showTyping(true, t('chat.aiThinking'))
+          _startResponseWatchdog()
         }
       } else {
         // 历史没更新，更新 typing 提示显示已等待时间
@@ -5578,6 +5916,7 @@ function resetStreamState() {
   _cancelResponseWatchdog()
   clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
+  clearOpenClawTransientRecoveryTimer()
   clearInterval(_typingElapsedInterval)
   _typingElapsedInterval = null
   if (_currentAiBubble && (_currentAiText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length)) {
@@ -5586,9 +5925,10 @@ function resetStreamState() {
     appendImagesToEl(_currentAiBubble, _currentAiImages)
     appendVideosToEl(_currentAiBubble, _currentAiVideos)
     appendAudiosToEl(_currentAiBubble, _currentAiAudios)
-    appendFilesToEl(_currentAiBubble, _currentAiFiles)
-    appendToolsToEl(_currentAiBubble, _currentAiTools)
+  appendFilesToEl(_currentAiBubble, _currentAiFiles)
+  appendToolsToEl(_currentAiBubble, _currentAiTools)
   }
+  releaseOpenClawRequestFingerprint()
   _renderPending = false
   _lastRenderTime = 0
   _lastRenderedAiText = ''
@@ -5708,7 +6048,11 @@ function hasVisibleOpenClawHistoryMessage(msg) {
   if (!msg || !_messagesEl) return false
   const dedupeKey = msg.displayDedupeKey || msg.dedupeKey
   const sessionKey = msg.sessionKey || _sessionKey || ''
-  if (dedupeKey && hasRenderedOpenClawMessage(sessionKey, dedupeKey)) return true
+  if (dedupeKey && hasVisibleRenderedOpenClawMessage(sessionKey, dedupeKey)) return true
+  if (msg.role === 'assistant') {
+    const displayKey = getOpenClawDedupeKeyParts(dedupeKey).display
+    return hasVisibleOpenClawAssistantAfterLastUserWithDisplay(sessionKey, displayKey)
+  }
   const targetText = normalizeVisibleOpenClawText(msg.role === 'assistant'
     ? sanitizeOpenClawVisibleReply(msg.text || '')
     : stripOpenClawIdentityPrelude(msg.text || ''))
@@ -5717,9 +6061,20 @@ function hasVisibleOpenClawHistoryMessage(msg) {
   return Array.from(_messagesEl.querySelectorAll(selector)).some(node => normalizeVisibleOpenClawText(node.textContent) === targetText)
 }
 
+function isOpenClawHistoryTransientFallbackMessage(msg = {}) {
+  if (!msg || msg.role !== 'assistant') return false
+  if (msg.images?.length || msg.videos?.length || msg.audios?.length || msg.files?.length || msg.screenshotCards?.length || msg.confirmations?.length) return false
+  const rawText = msg.text || msg.content || ''
+  if (isOpenClawAssistantFailurePlaceholderText(rawText)) return true
+  if (!rawText && msg.tools?.length) return false
+  const visibleText = completeOpenClawVisibleReply(rawText)
+  return isOpenClawTransientFallbackText(visibleText)
+}
+
 function appendOpenClawHistoryMessage(msg) {
   if (!msg || !msg.role) return false
   if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return false
+  if (isOpenClawHistoryTransientFallbackMessage(msg)) return false
   const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
   const dedupeKey = msg.displayDedupeKey || msg.dedupeKey
   if (msg.role === 'user') {
@@ -5744,6 +6099,7 @@ function appendOpenClawHistoryMessage(msg) {
     appendAiMessage(msg.text || '', msgTime, msg.images || [], msg.videos || [], msg.audios || [], msg.files || [], msg.tools || [], msg.screenshotCards || [], msg.confirmations || [], {
       dedupeKey,
       sessionKey: msg.sessionKey || _sessionKey,
+      fromHistory: true,
     })
     return true
   }
@@ -5794,6 +6150,7 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   if (!_messagesEl) return 0
   let merged = 0
   for (const msg of historyMessages || []) {
+    if (isOpenClawHistoryTransientFallbackMessage(msg)) continue
     if (completeStreamingDraftFromHistory(msg)) {
       merged += 1
       continue
@@ -5816,6 +6173,7 @@ async function loadHistory() {
       clearMessages()
       dedupeHistoryStable(local).forEach(msg => {
         if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return
+        if (isOpenClawHistoryTransientFallbackMessage(msg)) return
         const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
         if (msg.role === 'user') {
           const userAttachments = [
@@ -5856,16 +6214,17 @@ async function loadHistory() {
       && deduped.length > 0
       && displayedCount > deduped.length
     if (refreshIsSparse) {
-      console.warn('[chat] sparse history refresh ignored to preserve visible messages:', {
+      console.warn('[chat] sparse history refresh merged to preserve visible messages:', {
         sessionKey: _sessionKey,
         displayedCount,
         historyCount: deduped.length,
       })
+      mergeHistoryIntoCurrentMessages(deduped)
       saveMessages(result.messages.map(cachedHistoryMessage))
       return
     }
     const hash = deduped
-      .map(m => `${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
+      .map(m => `${m.dedupeKey || m.displayDedupeKey || m.id || m.messageId || m.runId || m.timestamp || ''}:${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
       .join('|')
     if (hash === _lastHistoryHash && hasExisting) return
     _lastHistoryHash = hash
@@ -5904,6 +6263,7 @@ async function loadHistory() {
           sessionKey: msg.sessionKey || _sessionKey,
         })
       } else if (msg.role === 'assistant') {
+        if (isOpenClawHistoryTransientFallbackMessage(msg)) return
         appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations, {
           dedupeKey: msg.dedupeKey,
           sessionKey: msg.sessionKey || _sessionKey,
@@ -5928,9 +6288,30 @@ function countDisplayedChatMessages() {
   return _messagesEl.querySelectorAll('.msg-user, .msg-ai').length
 }
 
+function normalizeOpenClawHistoryRecord(msg = {}) {
+  const inner = msg?.message
+  if (!inner || typeof inner !== 'object') return msg || {}
+  if (!inner.role && inner.content == null && inner.text == null) return msg || {}
+  return {
+    ...inner,
+    id: inner.id || msg.id,
+    messageId: inner.messageId || msg.messageId || msg.id,
+    eventId: inner.eventId || msg.eventId,
+    runId: inner.runId || msg.runId,
+    idempotencyKey: inner.idempotencyKey || msg.idempotencyKey,
+    clientRequestId: inner.clientRequestId || msg.clientRequestId,
+    sessionKey: inner.sessionKey || msg.sessionKey,
+    state: inner.state || msg.state,
+    type: inner.type || msg.type,
+    timestamp: inner.timestamp || msg.timestamp,
+    attachments: inner.attachments || msg.attachments,
+  }
+}
+
 function dedupeHistory(messages) {
   const deduped = []
-  for (const msg of messages) {
+  for (const rawMsg of messages) {
+    const msg = normalizeOpenClawHistoryRecord(rawMsg)
     const role = (msg.role === 'tool' || msg.role === 'toolResult') ? 'assistant' : msg.role
     const c = extractContent(msg)
     if (!c.text && !c.images.length && !c.videos.length && !c.audios.length && !c.files.length && !c.tools.length && !c.screenshotCards.length && !c.confirmations.length) continue
@@ -5941,10 +6322,15 @@ function dedupeHistory(messages) {
     })
     const last = deduped[deduped.length - 1]
     if (last && last.role === role) {
-      if (role === 'user' && last.text === c.text) continue
       if (role === 'assistant') {
+        const item = { role, text: c.text, images: c.images, videos: c.videos, audios: c.audios, files: c.files, tools, screenshotCards: c.screenshotCards, confirmations: c.confirmations, timestamp: msg.timestamp, runId: msg.runId }
+        if (shouldMergeAdjacentOpenClawAssistant(last, item)) {
+          deduped[deduped.length - 1] = mergeOpenClawHistoryMessage(last, item)
+        } else {
+          deduped.push(item)
+        }
+        continue
         // 同文本去重（Gateway 重试产生的重复回复）
-        if (c.text && last.text === c.text) continue
         // 不同文本则合并
         last.text = [last.text, c.text].filter(Boolean).join('\n')
         last.images = [...(last.images || []), ...c.images]
@@ -5966,7 +6352,8 @@ function dedupeHistoryStable(messages) {
   const deduped = []
   const indexByKey = new Map()
   const indexByDisplayKey = new Map()
-  for (const msg of messages || []) {
+  for (const rawMsg of messages || []) {
+    const msg = normalizeOpenClawHistoryRecord(rawMsg)
     const role = (msg.role === 'tool' || msg.role === 'toolResult') ? 'assistant' : msg.role
     const c = extractContent(msg)
     if (!c.text && !c.images.length && !c.videos.length && !c.audios.length && !c.files.length && !c.tools.length && !c.screenshotCards.length && !c.confirmations.length) continue
@@ -6012,7 +6399,6 @@ function dedupeHistoryStable(messages) {
     }
     const last = deduped[deduped.length - 1]
     if (last && last.role === role) {
-      if (role === 'user' && last.text === c.text) continue
       if (role === 'assistant') {
         if (shouldMergeAdjacentOpenClawAssistant(last, item)) {
           deduped[deduped.length - 1] = mergeOpenClawHistoryMessage(last, item)
@@ -6020,7 +6406,6 @@ function dedupeHistoryStable(messages) {
           if (item.displayDedupeKey) indexByDisplayKey.set(item.displayDedupeKey, deduped.length - 1)
           continue
         }
-        if (c.text && last.text === c.text) continue
       }
     }
     deduped.push(item)
@@ -6034,7 +6419,6 @@ function shouldMergeAdjacentOpenClawAssistant(prev, next) {
   if (!prev || !next || prev.role !== 'assistant' || next.role !== 'assistant') return false
   if (prev.runId && next.runId && prev.runId === next.runId) return true
   if ((prev.tools?.length || 0) > 0 || (next.tools?.length || 0) > 0) return true
-  if (prev.text && next.text && prev.text === next.text) return true
   return false
 }
 
@@ -6087,6 +6471,7 @@ function mergeOpenClawHistoryMessage(prev, next) {
 }
 
 function cachedHistoryMessage(m) {
+  m = normalizeOpenClawHistoryRecord(m)
   const c = extractContent(m)
   const role = (m.role === 'tool' || m.role === 'toolResult') ? 'assistant' : m.role
   const attachments = [
@@ -6138,6 +6523,7 @@ function collectOpenClawAttachmentImages(msg = {}) {
 }
 
 function extractContent(msg) {
+  msg = normalizeOpenClawHistoryRecord(msg)
   const tools = []
   const screenshotCards = []
   const confirmations = []
@@ -6166,6 +6552,22 @@ function extractContent(msg) {
       tools[0].output = output
     }
     return { text: '', images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+  }
+  if (msg.role === 'assistant') {
+    const artifactText = extractOpenClawAssistantText({
+      assistantTexts: msg.assistantTexts,
+      data: msg.data,
+      artifacts: msg.artifacts,
+      trace: msg.trace,
+      message: {
+        assistantTexts: msg.message?.assistantTexts,
+        data: msg.message?.data,
+        artifacts: msg.message?.artifacts,
+      },
+    })
+    if (artifactText) {
+      return { text: stripThinkingTags(artifactText), images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+    }
   }
   if (Array.isArray(msg.content)) {
     const texts = [], images = [...attachmentImages], videos = [], audios = [], files = []
@@ -6244,10 +6646,12 @@ function extractContent(msg) {
       else if (/\.(jpe?g|png|gif|webp|heic|svg)(\?|$)/i.test(url)) images.push({ url, mediaType: 'image/png' })
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
-    return { text: stripThinkingTags(texts.join('\n')), images, videos, audios, files, tools, screenshotCards, confirmations }
+    const text = stripThinkingTags(texts.join('\n'))
+    return { text: isOpenClawAssistantFailurePlaceholderText(text) ? '' : text, images, videos, audios, files, tools, screenshotCards, confirmations }
   }
   const text = typeof msg.text === 'string' ? msg.text : (typeof msg.content === 'string' ? msg.content : '')
-  return { text: stripThinkingTags(text), images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+  const visibleText = stripThinkingTags(text)
+  return { text: isOpenClawAssistantFailurePlaceholderText(visibleText) ? '' : visibleText, images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
 }
 
 // ── DOM 操作 ──
@@ -6350,7 +6754,12 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
     confirmations,
   })) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
-  if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
+  if (renderMeta.dedupeKey) {
+    const alreadyRendered = renderMeta.fromHistory === true
+      ? hasVisibleRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)
+      : hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)
+    if (alreadyRendered) return
+  }
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-ai sc-msg-row assistant'
   markRenderedOpenClawMessage(wrap, sessionKey, renderMeta.dedupeKey)
@@ -6680,7 +7089,7 @@ function updateSendState() {
     _sendBtn.title = t('chat.cmdStopGen')
   } else {
     const gatewayCanSend = _openClawGatewayUiState === 'ready'
-    _sendBtn.disabled = _sendInputLocked || _isSending || _openClawGatewayUiState !== 'ready' || !gatewayCanSend || (!_textarea.value.trim() && !_attachments.length)
+    _sendBtn.disabled = _sendInputLocked || _openClawPendingResponse || _isSending || _openClawGatewayUiState !== 'ready' || !gatewayCanSend || (!_textarea.value.trim() && !_attachments.length)
     _sendBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>'
     _sendBtn.title = t('chat.send')
   }

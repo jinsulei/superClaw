@@ -1,5 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  getSafeAgentIdentityReply,
+  guardAgentIdentityReply,
+} from '../src/shared/agent-identity-guard.js'
 
 const root = process.cwd()
 const chatPath = path.join(root, 'src', 'pages', 'chat.js')
@@ -12,93 +16,76 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-function includesAll(source, terms, label) {
-  for (const term of terms) {
-    assert(source.includes(term), `${label} missing: ${term}`)
+function getFunctionBody(source, name) {
+  const start = source.indexOf(`function ${name}`)
+  assert(start >= 0, `${name} function missing`)
+  const brace = source.indexOf('{', start)
+  let depth = 0
+  for (let index = brace; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    if (char === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(start, index + 1)
+    }
   }
+  throw new Error(`${name} function body not closed`)
 }
 
-includesAll(chat, [
-  'OPENCLAW_IDENTITY_CONTEXT_START',
-  'OPENCLAW_IDENTITY_CONTEXT_END',
-  'OPENCLAW_IDENTITY_PRELUDE',
-  '你是 SuperClaw 里的 OpenClaw。',
-  '执行 Agent',
-  '浏览器自动化',
-  '桌面控制',
-  'OCR 辅助操作',
-  '不要自称 Hermes 或 Claude Code。',
-  'SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE',
-  'sanitizeOpenClawVisibleReply',
-  'MiniMax-M3',
-], 'identity prelude')
+const identityQuestionFn = getFunctionBody(chat, 'isOpenClawIdentityQuestion')
+const localIdentityFn = getFunctionBody(chat, 'appendOpenClawLocalIdentityAnswer')
+const preludeFn = getFunctionBody(chat, 'withOpenClawIdentityPrelude')
+const stripPreludeFn = getFunctionBody(chat, 'stripOpenClawIdentityPrelude')
 
-includesAll(chat, [
-  'OPENCLAW_LOCAL_IDENTITY_ANSWER',
-  'function isOpenClawIdentityQuestion(input)',
-  'function appendOpenClawLocalIdentityAnswer(text, attachments = [], clientRequestId = createOpenClawClientRequestId())',
-  'function withOpenClawIdentityPrelude(prompt)',
-  'function stripOpenClawIdentityPrelude(text)',
-  'const displayText = stripOpenClawIdentityPrelude(text)',
-  'body.includes(OPENCLAW_IDENTITY_CONTEXT_START)',
-  'isOpenClawIdentityQuestion(text)',
-  'appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)',
-  'withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))',
-  'stripOpenClawIdentityPrelude(stripThinkingTags(content))',
-  'stripOpenClawIdentityPrelude(stripThinkingTags(texts.join(\'\\n\')))',
-  'stripOpenClawIdentityPrelude(stripThinkingTags(message.text))',
-], 'identity injection path')
+assert(chat.includes('OPENCLAW_IDENTITY_CONTEXT_START'), 'OpenClaw identity context marker must remain defined for legacy history cleanup')
+assert(chat.includes('OPENCLAW_IDENTITY_CONTEXT_END'), 'OpenClaw identity context end marker must remain defined for legacy history cleanup')
+assert(chat.includes('OPENCLAW_IDENTITY_PRELUDE'), 'OpenClaw identity prelude constant must remain available')
+assert(chat.includes('OPENCLAW_LOCAL_IDENTITY_ANSWER'), 'OpenClaw local identity answer must remain available')
+assert(chat.includes('SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE'), 'OpenClaw must keep Simplified Chinese visible reply guard')
+assert(chat.includes('sanitizeOpenClawVisibleReply'), 'OpenClaw visible reply sanitizer must remain wired')
 
-includesAll(chat, [
-  '我是 OpenClaw',
-  'SuperClaw 里的执行智能体',
-  '浏览器、桌面、文件、截图/OCR',
-  '高风险动作前等待你的确认',
-], 'local identity answer')
+assert(identityQuestionFn.includes('text.length > 160'), 'local identity fallback must not swallow long prompts')
+assert(identityQuestionFn.includes('OpenClaw') && identityQuestionFn.includes('return false'), 'local identity fallback must exclude OpenClaw audit/control prompts')
 
-assert(chat.includes('text.length > 160'), 'local identity fallback must not swallow long prompts')
-assert(chat.includes('OpenClaw 全面自检指令'), 'local identity fallback must exclude long audit prompts')
+assert(localIdentityFn.includes("agentName: 'openclaw'"), 'local identity answer must be guarded as OpenClaw')
+assert(localIdentityFn.includes('assistantText: OPENCLAW_LOCAL_IDENTITY_ANSWER || getSafeAgentIdentityReply'), 'local identity answer must use OpenClaw safe fallback')
+assert(localIdentityFn.includes('appendUserMessage(text, attachments)'), 'user bubble must continue to use original text')
+assert(localIdentityFn.includes("role: 'user'"), 'saved user message must keep user role')
+assert(localIdentityFn.includes('content: text'), 'saved user message must continue to use original text')
+assert(localIdentityFn.includes('appendAiMessage(identityAnswer)'), 'local identity answer must render as assistant')
+assert(localIdentityFn.includes('content: identityAnswer'), 'saved identity answer must store assistant answer only')
 
-assert(
-  chat.includes('appendUserMessage(text, attachments)'),
-  'user bubble must continue to use original text'
-)
-assert(
-  chat.includes('role: \'user\', content: text'),
-  'saved user message must continue to use original text'
-)
-assert(!chat.includes('appendUserMessage(sendText'), 'identity prelude must not be rendered as user bubble')
-assert(!chat.includes('content: sendText'), 'identity prelude must not be saved as user content')
+assert(preludeFn.includes('return body'), 'regular OpenClaw requests must stay clean and not inject hidden identity context into Gateway history')
+assert(!preludeFn.includes('OPENCLAW_IDENTITY_PRELUDE'), 'Gateway request path must not append hidden identity prelude')
+assert(stripPreludeFn.includes('raw.includes(OPENCLAW_IDENTITY_CONTEXT_START)'), 'legacy hidden identity context must still be stripped from visible/history text')
+assert(stripPreludeFn.includes('OPENCLAW_IDENTITY_CONTEXT_END'), 'legacy hidden identity context stripping must include end marker')
+
+assert(chat.includes('isOpenClawIdentityQuestion(text)'), 'send path must detect OpenClaw identity questions')
+assert(chat.includes('appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)'), 'identity questions must be answered locally')
+assert(chat.includes('const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))'), 'Gateway send path must still normalize attachment prompts')
+assert(!chat.includes('appendUserMessage(sendText'), 'identity/prelude text must not be rendered as user bubble')
+assert(!chat.includes('content: sendText'), 'identity/prelude text must not be saved as user content')
 
 assert(!ws.includes('params.system'), 'Gateway chat.send must not receive unsupported system field')
 assert(!ws.includes('system:'), 'Gateway chat.send params must not contain unsupported system field')
-includesAll(ws, [
-  'chatSend(sessionKey, message, attachments, options = {})',
-  'const idempotencyKey = options?.idempotencyKey || uuid()',
-], 'idempotency preservation')
+assert(ws.includes('chatSend(sessionKey, message, attachments, options = {})'), 'chatSend signature must preserve options')
+assert(ws.includes('const idempotencyKey = options?.idempotencyKey || uuid()'), 'idempotency preservation must remain wired')
 
-const samplePrompt = 'who are you?'
-function withOpenClawIdentityPreludeForSmoke(prompt) {
-  const body = String(prompt || '').trim()
-  if (!body || body.includes('[OPENCLAW_IDENTITY_CONTEXT]')) return body
-  return [
-    '[OPENCLAW_IDENTITY_CONTEXT]',
-    '你是 SuperClaw 里的 OpenClaw。',
-    '[/OPENCLAW_IDENTITY_CONTEXT]',
-    '',
-    'User:',
-    body,
-  ].join('\n')
-}
+const safe = getSafeAgentIdentityReply('openclaw')
+assert(/OpenClaw Agent/.test(safe), 'safe OpenClaw identity reply must name OpenClaw Agent')
+assert(!/\bMiniMax\b/i.test(safe.replace(/底层模型服务由当前系统配置提供。?/g, '')), 'safe OpenClaw identity reply must not disguise as MiniMax')
 
-const once = withOpenClawIdentityPreludeForSmoke(samplePrompt)
-const twice = withOpenClawIdentityPreludeForSmoke(once)
-assert(once === twice, 'identity prelude should not be injected twice')
+const guarded = guardAgentIdentityReply({
+  agentName: 'openclaw',
+  userText: '你是谁？',
+  assistantText: '我是 MiniMax。',
+})
+assert(/OpenClaw Agent/.test(guarded), 'identity guard must rewrite provider-disguised OpenClaw replies')
 
-console.log('OPENCLAW_IDENTITY_INJECTED: PASS')
+console.log('OPENCLAW_LOCAL_IDENTITY_FALLBACK: PASS')
+console.log('OPENCLAW_NO_HIDDEN_IDENTITY_PRELUDE_IN_GATEWAY: PASS')
+console.log('OPENCLAW_LEGACY_IDENTITY_CONTEXT_STRIPPED: PASS')
 console.log('OPENCLAW_NO_ILLEGAL_SYSTEM_FIELD: PASS')
 console.log('OPENCLAW_USER_BUBBLE_NOT_POLLUTED: PASS')
-console.log('OPENCLAW_IDENTITY_DEDUPED: PASS')
 console.log('OPENCLAW_IDEMPOTENCY_PRESERVED: PASS')
 console.log('OPENCLAW_DEFAULT_CHINESE: PASS')
-console.log('OPENCLAW_LOCAL_IDENTITY_FALLBACK: PASS')

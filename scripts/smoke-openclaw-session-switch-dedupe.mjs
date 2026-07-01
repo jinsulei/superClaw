@@ -67,7 +67,7 @@ function key(message) {
 }
 
 function displayKey(message) {
-  return `${message.sessionKey || 'agent:main:main'}|history-display:${message.role}:${hash(message.text || toolText(message.tools || []))}:${Math.floor((message.timestamp || 0) / 60000)}`
+  return `${message.sessionKey || 'agent:main:main'}|history-display:${message.role}:${hash(message.text || toolText(message.tools || []))}:${Math.floor((message.timestamp || 0) / 1000)}`
 }
 
 function merge(prev, next) {
@@ -147,6 +147,10 @@ const toolAssistant = mergeMessages([
 assert(toolAssistant.length === 1, 'tool success and assistant final rendered twice')
 assert(toolAssistant[0].text === 'OK', 'assistant final text should be retained')
 assert(toolAssistant[0].tools.length === 1, 'tool status should be retained as metadata')
+assert(!/role === 'user' && last\.text === c\.text\) continue/.test(chat), 'repeated user prompts must not be collapsed by text only')
+assert(!/c\.text && last\.text === c\.text\) continue/.test(chat), 'repeated assistant replies must not be collapsed by text only')
+assert(!/prev\.text && next\.text && prev\.text === next\.text\) return true/.test(chat), 'adjacent assistant merge must not use text-only equality')
+assert(chat.includes('Math.floor(ts / 1000)'), 'history display dedupe should use second-level buckets, not minute-level buckets')
 
 const seenEvents = new Set()
 function handleEventOnce(eventId) {

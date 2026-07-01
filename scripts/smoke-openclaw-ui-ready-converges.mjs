@@ -26,13 +26,32 @@ includesAll(chat, [
   'hasOpenClawGatewayReadySignal(probe) ? \'ready\' : normalizeGatewayUiState(probe)',
   'if (state === \'ready\') markOpenClawGatewayReady(\'dev-status-ready\', { probe })',
   'if (_openClawGatewayUiState === \'ready\') {',
-  'if (overlay) overlay.style.display = \'none\'',
+  'clearOpenClawTransientConnectionUi()',
 ], 'OpenClaw ready status hides startup UI')
 
 includesAll(chat, [
+  'function clearOpenClawTransientConnectionUi()',
+  'document.getElementById(\'chat-disconnect-bar\')',
+  'bar.textContent = \'\'',
+  'document.getElementById(\'chat-connect-overlay\')',
+], 'OpenClaw ready status clears stale disconnect UI text')
+
+includesAll(chat, [
   'const gatewayCanSend = _openClawGatewayUiState === \'ready\'',
-  '_sendBtn.disabled = _sendInputLocked || _isSending || _openClawGatewayUiState !== \'ready\'',
+  '_sendBtn.disabled = _sendInputLocked || _openClawPendingResponse || _isSending || _openClawGatewayUiState !== \'ready\'',
 ], 'OpenClaw send button follows latest ready state')
+
+includesAll(chat, [
+  'const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)',
+  "markOpenClawGatewayReady(`${reason}-health-converged-ready`, { probe: healthProbe })",
+  "const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 }).catch(() => null)",
+  "markOpenClawGatewayReady(`${reason}-converged-ready`, { probe })",
+], 'OpenClaw convergence probes ready state before showing checking UI')
+
+includesAll(chat, [
+  "markOpenClawGatewayReady('auto-enter-health-ready', { probe: healthProbe })",
+  "await connectGateway({ skipProbe: true })",
+], 'OpenClaw auto-enter uses live health before slower dev status')
 
 includesAll(sidebar, [
   'function _isOpenClawGatewaySwitchReady(status)',
