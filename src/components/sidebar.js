@@ -284,6 +284,34 @@ async function _probeOpenClawGatewayHealth(port) {
   }
 }
 
+function _isOpenClawGatewaySwitchReady(status) {
+  if (!status) return false
+  const rawStatus = String(status.status || status.state || '').toLowerCase()
+  const healthStatus = String(status.health?.status || status.healthStatus || '').toLowerCase()
+  const healthReady = healthStatus === 'live'
+    || healthStatus === 'ready'
+    || status.health?.ready === true
+    || status.health?.live === true
+  if (status.needsSetup || rawStatus === 'stopped' || rawStatus === 'error') return false
+  return status.ready === true
+    || status.connected === true
+    || status.verified === true
+    || rawStatus === 'ready'
+    || rawStatus === 'connected'
+    || (status.portListening === true && healthReady)
+    || healthReady
+}
+
+async function _readOpenClawGatewaySwitchStatus() {
+  try {
+    const resp = await fetch('/__api/dev/agents/status?agent=openclaw', { cache: 'no-store' })
+    if (!resp.ok) return null
+    return await resp.json().catch(() => null)
+  } catch {
+    return null
+  }
+}
+
 async function _waitForOpenClawGatewayHealth(progress, start = 78, end = 92, timeoutMs = 18000) {
   const port = await _readOpenClawGatewayPort()
   const startedAt = Date.now()
@@ -340,13 +368,23 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
   const services = await _runSwitchProgressStep(progress, 30, 42, () => api.getServicesStatus().catch(() => []))
   const gw = _findOpenClawGateway(services)
   if (gw?.running) {
+    const currentStatus = await _runSwitchProgressStep(progress, 42, 50, () => _readOpenClawGatewaySwitchStatus())
+    if (_isOpenClawGatewaySwitchReady(currentStatus)) {
+      progress?.setProgress(84)
+      return gw
+    }
     if (pairingRepaired) {
-      await _runSwitchProgressStep(progress, 42, 64, () => api.restartService('ai.openclaw.gateway'))
+      await _runSwitchProgressStep(progress, 50, 64, () => api.restartService('ai.openclaw.gateway'))
     }
     try {
       await _waitForOpenClawGatewayHealth(progress, pairingRepaired ? 64 : 46, 84, 9000)
       return gw
     } catch (e) {
+      const readyStatus = await _runSwitchProgressStep(progress, 84, 88, () => _readOpenClawGatewaySwitchStatus())
+      if (_isOpenClawGatewaySwitchReady(readyStatus)) {
+        progress?.setProgress(90)
+        return gw
+      }
       console.warn('[sidebar] OpenClaw Gateway running but unhealthy, restarting once:', e)
       await _runSwitchProgressStep(progress, 58, 78, () => api.restartService('ai.openclaw.gateway'))
       await _waitForOpenClawGatewayHealth(progress, 78, 90, 18000)

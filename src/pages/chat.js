@@ -196,6 +196,7 @@ let _openClawGatewayProbe = null
 let _openClawGatewayError = ''
 let _openClawGatewayActionBusy = false
 let _openClawGatewayAutoStartPromise = null
+let _openClawGatewayConvergenceTimers = []
 let _openClawGatewayProgress = 0
 let _openClawGatewayLastReadyReason = ''
 let _availableModels = []
@@ -477,12 +478,9 @@ export async function render() {
 
   loadHostedDefaults().then(() => { loadHostedSessionConfig(); renderHostedPanel(); updateHostedBadge() })
   loadModelOptions()
-  setOpenClawGatewayUiState('starting', { error: '', progress: 5 })
   // 非阻塞：先返回 DOM，后台连接 Gateway
   startCollaborationDispatchWatcher()
-  autoStartOpenClawGatewayOnEnter().catch(error => {
-    setOpenClawGatewayUiState('error', { error: error?.message || String(error) })
-  })
+  scheduleOpenClawGatewayUiConvergence('render')
   return page
 }
 
@@ -1682,6 +1680,37 @@ async function startOrRepairOpenClawGateway() {
     _openClawGatewayActionBusy = false
     updateOpenClawGatewayUi()
   }
+}
+
+function clearOpenClawGatewayUiConvergenceTimers() {
+  for (const timer of _openClawGatewayConvergenceTimers) {
+    clearTimeout(timer)
+  }
+  _openClawGatewayConvergenceTimers = []
+}
+
+function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
+  clearOpenClawGatewayUiConvergenceTimers()
+  const pageRef = _page
+  const delays = [0, 250, 1000]
+  for (const delay of delays) {
+    const timer = setTimeout(() => {
+      _openClawGatewayConvergenceTimers = _openClawGatewayConvergenceTimers.filter(item => item !== timer)
+      if (!_pageActive || _page !== pageRef || !pageRef?.isConnected) return
+      if (delay === 0 && _openClawGatewayUiState !== 'ready') {
+        setOpenClawGatewayUiState('checking', { error: '', progress: 5 })
+      } else {
+        updateOpenClawGatewayUi()
+        updateSendState()
+      }
+      autoStartOpenClawGatewayOnEnter().catch(error => {
+        if (!_pageActive || _page !== pageRef || _openClawGatewayUiState === 'ready') return
+        setOpenClawGatewayUiState('error', { error: error?.message || String(error) })
+      })
+    }, delay)
+    _openClawGatewayConvergenceTimers.push(timer)
+  }
+  _openClawGatewayLastReadyReason = `${reason}-scheduled`
 }
 
 async function autoStartOpenClawGatewayOnEnter() {
@@ -6812,6 +6841,7 @@ function appendHostedOutput(text) {
 
 export function cleanup() {
   snapshotCurrentChatState('cleanup')
+  clearOpenClawGatewayUiConvergenceTimers()
 
   // OpenClaw Gateway is an app-level service.
   // Regular route changes, page unmounts, and opening the dashboard must not stop it.
