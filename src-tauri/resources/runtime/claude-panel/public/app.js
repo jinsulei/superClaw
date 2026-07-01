@@ -301,6 +301,47 @@ function getSuperclawTargetCopy(route) {
   };
 }
 
+function isOpenClawSuperclawRoute(route) {
+  const normalizedRoute = String(route || "").startsWith("/") ? String(route || "") : `/${route || ""}`;
+  return normalizedRoute === "/dashboard"
+    || normalizedRoute.startsWith("/dashboard")
+    || normalizedRoute === "/chat"
+    || normalizedRoute.startsWith("/chat");
+}
+
+async function ensureOpenClawGatewayBeforeConsoleSwitch(route) {
+  if (!isOpenClawSuperclawRoute(route)) return { skipped: true };
+
+  const base = resolveSuperclawBase();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(`${base}/__api/dev/agents/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: "openclaw" }),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    let data = null;
+    try {
+      data = await resp.json();
+    } catch {}
+    return {
+      ok: resp.ok && data?.ok !== false,
+      status: resp.status,
+      data,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.name === "AbortError" ? "timeout" : (error?.message || String(error)),
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function setConsoleSwitchProgress(overlay, value) {
   const pct = Math.max(0, Math.min(100, Math.round(value)));
   const fill = overlay?.querySelector("[data-console-switch-fill]");
@@ -373,7 +414,12 @@ function handleSuperclawConsoleLinkClick(event) {
   event.preventDefault();
   const route = link.dataset.superclawRoute || "/h/chat";
   const overlay = showConsoleSwitchProgress(route);
-  consoleSwitchProgressTimer = setTimeout(() => {
+  consoleSwitchProgressTimer = setTimeout(async () => {
+    setConsoleSwitchProgress(overlay, 92);
+    const startResult = await ensureOpenClawGatewayBeforeConsoleSwitch(route);
+    if (startResult?.ok === false) {
+      console.warn("[claude-panel] OpenClaw pre-start before console switch failed:", startResult);
+    }
     setConsoleSwitchProgress(overlay, 100);
     window.location.assign(href);
   }, 920);
