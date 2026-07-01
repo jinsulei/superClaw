@@ -59,6 +59,7 @@ const OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY = 'superclaw-openclaw-manual-collap
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
 const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
+const OPENCLAW_EMPTY_REPLY_FALLBACK = 'OpenClaw \u6ca1\u6709\u6536\u5230\u6709\u6548\u56de\u590d\uff0c\u8bf7\u91cd\u8bd5\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u3002'
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
@@ -3259,6 +3260,129 @@ function completeOpenClawVisibleReply(text, userText = _lastVisibleUserText) {
   return repairIncompleteOpenClawVisibleReply(reply, userText)
 }
 
+function extractOpenClawTextPart(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value
+      .map(item => extractOpenClawTextPart(item))
+      .filter(Boolean)
+      .join('\n')
+  }
+  if (typeof value !== 'object') return ''
+  if (typeof value.text === 'string') return value.text
+  if (typeof value.content === 'string') return value.content
+  if (typeof value.value === 'string') return value.value
+  if (value.type === 'text' && typeof value.text === 'string') return value.text
+  if (value.type === 'output_text' && typeof value.text === 'string') return value.text
+  if (Array.isArray(value.content)) return extractOpenClawTextPart(value.content)
+  if (Array.isArray(value.parts)) return extractOpenClawTextPart(value.parts)
+  if (value.message) return extractOpenClawTextPart(value.message)
+  if (value.delta) return extractOpenClawTextPart(value.delta)
+  return ''
+}
+
+function extractOpenClawAssistantText(payload) {
+  if (payload == null) return ''
+  if (typeof payload === 'string') return payload
+  if (Array.isArray(payload)) return extractOpenClawTextPart(payload)
+
+  const candidates = [
+    payload.content,
+    payload.text,
+    payload.output_text,
+    payload.outputText,
+    payload.reply,
+    payload.response,
+    payload.result,
+    payload.message,
+    payload.message?.content,
+    payload.message?.text,
+    payload.delta,
+    payload.delta?.content,
+    payload.delta?.text,
+    payload.data,
+    payload.data?.content,
+    payload.data?.text,
+    payload.data?.message,
+    payload.data?.message?.content,
+    payload.event,
+    payload.event?.content,
+    payload.event?.text,
+    payload.choices?.[0]?.message,
+    payload.choices?.[0]?.message?.content,
+    payload.choices?.[0]?.message?.text,
+    payload.choices?.[0]?.delta,
+    payload.choices?.[0]?.delta?.content,
+    payload.choices?.[0]?.delta?.text,
+    payload.choices?.[0]?.text,
+  ]
+
+  for (const candidate of candidates) {
+    const text = extractOpenClawTextPart(candidate).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function stripOpenClawInternalBlocks(text) {
+  if (!text) return ''
+  let next = stripThinkingTags(String(text))
+  next = next.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
+  next = next.replace(/```tool[\s\S]*?```/gi, '')
+  next = next.replace(/```terminal[\s\S]*?```/gi, '')
+
+  const finalMarkers = [
+    /(?:\u6700\u7ec8\u7b54\u590d|\u6700\u7ec8\u56de\u7b54|\u7ed9\u7528\u6237\u7684\u56de\u7b54|\u7b54\u590d)[:\uff1a]\s*([\s\S]+)$/i,
+    /(?:final answer|final response)[:\uff1a]\s*([\s\S]+)$/i,
+  ]
+  for (const marker of finalMarkers) {
+    const match = next.match(marker)
+    if (match?.[1]?.trim()) {
+      next = match[1].trim()
+      break
+    }
+  }
+
+  const internalOnlyPatterns = [
+    /^\s*the user is asking me\b/i,
+    /^\s*let me think\b/i,
+    /^\s*i need to\b/i,
+    /^\s*this is a (huge )?red flag\b/i,
+    /^\s*policy analysis\b/i,
+    /^\s*internal reasoning\b/i,
+    /^\s*scratchpad\b/i,
+  ]
+
+  return next
+    .split(/\r?\n/)
+    .map(line => line.trimEnd())
+    .filter(line => {
+      const trimmed = line.trim()
+      if (!trimmed) return true
+      return !internalOnlyPatterns.some(pattern => pattern.test(trimmed))
+    })
+    .join('\n')
+    .trim()
+}
+
+function normalizeOpenClawVisibleAssistantText(payload, options = {}) {
+  const raw = extractOpenClawAssistantText(payload)
+  const cleaned = stripOpenClawInternalBlocks(raw).trim()
+  if (cleaned) {
+    return {
+      text: cleaned,
+      usedFallback: false,
+      rawWasEmpty: !raw.trim(),
+    }
+  }
+  return {
+    text: options.fallback ?? OPENCLAW_EMPTY_REPLY_FALLBACK,
+    usedFallback: true,
+    rawWasEmpty: !raw.trim(),
+  }
+}
+
 function isOpenClawInternalReasoningLeak(text) {
   return /^(?:The user wants|User wants|I need to|I should|We need to|Need to)\b/i.test(String(text || '').trim())
 }
@@ -4297,6 +4421,17 @@ function shouldIgnoreOpenClawUnboundChatEvent(event = {}, state = '', incomingTe
   return false
 }
 
+function shouldUseOpenClawEmptyReplyFallback(requestId = null) {
+  if (_currentAiBubble) return true
+  if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
+  return Boolean(
+    _openClawPendingResponse ||
+    _isSending ||
+    _isStreaming ||
+    (requestId && requestId === _activeClientRequestId)
+  )
+}
+
 function isOpenClawStreamIdMismatch(stableStreamId = '') {
   return !!(_currentAiBubbleRequestId && stableStreamId && _currentAiBubbleRequestId !== stableStreamId)
 }
@@ -4584,7 +4719,7 @@ function handleChatEvent(payload, eventId = '') {
     if (c?.audios?.length) _currentAiAudios = c.audios
     if (c?.files?.length) _currentAiFiles = c.files
     if (c?.tools?.length) _currentAiTools = c.tools
-    const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || '')
+    const visibleDeltaText = sanitizeOpenClawVisibleReply(extractOpenClawAssistantText(payload) || c?.text || '')
     if (isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) && isOpenClawBrowserAutomationTraceText(visibleDeltaText)) {
       return
     }
@@ -4629,7 +4764,8 @@ function handleChatEvent(payload, eventId = '') {
     const c = extractChatContent(payload.message)
     const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
     if (isOpenClawStreamIdMismatch(stableStreamId)) return
-    const rawFinalText = c?.text || ''
+    const normalizedFinal = normalizeOpenClawVisibleAssistantText(payload, { fallback: '' })
+    const rawFinalText = normalizedFinal.usedFallback ? (c?.text || '') : normalizedFinal.text
     if (rawFinalText) {
       _currentAiText = sanitizeOpenClawVisibleReply(rawFinalText)
     } else if (_currentAiText) {
@@ -4666,8 +4802,8 @@ function handleChatEvent(payload, eventId = '') {
     if (_currentAiText) {
       _currentAiText = completeOpenClawVisibleReply(_currentAiText)
     }
-    const visibleFinalText = _currentAiText || finalText
-    const hasContent = hasOpenClawRenderableContent({
+    let visibleFinalText = _currentAiText || finalText
+    let hasContent = hasOpenClawRenderableContent({
       text: visibleFinalText,
       images: _currentAiImages,
       videos: _currentAiVideos,
@@ -4677,6 +4813,11 @@ function handleChatEvent(payload, eventId = '') {
       screenshotCards: finalScreenshotCards,
       confirmations: finalConfirmations,
     })
+    if (!hasContent && shouldUseOpenClawEmptyReplyFallback(terminalRequestId)) {
+      _currentAiText = OPENCLAW_EMPTY_REPLY_FALLBACK
+      visibleFinalText = _currentAiText
+      hasContent = true
+    }
     const assistantFingerprint = getAssistantFinalFingerprint(payload, finalText || _currentAiText, finalTools.length ? finalTools : _currentAiTools)
     const assistantDedupeKey = getOpenClawMessageDedupeKey({
       id: payload.message?.id,
@@ -6045,7 +6186,19 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
 
 function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
-  text = completeOpenClawVisibleReply(text || '')
+  const hasNonTextContent = Boolean(
+    images?.length ||
+    videos?.length ||
+    audios?.length ||
+    files?.length ||
+    tools?.length ||
+    screenshotCards?.length ||
+    confirmations?.length
+  )
+  const normalizedText = normalizeOpenClawVisibleAssistantText(text || '', {
+    fallback: hasNonTextContent ? '' : OPENCLAW_EMPTY_REPLY_FALLBACK,
+  })
+  text = normalizedText.text ? completeOpenClawVisibleReply(normalizedText.text) : ''
   if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
