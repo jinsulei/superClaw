@@ -2602,8 +2602,8 @@
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  width: min(760px, calc(100% - 48px));
-  max-width: 760px;
+  width: min(1160px, 100%);
+  max-width: 1160px;
   margin-inline: auto;
   box-sizing: border-box;
 }
