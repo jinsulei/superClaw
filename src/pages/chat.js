@@ -60,6 +60,8 @@ const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
 const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
 const OPENCLAW_EMPTY_REPLY_FALLBACK = 'OpenClaw \u6ca1\u6709\u6536\u5230\u6709\u6548\u56de\u590d\uff0c\u8bf7\u91cd\u8bd5\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u3002'
+const OPENCLAW_TOOL_ONLY_FALLBACK = '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210\uff0c\u4f46\u6ca1\u6709\u751f\u6210\u53ef\u5c55\u793a\u7684\u56de\u7b54\u3002'
+const OPENCLAW_TOOL_FAILED_FALLBACK = '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898\uff0c\u672a\u751f\u6210\u53ef\u5c55\u793a\u7684\u56de\u7b54\u3002'
 const OPENCLAW_IDENTITY_CONTEXT_START = '[OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_CONTEXT_END = '[/OPENCLAW_IDENTITY_CONTEXT]'
 const OPENCLAW_IDENTITY_PRELUDE = [
@@ -1528,8 +1530,16 @@ function reconcileOpenClawGatewayAfterTransientStatus(reason = 'transient') {
     }
     const state = normalizeGatewayUiState(probe)
     setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
-  }).catch(error => {
+  }).catch(async error => {
     if (!_pageActive) return
+    if (isOpenClawTransientProbeError(error)) {
+      const health = await probeOpenClawGatewayHealthForSend().catch(() => null)
+      if (!_pageActive) return
+      if (hasOpenClawGatewayReadySignal(health)) {
+        markOpenClawGatewayReady(`${reason}-health-ready`, { probe: health })
+        return
+      }
+    }
     setOpenClawGatewayUiState(_hasEverConnected ? 'error' : 'checking', {
       error: error?.message || String(error),
     })
@@ -2178,7 +2188,19 @@ async function connectGateway(options = {}) {
       } else if (status === 'error') {
         // 连接错误：显示引导遮罩而非底部条
         if (bar) bar.style.display = 'none'
-        setOpenClawGatewayUiState('error', { error: errorMsg || t('chat.connectFailed') })
+        probeOpenClawGatewayHealthForSend().then(health => {
+          if (!_pageActive) return
+          if (hasOpenClawGatewayReadySignal(health)) {
+            markOpenClawGatewayReady('ws-error-health-ready', { probe: health })
+            return
+          }
+          if (bar) bar.style.display = 'none'
+          setOpenClawGatewayUiState('error', { error: errorMsg || t('chat.connectFailed') })
+        }).catch(() => {
+          if (!_pageActive) return
+          if (bar) bar.style.display = 'none'
+          setOpenClawGatewayUiState('error', { error: errorMsg || t('chat.connectFailed') })
+        })
       } else if (status === 'reconnecting' || status === 'disconnected') {
         // 首次连接或多次重连失败时，显示引导遮罩而非底部小条
         reconcileOpenClawGatewayAfterTransientStatus(`ws-${status}`)
@@ -3014,7 +3036,18 @@ function isOpenClawCapabilitySummaryQuestion(text) {
   const value = String(text || '').trim()
   if (!value || value.length > 80) return false
   if (/(?:\u7535\u5546|\u8d22\u52a1|\u4ed8\u6b3e|\u652f\u4ed8|\u4e0b\u5355|\u622a\u56fe|\u8bfb\u53d6|\u6253\u5f00|\u9875\u9762)/i.test(value)) return false
+  if (/(?:检查|查看|汇总|确认|介绍|说下).{0,12}(?:当前)?能力|(?:当前)?能力.{0,12}(?:检查|汇总|清单|结论)|能力清单|能力列表/i.test(value)) return true
   return /(?:\u4f60\u6709\u4ec0\u4e48\u6280\u80fd|\u6709\u54ea\u4e9b\u6280\u80fd|\u53ef\u7528\u7684\s*skills?|\u6280\u80fd\u5217\u8868|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u6709\u4ec0\u4e48\u80fd\u529b|what can you do|skills?)/i.test(value)
+}
+
+function isOpenClawOcrCapabilityQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 80) return false
+  return /(?:OCR|识别文字|读图|图片识别|截图识别).{0,20}(?:能力|可以|能不能|能否|会不会|有没有|支持吗)|(?:你有|是否有|有没有|能不能|能否|会不会).{0,20}(?:OCR|识别文字|读图|图片识别|截图识别)/i.test(value)
+}
+
+function buildOpenClawOcrCapabilityReply() {
+  return '当前具备 OCR 相关能力：可以识别上传图片或截图中的文字，也可以配合浏览器/桌面截图读取页面内容。需要识别哪张图或哪个窗口时，请直接告诉我。'
 }
 
 function isOpenClawFinanceCapabilityQuestion(text) {
@@ -3055,6 +3088,13 @@ function maybeHandleOpenClawLocalAnswer(text) {
       handled: true,
       kind: 'ecommerce',
       reply: buildOpenClawEcommerceVisibleReply(value),
+    }
+  }
+  if (isOpenClawOcrCapabilityQuestion(value)) {
+    return {
+      handled: true,
+      kind: 'ocr-capability',
+      reply: buildOpenClawOcrCapabilityReply(),
     }
   }
   if (isOpenClawFinanceCapabilityQuestion(value)) {
@@ -3228,6 +3268,49 @@ function isOpenClawFriendlyToolSummaryText(text) {
   return /^(?:Skills\s*\u67e5\u8be2(?:\u6210\u529f|\u5df2\u5b8c\u6210)|[\s\S]{0,40}\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210)[\s\S]{0,360}$/i.test(value)
 }
 
+function isOpenClawToolDebugEnabled() {
+  try {
+    const params = new URLSearchParams(window.location.search || '')
+    const value = params.get('openclawToolDebug') ||
+      params.get('debugOpenClawTools') ||
+      localStorage.getItem('superclaw-openclaw-tool-debug') ||
+      ''
+    return /^(?:1|true|yes|on)$/i.test(String(value).trim())
+  } catch {
+    return false
+  }
+}
+
+function isOpenClawTransientProbeError(error) {
+  const message = String(error?.message || error || '').toLowerCase()
+  const name = String(error?.name || '').toLowerCase()
+  return name === 'aborterror'
+    || message.includes('abort')
+    || message.includes('aborted')
+    || message.includes('signal is aborted')
+    || message.includes('timeout')
+    || message.includes('timed out')
+}
+
+function isOpenClawToolLikeMessage(message = {}) {
+  const role = String(message?.role || '').toLowerCase()
+  const type = String(message?.type || message?.kind || '').toLowerCase()
+  const text = String(message?.content || message?.text || '').trim()
+  if (role === 'tool' || role === 'toolresult') return true
+  if (type === 'tool' || type === 'tool_result' || type === 'toolresult') return true
+  if (type === 'terminal') return true
+  if (message?.toolCall || message?.toolResult || message?.terminal) return true
+  if (/^\s*\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210[.!?\u3002\uff01\uff1f]*\s*$/.test(text)) return true
+  if (/^tool call completed\.?$/i.test(text)) return true
+  if (/^tool completed\.?$/i.test(text)) return true
+  if (/^(?:stdout|stderr|terminal)\s*[:=]/i.test(text)) return true
+  return false
+}
+
+function shouldRenderOpenClawToolMessage(message = {}) {
+  return isOpenClawToolDebugEnabled() && isOpenClawToolLikeMessage(message)
+}
+
 function isOpenClawPlainCapabilitySummaryText(text) {
   const value = String(text || '').trim()
   if (!value) return false
@@ -3387,9 +3470,54 @@ function isOpenClawInternalReasoningLeak(text) {
   return /^(?:The user wants|User wants|I need to|I should|We need to|Need to)\b/i.test(String(text || '').trim())
 }
 
+function isOpenClawMarkdownTableFragment(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  const pipeCount = (value.match(/\|/g) || []).length
+  if (pipeCount < 3) return false
+  if (/\|\s*-{2,}\s*\|/.test(value)) return true
+  if (/(?:工具|能力|Skills?|可用|说明|结果|exec|browser|desktop|ocr|stdout|stderr)/i.test(value) && /\|[^|\n]*$/.test(value)) return true
+  return false
+}
+
+function isOpenClawNumberedListFragment(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  const promisesMultipleItems = /(?:两条|二条|三条|四条|几条|多条|两种|二种|三种|几种|多种|如下|包括|路径|方式|步骤|清单)/.test(value)
+  const hasFirstItem = /(?:^|\s|[：:])1[.、]/.test(value)
+  const hasSecondItem = /(?:^|\s)2[.、]/.test(value)
+  const endsCleanly = /[。！？.!?）)]$/.test(value)
+  return promisesMultipleItems && hasFirstItem && !hasSecondItem && !endsCleanly
+}
+
+function isOpenClawLetteredListFragment(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  const promisesMultipleItems = /(?:两条|二条|三条|四条|几条|多条|两种|二种|三种|几种|多种|路径|方式|步骤|清单)/.test(value)
+  const hasA = /(?:^|\s|[：:；;])A[.、\s]/i.test(value)
+  const hasB = /(?:^|\s|[：:；;])B[.、\s]/i.test(value)
+  const hasC = /(?:^|\s|[：:；;])C[.、\s]/i.test(value)
+  const expectsThreeOrMore = /(?:三条|四条|几条|多条|三种|几种|多种)/.test(value)
+  const danglingShortItem = /(?:[：:；;]\s*)?[A-Z][.、\s]+.{0,6}[给到要把发][。.!?]$/i.test(value)
+  return promisesMultipleItems && hasA && ((!hasB) || (expectsThreeOrMore && !hasC) || danglingShortItem)
+}
+
+function buildOpenClawCapabilitySummaryFallback(userText = '', text = '') {
+  const scope = `${userText}\n${text}`
+  if (/OCR|识别|图片|截图|文字/i.test(scope)) {
+    return '当前具备 OCR 相关能力：可以识别上传图片或截图中的文字，也可以配合浏览器/桌面截图读取页面内容。需要识别哪张图或哪个窗口时，请直接告诉我。'
+  }
+  if (/电商|抖店|小红书|订单|商品|付款|支付/.test(scope)) return ''
+  if (!/(能力|工具|可用|OCR|截图|浏览器|桌面|协作|Skills?|skill|tool|能做|能帮|检查一下当前)/i.test(scope)) return ''
+  return '当前可用：浏览器/桌面协助、文件与工作区处理、命令执行、截图/OCR、Skills 和工具调用。涉及登录、付款、提交、删除等高风险动作时，我会先停下来让你确认。'
+}
+
 function looksIncompleteOpenClawVisibleReply(text) {
   const value = String(text || '').trim()
   if (!value) return true
+  if (isOpenClawMarkdownTableFragment(value)) return true
+  if (isOpenClawNumberedListFragment(value)) return true
+  if (isOpenClawLetteredListFragment(value)) return true
   if (/[、，,：:；;]$/.test(value)) return true
   if (/(?:包括|例如|如下|生成|导出|整理|读取|截图|利润表|资产负债表|现金流量表|工具|页面)$/.test(value)) return true
   if (/\([^)]*$/.test(value)) return true
@@ -3404,6 +3532,8 @@ function repairIncompleteOpenClawVisibleReply(text, userText = _lastVisibleUserT
   if (!incomplete && !reasoningLeak) return value
   const unavailable = buildOpenClawToolUnavailableReply(userText)
   if (unavailable) return unavailable
+  const capabilityFallback = buildOpenClawCapabilitySummaryFallback(userText, value)
+  if (capabilityFallback) return capabilityFallback
   const base = value
     .replace(/[、，,：:；;\s]+$/, '。')
     .trim()
@@ -4124,6 +4254,7 @@ function getOpenClawToolResultInfo(tools = [], fallbackText = '') {
 }
 
 function shouldRenderOpenClawToolResultCard(tools = [], fallbackText = '') {
+  if (!isOpenClawToolDebugEnabled()) return false
   if ((!tools || tools.length === 0) && isOpenClawPlainCapabilitySummaryText(fallbackText)) return false
   if ((!tools || tools.length === 0) && isOpenClawFriendlyToolSummaryText(fallbackText)) return false
   const info = getOpenClawToolResultInfo(tools, fallbackText)
@@ -4214,6 +4345,7 @@ function ensureOpenClawToolResultCardStyles() {
 
 function renderOpenClawToolResultCard(container, tools = [], fallbackText = '') {
   if (!container) return false
+  if (!isOpenClawToolDebugEnabled()) return false
   const info = getOpenClawToolResultInfo(tools, fallbackText)
   if (!info.toolCount && !info.rawText) return false
   ensureOpenClawToolResultCardStyles()
@@ -4256,8 +4388,9 @@ function buildToolOnlyAssistantReply(tools = []) {
     return unavailableReply
   }
   if (!toolInfo.failed) {
-    return formatOpenClawToolResultForUser(toolInfo)
+    return OPENCLAW_TOOL_ONLY_FALLBACK
   }
+  return OPENCLAW_TOOL_FAILED_FALLBACK
   const last = list[list.length - 1] || {}
   const name = last.name || last.toolName || last.id || '工具'
   const failed = last.status === 'error' || last.isError
@@ -4882,7 +5015,7 @@ function handleChatEvent(payload, eventId = '') {
         return
       }
       _currentAiBubbleRequestId = stableStreamId
-      _currentAiText = finalText || _currentAiText
+      _currentAiText = _currentAiText || finalText
     } else if (_currentAiBubble && assistantDedupeKey) {
       if (!_currentAiBubbleRequestId) _currentAiBubbleRequestId = stableStreamId
       markRenderedOpenClawMessage(_currentAiBubble.closest('.msg'), _sessionKey, assistantDedupeKey)
@@ -5624,7 +5757,8 @@ function completeStreamingDraftFromHistory(msg) {
   const finalText = normalizeVisibleOpenClawText(msg.text)
   const looksLikeSameDraft = currentText && finalText && (finalText.startsWith(currentText) || currentText.startsWith(finalText))
   if (!sameRun && !looksLikeSameDraft) return false
-  renderCompactAssistantContent(msg.text || _currentAiText || '', _currentAiBubble)
+  const visibleDraftText = msg.text || _currentAiText || ((msg.tools?.length && !isOpenClawToolDebugEnabled()) ? OPENCLAW_TOOL_ONLY_FALLBACK : '')
+  renderCompactAssistantContent(visibleDraftText, _currentAiBubble)
   appendImagesToEl(_currentAiBubble, msg.images || [])
   appendVideosToEl(_currentAiBubble, msg.videos || [])
   appendAudiosToEl(_currentAiBubble, msg.audios || [])
@@ -6186,20 +6320,35 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
 
 function appendAiMessage(text, msgTime, images, videos, audios, files, tools, screenshotCards = [], confirmations = [], renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
-  const hasNonTextContent = Boolean(
+  const hasVisibleNonToolContent = Boolean(
     images?.length ||
     videos?.length ||
     audios?.length ||
     files?.length ||
-    tools?.length ||
     screenshotCards?.length ||
     confirmations?.length
+  )
+  const hasNonTextContent = Boolean(
+    hasVisibleNonToolContent ||
+    (isOpenClawToolDebugEnabled() && tools?.length)
   )
   const normalizedText = normalizeOpenClawVisibleAssistantText(text || '', {
     fallback: hasNonTextContent ? '' : OPENCLAW_EMPTY_REPLY_FALLBACK,
   })
   text = normalizedText.text ? completeOpenClawVisibleReply(normalizedText.text) : ''
-  if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return
+  if (!text && tools?.length && !hasVisibleNonToolContent && !isOpenClawToolDebugEnabled()) {
+    text = OPENCLAW_TOOL_ONLY_FALLBACK
+  }
+  if (!hasOpenClawRenderableContent({
+    text,
+    images,
+    videos,
+    audios,
+    files,
+    tools: isOpenClawToolDebugEnabled() ? tools : [],
+    screenshotCards,
+    confirmations,
+  })) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
   const wrap = document.createElement('div')
@@ -6388,6 +6537,10 @@ function collectToolsFromMessage(message, tools) {
 function appendToolsToEl(el, tools) {
   if (!el) return
   const existing = el.querySelector?.('.msg-tool, .openclaw-tool-result-card')
+  if (!isOpenClawToolDebugEnabled()) {
+    if (existing) existing.remove()
+    return
+  }
   if (!tools?.length) {
     if (existing) existing.remove()
     return

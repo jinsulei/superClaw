@@ -20,9 +20,12 @@ const requiredTerms = [
   'function isOpenClawBrowserAutomationTraceText',
   'function buildOpenClawToolUnavailableReply',
   'function isOpenClawCapabilitySummaryQuestion',
+  'function isOpenClawOcrCapabilityQuestion',
+  'function buildOpenClawOcrCapabilityReply',
   'function isOpenClawFinanceCapabilityQuestion',
   'function buildOpenClawFinanceCapabilityReply',
   'function buildOpenClawCapabilitySummaryReply',
+  '能力清单|能力列表',
   'function stripOpenClawInternalProcessText',
   'function isOpenClawFriendlyToolSummaryText',
   'function isOpenClawPlainCapabilitySummaryText',
@@ -45,6 +48,7 @@ const requiredTerms = [
   'browser-tool-unavailable-fallback',
   'maxChars: 520',
   "kind: 'capability'",
+  "kind: 'ocr-capability'",
   "kind: 'finance'",
 ]
 

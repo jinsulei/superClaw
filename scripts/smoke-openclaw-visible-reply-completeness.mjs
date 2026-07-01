@@ -18,10 +18,14 @@ const requiredTerms = [
   'function completeOpenClawVisibleReply',
   'function hasOpenClawRenderableContent',
   'function removeCurrentOpenClawStreamBubbleIfEmpty',
-  'const visibleDeltaText = sanitizeOpenClawVisibleReply(c?.text || \'\')',
+  'const visibleDeltaText = sanitizeOpenClawVisibleReply',
+  'function isOpenClawMarkdownTableFragment',
+  'function isOpenClawNumberedListFragment',
+  'function isOpenClawLetteredListFragment',
+  'function buildOpenClawCapabilitySummaryFallback',
   'if (!hasOpenClawRenderableContent({ visibleText: visibleDeltaText }))',
   'if (_currentAiBubble && !hasContent && removeCurrentOpenClawStreamBubbleIfEmpty())',
-  'if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return',
+  'if (!hasOpenClawRenderableContent({',
 ]
 
 for (const term of requiredTerms) {
@@ -34,12 +38,14 @@ const appendAiFn = source.slice(appendAiStart, appendAiEnd)
 
 assert(appendAiStart >= 0, 'appendAiMessage function not found')
 assert(
-  appendAiFn.includes('text = completeOpenClawVisibleReply(text || \'\')'),
+  appendAiFn.includes('normalizeOpenClawVisibleAssistantText(text || \'\',') &&
+    appendAiFn.includes('text = normalizedText.text ? completeOpenClawVisibleReply(normalizedText.text) : \'\''),
   'appendAiMessage must complete OpenClaw assistant text before rendering',
 )
 assert(
-  appendAiFn.includes('if (!hasOpenClawRenderableContent({ text, images, videos, audios, files, tools, screenshotCards, confirmations })) return'),
-  'appendAiMessage must refuse empty assistant messages without renderable attachments',
+  appendAiFn.includes('if (!hasOpenClawRenderableContent({') &&
+    appendAiFn.includes('tools: isOpenClawToolDebugEnabled() ? tools : []'),
+  'appendAiMessage must refuse empty assistant messages without renderable attachments and hide tools by default',
 )
 
 const deltaStart = source.indexOf("if (state === 'delta')")
@@ -95,5 +101,13 @@ const incompleteSentence = ensureCompleteVisibleReply('可以协助：', {
   userText: '你能做什么？',
 })
 assert(!/[:：,，;；、|]$/.test(incompleteSentence), 'OpenClaw incomplete sentence must be repaired')
+
+assert(source.includes('isOpenClawMarkdownTableFragment(value)'), 'OpenClaw must detect inline half markdown tables')
+assert(source.includes('isOpenClawNumberedListFragment(value)'), 'OpenClaw must detect incomplete numbered list fragments')
+assert(source.includes('isOpenClawLetteredListFragment(value)'), 'OpenClaw must detect incomplete lettered list fragments')
+assert(source.includes('buildOpenClawCapabilitySummaryFallback(userText, value)'), 'OpenClaw must repair capability table fragments')
+assert(source.includes('当前可用：浏览器/桌面协助'), 'OpenClaw capability fallback must be a Chinese summary')
+assert(source.includes('当前具备 OCR 相关能力'), 'OpenClaw OCR fallback must be a concise Chinese summary')
+assert(source.includes('_currentAiText = _currentAiText || finalText'), 'OpenClaw final branch must not overwrite repaired visible text with raw final text')
 
 console.log('SMOKE_OPENCLAW_VISIBLE_REPLY_COMPLETENESS_PASS')
