@@ -54,6 +54,45 @@ export function stripInternalStatusText(text) {
     .trim()
 }
 
+export function isHermesCollaborationCapabilityQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+
+  const normalized = value
+    .replace(/\s+/g, '')
+    .replace(/Claude\s*Code/ig, 'ClaudeCode')
+
+  return [
+    /协作任务.*是什么/,
+    /能做.*协作任务/,
+    /(你|Hermes|三个Agent|三Agent|Agent).*怎么.*协作/,
+    /(你|Hermes|三个Agent|三Agent|Agent).*如何.*协作/,
+    /(你|Hermes).*怎么.*调度/,
+    /(你|Hermes).*如何.*调度/,
+    /Hermes.*主脑/,
+    /主脑.*怎么.*工作/,
+    /调度.*OpenClaw/,
+    /调度.*ClaudeCode/,
+    /OpenClaw.*ClaudeCode.*配合/,
+    /OpenClaw.*ClaudeCode.*怎么.*配合/,
+    /三个Agent.*协作/,
+    /三Agent.*协作/,
+    /Agent.*协作.*怎么/,
+  ].some(pattern => pattern.test(normalized))
+}
+
+export function formatHermesCollaborationCapabilityReply() {
+  return [
+    '我是 Hermes，负责做主脑和调度。我的协作任务是先读项目和需求，拆成可执行步骤，明确验收标准，再分配给不同执行端。',
+    '',
+    '1. OpenClaw 负责执行操作，例如浏览器自动化、页面读取、数据采集、桌面操作和流程执行。',
+    '2. ClaudeCode 负责代码、脚本、测试、监督、验收和报告。',
+    '3. 执行或监督结果会回传给我，我负责最终验收；如果结果不达标，我会继续让 OpenClaw 或 ClaudeCode 返工、补充或重新执行。',
+    '',
+    '简单说：Hermes 负责规划、调度和最终验收，OpenClaw 负责动手执行，ClaudeCode 负责技术处理和监督验收。',
+  ].join('\n')
+}
+
 export function detectReportIntent(text) {
   const value = String(text || '')
   if (/查看图片|看图|图片里|截图里|分析图片|识别图片|图片内容/.test(value)) return 'image_inspect'

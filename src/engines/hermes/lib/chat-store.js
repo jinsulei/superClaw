@@ -26,6 +26,8 @@ import { selectStableActiveSession } from '../../../lib/agent-session-persistenc
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 import {
   dedupeToolEvents,
+  formatHermesCollaborationCapabilityReply,
+  isHermesCollaborationCapabilityQuestion,
   stripInternalStatusText,
 } from '../../../shared/chat-output-guard.js'
 import {
@@ -1981,6 +1983,41 @@ function createStore() {
     const clientRequestId = String(opts.clientRequestId || uid())
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
+    }
+    if (isHermesCollaborationCapabilityQuestion(rawText)) {
+      let collabSession = activeSession()
+      if (!collabSession) {
+        collabSession = createLocalSession({
+          title: deriveSessionTitleFromText(displayText || runText || rawText),
+          optimistic: false,
+          clientRequestId,
+        })
+      }
+      const userMessage = {
+        id: `user-${clientRequestId}`,
+        role: 'user',
+        content: displayText || rawText,
+        timestamp: Date.now(),
+        clientRequestId,
+      }
+      if (!collabSession.messages.some(m => m.id === userMessage.id)) {
+        collabSession.messages.push(userMessage)
+      }
+      collabSession.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: formatHermesCollaborationCapabilityReply(),
+        timestamp: Date.now(),
+        clientRequestId,
+      })
+      updateSessionTitleFromFirstUser(collabSession)
+      collabSession.updatedAt = Date.now()
+      collabSession.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return Promise.resolve({ status: 'success', reason: 'collaboration-capability-answer' })
     }
     if (isHermesImageCapabilityQuestion(rawText)) {
       let imageCapabilitySession = activeSession()
