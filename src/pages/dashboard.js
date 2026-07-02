@@ -3,15 +3,21 @@
  */
 import { api, invalidate } from '../lib/tauri-api.js'
 import { toast } from '../components/toast.js'
-import { getActiveInstance, onGatewayChange } from '../lib/app-state.js'
+import { getActiveInstance, onGatewayChange, refreshGatewayStatus } from '../lib/app-state.js'
 import { isForeignGatewayError, isForeignGatewayService, maybeShowForeignGatewayBindingPrompt, showGatewayConflictGuidance, showInstallationCleanup } from '../lib/gateway-ownership.js'
 import { navigate } from '../router.js'
 import { t } from '../lib/i18n.js'
 import { wsClient } from '../lib/ws-client.js'
 
 let _unsubGw = null
+let _unsubWsStatus = null
+let _unsubWsReady = null
 let _loadInFlight = false
+let _loadPage = null
+let _loadToken = 0
 let _lastGwChangeLoad = 0
+let _wsStatusRefreshTimer = null
+let _dashboardWsConnectInFlight = false
 
 export async function render() {
   const page = document.createElement('div')
@@ -64,11 +70,20 @@ export async function render() {
     loadDashboardData(page)
   })
 
+  if (_unsubWsStatus) _unsubWsStatus()
+  if (_unsubWsReady) _unsubWsReady()
+  const refreshWsStatus = () => scheduleDashboardWsStatusRefresh(page)
+  _unsubWsStatus = wsClient.onStatusChange(refreshWsStatus)
+  _unsubWsReady = wsClient.onReady(refreshWsStatus)
+
   return page
 }
 
 export function cleanup() {
   if (_unsubGw) { _unsubGw(); _unsubGw = null }
+  if (_unsubWsStatus) { _unsubWsStatus(); _unsubWsStatus = null }
+  if (_unsubWsReady) { _unsubWsReady(); _unsubWsReady = null }
+  if (_wsStatusRefreshTimer) { clearTimeout(_wsStatusRefreshTimer); _wsStatusRefreshTimer = null }
 }
 
 function openclawInstallationIdentity(installation) {
@@ -116,10 +131,18 @@ function versionInfoIncomplete(version) {
 }
 
 async function loadDashboardData(page, fullRefresh = false) {
-  // 并发保护：如果上一次加载仍在进行，跳过本次（fullRefresh 除外）
-  if (_loadInFlight && !fullRefresh) return
+  // Skip duplicate refreshes for the same dashboard instance, but allow a
+  // fresh page to load after quick route switches.
+  if (_loadInFlight && !fullRefresh && _loadPage === page) return
+  const token = ++_loadToken
+  _loadPage = page
   _loadInFlight = true
-  try { await _loadDashboardDataInner(page, fullRefresh) } finally { _loadInFlight = false }
+  try { await _loadDashboardDataInner(page, fullRefresh) } finally {
+    if (_loadToken === token) {
+      _loadInFlight = false
+      _loadPage = null
+    }
+  }
 }
 
 async function _loadDashboardDataInner(page, fullRefresh) {
@@ -211,12 +234,55 @@ async function _loadDashboardDataInner(page, fullRefresh) {
 
   renderStatCards(page, services, version, agents, config, panelConfig)
   renderOverview(page, services, mcpConfig, backups, config, agents, statusSummary, channels)
+  if (gw?.running === true && !isForeignGatewayService(gw)) {
+    ensureDashboardWsConnection(page).catch(err => {
+      console.warn('[dashboard] ensure ws connection failed:', err)
+      scheduleDashboardWsStatusRefresh(page)
+    })
+  }
 
   // 第三波：日志（最低优先级）
   const logs = await logsP
   renderLogs(page, logs)
 
   _dashboardInitialized = true
+}
+
+function scheduleDashboardWsStatusRefresh(page) {
+  if (_wsStatusRefreshTimer) clearTimeout(_wsStatusRefreshTimer)
+  _wsStatusRefreshTimer = setTimeout(() => {
+    _wsStatusRefreshTimer = null
+    refreshDashboardWsStatus(page)
+  }, 100)
+}
+
+function refreshDashboardWsStatus(page) {
+  const root = page?.querySelector?.('#dashboard-ws-status')
+  if (!root) return
+  root.innerHTML = renderWsStatus()
+}
+
+async function ensureDashboardWsConnection(page) {
+  if (wsClient.gatewayReady || wsClient.connected || wsClient.connecting || _dashboardWsConnectInFlight) {
+    scheduleDashboardWsStatusRefresh(page)
+    return
+  }
+
+  _dashboardWsConnectInFlight = true
+  try {
+    await refreshGatewayStatus().catch(() => {})
+    if (wsClient.gatewayReady || wsClient.connected || wsClient.connecting) return
+
+    const config = await api.readOpenclawConfig().catch(() => null)
+    const gw = config?.gateway || {}
+    const port = gw.port || 18789
+    const token = gw.auth?.token || gw.authToken || ''
+    const password = gw.auth?.password || ''
+    wsClient.connect(`127.0.0.1:${port}`, token, { password })
+  } finally {
+    _dashboardWsConnectInFlight = false
+    scheduleDashboardWsStatusRefresh(page)
+  }
 }
 
 async function openGatewayConflict(page, error = null, reason = null) {
@@ -418,7 +484,7 @@ function renderOverview(page, services, mcpConfig, backups, config, agents, stat
           </div>
         </div>
       </div>
-      ${renderWsStatus()}
+      <div id="dashboard-ws-status">${renderWsStatus()}</div>
       ${renderChannelsOverview(channels)}
       ${renderSessionStatus(sessions)}
     </div>
