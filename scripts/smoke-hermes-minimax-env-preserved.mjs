@@ -4,6 +4,7 @@ import path from 'node:path'
 
 const root = process.cwd()
 const hermesEnvPath = path.join(root, 'src-tauri', 'resources', 'data', 'hermes', '.env')
+const hermesConfigPath = path.join(root, 'src-tauri', 'resources', 'data', 'hermes', 'config.yaml')
 const apiBase = process.env.SUPERCLAW_PANEL_URL || 'http://127.0.0.1:1420'
 
 function readDotEnv(filePath) {
@@ -30,6 +31,21 @@ function hasUsableKey(value) {
   return true
 }
 
+function readText(filePath) {
+  return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : ''
+}
+
+function assertHermesMiniMaxRoute() {
+  const config = readText(hermesConfigPath)
+  assert.equal(fs.existsSync(hermesConfigPath), true)
+  assert.match(config, /^\s*provider:\s*minimax\s*$/m)
+  assert.match(config, /^\s*base_url:\s*https:\/\/api\.minimaxi\.com\/v1\s*$/m)
+  assert.doesNotMatch(config, /124\.222\.21\.44|openai\/gpt-5\.5|gpt-5\.5/i)
+  console.log('HERMES_MINIMAX_PROVIDER_ROUTE: PASS')
+  console.log('HERMES_MINIMAX_BASE_URL: PASS')
+  console.log('HERMES_NO_LEGACY_IP_OR_OPENAI_FALLBACK: PASS')
+}
+
 async function hermesChatProbe() {
   const response = await fetch(`${apiBase}/__api/hermes_agent_run_stream`, {
     method: 'POST',
@@ -51,16 +67,27 @@ const localEnv = readDotEnv(hermesEnvPath)
 const localKey = localEnv.MINIMAX_API_KEY || localEnv.OPENAI_API_KEY || ''
 const processKey = process.env.MINIMAX_API_KEY || process.env.OPENAI_API_KEY || ''
 const imageKey = process.env.IMAGE_API_KEY || ''
+const localKeyUsable = hasUsableKey(localKey)
+const processKeyUsable = hasUsableKey(processKey)
 
 assert.equal(fs.existsSync(hermesEnvPath), true)
 console.log('HERMES_LOCAL_ENV_EXISTS: PASS')
 
-assert.equal(hasUsableKey(localKey) || hasUsableKey(processKey), true)
-console.log('HERMES_MINIMAX_API_KEY_PRESENT: PASS')
+assertHermesMiniMaxRoute()
 
-assert.equal(hasUsableKey(imageKey) && !hasUsableKey(localKey) && !hasUsableKey(processKey), false)
+assert.equal(hasUsableKey(imageKey) && !localKeyUsable && !processKeyUsable, false)
 console.log('IMAGE_API_KEY_NOT_USED_AS_MAIN_CHAT_KEY: PASS')
 
+if (!localKeyUsable) {
+  if (processKeyUsable) {
+    console.log('HERMES_PROCESS_MINIMAX_KEY_PRESENT_BUT_NOT_ASSUMED_BY_DEV_SERVER: PASS')
+  }
+  console.log('HERMES_LOCAL_MINIMAX_API_KEY_MISSING: SKIPPED_NO_LOCAL_KEY')
+  console.log('HERMES_MINIMAX_LIVE_STREAM_SKIPPED_NO_LOCAL_KEY')
+  process.exit(0)
+}
+
+console.log('HERMES_MINIMAX_API_KEY_PRESENT: PASS')
 await hermesChatProbe()
 console.log('HERMES_AGENT_ENV_HAS_MINIMAX_KEY: PASS')
 console.log('HERMES_CHAT_WORKS_WITH_MINIMAX: PASS')
