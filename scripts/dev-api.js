@@ -14,10 +14,7 @@ import http from 'http'
 import https from 'https'
 import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
-import {
-  assertDirectModelConfigWritable,
-  getEffectiveModelConfig,
-} from './lib/model-config-source-guard.mjs'
+import { getEffectiveModelConfig } from './lib/model-config-source-guard.mjs'
 import { sanitizeMediaVisibleText } from '../src/shared/chat-output-guard.js'
 import {
   buildAgentIdentitySystemPrompt,
@@ -1042,7 +1039,10 @@ function hermesProviderUsesMiniMax(provider) {
 
 function hermesRuntimeEnv(extra = {}) {
   const localEnv = readDotEnvVars(path.join(hermesHome(), '.env'))
-  const hermesProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || 'minimax'
+  const configuredProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || ''
+  const forcedProvider = localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || ''
+  const explicitMiniMaxTest = isServerTestBuild() || String(forcedProvider || '').trim().toLowerCase() === 'minimax'
+  const hermesProvider = configuredProvider || (explicitMiniMaxTest ? 'minimax' : '')
   const minimaxBaseUrl = normalizeHermesMiniMaxBaseUrl(
     localEnv.MINIMAX_BASE_URL
       || localEnv.MINIMAX_CN_BASE_URL
@@ -1050,7 +1050,7 @@ function hermesRuntimeEnv(extra = {}) {
       || process.env.MINIMAX_CN_BASE_URL
       || localEnv.OPENAI_BASE_URL
       || process.env.OPENAI_BASE_URL
-      || 'https://api.minimaxi.com/v1'
+      || (explicitMiniMaxTest ? 'https://api.minimaxi.com/v1' : '')
   )
   const minimaxApiKey = localEnv.MINIMAX_API_KEY
     || localEnv.MINIMAX_CN_API_KEY
@@ -1061,21 +1061,26 @@ function hermesRuntimeEnv(extra = {}) {
     || ''
   const openAiBaseUrl = hermesProviderUsesMiniMax(hermesProvider)
     ? minimaxBaseUrl
-    : (localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || minimaxBaseUrl)
+    : (localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || '')
+  const openAiModel = localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || (explicitMiniMaxTest ? 'MiniMax-M3' : '')
+  const openAiApiKey = localEnv.OPENAI_API_KEY
+    || process.env.OPENAI_API_KEY
+    || (hermesProviderUsesMiniMax(hermesProvider) ? minimaxApiKey : '')
   const env = {
     ...process.env,
     ...localEnv,
     PATH: hermesEnhancedPath(),
-    HERMES_PROVIDER: hermesProvider,
-    OPENAI_BASE_URL: openAiBaseUrl,
-    OPENAI_MODEL: localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || 'MiniMax-M3',
-    OPENAI_API_KEY: localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || minimaxApiKey,
-    SUPERCLAW_FORCE_PROVIDER: localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || 'minimax',
-    MINIMAX_API_KEY: minimaxApiKey,
-    MINIMAX_BASE_URL: minimaxBaseUrl,
-    MINIMAX_CN_BASE_URL: localEnv.MINIMAX_CN_BASE_URL || process.env.MINIMAX_CN_BASE_URL || minimaxBaseUrl,
     ...extra,
   }
+  if (hermesProvider) env.HERMES_PROVIDER = hermesProvider
+  if (openAiBaseUrl) env.OPENAI_BASE_URL = openAiBaseUrl
+  if (openAiModel) env.OPENAI_MODEL = openAiModel
+  if (openAiApiKey) env.OPENAI_API_KEY = openAiApiKey
+  if (forcedProvider) env.SUPERCLAW_FORCE_PROVIDER = forcedProvider
+  if (minimaxApiKey) env.MINIMAX_API_KEY = minimaxApiKey
+  if (minimaxBaseUrl) env.MINIMAX_BASE_URL = minimaxBaseUrl
+  const minimaxCnBaseUrl = localEnv.MINIMAX_CN_BASE_URL || process.env.MINIMAX_CN_BASE_URL || minimaxBaseUrl
+  if (minimaxCnBaseUrl) env.MINIMAX_CN_BASE_URL = minimaxCnBaseUrl
   const bash = hermesGitBashPath()
   if (bash) env.HERMES_GIT_BASH_PATH = bash
   return env
@@ -2272,8 +2277,7 @@ function isHermesSmokeOrFixtureSession(session = {}) {
   const preview = String(session.preview || '').toLowerCase()
   const marker = `${id} ${title} ${source} ${preview}`
   if (marker.includes('codex-hermes')) return true
-  if (marker.includes('yyapi-test')) return true
-  return ['smoke', 'test', 'fixture', 'yyapi-test'].includes(source)
+  return ['smoke', 'test', 'fixture'].includes(source)
 }
 
 function isHermesPlaceholderSessionText(value) {
@@ -2783,18 +2787,6 @@ function openclawMiniMaxGatewayEnv() {
 
 function requireOpenClawMiniMaxGatewayConfig() {
   const minimaxConfig = openclawMiniMaxGatewayConfig()
-  if (minimaxConfig.effective?.status === 'config_conflict') {
-    const error = new Error('OpenClaw 模型配置冲突：当前 release/yyapi 模式要求 yyapi 接管，但检测到 direct MiniMax 配置仍在生效。')
-    error.code = 'CONFIG_CONFLICT'
-    error.details = minimaxConfig.effective
-    throw error
-  }
-  if (minimaxConfig.effective?.modelSource === 'yyapi' && minimaxConfig.effective?.status !== 'ready') {
-    const error = new Error('OpenClaw 模型配置未就绪：当前 release/yyapi 模式必须由 yyapi 提供模型配置，禁止 fallback 到 direct MiniMax。')
-    error.code = minimaxConfig.effective?.code || 'YYAPI_MODEL_CONFIG_REQUIRED'
-    error.details = minimaxConfig.effective
-    throw error
-  }
   if (!minimaxConfig.apiKey) {
     const error = new Error('OpenClaw MiniMax API Key 未配置，请先在模型设置中保存 MiniMax API Key。')
     error.code = 'OPENCLAW_MINIMAX_API_KEY_REQUIRED'
@@ -4342,7 +4334,7 @@ async function handleAppVersionApi(req, res, url) {
 
   if (url.pathname === '/api/admin/version') {
     if (!isAuthenticated(req)) {
-      sendJsonResponse(res, 401, { error: 'AUTH_REQUIRED' })
+      sendJsonResponse(res, 401, { error: 'ADMIN_ACCESS_REQUIRED' })
       return true
     }
     if (req.method === 'GET') {
@@ -7154,7 +7146,6 @@ function writeMiniMaxClaudeRelay(config = {}) {
 
 function saveMiniMaxTestConfigLocal(input = {}) {
   const normalized = normalizeMiniMaxTestPayload(input)
-  assertDirectModelConfigWritable('minimax-test-config')
   const plain = readMiniMaxPlainConfig()
   const apiKey = normalized.apiKey || plain.apiKey
   const nextConfig = ensureMiniMaxOpenClawConfig(plain.cfg, normalized, apiKey)
@@ -7593,7 +7584,6 @@ const handlers = {
   },
 
   configure_claude_code_relay({ config } = {}) {
-    assertDirectModelConfigWritable('claude-code')
     const payload = config || {}
     const baseUrl = cleanMiniMaxBaseUrl(payload.baseUrl)
     const apiKey = cleanMiniMaxValue(payload.apiKey)
@@ -11340,7 +11330,7 @@ const handlers = {
     }
     const providerName = String(provider || 'custom').trim() || 'custom'
     const lowerProvider = providerName.toLowerCase()
-    const modelStr = model || (['minimax', 'minimax-cn'].includes(lowerProvider) ? 'MiniMax-M3' : 'gpt-5.5')
+    const modelStr = model || (['minimax', 'minimax-cn'].includes(lowerProvider) ? 'MiniMax-M3' : 'custom-model')
     const baseUrlValue = baseUrl && baseUrl.trim() ? baseUrl.trim().replace(/\/+$/, '') : ''
     const isOpenAiChat = ['custom', 'openai', 'openai-api', 'openrouter', 'deepseek', 'minimax', 'minimax-cn'].includes(lowerProvider)
     const providerLine = `  provider: ${providerName}\n${isOpenAiChat ? '  api_mode: chat_completions\n' : ''}`

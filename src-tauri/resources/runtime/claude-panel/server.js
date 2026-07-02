@@ -451,7 +451,7 @@ function readRelayConfig() {
 
 function isOpenAiCompatibleRelay(config = readRelayConfig()) {
   const provider = String(config.provider || "").toLowerCase();
-  return provider.includes("openai") || provider.includes("yyapi");
+  return provider.includes("openai");
 }
 
 function localOpenAiCompatBaseUrl() {

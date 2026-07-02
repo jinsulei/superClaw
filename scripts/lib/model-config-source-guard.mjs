@@ -25,18 +25,6 @@ function boolFlag(value, fallback = false) {
   return fallback
 }
 
-function normalizeMode(value) {
-  const raw = clean(value).toLowerCase()
-  return raw === 'release' ? 'release' : 'dev'
-}
-
-function normalizeModelSource(value, mode) {
-  const raw = clean(value).toLowerCase()
-  if (raw === 'yyapi') return 'yyapi'
-  if (raw === 'direct') return 'direct'
-  return mode === 'release' ? 'yyapi' : 'direct'
-}
-
 function isPlaceholderApiKey(value) {
   const key = clean(value)
   if (!key) return true
@@ -63,15 +51,8 @@ export function modelConfigKeyFingerprint(value) {
   return key ? crypto.createHash('sha256').update(key).digest('hex').slice(0, 8) : ''
 }
 
-export function getRuntimeModelPolicy(env = process.env) {
-  const mode = normalizeMode(env.SUPERCLAW_MODE || env.VITE_SUPERCLAW_MODE)
-  const modelSource = normalizeModelSource(env.MODEL_SOURCE || env.SUPERCLAW_MODEL_SOURCE, mode)
-  const authRequired = boolFlag(env.AUTH_REQUIRED || env.SUPERCLAW_AUTH_REQUIRED, mode === 'release')
-  const allowDirectFallback = boolFlag(
-    env.ALLOW_DIRECT_FALLBACK || env.SUPERCLAW_ALLOW_DIRECT_FALLBACK,
-    false
-  )
-  return { mode, modelSource, authRequired, allowDirectFallback }
+export function getRuntimeModelPolicy() {
+  return { mode: 'runtime', modelSource: 'direct' }
 }
 
 function firstConfiguredKey(config = {}, env = {}) {
@@ -92,97 +73,41 @@ function firstConfiguredKey(config = {}, env = {}) {
 
 function normalizeDirectConfig(config = {}, env = {}) {
   const apiKey = firstConfiguredKey(config, env)
+  const provider = clean(
+    config.provider ||
+    config.providerId ||
+    env.HERMES_PROVIDER ||
+    env.OPENCLAW_PROVIDER ||
+    env.AGENT_PROVIDER ||
+    env.PROVIDER
+  )
   return {
-    provider: clean(config.provider || config.providerId || MODEL_CONFIG_DEFAULTS.provider),
-    baseUrl: clean(config.baseUrl || config.base_url || env.OPENAI_BASE_URL || MODEL_CONFIG_DEFAULTS.baseUrl),
-    model: clean(config.model || env.OPENAI_MODEL || MODEL_CONFIG_DEFAULTS.model),
+    provider,
+    baseUrl: clean(config.baseUrl || config.base_url || env.OPENAI_BASE_URL || ''),
+    model: clean(config.model || env.OPENAI_MODEL || ''),
     apiKeyConfigured: !!apiKey,
     apiKeyFingerprint: modelConfigKeyFingerprint(apiKey),
     configPath: clean(config.configPath || config.path || ''),
   }
 }
 
-function normalizeYyapiConfig(config = {}) {
-  const key = normalizeConfigApiKey(config.apiKey || config.api_key || config.token)
-  const apiKeyConfigured = config.apiKeyConfigured === true || !!key
-  return {
-    provider: clean(config.provider || 'yyapi'),
-    baseUrl: clean(config.baseUrl || config.base_url || ''),
-    model: clean(config.model || ''),
-    apiKeyConfigured,
-    apiKeyFingerprint: modelConfigKeyFingerprint(key),
-    configPath: clean(config.configPath || config.path || ''),
-  }
-}
-
 export function getEffectiveModelConfig(agentName, options = {}) {
   const env = options.env || process.env
-  const policy = getRuntimeModelPolicy(env)
+  const policy = getRuntimeModelPolicy()
   const direct = normalizeDirectConfig(options.directConfig || {}, env)
-  const yyapi = normalizeYyapiConfig(options.yyapiConfig || {})
   const warnings = []
 
-  if (policy.modelSource === 'yyapi') {
-    if (direct.apiKeyConfigured && !policy.allowDirectFallback) {
-      warnings.push('CONFIG_CONFLICT_DIRECT_WITH_YYAPI')
-      return {
-        agentName,
-        ...policy,
-        provider: yyapi.provider || 'yyapi',
-        baseUrl: yyapi.baseUrl,
-        model: yyapi.model,
-        apiKeyConfigured: yyapi.apiKeyConfigured,
-        apiKeySource: yyapi.apiKeyConfigured ? 'yyapi' : 'none',
-        apiKeyFingerprint: yyapi.apiKeyFingerprint,
-        configPath: yyapi.configPath || options.configPath || '',
-        status: 'config_conflict',
-        code: 'CONFIG_CONFLICT',
-        warnings,
-      }
-    }
-
-    if (!yyapi.provider || !yyapi.baseUrl || !yyapi.model || !yyapi.apiKeyConfigured) {
-      warnings.push('YYAPI_CONFIG_MISSING')
-      return {
-        agentName,
-        ...policy,
-        provider: yyapi.provider || 'yyapi',
-        baseUrl: yyapi.baseUrl,
-        model: yyapi.model,
-        apiKeyConfigured: yyapi.apiKeyConfigured,
-        apiKeySource: yyapi.apiKeyConfigured ? 'yyapi' : 'none',
-        apiKeyFingerprint: yyapi.apiKeyFingerprint,
-        configPath: yyapi.configPath || options.configPath || '',
-        status: 'needs_setup',
-        code: 'YYAPI_MODEL_CONFIG_REQUIRED',
-        warnings,
-      }
-    }
-
-    return {
-      agentName,
-      ...policy,
-      provider: yyapi.provider,
-      baseUrl: yyapi.baseUrl,
-      model: yyapi.model,
-      apiKeyConfigured: yyapi.apiKeyConfigured,
-      apiKeySource: 'yyapi',
-      apiKeyFingerprint: yyapi.apiKeyFingerprint,
-      configPath: yyapi.configPath || options.configPath || '',
-      status: 'ready',
-      code: 'OK',
-      warnings,
-    }
-  }
-
   if (!direct.provider || !direct.baseUrl || !direct.model || !direct.apiKeyConfigured) {
+    if (!direct.provider) warnings.push('DIRECT_PROVIDER_MISSING')
+    if (!direct.baseUrl) warnings.push('DIRECT_BASE_URL_MISSING')
+    if (!direct.model) warnings.push('DIRECT_MODEL_MISSING')
     if (!direct.apiKeyConfigured) warnings.push('DIRECT_API_KEY_MISSING')
     return {
       agentName,
       ...policy,
-      provider: direct.provider || MODEL_CONFIG_DEFAULTS.provider,
-      baseUrl: direct.baseUrl || MODEL_CONFIG_DEFAULTS.baseUrl,
-      model: direct.model || MODEL_CONFIG_DEFAULTS.model,
+      provider: direct.provider,
+      baseUrl: direct.baseUrl,
+      model: direct.model,
       apiKeyConfigured: direct.apiKeyConfigured,
       apiKeySource: direct.apiKeyConfigured ? 'direct-env' : 'none',
       apiKeyFingerprint: direct.apiKeyFingerprint,
@@ -210,12 +135,7 @@ export function getEffectiveModelConfig(agentName, options = {}) {
 }
 
 export function assertDirectModelConfigWritable(agentName, options = {}) {
-  const policy = getRuntimeModelPolicy(options.env || process.env)
-  if (policy.modelSource === 'yyapi' && !policy.allowDirectFallback) {
-    const error = new Error(`${agentName} direct model config is disabled while MODEL_SOURCE=yyapi`)
-    error.code = 'DIRECT_CONFIG_DISABLED_IN_RELEASE_YYAPI'
-    error.details = { agentName, ...policy }
-    throw error
-  }
+  void agentName
+  void options
   return true
 }

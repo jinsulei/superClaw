@@ -301,7 +301,7 @@ export function containsSensitiveMemoryText(text = '') {
     /\.env|config\.yaml|config\.json/i.test(value) ||
     /sk-[A-Za-z0-9.*_-]+/i.test(value) ||
     /Bearer\s+[A-Za-z0-9._-]+/i.test(value) ||
-    /C:\\tmp\\|F:\\|电商1\.0\.2|SuperClaw-1\.0\.4|release-user-package/i.test(value)
+    /C:\\tmp\\|F:\\|SuperClaw-\d+(?:\.\d+)*/i.test(value)
   )
 }
 

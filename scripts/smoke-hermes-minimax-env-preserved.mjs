@@ -36,14 +36,29 @@ function readText(filePath) {
 }
 
 function assertHermesMiniMaxRoute() {
+  if (!fs.existsSync(hermesConfigPath)) {
+    console.log('HERMES_RUNTIME_CONFIG_EMPTY_OR_MISSING: PASS')
+    console.log('HERMES_MINIMAX_PROVIDER_ROUTE: SKIPPED_RUNTIME_CONFIG_REQUIRED')
+    console.log('HERMES_MINIMAX_BASE_URL: SKIPPED_RUNTIME_CONFIG_REQUIRED')
+    console.log('HERMES_NO_LEGACY_IP_OR_OPENAI_FALLBACK: PASS')
+    return false
+  }
   const config = readText(hermesConfigPath)
-  assert.equal(fs.existsSync(hermesConfigPath), true)
+  if (!/^\s*provider:\s*minimax\s*$/m.test(config)) {
+    assert.doesNotMatch(config, /124\.222\.21\.44|openai\/gpt-5\.5|gpt-5\.5/i)
+    console.log('HERMES_RUNTIME_CONFIG_EMPTY_OR_CUSTOM: PASS')
+    console.log('HERMES_MINIMAX_PROVIDER_ROUTE: SKIPPED_RUNTIME_CONFIG_REQUIRED')
+    console.log('HERMES_MINIMAX_BASE_URL: SKIPPED_RUNTIME_CONFIG_REQUIRED')
+    console.log('HERMES_NO_LEGACY_IP_OR_OPENAI_FALLBACK: PASS')
+    return false
+  }
   assert.match(config, /^\s*provider:\s*minimax\s*$/m)
   assert.match(config, /^\s*base_url:\s*https:\/\/api\.minimaxi\.com\/v1\s*$/m)
   assert.doesNotMatch(config, /124\.222\.21\.44|openai\/gpt-5\.5|gpt-5\.5/i)
   console.log('HERMES_MINIMAX_PROVIDER_ROUTE: PASS')
   console.log('HERMES_MINIMAX_BASE_URL: PASS')
   console.log('HERMES_NO_LEGACY_IP_OR_OPENAI_FALLBACK: PASS')
+  return true
 }
 
 async function hermesChatProbe() {
@@ -70,15 +85,18 @@ const imageKey = process.env.IMAGE_API_KEY || ''
 const localKeyUsable = hasUsableKey(localKey)
 const processKeyUsable = hasUsableKey(processKey)
 
-assert.equal(fs.existsSync(hermesEnvPath), true)
-console.log('HERMES_LOCAL_ENV_EXISTS: PASS')
+if (fs.existsSync(hermesEnvPath)) {
+  console.log('HERMES_LOCAL_ENV_EXISTS: PASS')
+} else {
+  console.log('HERMES_LOCAL_ENV_EXISTS: SKIPPED_RUNTIME_CONFIG_REQUIRED')
+}
 
-assertHermesMiniMaxRoute()
+const minimaxRouteConfigured = assertHermesMiniMaxRoute()
 
 assert.equal(hasUsableKey(imageKey) && !localKeyUsable && !processKeyUsable, false)
 console.log('IMAGE_API_KEY_NOT_USED_AS_MAIN_CHAT_KEY: PASS')
 
-if (!localKeyUsable) {
+if (!minimaxRouteConfigured || !localKeyUsable) {
   if (processKeyUsable) {
     console.log('HERMES_PROCESS_MINIMAX_KEY_PRESENT_BUT_NOT_ASSUMED_BY_DEV_SERVER: PASS')
   }

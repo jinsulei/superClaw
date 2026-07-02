@@ -495,7 +495,6 @@ const P_OPENAI_CODEX: HermesProvider = HermesProvider {
     transport: TRANSPORT_CODEX,
     models_probe: PROBE_NONE,
     models: &[
-        "gpt-5.5",
         "gpt-5.4-mini",
         "gpt-5.4",
         "gpt-5.3-codex",

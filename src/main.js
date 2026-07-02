@@ -351,9 +351,13 @@ async function syncMiniMaxTestModelSettings() {
 
 async function syncDefaultModelSettings() {
   try {
-    await syncMiniMaxTestModelSettings()
+    if (isMiniMaxOnlyMode()) {
+      await syncMiniMaxTestModelSettings()
+    } else {
+      await syncHermesModel()
+    }
   } catch (err) {
-    console.warn('[model-sync] MiniMax default model sync failed:', err.message)
+    console.warn('[model-sync] runtime model sync failed:', err.message)
     await syncHermesModel()
   }
 }
