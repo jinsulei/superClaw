@@ -3085,9 +3085,21 @@ function buildOpenClawHighRiskSafetyReply() {
   ].join('\n\n')
 }
 
+function isOpenClawSkillsQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 120) return false
+  return (
+    /\bskills?\b/i.test(value) ||
+    /(?:\u6280\u80fd\u5305|\u6280\u80fd\u5217\u8868|\u6280\u80fd\u6e05\u5355)/i.test(value) ||
+    /(?:\u5f53\u524d|\u53ef\u7528|\u6709\u54ea\u4e9b|\u6709\u4ec0\u4e48|\u4ecb\u7ecd|\u8bf4\u660e|\u5217\u51fa|\u67e5\u770b|\u67e5\u8be2).{0,10}\u6280\u80fd(?!\u529b)/i.test(value) ||
+    /\u6280\u80fd(?!\u529b).{0,10}(?:\u5f53\u524d|\u53ef\u7528|\u6709\u54ea\u4e9b|\u6709\u4ec0\u4e48|\u4ecb\u7ecd|\u8bf4\u660e|\u5217\u51fa|\u67e5\u770b|\u67e5\u8be2)/i.test(value)
+  )
+}
+
 function isOpenClawCapabilitySummaryQuestion(text) {
   const value = String(text || '').trim()
   if (!value || value.length > 80) return false
+  if (isOpenClawSkillsQuestion(value)) return false
   if (/(?:\u7535\u5546|\u8d22\u52a1|\u4ed8\u6b3e|\u652f\u4ed8|\u4e0b\u5355|\u622a\u56fe|\u8bfb\u53d6|\u6253\u5f00|\u9875\u9762)/i.test(value)) return false
   if (/(?:检查|查看|汇总|确认|介绍|说下).{0,12}(?:当前)?能力|(?:当前)?能力.{0,12}(?:检查|汇总|清单|结论)|能力清单|能力列表/i.test(value)) return true
   return /(?:\u4f60\u6709\u4ec0\u4e48\u6280\u80fd|\u6709\u54ea\u4e9b\u6280\u80fd|\u53ef\u7528\u7684\s*skills?|\u6280\u80fd\u5217\u8868|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u6709\u4ec0\u4e48\u80fd\u529b|what can you do|skills?)/i.test(value)
@@ -3156,6 +3168,9 @@ function maybeHandleOpenClawLocalAnswer(text) {
       kind: 'finance',
       reply: buildOpenClawFinanceCapabilityReply(),
     }
+  }
+  if (isOpenClawSkillsQuestion(value)) {
+    return { handled: false, kind: 'skills-intent' }
   }
   if (isOpenClawCapabilitySummaryQuestion(value)) {
     return {
@@ -4162,7 +4177,9 @@ function buildIntentTriggeredToolPrompt(text) {
   const base = String(text || '').trim()
   if (!base) return base
   const lower = base.toLowerCase()
+  const skillsIntent = isOpenClawSkillsQuestion(base)
   const capabilityAuditIntent =
+    skillsIntent ||
     /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
   const hasUrl = /https?:\/\//i.test(base)
   const desktopIntent =
