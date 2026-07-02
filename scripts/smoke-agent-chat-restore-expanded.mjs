@@ -26,9 +26,12 @@ if (!compact.collapsed) {
 
 assertContains('OpenClaw chat', openclawChat, 'OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY')
 assertContains('OpenClaw chat', openclawChat, 'isOpenClawManualCompactCollapsed(compactKey)')
-assertContains('OpenClaw chat', openclawChat, "wrapper.classList.add(manualCollapsed ? 'is-collapsed' : 'is-expanded')")
-assertContains('OpenClaw chat', openclawChat, 'renderContent(manualCollapsed ? compact.preview : compact.content)')
+assertContains('OpenClaw chat', openclawChat, "if (!isStreaming) wrapper.classList.add(canToggle && manualCollapsed ? 'is-collapsed' : 'is-expanded')")
+assertContains('OpenClaw chat', openclawChat, "renderContent(isStreaming ? compact.content : (manualCollapsed ? compact.preview : compact.content))")
 assertContains('OpenClaw chat', openclawChat, 'setOpenClawManualCompactCollapsed(compactKey, !expanded)')
+assertContains('OpenClaw chat', openclawChat, "toggle.dataset.openclawControl = 'collapse-toggle'")
+assertContains('OpenClaw chat', openclawChat, "content.dataset.openclawAssistantContent = 'true'")
+assertContains('OpenClaw chat', openclawChat, "const canToggle = !isStreaming && !hasMarkdownTable && !!compact.collapsed")
 assertContains('OpenClaw chat', openclawChat, "bubble.dataset.compactKey = meta.dedupeKey || ''")
 assertContains('OpenClaw chat', openclawChat, "textEl.dataset.compactKey = renderMeta.dedupeKey || ''")
 

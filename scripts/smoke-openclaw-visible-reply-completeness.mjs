@@ -25,6 +25,9 @@ const requiredTerms = [
   'function isOpenClawNumberedListFragment',
   'function isOpenClawLetteredListFragment',
   'function buildOpenClawCapabilitySummaryFallback',
+  'function stripOpenClawInternalReasoningOutput',
+  'function containsOpenClawInternalReasoningOutput',
+  'OPENCLAW_INTERNAL_REASONING_VISIBLE_FALLBACK',
   'if (!hasOpenClawRenderableContent({ visibleText: visibleDeltaText }))',
   'if (_currentAiBubble && !hasContent && removeCurrentOpenClawStreamBubbleIfEmpty())',
   'if (!hasOpenClawRenderableContent({',
@@ -42,7 +45,7 @@ assert(appendAiStart >= 0, 'appendAiMessage function not found')
 assert(
   appendAiFn.includes('normalizeOpenClawVisibleAssistantText(text || \'\',') &&
     appendAiFn.includes('text = normalizedText.text ? completeOpenClawVisibleReply(normalizedText.text) : \'\''),
-  'appendAiMessage must complete OpenClaw assistant text before rendering',
+  'appendAiMessage must sanitize OpenClaw assistant text before rendering',
 )
 assert(
   appendAiFn.includes('if (!hasOpenClawRenderableContent({') &&
@@ -73,6 +76,16 @@ assert(finalStart >= 0, 'OpenClaw final branch not found')
 assert(
   finalBlock.includes('hasOpenClawRenderableContent({'),
   'final branch must decide renderability before keeping an assistant bubble',
+)
+const completeFnStart = source.indexOf('function completeOpenClawVisibleReply')
+const completeFnEnd = source.indexOf('function extractOpenClawTextPart', completeFnStart)
+const completeFn = source.slice(completeFnStart, completeFnEnd)
+assert(completeFnStart >= 0, 'completeOpenClawVisibleReply function not found')
+assert(
+  completeFn.includes('return sanitizeOpenClawVisibleReply(text)') &&
+    !completeFn.includes('ensureCompleteVisibleReply') &&
+    !completeFn.includes('repairIncompleteOpenClawVisibleReply'),
+  'OpenClaw render path must not replace model output with local incomplete-reply fallback',
 )
 assert(
   finalBlock.includes("clearOpenClawGenerationState('empty-final'"),
@@ -107,7 +120,7 @@ assert(!/[:：,，;；、|]$/.test(incompleteSentence), 'OpenClaw incomplete sen
 assert(source.includes('isOpenClawMarkdownTableFragment(value)'), 'OpenClaw must detect inline half markdown tables')
 assert(source.includes('isOpenClawNumberedListFragment(value)'), 'OpenClaw must detect incomplete numbered list fragments')
 assert(source.includes('isOpenClawLetteredListFragment(value)'), 'OpenClaw must detect incomplete lettered list fragments')
-assert(source.includes('buildOpenClawCapabilitySummaryFallback(userText, value)'), 'OpenClaw must repair capability table fragments')
+assert(source.includes('buildOpenClawCapabilitySummaryFallback(userText, value)'), 'OpenClaw retains fallback helper for explicit local replies')
 assert(source.includes('当前可用：浏览器/桌面协助'), 'OpenClaw capability fallback must be a Chinese summary')
 assert(source.includes('当前具备 OCR 相关能力'), 'OpenClaw OCR fallback must be a concise Chinese summary')
 assert(source.includes('_currentAiText = _currentAiText || finalText'), 'OpenClaw final branch must not overwrite repaired visible text with raw final text')
@@ -126,5 +139,14 @@ assert(source.includes('isInternalToolPlaceholderText(line, { allowShortLiteral:
 assert(source.includes('function isInternalToolPlaceholderText(value, options = {})'), 'OpenClaw tool placeholder filter must accept short-literal options')
 assert(source.includes('options.allowShortLiteral !== true && /^\\s*(?:success|ok|completed|done)\\s*$/i.test(raw)'), 'OpenClaw tool placeholder filter must preserve OK only when explicitly allowed')
 assert(source.includes('only\\s+reply') && source.includes('\\u53ea\\u9700') && source.includes('\\u56de\\u590d'), 'OpenClaw exact literal detector must cover English and Chinese literal requests')
+assert(source.includes('The user is asking'), 'OpenClaw visible sanitizer must catch English user-intent reasoning leaks')
+assert(source.includes("I've been running"), 'OpenClaw visible sanitizer must catch repeated-audit reasoning leaks')
+assert(source.includes('Reply in Simplified Chinese'), 'OpenClaw visible sanitizer must catch leaked prompt instructions')
+assert(source.includes('Use skill_manager'), 'OpenClaw visible sanitizer must catch leaked tool-audit instructions')
+assert(
+  source.indexOf('stripOpenClawInternalReasoningOutput(text)') <
+    source.indexOf('sanitizeVisibleReplyForChinese(safeInput'),
+  'OpenClaw must remove internal reasoning before Chinese visible-reply sanitization',
+)
 
 console.log('SMOKE_OPENCLAW_VISIBLE_REPLY_COMPLETENESS_PASS')
