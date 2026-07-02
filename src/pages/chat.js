@@ -32,7 +32,6 @@ import {
 } from '../engines/openclaw/lib/openclaw-ecommerce-assist.js'
 import { renderScreenshotCard, renderUserConfirmationCard } from '../shared/life-assistant-ui.js'
 import { compactChatMessage } from '../shared/compact-chat-policy.js'
-import { ensureCompleteVisibleReply } from '../shared/chat-output-guard.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
 import {
   buildAgentIdentitySystemPrompt,
@@ -56,6 +55,7 @@ const STORAGE_SESSION_WORKFILES_KEY = 'superclaw-chat-session-workfiles'
 const STORAGE_LOCAL_SESSIONS_KEY = 'superclaw-chat-local-sessions'
 const STORAGE_WORKSPACE_PANEL_KEY = 'superclaw-chat-workspace-open'
 const OPENCLAW_COMPACT_COLLAPSED_STORAGE_KEY = 'superclaw-openclaw-manual-collapsed-messages'
+const OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_KEY = 'superclaw-openclaw-chat-view-snapshots'
 const BROWSER_GATEWAY_PORT = 18789
 const BROWSER_GATEWAY_TOKEN = 'superclaw-portable-local'
 const OPENCLAW_GATEWAY_SEND_READY_TIMEOUT_MS = 30000
@@ -137,6 +137,7 @@ let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _last
 let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false
 let _isLoadingHistory = false
 let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
+let _chatSnapshotLifecycleBound = false
 let _seenRunIds = new Set()
 let _pageActive = false
 let _sendInputLocked = false
@@ -154,6 +155,8 @@ const _chatViewSnapshotsBySession = new Map()
 const OPENCLAW_SEND_DEDUPE_WINDOW_MS = 1200
 const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS = 5 * 60 * 1000
+const OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT = 350000
+const OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION = 2
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
@@ -472,6 +475,7 @@ export async function render() {
   if (snapshotSessionKey) {
     restoreOpenClawChatSnapshot(snapshotSessionKey, 'render')
   }
+  bindOpenClawChatSnapshotLifecycle()
   page.querySelector('#chat-sidebar')?.classList.toggle('open', getSidebarOpen())
 
   bindEvents(page)
@@ -772,7 +776,7 @@ function bindEvents(page) {
       e.stopPropagation()
       const msgWrap = voiceBtn.closest('.msg')
       const bubble = msgWrap?.querySelector('.msg-bubble .msg-text')
-      const text = bubble?.innerText || bubble?.textContent || ''
+      const text = getOpenClawAssistantContentText(bubble)
       if (!text.trim()) return
       const status = await _voicePlaybackController?.toggleAsync({ key: voiceBtn.dataset.voiceKey, text, lang: 'zh-CN', rate: _voiceRate })
       if (status === 'started') toast(t('chat.voiceFallbackTts'), 'info')
@@ -791,7 +795,7 @@ function bindEvents(page) {
       const msgWrap = copyBtn.closest('.msg')
       const bubble = msgWrap?.querySelector('.msg-bubble')
       if (bubble) {
-        const text = bubble.innerText || bubble.textContent || ''
+        const text = getOpenClawAssistantContentText(bubble)
         navigator.clipboard.writeText(text.trim()).then(() => {
           copyBtn.classList.add('copied')
           copyBtn.innerHTML = svgIcon('check', 12)
@@ -3296,13 +3300,120 @@ function withOpenClawIdentityPrelude(prompt) {
 
 function stripOpenClawIdentityPrelude(text) {
   const raw = String(text || '')
-  if (!raw.includes(OPENCLAW_IDENTITY_CONTEXT_START)) return raw
+  const legacyIdentitySource = raw.includes(OPENCLAW_IDENTITY_CONTEXT_START) ? raw : raw
   const escapedStart = OPENCLAW_IDENTITY_CONTEXT_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const escapedEnd = OPENCLAW_IDENTITY_CONTEXT_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return raw
+  return legacyIdentitySource
     .replace(new RegExp(`${escapedStart}[\\s\\S]*?${escapedEnd}\\s*`, 'g'), '')
     .replace(/^User:\s*/i, '')
     .trim()
+}
+
+function stripOpenClawRuntimePromptBlocks(text) {
+  let next = stripOpenClawIdentityPrelude(text)
+  const blockNames = [
+    'BROWSER_TOOL_TRIGGER',
+    'DESKTOP_CONTROL_TRIGGER',
+    'OPENCLAW_TOOL_TRIGGER',
+    'OPENCLAW_IDENTITY_CONTEXT',
+  ]
+  for (const name of blockNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    next = next.replace(new RegExp(`\\s*\\[${escaped}\\][\\s\\S]*?\\[/${escaped}\\]\\s*`, 'gi'), ' ')
+  }
+  return next
+    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|OPENCLAW_IDENTITY_CONTEXT)\][\s\S]*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function openClawVisibleUserText(text) {
+  return stripOpenClawRuntimePromptBlocks(text)
+}
+
+const OPENCLAW_INTERNAL_REASONING_VISIBLE_FALLBACK =
+  '\u6211\u4f1a\u7528\u4e2d\u6587\u76f4\u63a5\u7ed9\u7ed3\u8bba\uff1a\u5185\u90e8\u601d\u8003\u548c\u5ba1\u8ba1\u8fc7\u7a0b\u5df2\u9690\u85cf\u3002\u8bf7\u91cd\u65b0\u53d1\u9001\u95ee\u9898\uff0c\u6211\u4f1a\u53ea\u4fdd\u7559\u6700\u7ec8\u4e2d\u6587\u7ed3\u8bba\u3002'
+
+const OPENCLAW_INTERNAL_REASONING_PATTERNS = [
+  /\bCAPABILITY_AUDIT_TRIGGER\b/i,
+  /\bThe user is asking\b/i,
+  /\bThe user keeps asking\b/i,
+  /\bThe user wants\b/i,
+  /\bI've been running\b/i,
+  /\bI have been running\b/i,
+  /\bI should\b/i,
+  /\bI need to\b/i,
+  /\bI think\b/i,
+  /\bLet me\b/i,
+  /\bActually,?\s+I\b/i,
+  /\bReply in Simplified Chinese\b/i,
+  /\bInspect currently available tools\b/i,
+  /\bUse skill_manager\b/i,
+  /\bOnly call skill_manager\b/i,
+  /\bAcknowledge the request\b/i,
+  /\bGive the concise summary\b/i,
+  /\bAsk if there'?s\b/i,
+  /\binternal reasoning\b/i,
+  /\bscratchpad\b/i,
+  /\bpolicy analysis\b/i,
+]
+
+function normalizeOpenClawReasoningProbeLine(line) {
+  return String(line || '')
+    .replace(/^[\s>*\-+•\u2022\u2705\u2611\ufe0f\u261d\ufe0f\u{1f449}\u{1f4ac}]+/gu, '')
+    .trim()
+}
+
+function containsOpenClawInternalReasoningOutput(text) {
+  const value = String(text || '')
+  if (!value) return false
+  return OPENCLAW_INTERNAL_REASONING_PATTERNS.some(pattern => pattern.test(value))
+}
+
+function isMostlyEnglishOpenClawReasoningLine(line) {
+  const value = normalizeOpenClawReasoningProbeLine(line)
+  if (!value) return false
+  const latinWords = (value.match(/\b[A-Za-z][A-Za-z'-]{2,}\b/g) || []).length
+  const chineseChars = (value.match(/[\u3400-\u9fff]/g) || []).length
+  return latinWords >= 8 && chineseChars < 4
+}
+
+function isOpenClawInternalReasoningLine(line) {
+  const value = normalizeOpenClawReasoningProbeLine(line)
+  if (!value) return false
+  return OPENCLAW_INTERNAL_REASONING_PATTERNS.some(pattern => pattern.test(value))
+}
+
+function stripOpenClawInternalReasoningOutput(text) {
+  const value = String(text || '')
+  if (!value) return ''
+  let next = value
+    .replace(/\[CAPABILITY_AUDIT_TRIGGER\][\s\S]*?\[\/CAPABILITY_AUDIT_TRIGGER\]/gi, '')
+    .replace(/<scratchpad>[\s\S]*?<\/scratchpad>/gi, '')
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
+
+  if (!containsOpenClawInternalReasoningOutput(next)) return next.trim()
+
+  const lines = next.split(/\r?\n/)
+  const kept = []
+  let droppingEnglishReasoning = false
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim()
+    if (!trimmed) {
+      if (kept.length) kept.push('')
+      continue
+    }
+    const isReasoning = isOpenClawInternalReasoningLine(trimmed)
+    if (isReasoning || (droppingEnglishReasoning && isMostlyEnglishOpenClawReasoningLine(trimmed))) {
+      droppingEnglishReasoning = true
+      continue
+    }
+    droppingEnglishReasoning = false
+    kept.push(rawLine)
+  }
+
+  next = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  return next
 }
 
 function stripOpenClawInternalProcessText(text) {
@@ -3408,21 +3519,18 @@ function isOpenClawAssistantFailurePlaceholderText(text) {
 }
 
 function sanitizeOpenClawVisibleReply(text) {
-  return stripOpenClawInternalProcessText(
-    sanitizeVisibleReplyForChinese(text, _lastVisibleUserText, {
+  const withoutReasoning = stripOpenClawInternalReasoningOutput(text)
+  const safeInput = withoutReasoning || (containsOpenClawInternalReasoningOutput(text) ? OPENCLAW_INTERNAL_REASONING_VISIBLE_FALLBACK : text)
+  return stripOpenClawInternalReasoningOutput(stripOpenClawInternalProcessText(
+    sanitizeVisibleReplyForChinese(safeInput, _lastVisibleUserText, {
       agent: 'openclaw',
       allowEnglish: isOpenClawExactLiteralReplyRequest(_lastVisibleUserText) || isOpenClawSafeShortLiteralReply(text),
     })
-  )
+  ))
 }
 
 function completeOpenClawVisibleReply(text, userText = _lastVisibleUserText) {
-  const reply = ensureCompleteVisibleReply(sanitizeOpenClawVisibleReply(text), {
-    agent: 'openclaw',
-    userText,
-    maxChars: 520,
-  })
-  return repairIncompleteOpenClawVisibleReply(reply, userText)
+  return sanitizeOpenClawVisibleReply(text)
 }
 
 function extractOpenClawTextPart(value) {
@@ -3569,7 +3677,8 @@ function normalizeOpenClawVisibleAssistantText(payload, options = {}) {
 }
 
 function isOpenClawInternalReasoningLeak(text) {
-  return /^(?:The user wants|User wants|I need to|I should|We need to|Need to)\b/i.test(String(text || '').trim())
+  return containsOpenClawInternalReasoningOutput(text) ||
+    /^(?:The user wants|User wants|The user is asking|I need to|I should|I think|Let me|We need to|Need to)\b/i.test(String(text || '').trim())
 }
 
 function isOpenClawMarkdownTableFragment(text) {
@@ -3805,7 +3914,7 @@ function getOpenClawToolDisplayText(tools = []) {
 function getOpenClawDisplayFingerprint(message = {}) {
   const role = (message.role === 'tool' || message.role === 'toolResult') ? 'assistant' : (message.role || '')
   const rawText = message.text ?? message.content ?? ''
-  const visibleText = role === 'user' ? stripOpenClawIdentityPrelude(rawText) : sanitizeOpenClawVisibleReply(rawText)
+  const visibleText = role === 'user' ? openClawVisibleUserText(rawText) : sanitizeOpenClawVisibleReply(rawText)
   const text = normalizeOpenClawMessageText(visibleText)
   const toolText = getOpenClawToolDisplayText(message.tools)
   const mediaSig = [
@@ -4756,7 +4865,7 @@ function hideOpenClawGenerationActions() {
 function hasOpenClawVisibleAssistantNode(node) {
   if (!node || node.hidden) return false
   if (node.querySelector?.('.openclaw-tool-result-card, .msg-tool, img, video, audio, .msg-file-card')) return true
-  const text = normalizeOpenClawMessageText(node.textContent || '')
+  const text = normalizeOpenClawMessageText(getOpenClawAssistantContentText(node))
     .replace(/\bOpenClaw\b/g, '')
     .replace(/\bTool\b/g, '')
     .replace(/继续等待|停止生成|继续生成|回复等待时间较长|可能仍在生成/g, '')
@@ -4775,13 +4884,28 @@ function isOpenClawTransientFallbackText(text = '') {
     value.includes('没有生成可展示的回答')
 }
 
+function isOpenClawIncompleteVisibleText(text = '') {
+  const value = normalizeOpenClawMessageText(text)
+    .replace(/\bOpenClaw\b/g, '')
+    .replace(/\bTool\b/g, '')
+    .trim()
+  if (!value) return true
+  if (/^[|`*_~:：,，.。!！?？\-—\s]+$/.test(value)) return true
+  const rawLines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const hasTableSeparator = rawLines.some(line => /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/.test(line))
+  const startsTable = rawLines.some(line => /^\|/.test(line))
+  if (startsTable && !hasTableSeparator) return true
+  return false
+}
+
 function hasOpenClawMeaningfulAssistantNode(node) {
   if (!hasOpenClawVisibleAssistantNode(node)) return false
-  const text = normalizeOpenClawMessageText(node?.textContent || '')
+  const text = normalizeOpenClawMessageText(getOpenClawAssistantContentText(node))
     .replace(/\bOpenClaw\b/g, '')
     .replace(/\bTool\b/g, '')
     .trim()
   if (isOpenClawTransientFallbackText(text)) return false
+  if (isOpenClawIncompleteVisibleText(text)) return false
   return true
 }
 
@@ -5356,7 +5480,7 @@ function handleChatEvent(payload, eventId = '') {
     }
     if (_currentAiBubble) {
       if (_currentAiText && _currentAiText !== _lastRenderedAiText) {
-        renderCompactAssistantContent(_currentAiText, _currentAiBubble)
+        renderCompactAssistantContent(_currentAiText, _currentAiBubble, { phase: 'completed' })
         _lastRenderedAiText = _currentAiText
       }
       appendImagesToEl(_currentAiBubble, _currentAiImages)
@@ -5430,10 +5554,11 @@ function handleChatEvent(payload, eventId = '') {
   }
 
   if (state === 'aborted') {
-    showTyping(false)
+    const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawIncompleteVisibleText(_currentAiText)
+    showTyping(hasIncompleteDraft, hasIncompleteDraft ? t('chat.aiThinking') : undefined)
     clearGenerationTimeoutManager()
-    if (_currentAiBubble && _currentAiText) {
-      renderCompactAssistantContent(_currentAiText, _currentAiBubble)
+    if (_currentAiBubble && _currentAiText && !isOpenClawIncompleteVisibleText(_currentAiText)) {
+      renderCompactAssistantContent(_currentAiText, _currentAiBubble, { phase: 'completed' })
       _lastRenderedAiText = _currentAiText
       clearOpenClawGenerationState('aborted-after-visible-content', terminalRequestId)
       resetStreamState()
@@ -5442,7 +5567,10 @@ function handleChatEvent(payload, eventId = '') {
     }
     if (!_manualStopRequested) {
       removeCurrentOpenClawStreamBubbleIfEmpty()
-      recoverOpenClawAssistantFromHistoryBeforeFallback('aborted-before-fallback', terminalRequestId).then(recovered => {
+      recoverOpenClawAssistantFromHistoryBeforeFallback('aborted-before-fallback', terminalRequestId, {
+        attempts: hasIncompleteDraft ? 10 : 4,
+        delayMs: hasIncompleteDraft ? 1000 : 900,
+      }).then(recovered => {
         if (recovered) return
         const fallback = buildOpenClawToolUnavailableReply(_lastVisibleUserText) ||
           '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230\u5b8c\u6574\u7684\u53ef\u7528\u7ed3\u679c\uff0c\u6211\u4e0d\u4f1a\u628a\u5b83\u5047\u88c5\u6210\u5df2\u5b8c\u6210\u3002\u8bf7\u91cd\u8bd5\uff0c\u6216\u5148\u68c0\u67e5 OpenClaw Gateway \u548c\u76f8\u5173\u5de5\u5177\u662f\u5426\u53ef\u7528\u3002'
@@ -5508,10 +5636,32 @@ function handleChatEvent(payload, eventId = '') {
     _lastErrorMsg = errMsg
     _errorTimer = now
 
-    // 如果正在流式输出，说明消息已经部分成功，不显示错误
-    if (_isStreaming || _currentAiBubble) {
-      console.warn('[chat] 流式中收到错误，但消息已部分成功，忽略错误提示:', errMsg)
+    const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawIncompleteVisibleText(_currentAiText)
+    if ((_isStreaming || _currentAiBubble) && !hasIncompleteDraft) {
+      console.warn('[chat] streaming error after visible assistant content, keeping rendered reply:', errMsg)
       clearOpenClawGenerationState('error-after-visible-content', terminalRequestId)
+      return
+    }
+    if (hasIncompleteDraft) {
+      console.warn('[chat] streaming error while assistant draft is incomplete, waiting for history recovery:', errMsg)
+      showTyping(true, t('chat.aiThinking'))
+      clearGenerationTimeoutManager()
+      recoverOpenClawAssistantFromHistoryBeforeFallback('error-before-fallback', terminalRequestId, {
+        attempts: 10,
+        delayMs: 1000,
+      }).then(recovered => {
+        if (recovered) return
+        showTyping(false)
+        appendSystemMessage(`${t('chat.errorPrefix')}${errMsg}`)
+        resetStreamState()
+        processMessageQueue()
+      }).catch(error => {
+        console.warn('[chat] error history recovery failed:', error)
+        showTyping(false)
+        appendSystemMessage(`${t('chat.errorPrefix')}${errMsg}`)
+        resetStreamState()
+        processMessageQueue()
+      })
       return
     }
 
@@ -5558,7 +5708,7 @@ function extractChatContent(message) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
   }
   const content = message.content
-  if (typeof content === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(content)), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
+  if (typeof content === 'string') return { text: stripOpenClawRuntimePromptBlocks(stripThinkingTags(content)), images: [], videos: [], audios: [], files, tools, screenshotCards, confirmations }
   if (Array.isArray(content)) {
     const texts = [], images = [], videos = [], audios = [], files = []
     for (const block of content) {
@@ -5625,13 +5775,13 @@ function extractChatContent(message) {
       else if (/\.(jpe?g|png|gif|webp|heic|svg)(\?|$)/i.test(url)) images.push({ url, mediaType: 'image/png' })
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
-    const text = texts.length ? stripOpenClawIdentityPrelude(stripThinkingTags(texts.join('\n'))) : ''
+    const text = texts.length ? stripOpenClawRuntimePromptBlocks(stripThinkingTags(texts.join('\n'))) : ''
     return { text, images, videos, audios, files, tools, screenshotCards, confirmations }
   }
   if (screenshotCards.length || confirmations.length) {
     return { text: '', images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   }
-  if (typeof message.text === 'string') return { text: stripOpenClawIdentityPrelude(stripThinkingTags(message.text)), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
+  if (typeof message.text === 'string') return { text: stripOpenClawRuntimePromptBlocks(stripThinkingTags(message.text)), images: [], videos: [], audios: [], files: [], tools: [], screenshotCards, confirmations }
   return null
 }
 
@@ -5736,6 +5886,7 @@ function createStreamBubble(meta = {}) {
   bubble.className = 'msg-bubble sc-msg-bubble assistant'
   bubble.dataset.compactKey = meta.dedupeKey || ''
   if (requestId) bubble.dataset.requestId = requestId
+  setOpenClawAssistantRenderState(bubble, 'streaming', { compactAllowed: false, hasMarkdownTable: false })
   bubble.innerHTML = '<span class="stream-cursor"></span>'
   group.appendChild(createOpenClawRoleLine('assistant'))
   group.appendChild(bubble)
@@ -5757,7 +5908,57 @@ function createOpenClawRoleLine(role = 'assistant') {
   return line
 }
 
-function renderCompactAssistantContent(rawText, container) {
+function hasOpenClawMarkdownTable(text = '') {
+  const lines = String(text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const current = lines[i]
+    const next = lines[i + 1]
+    if (current.includes('|') && /^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/.test(next)) {
+      return true
+    }
+  }
+  return false
+}
+
+function getOpenClawAssistantContentText(node) {
+  const root = node?.querySelector?.('[data-openclaw-assistant-content="true"]') || node
+  return root?.innerText || root?.textContent || ''
+}
+
+function getOpenClawMessageCompactKey(container, rawText = '') {
+  const bubble = container?.classList?.contains('msg-bubble') ? container : container?.closest?.('.msg-bubble')
+  const wrap = container?.closest?.('.msg')
+  const existing = container?.dataset?.compactKey || bubble?.dataset?.compactKey || wrap?.dataset?.openclawMessageKey || bubble?.dataset?.requestId || wrap?.dataset?.requestId || ''
+  if (existing) return String(existing)
+  const fallback = `openclaw-msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  if (container?.dataset) container.dataset.compactKey = fallback
+  if (bubble?.dataset) bubble.dataset.compactKey = fallback
+  return fallback
+}
+
+function setOpenClawAssistantRenderState(container, state = 'completed', flags = {}) {
+  const bubble = container?.classList?.contains('msg-bubble') ? container : container?.closest?.('.msg-bubble')
+  const wrap = container?.closest?.('.msg')
+  const group = container?.closest?.('.sc-msg-group')
+  const targets = [bubble, wrap, group].filter(Boolean)
+  for (const target of targets) {
+    target.classList?.toggle('is-streaming', state === 'streaming')
+    target.classList?.toggle('is-completed', state === 'completed')
+    target.classList?.toggle('is-incomplete', state === 'incomplete')
+    target.classList?.toggle('has-markdown-table', !!flags.hasMarkdownTable)
+    if (target.dataset) {
+      target.dataset.openclawMessageState = state
+      target.dataset.openclawPending = state === 'streaming' ? 'true' : 'false'
+      target.dataset.openclawStreaming = state === 'streaming' ? 'true' : 'false'
+      target.dataset.openclawCompleted = state === 'completed' ? 'true' : 'false'
+      target.dataset.openclawIncomplete = state === 'incomplete' ? 'true' : 'false'
+      target.dataset.openclawCompactAllowed = flags.compactAllowed ? 'true' : 'false'
+      target.dataset.openclawHasMarkdownTable = flags.hasMarkdownTable ? 'true' : 'false'
+    }
+  }
+}
+
+function renderCompactAssistantContent(rawText, container, options = {}) {
   if (!container) return
   const visibleText = sanitizeOpenClawVisibleReply(rawText || '')
   const existingToolCard = container.closest?.('.msg-bubble')?.querySelector('.openclaw-tool-result-card')
@@ -5768,19 +5969,24 @@ function renderCompactAssistantContent(rawText, container) {
     if (!existingToolCard) renderOpenClawToolResultCard(container, [], rawText)
     return
   }
+  const phase = options.phase || 'completed'
+  const isStreaming = phase === 'streaming'
+  const hasMarkdownTable = hasOpenClawMarkdownTable(visibleText)
   const compact = compactChatMessage(visibleText)
-  const compactKey = container.dataset.compactKey || ''
-  const canToggle = !!compact.collapsed
+  const compactKey = getOpenClawMessageCompactKey(container, visibleText)
+  const canToggle = !isStreaming && !hasMarkdownTable && !!compact.collapsed
   const manualCollapsed = canToggle && isOpenClawManualCompactCollapsed(compactKey)
+  const compactAllowed = canToggle
   if (!compact.preview && !compact.content) return
   container.innerHTML = ''
 
   const wrapper = document.createElement('div')
-  wrapper.className = 'assistant-compact-message'
-  if (canToggle) wrapper.classList.add(manualCollapsed ? 'is-collapsed' : 'is-expanded')
+  wrapper.className = isStreaming ? 'assistant-stream-message' : 'assistant-compact-message'
+  if (!isStreaming) wrapper.classList.add(canToggle && manualCollapsed ? 'is-collapsed' : 'is-expanded')
 
   const content = document.createElement('div')
   content.className = 'assistant-compact-message__content'
+  content.dataset.openclawAssistantContent = 'true'
   const normalizeOpenClawReadableRows = (text) => String(text || '')
     .replace(/\s+(?=(?:我能做什么|我的能力|主要能力|工作方式|底层模型|产品身份|需要我做什么)[：:])/g, '\n\n')
     .replace(/([。！？；;])\s*(?=(?:🌐|🖥️?|💻|📁|📂|🔍|🧠|⚙️|🛠️?|📌|✅|🔑|🧭|💡|🖼️?|📝))/g, '$1\n')
@@ -5795,13 +6001,14 @@ function renderCompactAssistantContent(rawText, container) {
       details: compact.toolLines.join('\n'),
     })
   }
-  renderContent(manualCollapsed ? compact.preview : compact.content)
+  renderContent(isStreaming ? compact.content : (manualCollapsed ? compact.preview : compact.content))
   if (compact.preview || compact.content) wrapper.appendChild(content)
 
   if (canToggle) {
     const toggle = document.createElement('button')
     toggle.type = 'button'
     toggle.className = 'assistant-compact-message__toggle'
+    toggle.dataset.openclawControl = 'collapse-toggle'
     toggle.textContent = manualCollapsed ? '\u5c55\u5f00\u8be6\u60c5' : '\u6536\u8d77\u8be6\u60c5'
     toggle.addEventListener('click', () => {
       const expanded = wrapper.classList.toggle('is-expanded')
@@ -5814,6 +6021,13 @@ function renderCompactAssistantContent(rawText, container) {
   }
 
   container.appendChild(wrapper)
+  const bubble = container.classList?.contains('msg-bubble') ? container : container.closest?.('.msg-bubble')
+  container.classList?.toggle('has-markdown-table', hasMarkdownTable)
+  bubble?.classList?.toggle('has-markdown-table', hasMarkdownTable)
+  setOpenClawAssistantRenderState(container, isStreaming ? 'streaming' : 'completed', {
+    compactAllowed,
+    hasMarkdownTable,
+  })
 }
 
 // ── 流式渲染（节流） ──
@@ -5833,7 +6047,7 @@ function doRender() {
   _lastRenderTime = performance.now()
   const text = _currentAiText || ''
   if (!_currentAiBubble || !text || text === _lastRenderedAiText) return
-  renderCompactAssistantContent(text, _currentAiBubble)
+  renderCompactAssistantContent(text, _currentAiBubble, { phase: 'streaming' })
   _lastRenderedAiText = text
   scrollToBottom()
 }
@@ -5937,7 +6151,7 @@ function resetStreamState() {
   clearInterval(_typingElapsedInterval)
   _typingElapsedInterval = null
   if (_currentAiBubble && (_currentAiText || _currentAiImages.length || _currentAiVideos.length || _currentAiAudios.length || _currentAiFiles.length || _currentAiTools.length)) {
-    renderCompactAssistantContent(_currentAiText, _currentAiBubble)
+    renderCompactAssistantContent(_currentAiText, _currentAiBubble, { phase: 'completed' })
     _lastRenderedAiText = _currentAiText
     appendImagesToEl(_currentAiBubble, _currentAiImages)
     appendVideosToEl(_currentAiBubble, _currentAiVideos)
@@ -5976,10 +6190,62 @@ function resetStreamState() {
 function pruneOpenClawChatViewSnapshots() {
   const now = Date.now()
   for (const [key, snapshot] of _chatViewSnapshotsBySession) {
-    if (!snapshot?.timestamp || now - snapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
+    if (snapshot?.schemaVersion !== OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION || !snapshot?.timestamp || now - snapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
       _chatViewSnapshotsBySession.delete(key)
     }
   }
+  pruneStoredOpenClawChatViewSnapshots(now)
+}
+
+function readStoredOpenClawChatViewSnapshots() {
+  try {
+    const raw = sessionStorage.getItem(OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_KEY)
+    const parsed = JSON.parse(raw || '{}')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeStoredOpenClawChatViewSnapshots(snapshots) {
+  try {
+    sessionStorage.setItem(OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshots || {}))
+  } catch {}
+}
+
+function pruneStoredOpenClawChatViewSnapshots(now = Date.now()) {
+  const snapshots = readStoredOpenClawChatViewSnapshots()
+  let changed = false
+  for (const [key, snapshot] of Object.entries(snapshots)) {
+    if (snapshot?.schemaVersion !== OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION || !snapshot?.timestamp || now - snapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
+      delete snapshots[key]
+      changed = true
+    }
+  }
+  if (changed) writeStoredOpenClawChatViewSnapshots(snapshots)
+}
+
+function persistOpenClawChatViewSnapshot(snapshot) {
+  if (!snapshot?.sessionKey || !snapshot.html) return
+  if (snapshot.html.length > OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT) return
+  const snapshots = readStoredOpenClawChatViewSnapshots()
+  snapshots[snapshot.sessionKey] = snapshot
+  writeStoredOpenClawChatViewSnapshots(snapshots)
+}
+
+function getOpenClawChatViewSnapshot(sessionKey) {
+  const key = sessionKey || ''
+  if (!key) return null
+  const memorySnapshot = _chatViewSnapshotsBySession.get(key)
+  if (memorySnapshot?.html && memorySnapshot.schemaVersion === OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION) return memorySnapshot
+  const storedSnapshot = readStoredOpenClawChatViewSnapshots()[key]
+  if (!storedSnapshot?.html) return null
+  if (storedSnapshot.schemaVersion !== OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION || !storedSnapshot.timestamp || Date.now() - storedSnapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
+    pruneStoredOpenClawChatViewSnapshots()
+    return null
+  }
+  _chatViewSnapshotsBySession.set(key, storedSnapshot)
+  return storedSnapshot
 }
 
 function snapshotCurrentChatState(reason = '') {
@@ -5995,7 +6261,8 @@ function snapshotCurrentChatState(reason = '') {
     .map(node => node.outerHTML)
     .join('')
   if (!html && !hasDraft) return false
-  _chatViewSnapshotsBySession.set(_sessionKey, {
+  const snapshot = {
+    schemaVersion: OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION,
     sessionKey: _sessionKey,
     html,
     currentAiText: _currentAiText,
@@ -6014,7 +6281,9 @@ function snapshotCurrentChatState(reason = '') {
     lastHistoryHash: _lastHistoryHash,
     timestamp: Date.now(),
     reason,
-  })
+  }
+  _chatViewSnapshotsBySession.set(_sessionKey, snapshot)
+  persistOpenClawChatViewSnapshot(snapshot)
   return true
 }
 
@@ -6022,7 +6291,7 @@ function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
   const key = sessionKey || ''
   if (!key || !_messagesEl || !_typingEl) return false
   pruneOpenClawChatViewSnapshots()
-  const snapshot = _chatViewSnapshotsBySession.get(key)
+  const snapshot = getOpenClawChatViewSnapshot(key)
   if (!snapshot?.html) return false
   if (_messagesEl.querySelector('.msg-user, .msg-ai')) return false
   const holder = document.createElement('div')
@@ -6050,6 +6319,19 @@ function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
   return true
 }
 
+function handleOpenClawChatSnapshotLifecycle(reason = 'page-lifecycle') {
+  try { snapshotCurrentChatState(reason) } catch {}
+}
+
+function bindOpenClawChatSnapshotLifecycle() {
+  if (_chatSnapshotLifecycleBound) return
+  _chatSnapshotLifecycleBound = true
+  window.addEventListener('pagehide', () => handleOpenClawChatSnapshotLifecycle('pagehide'))
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') handleOpenClawChatSnapshotLifecycle('visibility-hidden')
+  })
+}
+
 function shouldProtectCurrentMessagesFromHistory(historyMessages = []) {
   if (!_messagesEl) return false
   if (_isStreaming || _isSending || _currentAiText || _currentAiBubble || _messageQueue.length > 0) return true
@@ -6072,10 +6354,47 @@ function hasVisibleOpenClawHistoryMessage(msg) {
   }
   const targetText = normalizeVisibleOpenClawText(msg.role === 'assistant'
     ? sanitizeOpenClawVisibleReply(msg.text || '')
-    : stripOpenClawIdentityPrelude(msg.text || ''))
+    : openClawVisibleUserText(msg.text || ''))
   if (!targetText) return false
   const selector = msg.role === 'assistant' ? '.msg-ai .msg-bubble' : '.msg-user .msg-bubble'
-  return Array.from(_messagesEl.querySelectorAll(selector)).some(node => normalizeVisibleOpenClawText(node.textContent) === targetText)
+  return Array.from(_messagesEl.querySelectorAll(selector)).some(node => normalizeVisibleOpenClawText(getOpenClawAssistantContentText(node)) === targetText)
+}
+
+function isOpenClawPartialAssistantText(currentText, nextText) {
+  const current = normalizeVisibleOpenClawText(currentText)
+  const next = normalizeVisibleOpenClawText(nextText)
+  if (!current || !next || current === next) return false
+  if (next.length <= current.length) return false
+  if (current.length <= 3) return true
+  if (next.startsWith(current)) return true
+  if (current.endsWith('|') && next.includes('|') && next.length > current.length + 20) return true
+  return false
+}
+
+function replaceOpenClawPartialAssistantAfterLastUser(msg = {}) {
+  if (!_messagesEl || msg.role !== 'assistant') return false
+  const finalText = sanitizeOpenClawVisibleReply(msg.text || '')
+  if (!finalText) return false
+  const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai'))
+  const lastUserIndex = rows.map(row => row.classList?.contains('msg-user')).lastIndexOf(true)
+  if (lastUserIndex < 0) return false
+  const afterLastUser = rows.slice(lastUserIndex + 1).filter(row => row.classList?.contains('msg-ai'))
+  for (const row of afterLastUser) {
+    if (row.dataset?.openclawSessionKey !== (msg.sessionKey || _sessionKey || '')) continue
+    const bubble = row.querySelector('.msg-bubble')
+    if (!bubble) continue
+    const existingText = sanitizeOpenClawVisibleReply(getOpenClawAssistantContentText(bubble))
+    if (!isOpenClawPartialAssistantText(existingText, finalText)) continue
+    renderCompactAssistantContent(finalText, bubble, { phase: 'completed' })
+    appendImagesToEl(bubble, msg.images || [])
+    appendVideosToEl(bubble, msg.videos || [])
+    appendAudiosToEl(bubble, msg.audios || [])
+    appendFilesToEl(bubble, msg.files || [])
+    appendLifeAssistantCardsToEl(bubble, msg.screenshotCards || [], msg.confirmations || [])
+    markRenderedOpenClawMessage(row, msg.sessionKey || _sessionKey, msg.displayDedupeKey || msg.dedupeKey)
+    return true
+  }
+  return false
 }
 
 function isOpenClawHistoryTransientFallbackMessage(msg = {}) {
@@ -6109,10 +6428,11 @@ function appendOpenClawHistoryMessage(msg) {
         fileName: i.fileName || i.filename || i.name || '',
       })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a))
       : []
-    appendUserMessage(msg.text || '', userAtts, msgTime, { dedupeKey, sessionKey: msg.sessionKey || _sessionKey })
+    appendUserMessage(openClawVisibleUserText(msg.text || ''), userAtts, msgTime, { dedupeKey, sessionKey: msg.sessionKey || _sessionKey })
     return true
   }
   if (msg.role === 'assistant') {
+    if (replaceOpenClawPartialAssistantAfterLastUser(msg)) return true
     appendAiMessage(msg.text || '', msgTime, msg.images || [], msg.videos || [], msg.audios || [], msg.files || [], msg.tools || [], msg.screenshotCards || [], msg.confirmations || [], {
       dedupeKey,
       sessionKey: msg.sessionKey || _sessionKey,
@@ -6131,7 +6451,7 @@ function completeStreamingDraftFromHistory(msg) {
   const looksLikeSameDraft = currentText && finalText && (finalText.startsWith(currentText) || currentText.startsWith(finalText))
   if (!sameRun && !looksLikeSameDraft) return false
   const visibleDraftText = msg.text || _currentAiText || ((msg.tools?.length && !isOpenClawToolDebugEnabled()) ? OPENCLAW_TOOL_ONLY_FALLBACK : '')
-  renderCompactAssistantContent(visibleDraftText, _currentAiBubble)
+  renderCompactAssistantContent(visibleDraftText, _currentAiBubble, { phase: 'completed' })
   appendImagesToEl(_currentAiBubble, msg.images || [])
   appendVideosToEl(_currentAiBubble, msg.videos || [])
   appendAudiosToEl(_currentAiBubble, msg.audios || [])
@@ -6199,7 +6519,7 @@ async function loadHistory() {
             ...(msg.audios || []).map(audio => ({ ...audio, category: 'audio' })),
             ...(msg.files || []).map(file => ({ ...file, category: file.category || 'file' })),
           ]
-          appendUserMessage(msg.text || '', userAttachments.length ? userAttachments : null, msgTime, {
+          appendUserMessage(openClawVisibleUserText(msg.text || ''), userAttachments.length ? userAttachments : null, msgTime, {
             dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
             sessionKey: msg.sessionKey || _sessionKey,
           })
@@ -6275,7 +6595,7 @@ async function loadHistory() {
           })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a))
           : []
         if (msg.images?.length && !userAtts.length) hasOmittedImages = true
-        appendUserMessage(msg.text, userAtts, msgTime, {
+        appendUserMessage(openClawVisibleUserText(msg.text || ''), userAtts, msgTime, {
           dedupeKey: msg.dedupeKey,
           sessionKey: msg.sessionKey || _sessionKey,
         })
@@ -6677,7 +6997,7 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
   if (!_messagesEl || !_typingEl) return
   const sessionKey = renderMeta.sessionKey || _sessionKey || ''
   if (renderMeta.dedupeKey && hasRenderedOpenClawMessage(sessionKey, renderMeta.dedupeKey)) return
-  const displayText = stripOpenClawIdentityPrelude(text)
+  const displayText = openClawVisibleUserText(text)
   const wrap = document.createElement('div')
   wrap.className = 'msg msg-user sc-msg-row user'
   markRenderedOpenClawMessage(wrap, sessionKey, renderMeta.dedupeKey)
@@ -6789,7 +7109,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   const textEl = document.createElement('div')
   textEl.className = 'msg-text'
   textEl.dataset.compactKey = renderMeta.dedupeKey || ''
-  renderCompactAssistantContent(text || '', textEl)
+  renderCompactAssistantContent(text || '', textEl, { phase: 'completed' })
   bubble.appendChild(textEl)
   appendImagesToEl(bubble, images)
   appendVideosToEl(bubble, videos)

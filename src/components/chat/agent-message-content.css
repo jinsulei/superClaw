@@ -104,6 +104,17 @@
   word-break: break-word;
 }
 
+.agent-message-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.agent-message-markdown-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
 .agent-message-detail {
   margin-top: 10px;
 }

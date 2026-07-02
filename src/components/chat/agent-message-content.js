@@ -147,6 +147,62 @@ function renderInline(rawText) {
     .replace(/\*\*([^*]+)\*\*/g, '<strong class="agent-message-strong">$1</strong>')
 }
 
+function isGfmTableSeparatorLine(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || '').trim())
+}
+
+function isGfmTableRowLine(line) {
+  const value = String(line || '').trim()
+  return value.includes('|') && !isGfmTableSeparatorLine(value)
+}
+
+function splitGfmTableRow(line) {
+  let value = String(line || '').trim()
+  if (value.startsWith('|')) value = value.slice(1)
+  if (value.endsWith('|')) value = value.slice(0, -1)
+  const cells = []
+  let cell = ''
+  let escaped = false
+  for (const ch of value) {
+    if (ch === '|' && !escaped) {
+      cells.push(cell.trim())
+      cell = ''
+      continue
+    }
+    cell += ch
+    escaped = ch === '\\' && !escaped
+    if (ch !== '\\') escaped = false
+  }
+  cells.push(cell.trim())
+  return cells
+}
+
+function gfmColumnAlign(separatorCell = '') {
+  const value = String(separatorCell || '').trim()
+  const left = value.startsWith(':')
+  const right = value.endsWith(':')
+  if (left && right) return 'center'
+  if (right) return 'right'
+  return 'left'
+}
+
+function renderGfmTable(rows = []) {
+  if (rows.length < 2 || !isGfmTableSeparatorLine(rows[1])) return ''
+  const headers = splitGfmTableRow(rows[0])
+  const separators = splitGfmTableRow(rows[1])
+  const bodyRows = rows.slice(2).map(splitGfmTableRow)
+  const aligns = headers.map((_, index) => gfmColumnAlign(separators[index]))
+  const renderCell = (tag, cell, index) => {
+    const align = aligns[index] || 'left'
+    return `<${tag} style="text-align:${align}">${renderInline(cell)}</${tag}>`
+  }
+  const head = `<thead><tr>${headers.map((cell, index) => renderCell('th', cell, index)).join('')}</tr></thead>`
+  const body = bodyRows.length
+    ? `<tbody>${bodyRows.map(row => `<tr>${headers.map((_, index) => renderCell('td', row[index] || '', index)).join('')}</tr>`).join('')}</tbody>`
+    : ''
+  return `<div class="agent-message-table-wrap"><table class="agent-message-markdown-table">${head}${body}</table></div>`
+}
+
 function splitCodeFences(text) {
   const segments = []
   const re = /```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g
@@ -177,10 +233,26 @@ function renderTextSegment(text, startIndex = 0) {
     index += 1
   }
 
-  for (const rawLine of String(text || '').split('\n')) {
+  const lines = String(text || '').split('\n')
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i]
     const line = rawLine.trim()
     if (!line) {
       flushParagraph()
+      continue
+    }
+
+    if (isGfmTableRowLine(line) && i + 1 < lines.length && isGfmTableSeparatorLine(lines[i + 1])) {
+      flushParagraph()
+      const tableRows = [rawLine, lines[i + 1]]
+      i += 2
+      while (i < lines.length && isGfmTableRowLine(lines[i])) {
+        tableRows.push(lines[i])
+        i += 1
+      }
+      i -= 1
+      rows.push(renderGfmTable(tableRows))
+      index += 1
       continue
     }
 

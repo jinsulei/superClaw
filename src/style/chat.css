@@ -2310,7 +2310,8 @@
   max-width: 100%;
 }
 
-.chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table) {
+.chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table),
+.chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant.has-markdown-table {
   min-width: 0;
   max-width: 100%;
 }
@@ -2480,13 +2481,21 @@
 .openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant,
 .openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(.assistant-compact-message.is-expanded),
 .openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(.assistant-compact-message.is-collapsed),
-.openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table) {
+.openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant:has(table),
+.openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant.has-markdown-table {
   width: fit-content;
   max-width: 100%;
   border: 0;
 }
 
+.openclaw-chat .chat-messages.sc-chat-stage .msg-ai.is-streaming .sc-msg-bubble.assistant,
+.openclaw-chat .chat-messages.sc-chat-stage .msg-ai .sc-msg-bubble.assistant.is-streaming {
+  width: 100%;
+  max-width: 100%;
+}
+
 .openclaw-chat .assistant-compact-message,
+.openclaw-chat .assistant-stream-message,
 .openclaw-chat .assistant-compact-message.is-expanded,
 .openclaw-chat .assistant-compact-message.is-collapsed,
 .openclaw-chat .assistant-compact-message__content {
@@ -2600,7 +2609,7 @@
 
 .openclaw-chat .openclaw-composer-row {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 10px;
   width: min(1160px, 100%);
   max-width: 1160px;
@@ -2627,6 +2636,7 @@
 .openclaw-chat .chat-voice-btn,
 .openclaw-chat .chat-hosted-btn {
   flex-shrink: 0;
+  transform: translateY(-2px);
 }
 
 [data-theme="dark"] .openclaw-chat .openclaw-role-badge,
