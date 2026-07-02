@@ -1422,25 +1422,6 @@ async function startDevAgent(agentInput) {
   const current = await createDevAgentStatus(agent)
   if (current.ready) return { ok: true, agent, started: false, status: 'ready', current }
 
-  let minimaxConfig = null
-  try {
-    minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
-  } catch (error) {
-    const code = error?.code || 'OPENCLAW_GATEWAY_CONFIG_ERROR'
-    const status = isOpenClawGatewayNeedsSetupError(error) ? 'needs_setup' : 'error'
-    return {
-      ok: false,
-      agent,
-      started: false,
-      ready: false,
-      status,
-      needsSetup: status === 'needs_setup',
-      code,
-      message: error?.message || String(error),
-      error: error?.message || String(error),
-    }
-  }
-
   try {
     const runtime = await getLocalGatewayRuntime('ai.openclaw.gateway')
     if (runtime?.running) {
@@ -1461,7 +1442,6 @@ async function startDevAgent(agentInput) {
         started: true,
         status: 'ready',
         pid: ready.pid || null,
-        keyFingerprint: openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey),
         current: ready,
       }
     }
@@ -1599,17 +1579,17 @@ async function createDevAgentStatus(agent) {
 
   if (agent === 'openclaw') {
     try {
-      const minimaxConfig = openclawMiniMaxGatewayConfig()
-      if (!minimaxConfig.apiKey) {
+      prepareOpenClawGatewayLaunchConfig()
+    } catch (error) {
+      if (isOpenClawGatewayNeedsSetupError(error)) {
         return {
           ...base,
           needsSetup: true,
           status: 'needs_setup',
-          message: 'OpenClaw 模型或 Key 未配置，请先完成配置。',
-          error: 'OPENCLAW_MINIMAX_API_KEY_REQUIRED',
+          message: error?.message || 'OpenClaw model config required.',
+          error: error?.code || error?.message || String(error),
         }
       }
-    } catch (error) {
       return {
         ...base,
         status: 'error',
@@ -2796,10 +2776,6 @@ function openclawMiniMaxGatewayEnv() {
     OPENCLAW_MINIMAX_API_KEY: minimaxConfig.apiKey,
     MINIMAX_API_KEY: minimaxConfig.apiKey,
     MINIMAX_CN_API_KEY: minimaxConfig.apiKey,
-    OPENAI_API_KEY: minimaxConfig.apiKey,
-    OPENAI_BASE_URL: minimaxConfig.baseUrl,
-    OPENAI_MODEL: minimaxConfig.model,
-    SUPERCLAW_FORCE_PROVIDER: 'minimax',
     SUPERCLAW_MINIMAX_BASE_URL: minimaxConfig.baseUrl,
     SUPERCLAW_MINIMAX_MODEL: minimaxConfig.model,
   }
@@ -2903,7 +2879,8 @@ function sanitizeOpenClawGatewayProviders(providers = {}) {
 function isOpenClawGatewayNeedsSetupError(error) {
   const code = error?.code || ''
   return code === 'OPENCLAW_MINIMAX_API_KEY_REQUIRED' ||
-    code === 'OPENCLAW_MODEL_PROVIDER_REQUIRED'
+    code === 'OPENCLAW_MODEL_PROVIDER_REQUIRED' ||
+    code === 'OPENCLAW_MODEL_CONFIG_REQUIRED'
 }
 
 function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
@@ -2953,7 +2930,169 @@ function normalizeOpenClawGatewayProvider(input, defaults = {}) {
   return provider
 }
 
-function prepareOpenClawGatewayLaunchConfig(minimaxConfig = requireOpenClawMiniMaxGatewayConfig()) {
+function isOpenClawGatewayModelRefAvailable(config, modelRef) {
+  const raw = String(modelRef || '').trim()
+  if (!raw) return false
+  const slash = raw.indexOf('/')
+  const providerId = slash >= 0 ? raw.slice(0, slash) : raw
+  const modelId = slash >= 0 ? raw.slice(slash + 1) : ''
+  const provider = config?.models?.providers?.[providerId]
+  if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
+  if (!modelId) return true
+  const models = normalizeProviderModelList(provider.models)
+  return models.includes(modelId)
+}
+
+function ensureOpenClawGatewayPrimaryModel(config, providerId, modelId) {
+  const primaryRef = `${providerId}/${modelId}`
+  if (!config.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) config.agents = {}
+  if (!config.agents.defaults || typeof config.agents.defaults !== 'object' || Array.isArray(config.agents.defaults)) {
+    config.agents.defaults = {}
+  }
+  if (!config.agents.defaults.model || typeof config.agents.defaults.model !== 'object' || Array.isArray(config.agents.defaults.model)) {
+    config.agents.defaults.model = {}
+  }
+  if (!isOpenClawGatewayModelRefAvailable(config, config.agents.defaults.model.primary)) {
+    config.agents.defaults.model.primary = primaryRef
+  }
+  if (!Array.isArray(config.agents.defaults.model.fallbacks)) config.agents.defaults.model.fallbacks = []
+
+  if (Array.isArray(config.agents.list)) {
+    config.agents.list = config.agents.list.map(agent => {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent
+      const next = { ...agent }
+      if (!next.model || typeof next.model !== 'object' || Array.isArray(next.model)) next.model = {}
+      if (!isOpenClawGatewayModelRefAvailable(config, next.model.primary)) {
+        next.model.primary = primaryRef
+      }
+      if (!Array.isArray(next.model.fallbacks)) next.model.fallbacks = []
+      return next
+    })
+  }
+
+  return primaryRef
+}
+
+function parseOpenClawGatewayModelRef(modelRef) {
+  const raw = String(modelRef || '').trim()
+  if (!raw) return null
+  const slash = raw.indexOf('/')
+  const provider = (slash >= 0 ? raw.slice(0, slash) : raw).trim()
+  const model = (slash >= 0 ? raw.slice(slash + 1) : '').trim()
+  if (!provider || !model) return null
+  return { provider, model, primary: `${provider}/${model}` }
+}
+
+function inferOpenClawGatewayUserModel(config) {
+  const existing = parseOpenClawGatewayModelRef(config?.agents?.defaults?.model?.primary)
+  if (existing && isOpenClawGatewayModelRefAvailable(config, existing.primary)) {
+    return { ...existing, source: 'user_config' }
+  }
+
+  for (const [provider, entry] of Object.entries(config?.models?.providers || {})) {
+    const model = normalizeProviderModelList(entry?.models || [entry?.model || entry?.modelId || entry?.model_id])[0]
+    if (provider && model) return { provider, model, primary: `${provider}/${model}`, source: 'user_config' }
+  }
+  return null
+}
+
+function resolveOpenClawGatewayPrimaryModel({ cfg, env = process.env, minimaxConfig = null, testMode = isServerTestBuild() } = {}) {
+  const user = inferOpenClawGatewayUserModel(cfg)
+  if (user) return { status: 'ready', ...user }
+
+  const forcedProvider = String(env.SUPERCLAW_FORCE_PROVIDER || env.VITE_SUPERCLAW_FORCE_PROVIDER || '').trim().toLowerCase()
+  const isExplicitTestMiniMax = testMode === true ||
+    env.SUPERCLAW_TEST_BUILD === '1' ||
+    env.VITE_SUPERCLAW_TEST_BUILD === '1' ||
+    forcedProvider === 'minimax'
+  if (isExplicitTestMiniMax) {
+    const model = String(env.MINIMAX_MODEL || env.VITE_MINIMAX_MODEL || minimaxConfig?.model || MINIMAX_TEST_DEFAULTS.model).trim() || MINIMAX_TEST_DEFAULTS.model
+    return { status: 'ready', source: 'test_override', provider: 'minimax', model, primary: `minimax/${model}` }
+  }
+
+  const envProvider = String(env.OPENCLAW_PROVIDER || env.AGENT_PROVIDER || '').trim()
+  const envModel = String(env.OPENCLAW_MODEL || env.AGENT_MODEL || '').trim()
+  if (envProvider && envModel) {
+    return { status: 'ready', source: 'env', provider: envProvider, model: envModel, primary: `${envProvider}/${envModel}` }
+  }
+
+  return { status: 'config_required', source: 'missing', provider: '', model: '', primary: '' }
+}
+
+function applyOpenClawGatewayPrimaryModel(config, resolution) {
+  if (!resolution?.primary) return ''
+  if (!config.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) config.agents = {}
+  if (!config.agents.defaults || typeof config.agents.defaults !== 'object' || Array.isArray(config.agents.defaults)) {
+    config.agents.defaults = {}
+  }
+  if (!config.agents.defaults.model || typeof config.agents.defaults.model !== 'object' || Array.isArray(config.agents.defaults.model)) {
+    config.agents.defaults.model = {}
+  }
+  config.agents.defaults.model.primary = resolution.primary
+  if (!Array.isArray(config.agents.defaults.model.fallbacks)) config.agents.defaults.model.fallbacks = []
+
+  if (Array.isArray(config.agents.list)) {
+    config.agents.list = config.agents.list.map(agent => {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent
+      const next = { ...agent }
+      if (!next.model || typeof next.model !== 'object' || Array.isArray(next.model)) next.model = {}
+      if (!isOpenClawGatewayModelRefAvailable(config, next.model.primary)) {
+        next.model.primary = resolution.primary
+      }
+      if (!Array.isArray(next.model.fallbacks)) next.model.fallbacks = []
+      return next
+    })
+  }
+  return resolution.primary
+}
+
+function ensureOpenClawGatewayResolvedProvider(config, resolution, minimaxConfig = null) {
+  if (!resolution?.provider || !resolution?.model) return
+  if (!config.models || typeof config.models !== 'object' || Array.isArray(config.models)) config.models = {}
+  if (!config.models.providers || typeof config.models.providers !== 'object' || Array.isArray(config.models.providers)) config.models.providers = {}
+  if (config.models.providers[resolution.provider]) return
+
+  if (resolution.provider === 'minimax' && resolution.source === 'test_override') {
+    config.models.providers.minimax = normalizeOpenClawGatewayProvider({
+      api: 'openai-completions',
+      baseUrl: minimaxConfig?.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl,
+      models: [{ id: resolution.model }],
+    }, {
+      api: 'openai-completions',
+      baseUrl: minimaxConfig?.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl,
+      model: resolution.model,
+      contextWindow: 204800,
+      maxTokens: 131072,
+    })
+  }
+}
+
+function isOpenClawWorkspaceInsideStateDir(workspace) {
+  const raw = String(workspace || '').trim()
+  if (!raw) return false
+  if (!path.isAbsolute(raw)) return true
+  return isPathInside(OPENCLAW_DIR, raw)
+}
+
+function ensureOpenClawGatewayWorkspace(config) {
+  const workspace = path.join(OPENCLAW_DIR, 'workspace')
+  if (!config.agents || typeof config.agents !== 'object' || Array.isArray(config.agents)) config.agents = {}
+  if (!config.agents.defaults || typeof config.agents.defaults !== 'object' || Array.isArray(config.agents.defaults)) {
+    config.agents.defaults = {}
+  }
+  if (!isOpenClawWorkspaceInsideStateDir(config.agents.defaults.workspace)) {
+    config.agents.defaults.workspace = workspace
+  }
+  if (Array.isArray(config.agents.list)) {
+    config.agents.list = config.agents.list.map(agent => {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent
+      if (isOpenClawWorkspaceInsideStateDir(agent.workspace)) return agent
+      return { ...agent, workspace }
+    })
+  }
+}
+
+function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatewayConfig(), env = process.env) {
   if (!fs.existsSync(CONFIG_PATH)) return { path: CONFIG_PATH, generated: false, reason: 'source_config_missing' }
   const cfg = JSON.parse(decodeJsonFileContent(CONFIG_PATH))
   cfg.models = cfg.models && typeof cfg.models === 'object' ? { ...cfg.models } : {}
@@ -2961,51 +3100,44 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = requireOpenClawMiniM
     ? { ...cfg.models.providers }
     : {}
 
-  const directDefaults = {
-    api: 'openai-completions',
-    baseUrl: minimaxConfig.baseUrl || 'https://api.minimaxi.com/v1',
-    model: minimaxConfig.model || 'MiniMax-M3',
-    contextWindow: 204800,
-    maxTokens: 131072,
-  }
-
-  const sourceProvider = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object'
-    ? cfg.models.providers.minimax
-    : {}
-  const fallbackProvider = cfg.models.providers.minimax_cn && typeof cfg.models.providers.minimax_cn === 'object'
-    ? cfg.models.providers.minimax_cn
-    : {}
-  cfg.models.providers.minimax = normalizeOpenClawGatewayProvider({
-    ...fallbackProvider,
-    ...sourceProvider,
-    baseUrl: sourceProvider.baseUrl || fallbackProvider.baseUrl || directDefaults.baseUrl,
-    api: sourceProvider.api || fallbackProvider.api || directDefaults.api,
-    models: Array.isArray(sourceProvider.models) && sourceProvider.models.length
-      ? sourceProvider.models
-      : fallbackProvider.models,
-  }, directDefaults)
-
-  if (cfg.models.providers.minimax_cn) {
-    cfg.models.providers.minimax_cn = normalizeOpenClawGatewayProvider(cfg.models.providers.minimax_cn, directDefaults)
-  }
   delete cfg.models.mode
   delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
   cfg.models.providers = sanitizeOpenClawGatewayProviders(cfg.models.providers)
-  if (!Object.keys(cfg.models.providers).length) {
-    const error = new Error('OpenClaw has no usable model provider. Configure provider/base_url/api_key/model first.')
-    error.code = 'OPENCLAW_MODEL_PROVIDER_REQUIRED'
+  const primaryResolution = resolveOpenClawGatewayPrimaryModel({ cfg, env, minimaxConfig, testMode: isServerTestBuild() })
+  ensureOpenClawGatewayResolvedProvider(cfg, primaryResolution, minimaxConfig)
+  cfg.models.providers = sanitizeOpenClawGatewayProviders(cfg.models.providers)
+  if (primaryResolution.status !== 'ready' || !primaryResolution.primary || !isOpenClawGatewayModelRefAvailable(cfg, primaryResolution.primary)) {
+    const error = new Error('OpenClaw model config required. Configure provider/base_url/api_key/model before starting Gateway.')
+    error.code = 'OPENCLAW_MODEL_CONFIG_REQUIRED'
     error.status = 'needs_setup'
     error.needsSetup = true
+    error.details = primaryResolution
     throw error
+  }
+  const primaryRef = applyOpenClawGatewayPrimaryModel(cfg, primaryResolution)
+  ensureOpenClawGatewayWorkspace(cfg)
+  cfg.gateway = cfg.gateway && typeof cfg.gateway === 'object' && !Array.isArray(cfg.gateway) ? cfg.gateway : {}
+  cfg.gateway.superclawRuntimeConfig = {
+    status: primaryResolution.status,
+    source: primaryResolution.source,
+    primary: primaryRef,
+    noOpenAiFallback: true,
   }
 
   const dir = openclawGatewayLaunchConfigDir()
   fs.mkdirSync(dir, { recursive: true })
   const target = openclawGatewayLaunchConfigPath()
   fs.writeFileSync(target, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8')
-  return { path: target, generated: true, provider: 'minimax', model: directDefaults.model, baseUrl: directDefaults.baseUrl }
+  return {
+    path: target,
+    generated: true,
+    provider: primaryResolution.provider,
+    model: primaryResolution.model,
+    primaryRef,
+    source: primaryResolution.source,
+  }
 }
 
 function openclawRuntimeEnv(extra = {}) {
@@ -5666,7 +5798,12 @@ function looksLikeGatewayCommandLine(commandLine) {
 }
 
 function readWindowsProcessCommandLine(pid) {
-  const script = `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($p) { [Console]::Out.Write($p.CommandLine) }`
+  const script = [
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    '$OutputEncoding = [System.Text.Encoding]::UTF8',
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"`,
+    'if ($p) { [Console]::Out.Write($p.CommandLine) }',
+  ].join('; ')
   const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
     windowsHide: true,
     encoding: 'utf8',
@@ -5721,11 +5858,9 @@ function winStartGateway() {
   // 写入启动标记到日志
   const timestamp = new Date().toISOString()
   fs.appendFileSync(logPath, `\n[${timestamp}] [ClawPanel] Starting Gateway on Windows...\n`)
-  const minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
-  const launchConfig = prepareOpenClawGatewayLaunchConfig(minimaxConfig)
-  fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
+  const launchConfig = prepareOpenClawGatewayLaunchConfig()
   if (launchConfig.generated) {
-    fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw Gateway launch config normalized: path=${launchConfig.path} provider=${launchConfig.provider} baseUrl=${launchConfig.baseUrl} model=${launchConfig.model}\n`)
+    fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw Gateway launch config normalized: path=${launchConfig.path} source=${launchConfig.source} provider=${launchConfig.provider} model=${launchConfig.model} primary=${launchConfig.primaryRef}; no openai fallback\n`)
   }
 
   // 用 cmd.exe /c 启动，不用 shell: true（避免额外 cmd.exe 进程链导致终端闪烁）
@@ -6149,14 +6284,16 @@ function linuxStartGateway() {
 
   const timestamp = new Date().toISOString()
   fs.appendFileSync(logPath, `\n[${timestamp}] [ClawPanel] Starting Gateway on Linux...\n`)
-  const minimaxConfig = requireOpenClawMiniMaxGatewayConfig()
-  fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw MiniMax env: hasMiniMaxKey=true keyFingerprint=${openclawMiniMaxKeyFingerprint(minimaxConfig.apiKey)} baseUrl=${minimaxConfig.baseUrl} model=${minimaxConfig.model}\n`)
+  const launchConfig = prepareOpenClawGatewayLaunchConfig()
+  if (launchConfig.generated) {
+    fs.appendFileSync(logPath, `[${timestamp}] [ClawPanel] OpenClaw Gateway launch config normalized: path=${launchConfig.path} source=${launchConfig.source} provider=${launchConfig.provider} model=${launchConfig.model} primary=${launchConfig.primaryRef}; no openai fallback\n`)
+  }
 
   const child = spawnOpenclaw(['gateway', 'run'], {
     stdio: ['ignore', out, err],
     shell: false,
     cwd: homedir(),
-    env: openclawMiniMaxGatewayEnv(),
+    env: { ...openclawMiniMaxGatewayEnv(), OPENCLAW_CONFIG_PATH: launchConfig.path },
   })
   child.unref()
 }
@@ -14293,6 +14430,7 @@ export {
   rememberHermesDeletedSession,
   normalizeProviderModelList,
   isValidOpenClawProviderConfig,
+  resolveOpenClawGatewayPrimaryModel,
   sanitizeOpenClawGatewayProviders,
   sanitizeHermesImageReply,
   isHermesDeletedSessionId,
