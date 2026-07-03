@@ -42,8 +42,28 @@ assert.match(
 )
 assert.match(
   chat,
-  /function\s+restoreOpenClawChatSnapshot\s*\(sessionKey,\s*reason = ''\)[\s\S]*?renderCompactAssistantContent\(cleanText,\s*bubble/,
-  'OpenClaw snapshot restore must re-render assistant bubbles instead of reusing stale HTML',
+  /function\s+restoreOpenClawChatSnapshot\s*\(sessionKey,\s*reason = ''\)[\s\S]*?normalizeOpenClawMessagesForRestore\(sourceMessages\)[\s\S]*?appendOpenClawHistoryMessage\(msg\)/,
+  'OpenClaw snapshot restore must normalize messages and render them through the history renderer',
+)
+assert.doesNotMatch(
+  chat,
+  /holder\.innerHTML\s*=\s*snapshot\.html[\s\S]*?_messagesEl\.insertBefore\(node,\s*_typingEl\)/,
+  'OpenClaw refresh restore must not reinsert stale rendered HTML directly',
+)
+assert.match(
+  chat,
+  /messages,\s*[\r\n]+\s*currentAiText:/,
+  'OpenClaw snapshots must persist canonical messages as the primary refresh source',
+)
+assert.match(
+  chat,
+  /function\s+collectOpenClawVisibleMessagesForSnapshot\s*\(/,
+  'OpenClaw snapshots must collect visible messages before refresh',
+)
+assert.match(
+  chat,
+  /function\s+openClawTableToMarkdown\s*\(/,
+  'OpenClaw legacy HTML snapshots must convert rendered tables back to markdown',
 )
 assert.match(
   chat,

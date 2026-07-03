@@ -165,7 +165,7 @@ const OPENCLAW_SEND_DEDUPE_WINDOW_MS = 1200
 const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS = 5 * 60 * 1000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT = 350000
-const OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION = 3
+const OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION = 4
 const OPENCLAW_ACTIVE_RUN_WATCHDOG_MS = 75 * 1000
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
@@ -6497,6 +6497,11 @@ function getOpenClawAssistantContentText(node) {
   return root?.innerText || root?.textContent || ''
 }
 
+function getOpenClawAssistantMarkdownSource(node) {
+  const root = node?.querySelector?.('[data-openclaw-assistant-content="true"]') || node
+  return root?.dataset?.openclawRawMarkdown || ''
+}
+
 function getOpenClawMessageCompactKey(container, rawText = '') {
   const bubble = container?.classList?.contains('msg-bubble') ? container : container?.closest?.('.msg-bubble')
   const wrap = container?.closest?.('.msg')
@@ -6560,6 +6565,7 @@ function renderCompactAssistantContent(rawText, container, options = {}) {
   const content = document.createElement('div')
   content.className = 'assistant-compact-message__content'
   content.dataset.openclawAssistantContent = 'true'
+  content.dataset.openclawRawMarkdown = visibleText
   const normalizeOpenClawReadableRows = (text) => String(text || '')
     .replace(/\s+(?=(?:我能做什么|我的能力|主要能力|工作方式|底层模型|产品身份|需要我做什么)[：:])/g, '\n\n')
     .replace(/([。！？；;])\s*(?=(?:🌐|🖥️?|💻|📁|📂|🔍|🧠|⚙️|🛠️?|📌|✅|🔑|🧭|💡|🖼️?|📝))/g, '$1\n')
@@ -6898,9 +6904,17 @@ function pruneStoredOpenClawChatViewSnapshots(now = Date.now()) {
   if (changed) writeStoredOpenClawChatViewSnapshots(snapshots)
 }
 
+function openClawSnapshotHasRenderableMessages(snapshot = {}) {
+  return !!(
+    snapshot?.html ||
+    (Array.isArray(snapshot?.messages) && snapshot.messages.length)
+  )
+}
+
 function persistOpenClawChatViewSnapshot(snapshot) {
-  if (!snapshot?.sessionKey || !snapshot.html) return
-  if (snapshot.html.length > OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT) return
+  if (!snapshot?.sessionKey || !openClawSnapshotHasRenderableMessages(snapshot)) return
+  const serialized = JSON.stringify(snapshot)
+  if (serialized.length > OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT) return
   const snapshots = readStoredOpenClawChatViewSnapshots()
   snapshots[snapshot.sessionKey] = snapshot
   writeStoredOpenClawChatViewSnapshots(snapshots)
@@ -6910,9 +6924,9 @@ function getOpenClawChatViewSnapshot(sessionKey) {
   const key = sessionKey || ''
   if (!key) return null
   const memorySnapshot = _chatViewSnapshotsBySession.get(key)
-  if (memorySnapshot?.html && memorySnapshot.schemaVersion === OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION) return memorySnapshot
+  if (openClawSnapshotHasRenderableMessages(memorySnapshot) && memorySnapshot.schemaVersion === OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION) return memorySnapshot
   const storedSnapshot = readStoredOpenClawChatViewSnapshots()[key]
-  if (!storedSnapshot?.html) return null
+  if (!openClawSnapshotHasRenderableMessages(storedSnapshot)) return null
   if (storedSnapshot.schemaVersion !== OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION || !storedSnapshot.timestamp || Date.now() - storedSnapshot.timestamp > OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS) {
     pruneStoredOpenClawChatViewSnapshots()
     return null
@@ -6925,7 +6939,49 @@ function stripOpenClawSnapshotHtml(value = '') {
   const holder = document.createElement('div')
   holder.innerHTML = String(value || '')
   holder.querySelectorAll('script, style, template, noscript').forEach(node => node.remove())
-  return holder.textContent || ''
+  return extractOpenClawSnapshotTextFromNode(holder)
+}
+
+function openClawCellText(node) {
+  return String(node?.innerText || node?.textContent || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim()
+}
+
+function openClawTableToMarkdown(table) {
+  const rows = Array.from(table?.querySelectorAll?.('tr') || [])
+    .map(row => Array.from(row.querySelectorAll('th,td')).map(openClawCellText))
+    .filter(cells => cells.length)
+  if (!rows.length) return ''
+  const width = Math.max(...rows.map(row => row.length))
+  const normalizeRow = row => {
+    const cells = [...row]
+    while (cells.length < width) cells.push('')
+    return `| ${cells.join(' | ')} |`
+  }
+  const separator = `| ${Array.from({ length: width }).map(() => '---').join(' | ')} |`
+  return [normalizeRow(rows[0]), separator, ...rows.slice(1).map(normalizeRow)].join('\n')
+}
+
+function extractOpenClawSnapshotTextFromNode(node) {
+  if (!node) return ''
+  const holder = node.cloneNode(true)
+  holder.querySelectorAll('script, style, template, noscript, .assistant-compact-message__toggle, [data-openclaw-control], .msg-meta, .sc-msg-meta').forEach(el => el.remove())
+  holder.querySelectorAll('table').forEach(table => {
+    const markdown = openClawTableToMarkdown(table)
+    table.replaceWith(document.createTextNode(markdown ? `\n${markdown}\n` : '\n'))
+  })
+  holder.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')))
+  holder.querySelectorAll('p, div, section, article, header, footer, h1, h2, h3, h4, h5, h6, blockquote, pre, ul, ol, li').forEach(el => {
+    el.insertBefore(document.createTextNode('\n'), el.firstChild)
+    el.appendChild(document.createTextNode('\n'))
+  })
+  return String(holder.textContent || '')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function sanitizeRestoredOpenClawAssistantText(bubble) {
@@ -6936,6 +6992,127 @@ function sanitizeRestoredOpenClawAssistantText(bubble) {
   if (!cleanText || isOpenClawVisibleTextInternalAuditOnly(cleanText)) return ''
   if (isOpenClawTextClearlyIncomplete(cleanText)) return ''
   return cleanText
+}
+
+function collectOpenClawVisibleMessagesForSnapshot() {
+  if (!_messagesEl) return []
+  const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai'))
+  const messages = []
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    const bubble = row.querySelector('.msg-bubble')
+    if (!bubble) continue
+    const isAssistant = row.classList?.contains('msg-ai')
+    const isUser = row.classList?.contains('msg-user')
+    if (!isAssistant && !isUser) continue
+    const rawText = isAssistant
+      ? (getOpenClawAssistantMarkdownSource(bubble) || extractOpenClawSnapshotTextFromNode(bubble.querySelector('[data-openclaw-assistant-content="true"]') || bubble))
+      : openClawVisibleUserText(extractOpenClawSnapshotTextFromNode(bubble))
+    const text = isAssistant ? sanitizeOpenClawVisibleReply(rawText) : openClawVisibleUserText(rawText)
+    if (!text) continue
+    if (isAssistant && (isOpenClawVisibleTextInternalAuditOnly(text) || isOpenClawTextClearlyIncomplete(text))) continue
+    messages.push({
+      role: isAssistant ? 'assistant' : 'user',
+      text,
+      content: text,
+      sessionKey: row.dataset?.openclawSessionKey || _sessionKey,
+      openclawTurnId: row.dataset?.openclawTurnId || '',
+      clientRequestId: row.dataset?.clientRequestId || '',
+      assistantMessageId: row.dataset?.assistantMessageId || '',
+      timestamp: Number(row.dataset?.openclawTimestamp || 0) || Date.now() + index,
+      orderIndex: index,
+      displayDedupeKey: row.dataset?.openclawDisplayDedupeKey || row.dataset?.openclawMessageKey || '',
+      dedupeKey: row.dataset?.openclawMessageKey || '',
+      renderMode: isAssistant ? 'markdown' : 'text',
+      contentFormat: isAssistant ? 'markdown' : 'text',
+    })
+  }
+  return collapseConsecutiveOpenClawAssistantDuplicates(messages)
+}
+
+function normalizeOpenClawSnapshotMessage(raw = {}, index = 0) {
+  const role = raw.role === 'assistant' ? 'assistant' : (raw.role === 'user' ? 'user' : '')
+  if (!role) return null
+  const rawText = raw.text || raw.content || raw.markdownText || stripOpenClawSnapshotHtml(raw.renderedHtml || raw.html || '')
+  const text = role === 'assistant' ? sanitizeOpenClawVisibleReply(rawText) : openClawVisibleUserText(rawText)
+  if (!text) return null
+  if (role === 'assistant' && (isOpenClawVisibleTextInternalAuditOnly(text) || isOpenClawTextClearlyIncomplete(text))) return null
+  const msg = {
+    ...raw,
+    role,
+    text,
+    content: text,
+    rawText: text,
+    markdownText: role === 'assistant' ? text : '',
+    renderedHtml: '',
+    html: '',
+    sessionKey: raw.sessionKey || _sessionKey,
+    timestamp: raw.timestamp || raw.createdAt || raw.created_at || Date.now() + index,
+    orderIndex: Number.isFinite(raw.orderIndex) ? raw.orderIndex : index,
+    renderMode: role === 'assistant' ? 'markdown' : 'text',
+    contentFormat: role === 'assistant' ? 'markdown' : 'text',
+    _openClawOriginalIndex: index,
+  }
+  msg.dedupeKey = msg.dedupeKey || getOpenClawMessageDedupeKey(msg)
+  msg.displayDedupeKey = msg.displayDedupeKey || getOpenClawHistoryDisplayDedupeKey(msg)
+  return msg
+}
+
+function collapseConsecutiveOpenClawAssistantDuplicates(messages = []) {
+  const result = []
+  for (const raw of messages || []) {
+    if (!raw) continue
+    const current = { ...raw }
+    const previous = result[result.length - 1]
+    if (previous?.role === 'assistant' && current.role === 'assistant') {
+      const prevText = normalizeOpenClawAssistantTextForDedupe(previous.text || previous.content || '')
+      const nextText = normalizeOpenClawAssistantTextForDedupe(current.text || current.content || '')
+      const sameTurn = isSameOpenClawAssistantTurn(previous, current)
+      const sameText = prevText && nextText && prevText === nextText
+      const partial = isOpenClawPartialAssistantText(previous.text || previous.content || '', current.text || current.content || '') ||
+        isOpenClawPartialAssistantText(current.text || current.content || '', previous.text || previous.content || '')
+      if (sameTurn || sameText || partial) {
+        result[result.length - 1] = mergeOpenClawAssistantMessage(previous, current)
+        continue
+      }
+    }
+    result.push(current)
+  }
+  return result
+}
+
+function normalizeOpenClawMessagesForRestore(messages = []) {
+  return collapseConsecutiveOpenClawAssistantDuplicates(
+    (messages || [])
+      .map((msg, index) => normalizeOpenClawSnapshotMessage(msg, index))
+      .filter(Boolean),
+  )
+}
+
+function openClawSnapshotHtmlToMessages(html = '') {
+  const holder = document.createElement('div')
+  holder.innerHTML = String(html || '')
+  return Array.from(holder.querySelectorAll('.msg-user, .msg-ai')).map((row, index) => {
+    const bubble = row.querySelector('.msg-bubble')
+    if (!bubble) return null
+    const role = row.classList?.contains('msg-ai') ? 'assistant' : 'user'
+    const text = role === 'assistant'
+      ? (getOpenClawAssistantMarkdownSource(bubble) || extractOpenClawSnapshotTextFromNode(bubble.querySelector('[data-openclaw-assistant-content="true"]') || bubble))
+      : extractOpenClawSnapshotTextFromNode(bubble)
+    return {
+      role,
+      text,
+      content: text,
+      sessionKey: row.dataset?.openclawSessionKey || _sessionKey,
+      openclawTurnId: row.dataset?.openclawTurnId || '',
+      clientRequestId: row.dataset?.clientRequestId || '',
+      assistantMessageId: row.dataset?.assistantMessageId || '',
+      timestamp: Number(row.dataset?.openclawTimestamp || 0) || Date.now() + index,
+      orderIndex: index,
+      displayDedupeKey: row.dataset?.openclawDisplayDedupeKey || row.dataset?.openclawMessageKey || '',
+      dedupeKey: row.dataset?.openclawMessageKey || '',
+    }
+  }).filter(Boolean)
 }
 
 function snapshotCurrentChatState(reason = '') {
@@ -6950,11 +7127,13 @@ function snapshotCurrentChatState(reason = '') {
     .filter(node => node?.id !== 'typing-indicator' && !node.classList?.contains('chat-page-guide'))
     .map(node => node.outerHTML)
     .join('')
-  if (!html && !hasDraft) return false
+  const messages = collectOpenClawVisibleMessagesForSnapshot()
+  if (!html && !messages.length && !hasDraft) return false
   const snapshot = {
     schemaVersion: OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION,
     sessionKey: _sessionKey,
     html,
+    messages,
     currentAiText: _currentAiText,
     currentAiImages: [...(_currentAiImages || [])],
     currentAiVideos: [...(_currentAiVideos || [])],
@@ -6982,23 +7161,13 @@ function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
   if (!key || !_messagesEl || !_typingEl) return false
   pruneOpenClawChatViewSnapshots()
   const snapshot = getOpenClawChatViewSnapshot(key)
-  if (!snapshot?.html) return false
+  if (!openClawSnapshotHasRenderableMessages(snapshot)) return false
   if (_messagesEl.querySelector('.msg-user, .msg-ai')) return false
-  const holder = document.createElement('div')
-  holder.innerHTML = snapshot.html
-  Array.from(holder.children).forEach(node => _messagesEl.insertBefore(node, _typingEl))
-  Array.from(_messagesEl.querySelectorAll('.msg-ai')).forEach(row => {
-    const bubble = row.querySelector('.msg-bubble')
-    if (!bubble) return
-    const cleanText = sanitizeRestoredOpenClawAssistantText(bubble)
-    if (!cleanText) {
-      row.remove()
-      return
-    }
-    renderCompactAssistantContent(cleanText, bubble, {
-      phase: row.dataset?.openclawStreamingDraft === '1' ? 'streaming' : 'completed',
-    })
-  })
+  const sourceMessages = Array.isArray(snapshot.messages) && snapshot.messages.length
+    ? snapshot.messages
+    : openClawSnapshotHtmlToMessages(snapshot.html || '')
+  const restoredMessages = normalizeOpenClawMessagesForRestore(sourceMessages)
+  restoredMessages.forEach(msg => appendOpenClawHistoryMessage(msg))
   _sessionKey = key
   _currentAiText = snapshot.currentAiText || ''
   _currentAiImages = [...(snapshot.currentAiImages || [])]
@@ -7298,7 +7467,8 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   let merged = 0
   let lastHistoryUserText = ''
   const lastVisibleUserFingerprint = getOpenClawLastVisibleUserText()
-  for (const msg of historyMessages || []) {
+  const stableHistoryMessages = collapseConsecutiveOpenClawAssistantDuplicates(historyMessages || [])
+  for (const msg of stableHistoryMessages) {
     if (msg?.role === 'user') {
       lastHistoryUserText = openClawVisibleUserText(msg.text || '')
       if (lastHistoryUserText) _lastVisibleUserText = lastHistoryUserText
@@ -7317,6 +7487,11 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
     }
     if (isOpenClawHistoryTransientFallbackMessage(msg)) continue
     if (completeStreamingDraftFromHistory(msg)) {
+      merged += 1
+      continue
+    }
+    const sameTurnRow = msg?.role === 'assistant' ? findOpenClawAssistantRowAfterLastUser(msg) : null
+    if (sameTurnRow && mergeOpenClawAssistantIntoVisibleRow(sameTurnRow, msg)) {
       merged += 1
       continue
     }
