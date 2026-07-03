@@ -10,7 +10,6 @@ import {
   loadHermesProviders,
   inferProviderByBaseUrl,
 } from '../lib/providers.js'
-import { openHermesTerminalLauncher } from '../lib/hermes-terminal-launcher.js'
 
 const ICONS = {
   running: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--success, #22c55e)" stroke-width="2.5" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`,
@@ -47,10 +46,11 @@ async function tauriListen(event, cb) {
   return _listenFn(event, cb)
 }
 
-const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
+const HERMES_DASHBOARD_PATH = '/chat'
+const HERMES_DASHBOARD_URL = `http://127.0.0.1:9119${HERMES_DASHBOARD_PATH}`
 
 function hermesDashboardUrl(port) {
-  return HERMES_DASHBOARD_URL.replace(/:9119(\/?$)/, ':' + (port || 9119) + '$1')
+  return `http://127.0.0.1:${port || 9119}${HERMES_DASHBOARD_PATH}`
 }
 
 function isHermesDashboardReady(result) {
@@ -288,7 +288,7 @@ export function render() {
           ${!gwRunning ? `<button class="hm-btn hm-btn--cta hm-dash-start" ${actionBusy ? 'disabled' : ''}>▶ ${actionBusy ? t('engine.gatewayStarting') : t('engine.dashStartGw')}</button>` : ''}
           ${gwRunning ? `<button class="hm-btn hm-btn--danger hm-dash-stop" ${actionBusy ? 'disabled' : ''}>■ ${actionBusy ? t('engine.dashStopping') : t('engine.dashStopGw')}</button>` : ''}
           ${gwRunning ? `<button class="hm-btn hm-dash-restart" ${actionBusy ? 'disabled' : ''}>↻ ${actionBusy ? t('engine.dashRestarting') : t('engine.dashRestartGw')}</button>` : ''}
-          <button class="hm-btn hm-dash-terminal-chat">↗ ${t('engine.cliChat')}</button>
+          <button class="hm-btn hm-dash-hermes-web">↗ 打开 Hermes Web</button>
           <button class="hm-btn hm-btn--icon hm-dash-refresh" title="${t('engine.dashRefresh')}">${ICONS.refresh}</button>
         </div>
       </div>
@@ -653,27 +653,15 @@ export function render() {
       } catch (e) { showGwMsg(String(e).replace(/^Error:\s*/, ''), true) }
       actionBusy = false; await refresh()
     })
-    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', async (e) => {
+    el.querySelector('.hm-dash-hermes-web')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget
       const origText = btn.textContent
       const tryOpen = async (port) => {
         await openExternalUrl(hermesDashboardUrl(port))
       }
 
-      const ready = openHermesTerminalLauncher({
-        info,
-        health,
-        route: '/h/native-dashboard',
-        notify: (message, type) => {
-          showGwMsg(message, type === 'warning' || type === 'error')
-          toast(message, type || 'info', { duration: 5000 })
-        },
-        navigate: () => {},
-      })
-      if (!ready.ok) return
-
       btn.disabled = true
-      btn.textContent = t('engine.dashNativePanelChecking')
+      btn.textContent = '正在检测 Hermes Web...'
       try {
         const probe = await api.hermesDashboardProbe().catch(() => ({ running: false, port: 9119 }))
         if (isHermesDashboardReady(probe)) {
@@ -686,7 +674,7 @@ export function render() {
           return
         }
 
-        btn.textContent = t('engine.dashNativePanelStarting')
+        btn.textContent = '正在启动 Hermes Web...'
         const result = await api.hermesDashboardStart().catch((err) => ({
           started: false,
           kind: 'spawn_failed',

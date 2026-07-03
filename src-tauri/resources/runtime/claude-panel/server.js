@@ -7,9 +7,10 @@ const { spawn, spawnSync } = require("child_process");
 const PORT = Number(process.env.PORT || 3020);
 const ADMIN_PORT = Number(process.env.CLEAN_PANEL_ADMIN_PORT || 3021);
 const PUBLIC_DIR = path.join(__dirname, "public");
+const DEFAULT_PORTABLE_HOME = path.resolve(__dirname, "..", "..", "data", "claude-code", "home");
 const HOME = process.env.CLEAN_PANEL_HOME_DIR
   ? path.resolve(process.env.CLEAN_PANEL_HOME_DIR)
-  : os.homedir();
+  : DEFAULT_PORTABLE_HOME;
 const APP_CONFIG_DIR = process.env.CLEAN_PANEL_DATA_DIR
   ? path.resolve(process.env.CLEAN_PANEL_DATA_DIR)
   : path.join(HOME, ".clean-claude-panel");
@@ -321,16 +322,14 @@ function buildPortableEnv(extra = {}) {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: extra.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
   };
 
-  if (process.env.CLEAN_PANEL_HOME_DIR) {
-    const appData = path.join(HOME, "AppData", "Roaming");
-    const localAppData = path.join(HOME, "AppData", "Local");
-    fs.mkdirSync(appData, { recursive: true });
-    fs.mkdirSync(localAppData, { recursive: true });
-    env.HOME = HOME;
-    env.USERPROFILE = HOME;
-    env.APPDATA = appData;
-    env.LOCALAPPDATA = localAppData;
-  }
+  const appData = path.join(HOME, "AppData", "Roaming");
+  const localAppData = path.join(HOME, "AppData", "Local");
+  fs.mkdirSync(appData, { recursive: true });
+  fs.mkdirSync(localAppData, { recursive: true });
+  env.HOME = HOME;
+  env.USERPROFILE = HOME;
+  env.APPDATA = appData;
+  env.LOCALAPPDATA = localAppData;
 
   return env;
 }
@@ -1343,31 +1342,45 @@ async function handleNativeClaudeStart(req, res) {
   env.PATH = `${path.dirname(claudeCommand)}${path.delimiter}${env.PATH || process.env.PATH || ""}`;
 
   try {
-    const child = spawn(claudeCommand, [], {
+    if (process.platform !== "win32") {
+      sendJson(res, 501, {
+        ok: false,
+        error: "Claude Code native terminal window is currently supported on Windows only.",
+        command: claudeCommand,
+        launcher: launcherPath,
+        cwd,
+      });
+      return;
+    }
+
+    const child = spawn("cmd.exe", ["/d", "/c", "start", NATIVE_CLAUDE_WINDOW_TITLE, launcherPath], {
       cwd,
       stdio: "ignore",
       env,
-      windowsHide: true,
+      windowsHide: false,
       detached: true,
     });
-    nativeClaudeChild = child;
+    nativeClaudeChild = null;
     if (typeof child.unref === "function") child.unref();
 
     sendJson(res, 200, {
       ok: true,
-      message: "Claude Code 原生 CLI 已在后台启动。",
+      message: "Claude Code 原生终端窗口已打开。",
       cwd,
       command: claudeCommand,
       launcher: launcherPath,
       windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
-      pid: child.pid || null,
-      background: true,
+      launcherPid: child.pid || null,
+      terminalWindow: true,
+      mode: "visible_terminal",
+      background: false,
     });
   } catch (error) {
     sendJson(res, 500, {
       ok: false,
       error: `启动 Claude Code 原生终端失败：${error.message || error}`,
       command: claudeCommand,
+      launcher: launcherPath,
       cwd,
     });
   }

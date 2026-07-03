@@ -2385,10 +2385,11 @@ pub async fn hermes_dashboard_start() -> Result<Value, String> {
 
     let enhanced = hermes_enhanced_path();
     patch_hermes_dashboard_windows_chat_notice();
-    let mut cmd = hermes_command(&["dashboard"], &enhanced);
+    let mut cmd = hermes_command(&["dashboard", "--tui"], &enhanced);
     cmd.stdin(std::process::Stdio::null())
         .stdout(log_file)
-        .stderr(log_err);
+        .stderr(log_err)
+        .env("HERMES_DASHBOARD_TUI", "1");
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
 

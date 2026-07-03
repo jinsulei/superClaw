@@ -376,6 +376,78 @@ function hermesBundledPythonExecutable() {
   return fs.existsSync(candidate) ? candidate : ''
 }
 
+function hermesDashboardWebDistDir() {
+  const root = hermesBundledRuntimeDir()
+  if (!root) return ''
+  return path.join(root, 'Lib', 'site-packages', 'hermes_cli', 'web_dist')
+}
+
+function hermesDashboardWebDistReady() {
+  const dist = hermesDashboardWebDistDir()
+  return !!dist && fs.existsSync(path.join(dist, 'index.html'))
+}
+
+function hermesSourceArchivePath() {
+  for (const candidate of [
+    path.join(appRootDir(), 'src-tauri', 'resources', 'hermes-agent-main.zip'),
+    path.join(appRootDir(), 'resources', 'hermes-agent-main.zip'),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return ''
+}
+
+function runLogged(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    windowsHide: true,
+    shell: isWindows && /^(npm|npx)$/.test(command),
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+    ...options,
+  })
+  if (result.status !== 0) {
+    const stdout = String(result.stdout || '').trim()
+    const stderr = String(result.stderr || '').trim()
+    const detail = [stdout, stderr].filter(Boolean).join('\n').slice(-4000)
+    throw new Error(`${command} ${args.join(' ')} failed${detail ? `:\n${detail}` : ''}`)
+  }
+  return result
+}
+
+function ensureHermesDashboardWebDist() {
+  if (hermesDashboardWebDistReady()) {
+    return { ready: true, prepared: false, kind: 'ready', message: 'Hermes dashboard web_dist already exists.' }
+  }
+  const archive = hermesSourceArchivePath()
+  const target = hermesDashboardWebDistDir()
+  if (!archive || !target) {
+    return { ready: false, prepared: false, kind: 'dashboard_source_missing', message: 'Hermes dashboard source archive or runtime target is missing.' }
+  }
+
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superclaw-hermes-dashboard-'))
+  try {
+    runLogged('tar', ['-xf', archive, '-C', workDir, 'hermes-agent-main/web', 'hermes-agent-main/hermes_cli'])
+    const webDir = path.join(workDir, 'hermes-agent-main', 'web')
+    const distDir = path.join(workDir, 'hermes-agent-main', 'hermes_cli', 'web_dist')
+    if (!fs.existsSync(path.join(webDir, 'package.json'))) {
+      throw new Error(`Hermes dashboard web/package.json not found in ${archive}`)
+    }
+    runLogged('npm', [fs.existsSync(path.join(webDir, 'package-lock.json')) ? 'ci' : 'install'], { cwd: webDir })
+    runLogged('npm', ['run', 'build'], { cwd: webDir })
+    if (!fs.existsSync(path.join(distDir, 'index.html'))) {
+      throw new Error(`Hermes dashboard build did not produce ${path.join(distDir, 'index.html')}`)
+    }
+    fs.rmSync(target, { recursive: true, force: true })
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.cpSync(distDir, target, { recursive: true, force: true })
+    return { ready: true, prepared: true, kind: 'ready', message: 'Hermes dashboard web_dist prepared from bundled source archive.' }
+  } catch (err) {
+    return { ready: false, prepared: false, kind: 'dashboard_build_failed', message: String(err?.message || err) }
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true })
+  }
+}
+
 function isBadHermesLauncher(exePath) {
   if (!exePath) return false
   return exePath.replace(/\\/g, '/').toLowerCase().includes('/.local/bin/hermes.exe')
@@ -1038,7 +1110,9 @@ function hermesProviderUsesMiniMax(provider) {
 }
 
 function hermesRuntimeEnv(extra = {}) {
-  const localEnv = readDotEnvVars(path.join(hermesHome(), '.env'))
+  const home = hermesHome()
+  const gatewayPort = hermesGatewayPort()
+  const localEnv = readDotEnvVars(path.join(home, '.env'))
   const configuredProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || ''
   const forcedProvider = localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || ''
   const explicitMiniMaxTest = isServerTestBuild() || String(forcedProvider || '').trim().toLowerCase() === 'minimax'
@@ -1069,6 +1143,8 @@ function hermesRuntimeEnv(extra = {}) {
   const env = {
     ...process.env,
     ...localEnv,
+    HERMES_HOME: home,
+    GATEWAY_HEALTH_URL: localEnv.GATEWAY_HEALTH_URL || process.env.GATEWAY_HEALTH_URL || `http://127.0.0.1:${gatewayPort}`,
     PATH: hermesEnhancedPath(),
     ...extra,
   }
@@ -12002,8 +12078,7 @@ const handlers = {
 
   async hermes_dashboard_probe() {
     const port = handlers._hermesDashboardPort()
-    const running = await _tcpProbe('127.0.0.1', port, 800)
-    return { running, port }
+    return handlers._hermesDashboardHttpStatus(port, 1200)
   },
 
   // 共用：解析 dashboard.port（缩进感知，避免误匹配 gateway 块的 port）
@@ -12029,13 +12104,141 @@ const handlers = {
     return port
   },
 
+  async _hermesDashboardHttpStatus(port, timeoutMs = 1200) {
+    const running = await _tcpProbe('127.0.0.1', port, Math.min(timeoutMs, 800))
+    if (!running) {
+      return {
+        running: false,
+        ready: false,
+        kind: 'not_running',
+        status_code: null,
+        message: 'dashboard port is not listening',
+        port,
+      }
+    }
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/`, {
+        headers: { 'Connection': 'close' },
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      const text = await resp.text().catch(() => '')
+      const lower = String(text || '').toLowerCase()
+      if (lower.includes('frontend not built') || lower.includes('run: cd web && npm run build')) {
+        return {
+          running: true,
+          ready: false,
+          kind: 'frontend_not_built',
+          status_code: resp.status,
+          message: 'Hermes native dashboard frontend is not built.',
+          port,
+        }
+      }
+      if (resp.status === 200 && lower.includes('<html')) {
+        return {
+          running: true,
+          ready: true,
+          kind: 'native_web',
+          status_code: resp.status,
+          message: 'Hermes native dashboard is ready.',
+          url: `http://127.0.0.1:${port}/chat`,
+          port,
+        }
+      }
+      return {
+        running: true,
+        ready: false,
+        kind: 'frontend_unavailable',
+        status_code: resp.status,
+        message: 'Hermes native dashboard did not return a usable UI.',
+        port,
+      }
+    } catch (err) {
+      return {
+        running: true,
+        ready: false,
+        kind: 'http_probe_failed',
+        status_code: null,
+        message: `dashboard http probe failed: ${err?.message || err}`,
+        port,
+      }
+    }
+  },
+
+  _ensureHermesDashboardWebDist() {
+    return ensureHermesDashboardWebDist()
+  },
+
+  _stopHermesDashboardPortOwner(port) {
+    if (!isWindows) return false
+    const script = `
+$conn = Get-NetTCPConnection -State Listen -LocalPort ${Number(port)} -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $conn) { Write-Output "NO_LISTENER"; exit 0 }
+$pidValue = $conn.OwningProcess
+$proc = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue"
+if ($proc -and $proc.CommandLine -match "hermes_cli\\.main dashboard") {
+  Stop-Process -Id $pidValue -Force
+  Write-Output "STOPPED:$pidValue"
+  exit 0
+}
+Write-Output "REFUSED:$pidValue"
+exit 2
+`
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 10000,
+    })
+    return result.status === 0 && String(result.stdout || '').includes('STOPPED:')
+  },
+
   async hermes_dashboard_start() {
     const port = handlers._hermesDashboardPort()
     // 1. 已运行？
-    if (await _tcpProbe('127.0.0.1', port, 500)) {
-      return { started: true, already_running: true, port }
+    let initialStatus = await handlers._hermesDashboardHttpStatus(port, 800)
+    if (initialStatus.kind === 'frontend_not_built') {
+      const prepared = handlers._ensureHermesDashboardWebDist()
+      if (!prepared.ready) {
+        return {
+          started: false,
+          already_running: true,
+          ready: false,
+          kind: prepared.kind,
+          status_code: initialStatus.status_code,
+          port,
+          log_tail: prepared.message,
+        }
+      }
+      if (handlers._stopHermesDashboardPortOwner(port)) {
+        await new Promise(r => setTimeout(r, 1200))
+        initialStatus = await handlers._hermesDashboardHttpStatus(port, 800)
+      }
+    }
+    if (initialStatus.ready) {
+      return { started: true, already_running: true, ready: true, kind: initialStatus.kind, port }
+    }
+    if (initialStatus.running) {
+      return {
+        started: false,
+        already_running: true,
+        ready: false,
+        kind: initialStatus.kind,
+        status_code: initialStatus.status_code,
+        port,
+        log_tail: initialStatus.message,
+      }
     }
     // 2. 清残留 PID
+    const prepared = handlers._ensureHermesDashboardWebDist()
+    if (!prepared.ready) {
+      return {
+        started: false,
+        already_running: false,
+        ready: false,
+        kind: prepared.kind,
+        port,
+        log_tail: prepared.message,
+      }
+    }
     if (handlers._dashPid) {
       try { process.kill(handlers._dashPid, 'SIGKILL') } catch {}
       handlers._dashPid = 0
@@ -12060,12 +12263,13 @@ const handlers = {
         if (eq > 0) envVars[t.slice(0, eq).trim()] = t.slice(eq + 1).trim()
       }
     }
-    const dashboardSpec = hermesCommandSpec(['dashboard'])
+    const dashboardSpec = hermesCommandSpec(['dashboard', '--tui'])
     const child = spawn(dashboardSpec.command, dashboardSpec.args, {
       cwd: dashboardSpec.cwd || home,
       env: {
         ...dashboardSpec.env,
         ...envVars,
+        HERMES_DASHBOARD_TUI: '1',
         PYTHONPATH: dashboardSpec.env.PYTHONPATH || envVars.PYTHONPATH,
         VIRTUAL_ENV: dashboardSpec.env.VIRTUAL_ENV || envVars.VIRTUAL_ENV,
       },
@@ -12109,8 +12313,21 @@ const handlers = {
         }
         return { started: false, kind, exit_code: earlyExitCode, port, log_tail: tail }
       }
-      if (await _tcpProbe('127.0.0.1', port, 300)) {
-        return { started: true, already_running: false, port, pid }
+      const dashboardStatus = await handlers._hermesDashboardHttpStatus(port, 800)
+      if (dashboardStatus.ready) {
+        return { started: true, already_running: false, ready: true, kind: dashboardStatus.kind, port, pid }
+      }
+      if (dashboardStatus.running && dashboardStatus.kind === 'frontend_not_built') {
+        return {
+          started: false,
+          already_running: false,
+          ready: false,
+          kind: dashboardStatus.kind,
+          status_code: dashboardStatus.status_code,
+          port,
+          pid,
+          log_tail: dashboardStatus.message,
+        }
       }
       await new Promise(r => setTimeout(r, 500))
     }
@@ -13370,25 +13587,20 @@ async function startNativeClaudeTerminal(cwd) {
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
   fs.mkdirSync(path.join(paths.homeDir, '.claude'), { recursive: true })
 
+  const launcherPath = writeNativeClaudeLauncher({ paths, runCwd })
+
   if (!isWindows) {
-    const child = spawn(paths.claude, [], {
-      cwd: runCwd,
-      env,
-      detached: true,
-      stdio: 'ignore',
-    })
-    if (typeof child.unref === 'function') child.unref()
-    return { ok: true, started: true, mode: 'native', cwd: runCwd, command: paths.claude }
+    throw new Error('Claude Code native terminal window is currently supported on Windows only.')
   }
 
-  const child = spawn(paths.claude, [], {
+  const child = spawn('cmd.exe', ['/d', '/c', 'start', NATIVE_CLAUDE_WINDOW_TITLE, launcherPath], {
     cwd: runCwd,
     env,
     detached: true,
     stdio: 'ignore',
-    windowsHide: true,
+    windowsHide: false,
   })
-  _nativeClaudeChild = child
+  _nativeClaudeChild = null
   if (typeof child.unref === 'function') child.unref()
   return {
     ok: true,
@@ -13396,9 +13608,12 @@ async function startNativeClaudeTerminal(cwd) {
     mode: 'native',
     cwd: runCwd,
     command: paths.claude,
-    message: 'Claude Code native CLI is running in the background.',
-    pid: child.pid || null,
-    background: true,
+    launcher: launcherPath,
+    message: 'Claude Code native terminal window opened.',
+    launcherPid: child.pid || null,
+    terminalWindow: true,
+    terminalMode: 'visible_terminal',
+    background: false,
     status,
   }
 }
