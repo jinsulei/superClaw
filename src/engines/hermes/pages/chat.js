@@ -393,6 +393,31 @@ function isFetchedContentFailure(text) {
   return /抓取失败|抓取超时|读取失败|无法读取|无法抓取|timeout|timed out|fetch failed|network error|econnreset|socket hang up|und_err|connection reset|连接被断开/i.test(String(text || ''))
 }
 
+function classifyHermesLinkFetchStatus(text) {
+  const value = String(text || '').trim()
+  if (!value) return { kind: 'link_fetch_failed', message: '网页抓取失败：没有读取到可分析的网页内容。' }
+  if (/抓取超时|timeout|timed out/i.test(value)) return { kind: 'link_fetch_timeout', message: '网页抓取失败：抓取超时，请稍后重试或换一个链接。' }
+  if (isFetchedContentFailure(value)) return { kind: 'link_fetch_failed', message: `网页抓取失败：${value.replace(/^抓取失败[:：]?\s*/i, '')}` }
+  return { kind: 'link_fetch_success', message: '链接内容已读取，正在交给 Hermes 分析。' }
+}
+
+async function getHermesLinkModelStatus() {
+  try {
+    const resp = await fetch('/__api/dev/agents/status?agent=hermes', { cache: 'no-store' })
+    if (!resp.ok) return { kind: 'gateway_unavailable', message: 'Hermes Gateway 暂不可用，无法分析链接。' }
+    const status = await resp.json()
+    if (!status?.gatewayReady && !status?.ready && !status?.connected) {
+      return { kind: 'gateway_unavailable', message: 'Hermes Gateway 暂不可用，无法分析链接。' }
+    }
+    if (status?.modelReady === false || status?.keyConfigured === false || status?.configMissing === true) {
+      return { kind: 'model_config_missing', message: '链接已处理，但 Hermes 模型配置不可用，请先配置 MiniMax API Key。' }
+    }
+    return { kind: 'model_ready', message: '' }
+  } catch {
+    return { kind: 'gateway_unavailable', message: 'Hermes Gateway 状态检查失败，无法确认模型是否可用。' }
+  }
+}
+
 function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
   return [
     '重要补充：如果第一次 browser_navigate 只返回首页、登录态、短内容或空内容，不要立即失败；必须继续尝试 browser_snapshot，再用 browser_console 读取 document.title、meta description、JSON-LD、document.body.innerText 的前 8000 字。',
@@ -517,7 +542,7 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
     '[视频链接分析请求]',
     `平台: ${platform}`,
     `URL: ${url}`,
-    '来源: 用户通过加号入口提交，已授权后台读取该链接或用户已打开页面中的公开可见信息。',
+    '来源: 用户通过加号入口提交。当前版本不会直接解析视频正文、画面或字幕，只会把链接交给 Hermes 进行文本化分析；如需完整读取视频内容，后续需要接入专门解析器或使用用户已打开页面的公开可见信息。',
     '读取策略: 优先使用 browser_navigate / browser_snapshot / computer_use 等可用后台浏览器工具读取公开可见信息；不要展示、播放、嵌入、截图回传、保存或主动建议打开平台页面。',
     '读取兜底: browser_navigate 后如果只拿到首页、登录态、空白页或很短的结果，必须继续调用 browser_snapshot 和 browser_console 读取标题、meta、JSON-LD、可见正文；只有这些都失败后才进入素材补充流程。',
     '合规边界: 不保存账号 Cookie，不保存或提及平台截图，不主动要求用户提供截图，不询问是否打开平台页面，不绕过登录、付费、权限、robots 或平台限制；只把公开可见的标题、字幕、口播、页面文字、封面说明等转成文字结果。',
@@ -2789,6 +2814,14 @@ export function render() {
       linkDraft = ''
       if (isVideoShareUrl(url)) {
         const platform = videoPlatformLabel(url)
+        const modelStatus = await getHermesLinkModelStatus()
+        if (modelStatus.kind === 'model_config_missing' || modelStatus.kind === 'gateway_unavailable') {
+          linkMenuOpen = true
+          linkDraft = url
+          linkError = modelStatus.message
+          toast(modelStatus.message, 'warning')
+          return
+        }
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个${platform}视频链接：${url}`
@@ -2798,9 +2831,25 @@ export function render() {
         forceScrollBottom = true
         draw()
         await store.sendMessage(visibleText, { modelContent, instructions })
-        toast('已开始后台读取并拆解视频链接', 'success')
+        toast('已识别为视频/社媒链接：当前不是完整视频解析器，已交给 Hermes 做文本化分析。', 'warning')
       } else {
         const content = await api.assistantFetchUrl(url)
+        const fetchStatus = classifyHermesLinkFetchStatus(content)
+        if (fetchStatus.kind !== 'link_fetch_success') {
+          linkMenuOpen = true
+          linkDraft = url
+          linkError = fetchStatus.message
+          toast(fetchStatus.message, 'warning')
+          return
+        }
+        const modelStatus = await getHermesLinkModelStatus()
+        if (modelStatus.kind === 'model_config_missing' || modelStatus.kind === 'gateway_unavailable') {
+          linkMenuOpen = true
+          linkDraft = url
+          linkError = modelStatus.message
+          toast(modelStatus.message, 'warning')
+          return
+        }
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个链接：${url}`
@@ -2809,7 +2858,7 @@ export function render() {
         forceScrollBottom = true
         draw()
         await store.sendMessage(visibleText, { modelContent })
-        toast('已开始分析链接内容', 'success')
+        toast('链接内容已读取，正在交给 Hermes 分析', 'success')
       }
     } catch (e) {
       const message = e?.message || String(e)
