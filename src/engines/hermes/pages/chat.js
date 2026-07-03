@@ -431,6 +431,8 @@ function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
     '如果用户已经表达想做仿写/改写/优化，则在拿到素材后直接继续产出，不要反复确认同一个意图。',
     '仿写/改写时保留核心内容、关键信息和观点，优化标题、开场、口播结构、转场、节奏和整体表达，做到内容核心不变、呈现更自然完整。',
     '',
+    ...formatVideoMaterialCompletenessRules(platform),
+    '',
     '如果读取到视频内容，请先按这些维度拆解：',
     '1. 核心主题与目标受众',
     '2. 开场钩子',
@@ -450,6 +452,22 @@ function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
     '想要方向：仿写/改写 / 标题 / 口播稿 / 分镜 / 发布文案',
     '[/视频素材]',
   ].join('\n')
+}
+
+function formatVideoMaterialCompletenessRules(platform = '短视频平台') {
+  return [
+    '[MATERIAL_COMPLETENESS_REQUIREMENT]',
+    `platform=${platform}`,
+    'materialLevel=metadata_only',
+    'transcriptAvailable=false',
+    'ocrAvailable=false',
+    'subtitleAvailable=false',
+    'audioTranscriptAvailable=false',
+    '如果用户问“为什么素材不足”“为什么只回答一半”“还能分析什么”，必须用中文完整说明，不能只回一句“只能拿到公开字段”。',
+    '回答结构必须包含：1. 结论：当前不是模型不会回答，而是素材不足；2. 已获取素材：标题、作者、描述、话题、互动数据、热门评论、页面公开字段；3. 未获取素材：视频逐字稿、字幕、音频转写、画面 OCR、完整视频正文、分镜内容；4. 为什么受限：当前版本没有稳定视频解析器/逐字稿提取器，只能基于公开字段做有限分析；5. 还能做什么：选题判断、评论反馈分析、账号内容定位、粗略卖点拆解、爆点方向判断；6. 用户可以补充：视频逐字稿、字幕、口播文本、视频截图、商品信息或链接正文；7. 下一步建议：补充素材后继续完整拆解。',
+    '禁止声称已经完整读取视频、已经解析视频正文、已经获取逐字稿、已经完成视频拆解，除非前置内容明确包含完整 transcript/captions/subtitles/OCR/audio transcript。',
+    '[/MATERIAL_COMPLETENESS_REQUIREMENT]',
+  ]
 }
 
 function appendUserSupplement(block, supplement) {
@@ -528,6 +546,7 @@ function formatVideoLinkFallbackPrompt(url, failureText) {
     `平台: ${platform}`,
     `URL: ${url}`,
     `读取状态: ${failureText || '抓取失败，暂时无法直接读取视频内容'}`,
+    ...formatVideoMaterialCompletenessRules(platform),
     '下一步: 优先后台读取用户已打开或授权打开页面的公开信息；不要展示、截图保存、播放或建议打开平台页面。若仍失败，进入素材补充流程。',
     '处理目标: 先做文字型拆解，再询问是否继续仿写/改写或生成标题、口播稿、分镜、拍摄清单、发布文案。',
     '[/视频链接]',
@@ -547,6 +566,7 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
     '读取兜底: browser_navigate 后如果只拿到首页、登录态、空白页或很短的结果，必须继续调用 browser_snapshot 和 browser_console 读取标题、meta、JSON-LD、可见正文；只有这些都失败后才进入素材补充流程。',
     '合规边界: 不保存账号 Cookie，不保存或提及平台截图，不主动要求用户提供截图，不询问是否打开平台页面，不绕过登录、付费、权限、robots 或平台限制；只把公开可见的标题、字幕、口播、页面文字、封面说明等转成文字结果。',
     '处理目标: 先做文字型视频拆解，再询问是否继续仿写/改写，或生成标题、口播稿、分镜、拍摄清单、发布文案。',
+    ...formatVideoMaterialCompletenessRules(platform),
   ]
   if (clipped && !isFetchedContentFailure(clipped)) {
     lines.push('', '[前置读取内容]', clipped, '[/前置读取内容]')
@@ -563,6 +583,7 @@ function formatVideoLinkSuccessPrompt(url, clipped) {
     '[视频链接内容]',
     `平台: ${platform}`,
     `URL: ${url}`,
+    ...formatVideoMaterialCompletenessRules(platform),
     '',
     clipped || '（视频链接内容为空）',
     '[/视频链接内容]',
