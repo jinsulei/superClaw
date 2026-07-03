@@ -736,6 +736,14 @@ function assistantTextHasExtractedMaterial(text) {
   return clean.length >= 120 && countFilledMaterialFields(clean) >= 2
 }
 
+function assistantTextHasPublicMetadataAnalysis(text) {
+  const clean = normalizeMaterialText(text)
+  if (!clean) return false
+  const hasPublicFields = /标题|描述|关键词|话题|页面公开字段|公开可见字段|页面文本|热门评论|互动数据|有限文稿分析|有限文稿时间轴|几句话文稿推断/.test(clean)
+  const hasNoFullVideo = /素材不足|没有拿到完整|暂时拿不到视频正文|没有读取到视频正文|没有逐字稿|没有字幕|没有口播|没有完整画面|公开字段|metadata_only/.test(clean)
+  return hasPublicFields && hasNoFullVideo
+}
+
 function assistantTextHasMaterialFailure(text) {
   const clean = normalizeMaterialText(text)
   return /素材不足|没有拿到完整|暂时拿不到视频正文|需要你补充素材|抓取失败|抓取超时|登录|验证码|反爬|访问受限/.test(clean)
@@ -803,15 +811,21 @@ function collectTurnMaterial(messages, index) {
 
   const fullText = uniqueMaterialLines(pieces.join('\n\n')).slice(0, MATERIAL_FULL_LIMIT)
   const fallbackText = normalizeMaterialText(assistantText).slice(0, 3600)
-  const hasMaterial = fullText.length >= 80
+  const hasToolText = fullText.length >= 80
+  const toolHasLimitedMetadata = hasToolText
+    && /短视频页面可读取信息|读取限制|页面元信息兜底|公开标题|公开字段|没有逐字稿|没有字幕|没有口播/.test(fullText)
+  const hasMaterial = hasToolText && !toolHasLimitedMetadata
   const assistantHasMaterial = assistantTextHasExtractedMaterial(fallbackText)
+  const assistantHasPublicMetadata = assistantTextHasPublicMetadataAnalysis(fallbackText)
   const assistantHasFailure = assistantTextHasMaterialFailure(fallbackText)
-  if (!hasMaterial && !assistantHasMaterial && !assistantHasFailure) return null
+  if (!hasToolText && !assistantHasMaterial && !assistantHasPublicMetadata && !assistantHasFailure) return null
 
-  const displayText = hasMaterial ? fullText : fallbackText
-  const status = hasMaterial || assistantHasMaterial ? 'ready' : 'partial'
+  const displayText = hasToolText ? fullText : fallbackText
+  const status = hasMaterial || assistantHasMaterial ? 'ready' : (toolHasLimitedMetadata || assistantHasPublicMetadata) ? 'metadata' : 'partial'
   const reason = hasMaterial || assistantHasMaterial
     ? '已读取到可整理的视频页面素材。'
+    : (toolHasLimitedMetadata || assistantHasPublicMetadata)
+      ? '已读取到公开字段，可做有限文稿分析；未拿到完整视频正文、字幕或逐字稿。'
     : '这次没有拿到完整原生页素材，只保留了失败原因和后续补充模板。'
   const preview = normalizeMaterialText(displayText).slice(0, MATERIAL_PREVIEW_LIMIT)
 
@@ -1770,8 +1784,12 @@ export function render() {
     if (!material) return ''
     materialCards.set(material.id, material)
     const expanded = expandedMaterialIds.has(material.id)
-    const title = material.status === 'ready' ? '已抓取素材' : '素材不足'
-    const tone = material.status === 'ready' ? 'is-ready' : 'is-partial'
+    const title = material.status === 'ready'
+      ? '已抓取素材'
+      : material.status === 'metadata'
+        ? '公开字段可分析'
+        : '素材不足'
+    const tone = material.status === 'ready' ? 'is-ready' : material.status === 'metadata' ? 'is-metadata' : 'is-partial'
     const expandedText = formatCapturedMaterialAsTranscript(material.fullText) || material.fullText
     const source = material.resolvedUrl && material.resolvedUrl !== material.url
       ? material.resolvedUrl
@@ -2844,6 +2862,15 @@ export function render() {
       linkDraft = ''
       if (isVideoShareUrl(url)) {
         const platform = videoPlatformLabel(url)
+        let fetchedContent = ''
+        let fetchStatus = null
+        try {
+          fetchedContent = await api.assistantFetchUrl(url)
+          fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+        } catch (fetchErr) {
+          fetchedContent = `抓取失败: ${fetchErr?.message || String(fetchErr)}`
+          fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+        }
         const modelStatus = await getHermesLinkModelStatus()
         if (modelStatus.kind === 'model_config_missing' || modelStatus.kind === 'gateway_unavailable') {
           linkMenuOpen = true
@@ -2855,13 +2882,18 @@ export function render() {
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个${platform}视频链接：${url}`
-        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url), supplement)
+        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent), supplement)
         const instructions = formatShortVideoWorkflowInstructions(platform)
         resetInput()
         forceScrollBottom = true
         draw()
         await store.sendMessage(visibleText, { modelContent, instructions })
-        toast('已识别为视频/社媒链接：当前不是完整视频解析器，已交给 Hermes 做文本化分析。', 'warning')
+        toast(
+          fetchStatus?.kind === 'link_fetch_success'
+            ? '已读取公开字段，正在交给 Hermes 做有限文稿分析。'
+            : '已识别为视频/社媒链接：当前不是完整视频解析器，已交给 Hermes 做文本化分析。',
+          fetchStatus?.kind === 'link_fetch_success' ? 'success' : 'warning',
+        )
       } else {
         const content = await api.assistantFetchUrl(url)
         const fetchStatus = classifyHermesLinkFetchStatus(content)
@@ -3771,6 +3803,7 @@ export function render() {
       restoreInstructions,
       buildIntentTriggeredToolInstructions(text),
     ].filter(Boolean).join('\n\n')
+    let sendModelContent = null
     try {
       clearDraftForSend()
 
@@ -3787,8 +3820,25 @@ export function render() {
         store.pushLocalAssistant(ocrBlock)
       }
     }
+      const directVideoUrl = extractFirstHttpUrl(text)
+      if (directVideoUrl && isVideoShareUrl(directVideoUrl)) {
+        const platform = videoPlatformLabel(directVideoUrl)
+        let fetchedContent = ''
+        try {
+          fetchedContent = await api.assistantFetchUrl(directVideoUrl)
+        } catch (fetchErr) {
+          fetchedContent = `抓取失败: ${fetchErr?.message || String(fetchErr)}`
+        }
+        const supplement = stripFirstHttpUrl(text)
+        sendModelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(directVideoUrl, fetchedContent), supplement)
+        sendInstructions = [
+          sendInstructions,
+          formatShortVideoWorkflowInstructions(platform),
+        ].filter(Boolean).join('\n\n')
+      }
       await store.sendMessage(text, {
         clientRequestId,
+        modelContent: sendModelContent || undefined,
         instructions: sendInstructions || null,
         attachments,
       })
