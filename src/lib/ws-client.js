@@ -88,6 +88,7 @@ export class WsClient {
     this._missedHeartbeats = 0
     this._heartbeatTimer = null
     this._reconnectState = 'idle' // idle | attempting | scheduled
+    this._reconnectSuppressedReason = ''
 
     // 消息缓存
     this._messageCache = new Map()
@@ -108,6 +109,7 @@ export class WsClient {
   get serverVersion() { return this._serverVersion }
   get reconnectState() { return this._reconnectState }
   get reconnectAttempts() { return this._reconnectAttempts }
+  get reconnectSuppressedReason() { return this._reconnectSuppressedReason }
   get lastConnectedAt() { return this._lastConnectedAt }
   get lastMessageAt() { return this._lastMessageAt }
 
@@ -122,6 +124,7 @@ export class WsClient {
       lastMessageAt: this._lastMessageAt,
       reconnectAttempts: this._reconnectAttempts,
       reconnectState: this._reconnectState,
+      reconnectSuppressedReason: this._reconnectSuppressedReason,
       serverVersion: this._serverVersion,
       missedHeartbeats: this._missedHeartbeats,
       pendingReconnect: this._pendingReconnect,
@@ -139,6 +142,11 @@ export class WsClient {
   }
 
   connect(host, token, opts = {}) {
+    if (opts.suppressReconnect) {
+      this.setReconnectSuppressed(opts.suppressReconnect === true ? 'suppressed' : opts.suppressReconnect)
+      return
+    }
+    this.clearReconnectSuppression()
     this._intentionalClose = false
     this._autoPairAttempts = 0
     this._token = token || ''
@@ -155,7 +163,7 @@ export class WsClient {
     this._doConnect()
   }
 
-  disconnect() {
+  disconnect(options = {}) {
     this._intentionalClose = true
     this._stopPing()
     this._stopHeartbeat()
@@ -168,10 +176,14 @@ export class WsClient {
     this._handshaking = false
     this._reconnectState = 'idle'
     this._pendingReconnect = false
+    if (options.suppressReconnect) {
+      this.setReconnectSuppressed(options.reason || options.suppressReconnect)
+    }
   }
 
   reconnect() {
     if (!this._url) return
+    this.clearReconnectSuppression()
     this._intentionalClose = false
     this._reconnectAttempts = 0
     this._autoPairAttempts = 0
@@ -187,7 +199,33 @@ export class WsClient {
     this._doConnect()
   }
 
+  setReconnectSuppressed(reason = 'suppressed') {
+    this._reconnectSuppressedReason = String(reason || 'suppressed')
+    this._intentionalClose = true
+    this._stopPing()
+    this._stopHeartbeat()
+    this._clearReconnectTimer()
+    this._clearChallengeTimer()
+    this._flushPending()
+    this._closeWs()
+    this._connecting = false
+    this._handshaking = false
+    this._gatewayReady = false
+    this._reconnectState = 'idle'
+    this._pendingReconnect = false
+    this._setConnected(false, 'config_missing', this._reconnectSuppressedReason)
+  }
+
+  clearReconnectSuppression() {
+    this._reconnectSuppressedReason = ''
+  }
+
+  _canReconnect() {
+    return !this._intentionalClose && !this._reconnectSuppressedReason
+  }
+
   _doConnect() {
+    if (this._reconnectSuppressedReason) return
     this._connecting = true
     this._closeWs()
     this._gatewayReady = false
@@ -242,7 +280,7 @@ export class WsClient {
         this._handshaking = false
         this._stopPing()
         setTimeout(() => {
-          if (!this._intentionalClose) {
+          if (this._canReconnect()) {
             this._reconnectAttempts = 0
             this._doConnect()
           }
@@ -251,7 +289,7 @@ export class WsClient {
       }
 
       // ── 1008: 握手期策略拒绝（按 reason 文本精确分流）──
-      if (e.code === 1008 && !this._intentionalClose) {
+      if (e.code === 1008 && this._canReconnect()) {
         if (/origin not allowed/i.test(reason)) {
           // Origin 不在白名单 → 自动配对（写 allowedOrigins + reload）
           if (this._autoPairAttempts < 1) {
@@ -304,7 +342,7 @@ export class WsClient {
           console.log('[ws] 被限流，30秒后重试')
           this._setConnected(false, 'reconnecting', '请求过于频繁，30秒后重试...')
           setTimeout(() => {
-            if (!this._intentionalClose) this._doConnect()
+            if (this._canReconnect()) this._doConnect()
           }, 30000)
           return
         }
@@ -316,7 +354,7 @@ export class WsClient {
           console.log(`[ws] Gateway 尚未就绪 (${e.reason})，${Math.round(delay/1000)}秒后重试 (${this._initRetryCount})`)
           this._setConnected(false, 'reconnecting', 'Gateway 启动中...')
           setTimeout(() => {
-            if (!this._intentionalClose) this._doConnect()
+            if (this._canReconnect()) this._doConnect()
           }, delay)
           return
         }
@@ -332,7 +370,7 @@ export class WsClient {
       this._handshaking = false
       this._stopPing()
       this._flushPending()
-      if (!this._intentionalClose) this._scheduleReconnect()
+      if (this._canReconnect()) this._scheduleReconnect()
     }
 
     ws.onerror = (err) => {
@@ -399,7 +437,7 @@ export class WsClient {
             const retryMs = msg.error?.retryAfterMs || 30000
             console.log(`[ws] 被限流，${Math.round(retryMs / 1000)}秒后重试`)
             this._setConnected(false, 'reconnecting', `请求过于频繁，${Math.round(retryMs / 1000)}秒后重试...`)
-            setTimeout(() => { if (!this._intentionalClose) this._doConnect() }, retryMs)
+            setTimeout(() => { if (this._canReconnect()) this._doConnect() }, retryMs)
             return
           }
           case 'DEVICE_IDENTITY_REQUIRED':
@@ -448,7 +486,7 @@ export class WsClient {
           console.log(`[ws] Gateway 启动中 (sidecars 加载)，${retryMs}ms 后重试`)
           // 标 reconnecting 而非 error，UI 上显示的是 spinner 不是红色叉
           this._setConnected(false, 'reconnecting', 'Gateway 启动中...')
-          setTimeout(() => { if (!this._intentionalClose) this._doConnect() }, retryMs)
+          setTimeout(() => { if (this._canReconnect()) this._doConnect() }, retryMs)
           return
         }
 
@@ -537,7 +575,7 @@ export class WsClient {
       // 而是直接重连一次。如果仍然失败，_autoPairAttempts 不会被重置，不会再次触发自动修复。
       console.log('[ws] 配对成功，3秒后重新连接...')
       setTimeout(() => {
-        if (!this._intentionalClose) {
+        if (this._canReconnect()) {
           this._reconnectAttempts = 0
           this._closeWs()
           this._doConnect()
@@ -566,7 +604,7 @@ export class WsClient {
       try { await api.autoPairDevice() } catch {}
       // 3秒后重连
       setTimeout(() => {
-        if (!this._intentionalClose) {
+          if (this._canReconnect()) {
           this._doConnect()
         }
       }, 3000)
@@ -658,6 +696,12 @@ export class WsClient {
   }
 
   _scheduleReconnect() {
+    if (this._reconnectSuppressedReason) {
+      this._reconnectState = 'idle'
+      this._pendingReconnect = false
+      this._setConnected(false, 'config_missing', this._reconnectSuppressedReason)
+      return
+    }
     // 超过最大重连次数，停止重连
     if (this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       console.warn('[ws] 已达到最大重连次数 (', MAX_RECONNECT_ATTEMPTS, ')，停止自动重连')
@@ -683,7 +727,7 @@ export class WsClient {
     this._setConnected(false, 'reconnecting', `重连中 (${this._reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})，${Math.round(delay/1000)}秒后...`)
     console.log(`[ws] 计划重连 (${this._reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})，延迟 ${Math.round(delay/1000)}秒`)
     this._reconnectTimer = setTimeout(() => {
-      if (!this._intentionalClose) {
+      if (this._canReconnect()) {
         this._reconnectState = 'attempting'
         this._doConnect()
       }
@@ -748,7 +792,7 @@ export class WsClient {
   request(method, params = {}) {
     return new Promise((resolve, reject) => {
       if (!this._ws || this._ws.readyState !== WebSocket.OPEN || !this._gatewayReady) {
-        if (!this._intentionalClose && (this._reconnectAttempts > 0 || !this._gatewayReady)) {
+        if (this._canReconnect() && (this._reconnectAttempts > 0 || !this._gatewayReady)) {
           const waitTimeout = setTimeout(() => { unsub(); reject(new Error('等待重连超时')) }, 15000)
           const unsub = this.onReady((hello, sessionKey, err) => {
             clearTimeout(waitTimeout); unsub()

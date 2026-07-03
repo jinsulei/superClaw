@@ -8,6 +8,7 @@ import { isForeignGatewayError, isForeignGatewayService, maybeShowForeignGateway
 import { navigate } from '../router.js'
 import { t } from '../lib/i18n.js'
 import { wsClient } from '../lib/ws-client.js'
+import { normalizeGatewayUiState, probeAgentGateway, shouldSuppressAgentGatewayReconnect } from '../lib/agent-gateway-status.js'
 
 let _unsubGw = null
 let _unsubWsStatus = null
@@ -18,6 +19,7 @@ let _loadToken = 0
 let _lastGwChangeLoad = 0
 let _wsStatusRefreshTimer = null
 let _dashboardWsConnectInFlight = false
+let _dashboardGatewayProbe = null
 
 export async function render() {
   const page = document.createElement('div')
@@ -282,6 +284,13 @@ async function ensureDashboardWsConnection(page) {
   _dashboardWsConnectInFlight = true
   try {
     await refreshGatewayStatus().catch(() => {})
+    const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 }).catch(() => null)
+    _dashboardGatewayProbe = probe
+    if (probe && shouldSuppressAgentGatewayReconnect(probe)) {
+      wsClient.setReconnectSuppressed(probe.reason || probe.error || probe.message || 'openclaw-needs_setup')
+      return
+    }
+    wsClient.clearReconnectSuppression?.()
     if (wsClient.gatewayReady || wsClient.connected || wsClient.connecting) return
 
     const config = await api.readOpenclawConfig().catch(() => null)
@@ -543,6 +552,8 @@ function renderSessionStatus(sessions) {
 }
 
 function renderWsStatus() {
+  const gatewayUiState = _dashboardGatewayProbe ? normalizeGatewayUiState(_dashboardGatewayProbe) : null
+  const suppressedReason = wsClient.reconnectSuppressedReason
   const connected = wsClient.connected
   const ready = wsClient.gatewayReady
   const reconnecting = wsClient.reconnectState === 'attempting' || wsClient.reconnectState === 'scheduled'
@@ -550,7 +561,11 @@ function renderWsStatus() {
   const serverVer = wsClient.serverVersion
 
   let statusColor, statusLabel, statusDetail
-  if (ready) {
+  if (gatewayUiState === 'needs_setup' || suppressedReason) {
+    statusColor = 'var(--warning)'
+    statusLabel = '需要配置模型 Key'
+    statusDetail = _dashboardGatewayProbe?.message || suppressedReason || ''
+  } else if (ready) {
     statusColor = 'var(--success)'
     statusLabel = t('dashboard.wsConnected')
     statusDetail = serverVer ? `Gateway ${serverVer}` : ''

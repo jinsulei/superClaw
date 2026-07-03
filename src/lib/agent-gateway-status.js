@@ -24,6 +24,7 @@ export const OPENCLAW_GATEWAY_STATES = {
   STARTING: 'starting',
   CHECKING: 'checking',
   NEEDS_SETUP: 'needs_setup',
+  CONFIG_MISSING: 'config_missing',
   READY: 'ready',
   ERROR: 'error',
 }
@@ -50,7 +51,14 @@ export function createAgentGatewayState(overrides = {}) {
     portListening: Boolean(overrides.portListening),
     verified: Boolean(overrides.verified),
     modelReady: overrides.modelReady ?? null,
+    gatewayReady: Boolean(overrides.gatewayReady ?? overrides.ready),
+    webReady: Boolean(overrides.webReady),
+    relayReady: overrides.relayReady ?? null,
     needsSetup: Boolean(overrides.needsSetup),
+    configMissing: Boolean(overrides.configMissing),
+    canConnectWebSocket: overrides.canConnectWebSocket ?? true,
+    shouldReconnect: overrides.shouldReconnect ?? true,
+    reason: overrides.reason || '',
     message: overrides.message || '',
     port: overrides.port || null,
     pid: overrides.pid || null,
@@ -66,11 +74,16 @@ export function isAgentGatewayUsable(state) {
 
 export function normalizeGatewayUiState(raw) {
   if (!raw) return OPENCLAW_GATEWAY_STATES.STOPPED
+  if (raw.needsSetup
+    || raw.needs_setup
+    || raw.configMissing
+    || raw.config_missing
+    || raw.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
+    || raw.status === OPENCLAW_GATEWAY_STATES.CONFIG_MISSING) {
+    return OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
+  }
   if (raw.ready === true || raw.connected === true || raw.status === OPENCLAW_GATEWAY_STATES.READY) {
     return OPENCLAW_GATEWAY_STATES.READY
-  }
-  if (raw.needsSetup || raw.needs_setup || raw.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP) {
-    return OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
   }
   if (raw.status === OPENCLAW_GATEWAY_STATES.STARTING) return OPENCLAW_GATEWAY_STATES.STARTING
   if (raw.status === OPENCLAW_GATEWAY_STATES.CHECKING) return OPENCLAW_GATEWAY_STATES.CHECKING
@@ -78,6 +91,23 @@ export function normalizeGatewayUiState(raw) {
   if (raw.status === 'listening_unverified') return OPENCLAW_GATEWAY_STATES.ERROR
   if (raw.portListening && raw.verified) return OPENCLAW_GATEWAY_STATES.CHECKING
   return OPENCLAW_GATEWAY_STATES.STOPPED
+}
+
+export function shouldSuppressAgentGatewayReconnect(raw) {
+  if (!raw) return false
+  const state = normalizeGatewayUiState(raw)
+  const reason = String(raw.reason || raw.code || raw.error || raw.message || '').toLowerCase()
+  return state === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
+    || raw.needsSetup === true
+    || raw.needs_setup === true
+    || raw.configMissing === true
+    || raw.config_missing === true
+    || raw.shouldReconnect === false
+    || raw.canConnectWebSocket === false
+    || reason.includes('openclaw_model_config_required')
+    || reason.includes('gateway_not_started_because_config_missing')
+    || reason.includes('config_missing')
+    || reason.includes('needs_setup')
 }
 
 export function pickAgentStatusPayload(data, agent) {
@@ -222,7 +252,10 @@ function normalizeProbePayload(agent, payload = {}) {
   const needsSetup = Boolean(
     source.needsSetup
     || source.needs_setup
+    || source.configMissing
+    || source.config_missing
     || source.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
+    || source.status === OPENCLAW_GATEWAY_STATES.CONFIG_MISSING
     || /OPENCLAW_MINIMAX_API_KEY_REQUIRED|api key|config|配置|未配置|needs_setup/i.test(text)
   )
   const ready = Boolean(source.ready || source.usable || source.status === OPENCLAW_GATEWAY_STATES.READY)
@@ -242,7 +275,15 @@ function normalizeProbePayload(agent, payload = {}) {
     verified,
     ready: ready && !needsSetup,
     connected: ready && !needsSetup,
+    gatewayReady: ready && !needsSetup,
+    webReady: source.webReady === true,
+    relayReady: source.relayReady ?? null,
+    modelReady: source.modelReady ?? null,
     needsSetup,
+    configMissing: needsSetup || source.configMissing === true || source.config_missing === true,
+    canConnectWebSocket: needsSetup ? false : source.canConnectWebSocket !== false,
+    shouldReconnect: needsSetup ? false : source.shouldReconnect !== false,
+    reason: source.reason || source.code || '',
     status,
     message: source.message || '',
     error: ready ? null : (source.error || null),

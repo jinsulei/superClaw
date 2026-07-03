@@ -1561,6 +1561,25 @@ async function probeLocalAgentHttp(agent, port, timeoutMs = 1500) {
   }
 }
 
+function getClaudeRelayRuntimeStatus() {
+  const relayPath = miniMaxDataPath('claude-panel', 'relay-config.json')
+  const relay = readJsonFileRelaxed(relayPath) || {}
+  const enabled = relay.enabled === true
+  const baseUrl = String(relay.baseUrl || relay.base_url || relay.endpoint || '').trim()
+  const model = String(relay.model || relay.modelName || '').trim()
+  const apiKey = String(relay.apiKey || relay.api_key || relay.token || '').trim()
+  const relayReady = enabled && !!baseUrl && !!model && !!apiKey
+  return {
+    relayEnabled: enabled,
+    relayReady,
+    modelReady: relayReady,
+    configMissing: !relayReady,
+    needsSetup: !relayReady,
+    relayStatus: relayReady ? 'ready' : 'not_configured',
+    relayConfigPath: relayPath,
+  }
+}
+
 async function createDevAgentStatus(agent) {
   const port = getAgentDefaultPort(agent)
   const details = getPortProcessDetails(port)
@@ -1576,6 +1595,16 @@ async function createDevAgentStatus(agent) {
     verified,
     ready: false,
     connected: false,
+    gatewayReady: false,
+    webReady: false,
+    panelReady: false,
+    relayReady: null,
+    modelReady: null,
+    configMissing: false,
+    canConnectWebSocket: agent === 'openclaw',
+    shouldReconnect: agent === 'openclaw',
+    kind: agent === 'openclaw' ? 'gateway' : agent === 'hermes' ? 'gateway' : 'panel',
+    reason: '',
     needsSetup: false,
     status: 'stopped',
     message: '',
@@ -1590,6 +1619,11 @@ async function createDevAgentStatus(agent) {
         return {
           ...base,
           needsSetup: true,
+          configMissing: true,
+          canConnectWebSocket: false,
+          shouldReconnect: false,
+          kind: 'gateway_not_started_because_config_missing',
+          reason: 'OPENCLAW_MODEL_CONFIG_REQUIRED',
           status: 'needs_setup',
           message: error?.message || 'OpenClaw model config required.',
           error: error?.code || error?.message || String(error),
@@ -1628,11 +1662,49 @@ async function createDevAgentStatus(agent) {
         ? (probe.httpOk || portListening && verified ? 'checking' : 'error')
         : 'checking'
 
+  if (agent === 'claudecode') {
+    const relayStatus = getClaudeRelayRuntimeStatus()
+    const panelReady = !!probe.ready
+    return {
+      ...base,
+      ready: panelReady,
+      connected: panelReady,
+      panelReady,
+      relayReady: relayStatus.relayReady,
+      modelReady: relayStatus.modelReady,
+      needsSetup: relayStatus.needsSetup,
+      configMissing: relayStatus.configMissing,
+      canConnectWebSocket: false,
+      shouldReconnect: false,
+      kind: 'panel',
+      status: panelReady ? 'ready' : 'checking',
+      relayStatus: relayStatus.relayStatus,
+      relayEnabled: relayStatus.relayEnabled,
+      message: panelReady
+        ? (relayStatus.relayReady ? 'Claude panel ready.' : 'Claude panel ready; relay is not configured.')
+        : probe.message || `Claude panel probe not ready: ${probe.status || 'unknown'}`,
+      error: panelReady ? null : (probe.error || null),
+      health: {
+        ready: !!probe.ready,
+        httpOk: !!probe.httpOk,
+        status: probe.status || 'unknown',
+        path: probe.path || '/health',
+      },
+    }
+  }
+
   return {
     ...base,
     ready,
     connected: ready,
+    gatewayReady: agent !== 'claudecode' ? ready : false,
+    modelReady: agent === 'hermes' ? null : ready,
     needsSetup,
+    configMissing: needsSetup,
+    canConnectWebSocket: agent === 'openclaw' ? !needsSetup : false,
+    shouldReconnect: agent === 'openclaw' ? !needsSetup : false,
+    kind: agent === 'openclaw' ? 'gateway' : 'gateway',
+    reason: needsSetup ? 'config_missing' : '',
     status,
     message: needsSetup
       ? '模型或网关配置未完成，请先完成配置。'

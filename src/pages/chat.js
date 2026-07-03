@@ -9,6 +9,7 @@ import {
   getOpenClawGatewayCopy,
   normalizeGatewayUiState,
   probeAgentGateway,
+  shouldSuppressAgentGatewayReconnect,
   waitForAgentGatewayReady,
 } from '../lib/agent-gateway-status.js'
 import { navigate } from '../router.js'
@@ -1598,6 +1599,7 @@ function setOpenClawGatewayUiState(nextState, details = {}) {
   _openClawGatewayUiState = readyByProbe || readyByWs || recoverableAbortError ? 'ready' : requestedState
   if (details.probe) _openClawGatewayProbe = details.probe
   if (_openClawGatewayUiState === 'ready') {
+    wsClient.clearReconnectSuppression?.()
     _hasEverConnected = true
     _openClawGatewayError = ''
   } else if (details.error !== undefined) {
@@ -1675,6 +1677,7 @@ async function refreshOpenClawGatewayUiState() {
   const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
   const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
   if (state === 'ready') markOpenClawGatewayReady('dev-status-ready', { probe })
+  else if (shouldSuppressAgentGatewayReconnect(probe)) suppressOpenClawReconnectForConfig(probe, 'refresh-openclaw-needs_setup')
   else setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
   return probe
 }
@@ -1742,6 +1745,17 @@ function clearOpenClawGatewayUiConvergenceTimers() {
   _openClawGatewayConvergenceTimers = []
 }
 
+function suppressOpenClawReconnectForConfig(probe = null, reason = 'openclaw-needs_setup') {
+  clearOpenClawGatewayUiConvergenceTimers()
+  clearOpenClawTransientRecoveryTimer()
+  wsClient.setReconnectSuppressed(probe?.reason || probe?.error || probe?.message || reason)
+  if (probe) _openClawGatewayProbe = probe
+  setOpenClawGatewayUiState('needs_setup', {
+    probe,
+    error: probe?.message || probe?.error || 'OpenClaw model config required.',
+  })
+}
+
 function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
   clearOpenClawGatewayUiConvergenceTimers()
   const pageRef = _page
@@ -1760,6 +1774,10 @@ function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
         }
         const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 }).catch(() => null)
         if (!_pageActive || _page !== pageRef || !pageRef?.isConnected) return
+        if (probe && shouldSuppressAgentGatewayReconnect(probe)) {
+          suppressOpenClawReconnectForConfig(probe, 'convergence-openclaw-needs_setup')
+          return
+        }
         if (hasOpenClawGatewayReadySignal(probe)) {
           markOpenClawGatewayReady(`${reason}-converged-ready`, { probe })
           updateSendState()
@@ -1800,7 +1818,10 @@ async function autoStartOpenClawGatewayOnEnter() {
       markOpenClawGatewayReady('auto-enter-ready', { probe })
       return true
     }
-    if (state === 'needs_setup') return false
+    if (state === 'needs_setup') {
+      suppressOpenClawReconnectForConfig(probe, 'auto-enter-openclaw-needs_setup')
+      return false
+    }
     if (state === 'checking') {
       const result = await finalizeOpenClawProgressReady()
       if (!result.ok || !_pageActive) return false
@@ -2226,11 +2247,15 @@ async function connectGateway(options = {}) {
       const probe = await refreshOpenClawGatewayUiState()
       const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
       if (state === 'stopped' || state === 'needs_setup' || state === 'error') {
+        if (shouldSuppressAgentGatewayReconnect(probe)) {
+          suppressOpenClawReconnectForConfig(probe, 'connect-openclaw-needs_setup')
+          return
+        }
         if (isOpenClawGenerationActive()) {
           scheduleOpenClawTransientRecovery(`connect-probe-${state}`, { notify: false, delayMs: 1200 })
           return
         }
-        if (wsClient.connected || wsClient.connecting || wsClient.gatewayReady) wsClient.disconnect()
+        if (wsClient.connected || wsClient.connecting || wsClient.gatewayReady) wsClient.disconnect({ suppressReconnect: state === 'needs_setup', reason: `connect-probe-${state}` })
         return
       }
       if (state === 'checking') {
@@ -2247,6 +2272,11 @@ async function connectGateway(options = {}) {
       if (!_pageActive) return
       updateStatusDot(status)
       const bar = document.getElementById('chat-disconnect-bar')
+      if (status === 'config_missing') {
+        setOpenClawGatewayUiState('needs_setup', { error: errorMsg || 'OpenClaw model config required.' })
+        if (bar) bar.style.display = 'none'
+        return
+      }
       if (status === 'ready' || status === 'connected') {
         markOpenClawGatewayReady('ws-status-ready')
         // WS 已连接，主动刷新 Gateway 状态以消除顶部横条延迟
@@ -2393,6 +2423,11 @@ async function ensureOpenClawGatewayReadyForSend() {
   const readyCheckState = hasOpenClawGatewayReadySignal(readyCheck.state) ? 'ready' : normalizeGatewayUiState(readyCheck.state)
   if (readyCheckState === 'ready') markOpenClawGatewayReady('send-ready-check', { probe: readyCheck.state })
   else {
+    if (shouldSuppressAgentGatewayReconnect(readyCheck.state)) {
+      suppressOpenClawReconnectForConfig(readyCheck.state, 'send-openclaw-needs_setup')
+      toast(readyCheck.message || 'OpenClaw model config required.', 'warning')
+      return false
+    }
     setOpenClawGatewayUiState(readyCheckState, {
       probe: readyCheck.state,
       error: readyCheck.state?.error || '',
@@ -9026,6 +9061,11 @@ export function cleanup() {
   if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
   if (_unsubReady) { _unsubReady(); _unsubReady = null }
   if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
+  clearOpenClawGatewayUiConvergenceTimers()
+  clearOpenClawTransientRecoveryTimer()
+  if (!keepActiveOpenClawRun && (wsClient.connected || wsClient.connecting || wsClient.gatewayReady || wsClient.reconnectState !== 'idle')) {
+    wsClient.disconnect({ suppressReconnect: true, reason: 'openclaw-route-switch' })
+  }
   clearTimeout(_streamSafetyTimer)
   if (_scrollFrame) {
     cancelAnimationFrame(_scrollFrame)
