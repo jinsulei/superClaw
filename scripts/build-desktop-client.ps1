@@ -146,6 +146,32 @@ function Write-Utf8NoBom([string]$Path, [string]$Value) {
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }
 
+function Write-PortableClaudeNativeLauncher([string]$ClaudeCodeHome) {
+  New-Item -ItemType Directory -Path $ClaudeCodeHome -Force | Out-Null
+  Write-Utf8NoBom (Join-Path $ClaudeCodeHome "run-claude-native.cmd") (@"
+@echo off
+chcp 65001 >nul
+title SuperClaw Claude Code Native
+
+for %%I in ("%~dp0.") do set "CLAUDE_HOME=%%~fI"
+for %%I in ("%CLAUDE_HOME%\..\..") do set "DATA_ROOT=%%~fI"
+for %%I in ("%DATA_ROOT%\..") do set "RESOURCES_ROOT=%%~fI"
+set "RUNTIME_ROOT=%RESOURCES_ROOT%\runtime"
+set "CLAUDE_BIN=%RUNTIME_ROOT%\claude-code\bin"
+
+cd /d "%RUNTIME_ROOT%"
+set "HOME=%CLAUDE_HOME%"
+set "USERPROFILE=%CLAUDE_HOME%"
+set "APPDATA=%CLAUDE_HOME%\AppData\Roaming"
+set "LOCALAPPDATA=%CLAUDE_HOME%\AppData\Local"
+set "CLAUDE_CONFIG_DIR=%CLAUDE_HOME%\claude-config"
+set "CLAUDE_CODE_PROJECTS_DIR=%DATA_ROOT%\claude-code\projects"
+set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+set "PATH=%CLAUDE_BIN%;%PATH%"
+"%CLAUDE_BIN%\claude.exe"
+"@)
+}
+
 function Copy-FileIfMissingOrEmpty([string]$Source, [string]$Target) {
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Fail "Missing OpenClaw identity template: $Source"
@@ -714,6 +740,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
     Remove-IfExists (Join-Path $ClaudeConfig $name)
   }
 
+  Write-PortableClaudeNativeLauncher $ClaudeCodeHome
   Write-PortableOpenClawConfig $DotOpenClaw $SanitizedTestMode
   Copy-OpenClawWorkspaceIdentity $ResourcesDir $DataRoot
   Write-PortablePanelConfig $DotOpenClaw $SanitizedTestMode
