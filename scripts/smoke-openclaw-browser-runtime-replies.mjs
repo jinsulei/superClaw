@@ -39,11 +39,11 @@ const requiredTerms = [
   'const localAnswer = !attachments.length && !slashLikeInput ? maybeHandleOpenClawLocalAnswer(text) : { handled: false }',
   'if (localAnswer.handled)',
   'appendAiMessage(reply, new Date(now + 1)',
-  'if (!(await ensureOpenClawGatewayReadyForSend())) return',
+  'finishOpenClawActiveRun(\'failed\', \'gateway-not-ready\')',
   'if (!visibleFinalText) appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)',
   "clearOpenClawGenerationState('aborted-fallback'",
   'buildOpenClawToolUnavailableReply(_lastVisibleUserText)',
-  'return sanitizeOpenClawVisibleReply(text)',
+  'return sanitizeOpenClawVisibleReply(text, userText)',
   'skipped unbound stale OpenClaw event',
   'browser-tool-unavailable-fallback',
   "kind: 'capability'",
@@ -61,12 +61,12 @@ const sendBlock = chatSource.slice(sendStart, sendEnd)
 
 assert(sendStart >= 0 && sendEnd > sendStart, 'sendMessage block not found')
 assert(
-  sendBlock.indexOf('maybeHandleOpenClawLocalAnswer') < sendBlock.indexOf('ensureOpenClawGatewayReadyForSend'),
-  'local safety/ecommerce answer must run before gateway-ready check',
+  sendBlock.indexOf('maybeHandleOpenClawLocalAnswer') < sendBlock.indexOf('doSend(text, attachments'),
+  'local safety/ecommerce answer must run before the gateway-backed send path',
 )
 assert(
-  sendBlock.indexOf('parseOpenClawSlashCommand') > sendBlock.indexOf('ensureOpenClawGatewayReadyForSend'),
-  'slash/delegation flow should keep the original gateway-backed send path',
+  chatSource.indexOf('async function doSend') < chatSource.indexOf('if (!(await ensureOpenClawGatewayReadyForSend())) {'),
+  'gateway-ready check must live in doSend after the active run is bound',
 )
 
 const renderStart = chatSource.indexOf('function renderCompactAssistantContent')

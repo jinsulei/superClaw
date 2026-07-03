@@ -218,7 +218,7 @@ for (const term of [
   'payload.message?.data?.assistantTexts',
   'isOpenClawAssistantFailurePlaceholderText(text)',
   'isOpenClawAssistantFailurePlaceholderText(c?.text)',
-  "normalizeOpenClawVisibleAssistantText(payload, { fallback: '' })",
+  "normalizeOpenClawVisibleAssistantText(payload, { fallback: '', userText: activeFinalUserText })",
   'function shouldUseOpenClawEmptyReplyFallback',
   "recoverOpenClawAssistantFromHistoryBeforeFallback('history-visible-assistant-after-empty-final'",
   "console.warn('[chat] empty final history recovery failed:'",

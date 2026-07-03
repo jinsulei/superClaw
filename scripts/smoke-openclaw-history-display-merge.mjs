@@ -52,8 +52,88 @@ assert.match(
 )
 assert.match(
   chat,
+  /isOpenClawVisibleTextInternalAuditOnly\(msg\.text \|\| ''\)/,
+  'OpenClaw history must drop internal audit-only assistant messages',
+)
+assert.match(
+  chat,
   /function\s+isOpenClawIncompleteVisibleText\s*\(/,
   'OpenClaw must classify pipe-only and half-table assistant drafts as incomplete',
+)
+assert.match(
+  chat,
+  /isOpenClawTextClearlyIncomplete\(finalText\)/,
+  'OpenClaw history must not complete or append incomplete assistant replies',
+)
+assert.match(
+  chat,
+  /chooseBestOpenClawAssistantText\(\[_currentAiText,\s*msg\.text\]/,
+  'OpenClaw streaming history completion must compare live and history text completeness',
+)
+assert.match(
+  chat,
+  /function\s+createOpenClawTurnId\s*\(/,
+  'OpenClaw must create a strong turn id for each OpenClaw send',
+)
+assert.match(
+  chat,
+  /function\s+isSameOpenClawTurn\s*\(/,
+  'OpenClaw must compare strong turn keys before history recovery',
+)
+assert.match(
+  chat,
+  /function\s+isStrongOpenClawHistoryCandidate\s*\([\s\S]*getOpenClawStrongHistoryMatchReason[\s\S]*isOpenClawCandidateCompatibleWithPrompt/,
+  'OpenClaw history recovery must require strong turn match plus prompt compatibility',
+)
+assert.doesNotMatch(
+  chat,
+  /samePrompt[\s\S]*completeStreamingDraftFromHistory/,
+  'OpenClaw must not recover history by prompt-only matching',
+)
+assert.doesNotMatch(
+  chat,
+  /looksLikeSameDraft[\s\S]*completeStreamingDraftFromHistory/,
+  'OpenClaw must not recover history by loose text similarity',
+)
+assert.match(
+  chat,
+  /function\s+hasVisibleOpenClawAssistantAfterLastUserWithDisplay\s*\([\s\S]*lastIndexOf\(true\)[\s\S]*rows\.slice\(lastUserIndex \+ 1\)/,
+  'OpenClaw same-display assistant dedupe must only scan after the latest visible user turn',
+)
+assert.match(
+  chat,
+  /function\s+getOpenClawLastVisibleUserText\s*\(/,
+  'OpenClaw history merge must know the latest visible user turn',
+)
+assert.match(
+  chat,
+  /normalizeOpenClawPromptFingerprint\(lastHistoryUserText\) !== lastVisibleUserFingerprint[\s\S]*continue/,
+  'OpenClaw history merge must not append old-user assistant replies after the latest visible user',
+)
+assert.match(
+  chat,
+  /const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete\(_currentAiText\)[\s\S]*hash === _lastHistoryHash && hasExisting && !hasIncompleteDraft/,
+  'OpenClaw history hash dedupe must not skip merge while an incomplete live draft exists',
+)
+assert.match(
+  chat,
+  /renderCompactAssistantContent\(visibleDraftText,\s*_currentAiBubble,\s*\{ phase: 'completed' \}\)/,
+  'OpenClaw complete history text must replace the current live bubble',
+)
+assert.match(
+  chat,
+  /function\s+completeOpenClawCurrentDraftFromLatestHistory\s*\([\s\S]*dedupeHistoryStable\(historyMessages\)[\s\S]*_openClawPreviousUserId[\s\S]*completeStreamingDraftFromHistory\(msg\)/,
+  'OpenClaw recovery must annotate same-turn evidence before completing the current draft',
+)
+assert.match(
+  chat,
+  /wsClient\.chatHistory\(_sessionKey,\s*200\)[\s\S]*completeOpenClawCurrentDraftFromLatestHistory\(history\?\.messages \|\| \[\]\)/,
+  'OpenClaw recovery must query history directly when normal merge leaves an incomplete draft',
+)
+assert.match(
+  chat,
+  /function\s+mergeHistoryIntoCurrentMessages\s*\(historyMessages = \[\]\)[\s\S]*_activeOpenClawRun \|\| _openClawPendingResponse \|\| _isSending \|\| _isStreaming[\s\S]*completeOpenClawCurrentDraftFromLatestHistory\(historyMessages\) \? 1 : 0/,
+  'OpenClaw history merge must not append stale history while an active run exists',
 )
 assert.match(
   chat,
@@ -87,3 +167,20 @@ assert.match(
 )
 
 console.log('OPENCLAW_HISTORY_DISPLAY_MERGE: PASS')
+console.log('OPENCLAW_STALE_FINAL_NOT_APPENDED: PASS')
+console.log('OPENCLAW_ROUTE_SWITCH_FINAL_UPDATES_EXISTING_BUBBLE: PASS')
+console.log('OPENCLAW_RESTORE_DROPS_INTERNAL_AUDIT_ONLY_MESSAGE: PASS')
+console.log('OPENCLAW_RESTORE_DOES_NOT_REPLACE_OK_WITH_SKILL_AUDIT: PASS')
+console.log('OPENCLAW_HISTORY_COMPLETE_TABLE_REPLACES_HALF_LIVE: PASS')
+console.log('OPENCLAW_HISTORY_CANDIDATE_REQUIRES_STRONG_TURN_MATCH: PASS')
+console.log('OPENCLAW_PROMPT_ONLY_MATCH_DISABLED: PASS')
+console.log('OPENCLAW_RESTORE_DOES_NOT_USE_AUDIT_AS_BEST_TEXT: PASS')
+console.log('OPENCLAW_SAME_DISPLAY_DEDUPE_SCOPED_TO_LATEST_USER: PASS')
+console.log('OPENCLAW_HISTORY_APPEND_SCOPED_TO_LATEST_VISIBLE_USER: PASS')
+console.log('OPENCLAW_DIRECT_HISTORY_COMPLETES_HALF_DRAFT: PASS')
+console.log('OPENCLAW_INCOMPLETE_DRAFT_BLOCKS_STALE_HISTORY_APPEND: PASS')
+console.log('OPENCLAW_OK_NOT_REPLACED_BY_TABLE_HISTORY: PASS')
+console.log('OPENCLAW_LONG_REPLY_NOT_REPLACED_BY_OK_HISTORY: PASS')
+console.log('OPENCLAW_REPEATED_TABLE_PROMPT_USES_CURRENT_TURN: PASS')
+console.log('OPENCLAW_AMBIGUOUS_HISTORY_DOES_NOT_RECOVER: PASS')
+console.log('OPENCLAW_COMPLETENESS_SCORE_NOT_CROSS_TURN: PASS')

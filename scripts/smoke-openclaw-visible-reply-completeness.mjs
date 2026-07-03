@@ -20,6 +20,9 @@ const requiredTerms = [
   'function isOpenClawSafeShortLiteralReply',
   'function hasOpenClawRenderableContent',
   'function removeCurrentOpenClawStreamBubbleIfEmpty',
+  'function isOpenClawHalfMarkdownTable',
+  'function isOpenClawCompleteMarkdownTable',
+  'function chooseBestOpenClawAssistantText',
   'const visibleDeltaText = sanitizeOpenClawVisibleReply',
   'function isOpenClawMarkdownTableFragment',
   'function isOpenClawNumberedListFragment',
@@ -82,7 +85,7 @@ const completeFnEnd = source.indexOf('function extractOpenClawTextPart', complet
 const completeFn = source.slice(completeFnStart, completeFnEnd)
 assert(completeFnStart >= 0, 'completeOpenClawVisibleReply function not found')
 assert(
-  completeFn.includes('return sanitizeOpenClawVisibleReply(text)') &&
+  /return sanitizeOpenClawVisibleReply\(text,\s*userText\)/.test(completeFn) &&
     !completeFn.includes('ensureCompleteVisibleReply') &&
     !completeFn.includes('repairIncompleteOpenClawVisibleReply'),
   'OpenClaw render path must not replace model output with local incomplete-reply fallback',
@@ -118,6 +121,11 @@ const incompleteSentence = ensureCompleteVisibleReply('可以协助：', {
 assert(!/[:：,，;；、|]$/.test(incompleteSentence), 'OpenClaw incomplete sentence must be repaired')
 
 assert(source.includes('isOpenClawMarkdownTableFragment(value)'), 'OpenClaw must detect inline half markdown tables')
+assert(source.includes('if (isOpenClawHalfMarkdownTable(text)) return true'), 'OpenClaw half markdown table must be incomplete')
+assert(source.includes('if (startsTable && !isOpenClawCompleteMarkdownTable(text)) return true'), 'OpenClaw table drafts must not complete without separator and data rows')
+assert(source.includes('recoverOpenClawAssistantFromHistoryBeforeFallback(\'incomplete-final-history-recovery\''), 'OpenClaw incomplete final must recover from complete history before fallback')
+assert(source.includes('recoverOpenClawAssistantFromHistoryBeforeFallback(\'incomplete-visible-final-history-recovery\''), 'OpenClaw incomplete visible final must recover from complete history before fallback')
+assert(source.includes('chooseBestOpenClawAssistantText([_currentAiText, msg.text]'), 'OpenClaw history must pick the most complete assistant text')
 assert(source.includes('isOpenClawNumberedListFragment(value)'), 'OpenClaw must detect incomplete numbered list fragments')
 assert(source.includes('isOpenClawLetteredListFragment(value)'), 'OpenClaw must detect incomplete lettered list fragments')
 assert(source.includes('buildOpenClawCapabilitySummaryFallback(userText, value)'), 'OpenClaw retains fallback helper for explicit local replies')
@@ -132,7 +140,7 @@ assert(
   !/String\(text \|\| ''\)\.trim\(\),\s*\n\s*payload\?\.message\?\.id \|\| ''/.test(source),
   'OpenClaw final fingerprint must not dedupe only by visible text plus optional message id',
 )
-assert(source.includes('allowEnglish: isOpenClawExactLiteralReplyRequest(_lastVisibleUserText)'), 'OpenClaw must allow exact short literal replies like "只回复 OK"')
+assert(source.includes('allowEnglish: isOpenClawExactLiteralReplyRequest(userText)'), 'OpenClaw must allow exact short literal replies like "只回复 OK"')
 assert(source.includes('isOpenClawSafeShortLiteralReply(text)'), 'OpenClaw must preserve safe short literal replies like OK')
 assert(source.includes('const preserveShortLiteral = isOpenClawSafeShortLiteralReply(text)'), 'OpenClaw internal cleaner must detect whole-message safe short literals')
 assert(source.includes('isInternalToolPlaceholderText(line, { allowShortLiteral: preserveShortLiteral })'), 'OpenClaw internal cleaner must not strip whole-message OK replies')
@@ -150,3 +158,5 @@ assert(
 )
 
 console.log('SMOKE_OPENCLAW_VISIBLE_REPLY_COMPLETENESS_PASS')
+console.log('OPENCLAW_COMPLETED_GATE_REJECTS_HALF_TABLE_HEADER: PASS')
+console.log('OPENCLAW_COMPLETED_TRUE_REQUIRES_COMPLETE_TEXT: PASS')

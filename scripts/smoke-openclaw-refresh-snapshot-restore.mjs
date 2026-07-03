@@ -12,8 +12,8 @@ assert.match(
 )
 assert.match(
   chat,
-  /const\s+OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION\s*=\s*2/,
-  'OpenClaw refresh snapshots must be schema-versioned so old rendered HTML is not restored',
+  /const\s+OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION\s*=\s*(?:[3-9]|\d{2,})/,
+  'OpenClaw refresh snapshots must bump render schema when old rendered HTML is invalidated',
 )
 assert.match(
   chat,
@@ -42,6 +42,46 @@ assert.match(
 )
 assert.match(
   chat,
+  /function\s+restoreOpenClawChatSnapshot\s*\(sessionKey,\s*reason = ''\)[\s\S]*?renderCompactAssistantContent\(cleanText,\s*bubble/,
+  'OpenClaw snapshot restore must re-render assistant bubbles instead of reusing stale HTML',
+)
+assert.match(
+  chat,
+  /function\s+stripOpenClawSnapshotHtml\s*\(/,
+  'OpenClaw snapshot restore must be able to extract text from old HTML snapshots',
+)
+assert.match(
+  chat,
+  /function\s+sanitizeRestoredOpenClawAssistantText\s*\(/,
+  'OpenClaw snapshot restore must resanitize assistant text before rendering',
+)
+assert.match(
+  chat,
+  /isOpenClawVisibleTextInternalAuditOnly\(rawText\)/,
+  'OpenClaw snapshot restore must drop old internal audit-only snapshots',
+)
+assert.match(
+  chat,
+  /isOpenClawTextClearlyIncomplete\(cleanText\)/,
+  'OpenClaw snapshot restore must not restore incomplete assistant text as completed',
+)
+assert.match(
+  chat,
+  /isOpenClawHalfMarkdownTable\(text = ''\)/,
+  'OpenClaw must detect half markdown table text before completed restore',
+)
+assert.match(
+  chat,
+  /isOpenClawCompleteMarkdownTable\(text = ''\)/,
+  'OpenClaw must detect complete markdown table text before completed restore',
+)
+assert.match(
+  chat,
+  /chooseBestOpenClawAssistantText\(\[prev\.text,\s*next\.text,\s*prevVisible,\s*nextVisible\]\)/,
+  'OpenClaw history merge must prefer complete table text over half snapshots',
+)
+assert.match(
+  chat,
   /schemaVersion:\s*OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION/,
   'OpenClaw snapshot creation must persist the current render schema version',
 )
@@ -62,3 +102,6 @@ assert.match(
 )
 
 console.log('OPENCLAW_REFRESH_SNAPSHOT_RESTORE: PASS')
+console.log('OPENCLAW_RESTORE_RESANITIZES_OLD_HTML_SNAPSHOT: PASS')
+console.log('OPENCLAW_TABLE_HISTORY_RESTORE_RENDERED: PASS')
+console.log('OPENCLAW_HISTORY_COMPLETE_TABLE_REPLACES_HALF_LIVE: PASS')
