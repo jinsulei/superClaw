@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 
 const root = process.cwd()
 const chat = readFileSync(resolve(root, 'src/engines/hermes/pages/chat.js'), 'utf8')
+const devApi = readFileSync(resolve(root, 'scripts/dev-api.js'), 'utf8')
 
 assert.match(
   chat,
@@ -32,12 +33,28 @@ const requiredPhrases = [
   '当前版本没有稳定视频解析器/逐字稿提取器',
   '只能基于公开字段做有限分析',
   '选题判断、评论反馈分析、账号内容定位、粗略卖点拆解、爆点方向判断',
+  '有限文稿分析',
+  '有限文稿时间轴',
+  '几句话文稿推断',
+  '选题/标题方向',
+  '可能受众',
+  '开场钩子推断',
+  '卖点或情绪点',
+  '可仿写方向',
+  '开场句',
+  '承接句',
+  '转折句',
+  '收束句',
+  '不要编造真实时间戳',
+  '不能只输出素材补充模板',
   '视频逐字稿、字幕、口播文本、视频截图、商品信息或链接正文',
   '补充素材后继续完整拆解',
   '禁止声称已经完整读取视频',
   '已经解析视频正文',
   '已经获取逐字稿',
   '已经完成视频拆解',
+  '不要把失败原因写成用户桌面端状态同步失败',
+  '不要说“用户没有在隔离浏览器里打开过”',
 ]
 
 for (const phrase of requiredPhrases) {
@@ -81,6 +98,12 @@ assert.match(
   'Video link success prompt must still avoid overclaiming complete video parsing',
 )
 
+assert.doesNotMatch(
+  workflowBlock + fallbackBlock + analysisBlock,
+  /继承用户桌面|用户桌面抖音|用户已打开(?:抖音|快手|小红书|桌面|客户端)|用户已经打开(?:抖音|快手|小红书|桌面|客户端)|后台浏览器没有继承/,
+  'Video/social link prompts must not assume the user opened a desktop app or inherited login state',
+)
+
 assert.match(
   chat,
   /if\s*\(\s*fetchStatus\.kind\s*!==\s*['"]link_fetch_success['"]\s*\)/,
@@ -93,5 +116,11 @@ assert.match(
 )
 assert.doesNotMatch(chat, /sk-[A-Za-z0-9_-]{20,}/, 'Hermes answer completeness source must not contain real API keys')
 assert.doesNotMatch(chat, /OpenClaw\s+配置缺失跳转提示|Claude\s+原生入口/, 'This fix must not add OpenClaw or Claude task text')
+assert.match(devApi, /有限文稿分析/, 'Short-video backend fallback must request limited manuscript analysis')
+assert.match(devApi, /选题\/标题方向、可能受众、开场钩子推断、卖点或情绪点、可仿写方向/, 'Backend metadata fallback must list concrete manuscript analysis dimensions')
+assert.match(devApi, /有限文稿时间轴/, 'Backend metadata fallback must request a limited manuscript timeline')
+assert.match(devApi, /几句话文稿推断/, 'Backend metadata fallback must request sentence-level manuscript inference')
+assert.match(devApi, /不编造真实时间戳/, 'Backend metadata fallback must forbid fake timestamps')
+assert.doesNotMatch(devApi, /用户已打开(?:抖音|快手|小红书|桌面|客户端)|用户已经打开(?:抖音|快手|小红书|桌面|客户端)|继承用户桌面|后台浏览器没有继承/, 'Backend short-video fallback must not assume user opened a desktop app')
 
 console.log('HERMES_ANSWER_COMPLETENESS: PASS')
