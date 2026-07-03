@@ -5,14 +5,22 @@ const dashboardPath = 'src/engines/hermes/pages/dashboard.js'
 const launcherPath = 'src/engines/hermes/lib/hermes-terminal-launcher.js'
 const indexPath = 'src/engines/hermes/index.js'
 const terminalPagePath = 'src/engines/hermes/pages/terminal.js'
+const hermesCommandPath = 'src-tauri/src/commands/hermes.rs'
 
 const dashboard = fs.readFileSync(dashboardPath, 'utf8')
 const launcher = fs.readFileSync(launcherPath, 'utf8')
 const index = fs.readFileSync(indexPath, 'utf8')
 const terminalPage = fs.readFileSync(terminalPagePath, 'utf8')
+const hermesCommand = fs.readFileSync(hermesCommandPath, 'utf8')
 
 assert.match(dashboard, /hm-dash-terminal-chat/, 'Hermes dashboard must keep the terminal entry')
 assert.match(dashboard, /openHermesTerminalLauncher/, 'Hermes terminal entry must call the launcher')
+assert.match(dashboard, /function isHermesDashboardReady/, 'dashboard must validate native dashboard readiness')
+assert.match(dashboard, /frontend_not_built/, 'dashboard must handle native dashboard frontend-not-built responses')
+assert.match(hermesCommand, /fn hermes_dashboard_http_status/, 'Tauri dashboard command must verify HTTP UI readiness')
+assert.match(hermesCommand, /frontend_not_built/, 'Tauri dashboard command must detect frontend-not-built responses')
+assert.match(hermesCommand, /"ready": status\.ready/, 'dashboard probe must expose a ready flag')
+assert.match(hermesCommand, /"kind": status\.kind/, 'dashboard probe must expose failure kind')
 assert.match(launcher, /HERMES_TERMINAL_GATEWAY_NOT_READY_MESSAGE/, 'launcher must guard gateway-not-ready')
 assert.match(launcher, /HERMES_TERMINAL_UNAVAILABLE_MESSAGE/, 'launcher must report unavailable terminal runtime')
 assert.match(launcher, /isHermesGatewayReadyForTerminal/, 'launcher must expose a gateway readiness guard')
@@ -23,8 +31,13 @@ assert.match(terminalPage, /Hermes 终端对话暂未启用受控 session。/, '
 assert.match(terminalPage, /当前不会执行系统命令。/, 'terminal page must state it will not execute commands')
 assert.match(terminalPage, /只允许用户手动输入命令/, 'terminal page must require manual user input for future terminal support')
 
-const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,900}/)?.[0] || ''
+const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,2600}/)?.[0] || ''
 assert.ok(terminalHandler.includes('openHermesTerminalLauncher'), 'terminal click handler must not be empty')
+assert.ok(terminalHandler.includes('hermesDashboardProbe'), 'terminal click handler must probe Hermes native dashboard')
+assert.ok(terminalHandler.includes('hermesDashboardStart'), 'terminal click handler must start Hermes native dashboard when needed')
+assert.ok(terminalHandler.includes('openExternalUrl'), 'terminal click handler must open the native dashboard URL')
+assert.ok(terminalHandler.includes('isHermesDashboardReady'), 'terminal click handler must only open a ready native dashboard')
+assert.ok(terminalHandler.includes('ready !== false'), 'terminal click handler must reject started-but-unready dashboard results')
 assert.ok(!terminalHandler.includes("'#/chat'"), 'terminal click handler must not route to OpenClaw')
 assert.ok(!terminalHandler.includes("'#/c"), 'terminal click handler must not route to ClaudeCode')
 

@@ -7,10 +7,12 @@ const root = process.cwd()
 const devApiPath = path.join(root, 'scripts', 'dev-api.js')
 const openclawChatPath = path.join(root, 'src', 'pages', 'chat.js')
 const hermesChatPath = path.join(root, 'src', 'engines', 'hermes', 'pages', 'chat.js')
+const claudePanelServerPath = path.join(root, 'src-tauri', 'resources', 'runtime', 'claude-panel', 'server.js')
 
 const devApi = fs.readFileSync(devApiPath, 'utf8')
 const openclawChat = fs.readFileSync(openclawChatPath, 'utf8')
 const hermesChat = fs.readFileSync(hermesChatPath, 'utf8')
+const claudePanelServer = fs.readFileSync(claudePanelServerPath, 'utf8')
 
 function functionBlock(source, name) {
   const start = source.indexOf(`function ${name}`)
@@ -35,6 +37,12 @@ assert.equal(/spawn\(\s*['"]cmd\.exe['"][\s\S]{0,160}['"]start['"][\s\S]{0,160}[
 assert.match(nativeClaudeBlock, /windowsHide:\s*true/)
 assert.match(nativeClaudeBlock, /background:\s*true/)
 console.log('CLAUDE_TERMINAL_BACKGROUND: PASS')
+
+const claudePanelNativeBlock = functionBlock(claudePanelServer, 'handleNativeClaudeStart')
+assert.equal(/spawn\(\s*['"]cmd\.exe['"][\s\S]{0,200}['"]start['"][\s\S]{0,200}['"]cmd\.exe['"][\s\S]{0,200}['"]\/k['"]/.test(claudePanelNativeBlock), false)
+assert.match(claudePanelNativeBlock, /windowsHide:\s*true/)
+assert.match(claudePanelNativeBlock, /background:\s*true/)
+console.log('CLAUDE_PANEL_NATIVE_BACKGROUND: PASS')
 
 assert.match(devApi, /function writeAgentToolLog/)
 assert.match(devApi, /logs['"],\s*['"]agent-tools/)

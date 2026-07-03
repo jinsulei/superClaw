@@ -49,6 +49,25 @@ async function tauriListen(event, cb) {
 
 const HERMES_DASHBOARD_URL = 'http://127.0.0.1:9119/'
 
+function hermesDashboardUrl(port) {
+  return HERMES_DASHBOARD_URL.replace(/:9119(\/?$)/, ':' + (port || 9119) + '$1')
+}
+
+function isHermesDashboardReady(result) {
+  return !!(result?.running && result?.ready === true)
+}
+
+function hermesDashboardIssueMessage(result) {
+  const port = result?.port || 9119
+  if (result?.kind === 'frontend_not_built') {
+    return `Hermes 原生面板端口 ${port} 已启动，但前端未构建，暂时不能打开原生页面。请继续使用 SuperClaw 内置 Hermes 聊天页。`
+  }
+  if (result?.kind === 'frontend_unavailable') {
+    return `Hermes 原生面板端口 ${port} 已启动，但没有返回可用页面，暂时不能打开原生页面。`
+  }
+  return `Hermes 原生面板暂不可用，端口 ${port} 未返回可用页面。`
+}
+
 function normalizeUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
 }
@@ -634,18 +653,77 @@ export function render() {
       } catch (e) { showGwMsg(String(e).replace(/^Error:\s*/, ''), true) }
       actionBusy = false; await refresh()
     })
-    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', () => {
-      openHermesTerminalLauncher({
+    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget
+      const origText = btn.textContent
+      const tryOpen = async (port) => {
+        await openExternalUrl(hermesDashboardUrl(port))
+      }
+
+      const ready = openHermesTerminalLauncher({
         info,
         health,
+        route: '/h/native-dashboard',
         notify: (message, type) => {
           showGwMsg(message, type === 'warning' || type === 'error')
           toast(message, type || 'info', { duration: 5000 })
         },
-        navigate: route => {
-          window.location.hash = `#${route}`
-        },
+        navigate: () => {},
       })
+      if (!ready.ok) return
+
+      btn.disabled = true
+      btn.textContent = t('engine.dashNativePanelChecking')
+      try {
+        const probe = await api.hermesDashboardProbe().catch(() => ({ running: false, port: 9119 }))
+        if (isHermesDashboardReady(probe)) {
+          await tryOpen(probe.port || 9119)
+          toast('Hermes 原生面板已打开。', 'success')
+          return
+        }
+        if (probe?.running && probe?.ready === false) {
+          toast(hermesDashboardIssueMessage(probe), 'warning', { duration: 8000 })
+          return
+        }
+
+        btn.textContent = t('engine.dashNativePanelStarting')
+        const result = await api.hermesDashboardStart().catch((err) => ({
+          started: false,
+          kind: 'spawn_failed',
+          port: probe?.port || 9119,
+          log_tail: String(err?.message || err),
+        }))
+        if (result?.started && result?.ready !== false) {
+          await tryOpen(result.port || 9119)
+          toast('Hermes 原生面板已启动。', 'success')
+          return
+        }
+
+        const port = result?.port || probe?.port || 9119
+        if (result?.kind === 'frontend_not_built' || result?.kind === 'frontend_unavailable') {
+          toast(hermesDashboardIssueMessage(result), 'warning', { duration: 8000 })
+          return
+        }
+        if (result?.kind === 'posix_only_module') {
+          toast('Hermes 原生面板在 Windows 下暂不可用，请继续使用 SuperClaw 内置 Hermes 聊天页。', 'warning', { duration: 8000 })
+          return
+        }
+        if (result?.kind === 'deps_missing') {
+          toast(t('engine.dashNativePanelDepHint'), 'warning', { duration: 7000 })
+          return
+        }
+        if (result?.kind === 'timeout') {
+          toast(t('engine.dashNativePanelStartTimeout', { port }), 'warning', { duration: 7000 })
+          return
+        }
+        const detail = (result?.log_tail || '').split('\n').slice(-2).join('\n').trim()
+        toast(t('engine.dashNativePanelStartGeneric') + (detail ? ': ' + detail : ''), 'error', { duration: 8000 })
+      } catch (err) {
+        toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error', { duration: 8000 })
+      } finally {
+        btn.disabled = false
+        btn.textContent = origText
+      }
     })
     // Quick links
     el.querySelectorAll('.hm-dash-link').forEach(btn => {
@@ -676,8 +754,7 @@ export function render() {
       btn.textContent = t('engine.dashNativePanelChecking')
 
       const tryOpen = async (port) => {
-        const url = href.replace(/:9119(\/?$)/, ':' + port + '$1')
-        await openExternalUrl(url)
+        await openExternalUrl(href.replace(/:9119(\/?$)/, ':' + port + '$1'))
       }
 
       // 共用：调用 hermesDashboardStart，带"首次启动"提示，端口起来后开浏览器
@@ -696,7 +773,7 @@ export function render() {
             started: false, kind: 'spawn_failed', port: 9119,
             log_tail: String(err?.message || err),
           }))
-          if (result?.started) {
+          if (result?.started && result?.ready !== false) {
             try {
               await tryOpen(result.port || 9119)
               return { ok: true, ...result }
@@ -714,8 +791,13 @@ export function render() {
 
       try {
         const probe = await api.hermesDashboardProbe().catch(() => ({ running: false, port: 9119 }))
-        if (probe?.running) {
+        if (isHermesDashboardReady(probe)) {
           await tryOpen(probe.port || 9119)
+          return
+        }
+        if (probe?.running && probe?.ready === false) {
+          const { toast } = await import('../../../components/toast.js')
+          toast(hermesDashboardIssueMessage(probe), 'warning', { duration: 8000 })
           return
         }
 
@@ -733,6 +815,10 @@ export function render() {
         }
         if (startResult.kind === 'port_in_use') {
           toast(t('engine.dashNativePanelStartPortBusy', { port }), 'warning', { duration: 6000 })
+          return
+        }
+        if (startResult.kind === 'frontend_not_built' || startResult.kind === 'frontend_unavailable') {
+          toast(hermesDashboardIssueMessage(startResult), 'warning', { duration: 8000 })
           return
         }
         if (startResult.kind === 'posix_only_module') {
@@ -800,9 +886,13 @@ export function render() {
           // 重试：先 probe，再 auto-start
           overlay.close()
           const retryProbe = await api.hermesDashboardProbe().catch(() => ({ running: false, port }))
-          if (retryProbe?.running) {
+          if (isHermesDashboardReady(retryProbe)) {
             try { await tryOpen(retryProbe.port || port) }
             catch (err) { toast(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error') }
+            return
+          }
+          if (retryProbe?.running && retryProbe?.ready === false) {
+            toast(hermesDashboardIssueMessage(retryProbe), 'warning', { duration: 8000 })
             return
           }
           const r = await startAndOpen()
@@ -876,7 +966,7 @@ export function render() {
               started: false, kind: 'spawn_failed',
               log_tail: String(err?.message || err),
             }))
-            if (startRes?.started) {
+            if (startRes?.started && startRes?.ready !== false) {
               um.appendLog('✓ Dashboard @ 127.0.0.1:' + (startRes.port || port))
               try {
                 await tryOpen(startRes.port || port)

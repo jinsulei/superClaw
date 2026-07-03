@@ -2183,22 +2183,127 @@ fn hermes_dashboard_port() -> u16 {
     9119 // Hermes Dashboard 默认端口
 }
 
+#[derive(Debug)]
+struct DashboardHttpStatus {
+    running: bool,
+    ready: bool,
+    kind: String,
+    status_code: Option<u16>,
+    message: String,
+}
+
+fn parse_http_status_code(response: &str) -> Option<u16> {
+    response
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+}
+
+fn hermes_dashboard_http_status(port: u16, timeout_ms: u64) -> DashboardHttpStatus {
+    use std::io::{Read, Write};
+
+    let addr = format!("127.0.0.1:{port}");
+    let socket_addr = match addr.parse::<std::net::SocketAddr>() {
+        Ok(v) => v,
+        Err(e) => {
+            return DashboardHttpStatus {
+                running: false,
+                ready: false,
+                kind: "address_error".into(),
+                status_code: None,
+                message: format!("address parse error: {e}"),
+            };
+        }
+    };
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let mut stream = match std::net::TcpStream::connect_timeout(&socket_addr, timeout) {
+        Ok(v) => v,
+        Err(_) => {
+            return DashboardHttpStatus {
+                running: false,
+                ready: false,
+                kind: "not_running".into(),
+                status_code: None,
+                message: "dashboard port is not listening".into(),
+            };
+        }
+    };
+
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        return DashboardHttpStatus {
+            running: true,
+            ready: false,
+            kind: "http_write_failed".into(),
+            status_code: None,
+            message: format!("dashboard http probe write failed: {e}"),
+        };
+    }
+
+    let mut buf = String::new();
+    if let Err(e) = stream.read_to_string(&mut buf) {
+        return DashboardHttpStatus {
+            running: true,
+            ready: false,
+            kind: "http_read_failed".into(),
+            status_code: None,
+            message: format!("dashboard http probe read failed: {e}"),
+        };
+    }
+
+    let status_code = parse_http_status_code(&buf);
+    let lower = buf.to_lowercase();
+    if lower.contains("frontend not built") || lower.contains("run: cd web && npm run build") {
+        return DashboardHttpStatus {
+            running: true,
+            ready: false,
+            kind: "frontend_not_built".into(),
+            status_code,
+            message: "Hermes native dashboard frontend is not built.".into(),
+        };
+    }
+    if status_code == Some(200) && lower.contains("<html") {
+        return DashboardHttpStatus {
+            running: true,
+            ready: true,
+            kind: "ready".into(),
+            status_code,
+            message: "Hermes native dashboard is ready.".into(),
+        };
+    }
+
+    DashboardHttpStatus {
+        running: true,
+        ready: false,
+        kind: "frontend_unavailable".into(),
+        status_code,
+        message: "Hermes native dashboard did not return a usable UI.".into(),
+    }
+}
+
 /// 探测 Hermes Dashboard 是否在运行（TCP 连接 127.0.0.1 上的 dashboard 端口）
 /// 返回 { running: bool, port: u16 }，前端据此决定是否打开浏览器或提示用户启动
 #[tauri::command]
 pub async fn hermes_dashboard_probe() -> Result<Value, String> {
     let port = hermes_dashboard_port();
-    let addr = format!("127.0.0.1:{port}");
-    let socket_addr: std::net::SocketAddr = addr
-        .parse()
-        .map_err(|e| format!("address parse error: {e}"))?;
-    let running = tokio::task::spawn_blocking(move || {
-        std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_millis(800))
-            .is_ok()
+    let status = tokio::task::spawn_blocking(move || {
+        hermes_dashboard_http_status(port, 1200)
     })
     .await
-    .unwrap_or(false);
-    Ok(serde_json::json!({ "running": running, "port": port }))
+    .map_err(|e| format!("dashboard probe task failed: {e}"))?;
+    Ok(serde_json::json!({
+        "running": status.running,
+        "ready": status.ready,
+        "kind": status.kind,
+        "status_code": status.status_code,
+        "message": status.message,
+        "port": port,
+    }))
 }
 
 /// 我们 spawn 的 Dashboard 进程 PID（0 = 没有）
@@ -2244,19 +2349,26 @@ fn kill_dashboard_pid() -> bool {
 #[tauri::command]
 pub async fn hermes_dashboard_start() -> Result<Value, String> {
     let port = hermes_dashboard_port();
-    let addr_str = format!("127.0.0.1:{port}");
-    let socket_addr: std::net::SocketAddr = addr_str
-        .parse()
-        .map_err(|e| format!("address parse error: {e}"))?;
 
-    // 1. 已运行？
-    if std::net::TcpStream::connect_timeout(&socket_addr, std::time::Duration::from_millis(500))
-        .is_ok()
-    {
+    // 1. 已运行且前端可用？
+    let initial_status = hermes_dashboard_http_status(port, 800);
+    if initial_status.ready {
         return Ok(serde_json::json!({
             "started": true,
             "already_running": true,
+            "ready": true,
             "port": port,
+        }));
+    }
+    if initial_status.running {
+        return Ok(serde_json::json!({
+            "started": false,
+            "already_running": true,
+            "ready": false,
+            "kind": initial_status.kind,
+            "status_code": initial_status.status_code,
+            "port": port,
+            "log_tail": initial_status.message,
         }));
     }
 
@@ -2352,19 +2464,28 @@ pub async fn hermes_dashboard_start() -> Result<Value, String> {
                 }));
             }
             Ok(None) => {
-                // 还活着，探端口
-                if std::net::TcpStream::connect_timeout(
-                    &socket_addr,
-                    std::time::Duration::from_millis(300),
-                )
-                .is_ok()
-                {
+                // 还活着，探端口和前端可用性
+                let dashboard_status = hermes_dashboard_http_status(port, 500);
+                if dashboard_status.ready {
                     // PID 仍记录在 DASH_PID，供后续 stop 使用
                     return Ok(serde_json::json!({
                         "started": true,
                         "already_running": false,
+                        "ready": true,
                         "port": port,
                         "pid": pid,
+                    }));
+                }
+                if dashboard_status.running && dashboard_status.kind == "frontend_not_built" {
+                    return Ok(serde_json::json!({
+                        "started": false,
+                        "already_running": false,
+                        "ready": false,
+                        "kind": dashboard_status.kind,
+                        "status_code": dashboard_status.status_code,
+                        "port": port,
+                        "pid": pid,
+                        "log_tail": dashboard_status.message,
                     }));
                 }
             }

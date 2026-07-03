@@ -48,6 +48,7 @@ const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_REQUEST_BYTES = 32 * 1024 * 1024;
 const RELAY_TEST_TIMEOUT_MS = 12000;
 const NATIVE_CLAUDE_WINDOW_TITLE = "SuperClaw Claude Code Native";
+let nativeClaudeChild = null;
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const TOOL_PROFILES = {
   none: [],
@@ -1339,23 +1340,28 @@ async function handleNativeClaudeStart(req, res) {
 
   const claudeCommand = nativeClaude.path;
   const { launcherPath, env } = writeNativeClaudeLauncher({ cwd, claudeCommand });
+  env.PATH = `${path.dirname(claudeCommand)}${path.delimiter}${env.PATH || process.env.PATH || ""}`;
 
   try {
-    spawn("cmd.exe", ["/d", "/c", "start", "", "cmd.exe", "/k", launcherPath], {
+    const child = spawn(claudeCommand, [], {
       cwd,
       stdio: "ignore",
       env,
-      windowsHide: false,
+      windowsHide: true,
       detached: true,
-    }).unref();
+    });
+    nativeClaudeChild = child;
+    if (typeof child.unref === "function") child.unref();
 
     sendJson(res, 200, {
       ok: true,
-      message: "Claude Code 原生终端已启动。",
+      message: "Claude Code 原生 CLI 已在后台启动。",
       cwd,
       command: claudeCommand,
       launcher: launcherPath,
       windowTitle: NATIVE_CLAUDE_WINDOW_TITLE,
+      pid: child.pid || null,
+      background: true,
     });
   } catch (error) {
     sendJson(res, 500, {
@@ -1378,7 +1384,12 @@ function handleNativeClaudeStop(req, res) {
     return;
   }
 
-  const result = spawnSync("taskkill.exe", ["/F", "/T", "/FI", `WINDOWTITLE eq ${NATIVE_CLAUDE_WINDOW_TITLE}*`], {
+  const pid = nativeClaudeChild?.pid || null;
+  nativeClaudeChild = null;
+  const args = pid
+    ? ["/F", "/T", "/PID", String(pid)]
+    : ["/F", "/T", "/FI", `WINDOWTITLE eq ${NATIVE_CLAUDE_WINDOW_TITLE}*`];
+  const result = spawnSync("taskkill.exe", args, {
     encoding: "utf8",
     windowsHide: true,
   });
