@@ -313,6 +313,16 @@ async function ensureOpenClawGatewayBeforeConsoleSwitch(route) {
   if (!isOpenClawSuperclawRoute(route)) return { skipped: true };
 
   const base = resolveSuperclawBase();
+  const preflight = await probeOpenClawGatewayStatusFromSuperclaw(base);
+  if (preflight?.needsSetup) return preflight;
+  if (preflight?.ok) {
+    return {
+      ok: true,
+      start: { skipped: true },
+      ready: preflight,
+    };
+  }
+
   let startResult = null;
   try {
     startResult = await startOpenClawGatewayFromSuperclaw(base);
@@ -322,6 +332,8 @@ async function ensureOpenClawGatewayBeforeConsoleSwitch(route) {
       error: error?.name === "AbortError" ? "timeout" : (error?.message || String(error)),
     };
   }
+  const startStatus = normalizeOpenClawGatewaySetupRequired(startResult?.data, "start");
+  if (startStatus.needsSetup) return startStatus;
 
   const readyResult = await waitForOpenClawGatewayReadyFromSuperclaw(base, {
     timeoutMs: 30000,
@@ -384,9 +396,51 @@ function isOpenClawGatewayReadyStatus(data) {
     String(data.health?.status || "").toLowerCase() === "live";
 }
 
+function normalizeOpenClawGatewaySetupRequired(data, source = "dev-status") {
+  if (!data || typeof data !== "object") return { ok: false, needsSetup: false };
+  const errorText = String(data.error || data.reason || data.code || data.kind || data.status || "").toLowerCase();
+  const needsSetup = data.needsSetup === true ||
+    data.needs_setup === true ||
+    data.configMissing === true ||
+    data.config_missing === true ||
+    errorText.includes("openclaw_model_config_required") ||
+    errorText.includes("gateway_not_started_because_config_missing") ||
+    errorText.includes("needs_setup") ||
+    errorText.includes("config_missing");
+  if (!needsSetup) return { ok: false, needsSetup: false };
+  return {
+    ok: false,
+    needsSetup: true,
+    configMissing: true,
+    kind: "openclaw_model_config_required",
+    source,
+    data,
+    error: "OPENCLAW_MODEL_CONFIG_REQUIRED",
+    message: "请先配置 OpenClaw 模型 Key。",
+  };
+}
+
+async function probeOpenClawGatewayStatusFromSuperclaw(base) {
+  try {
+    const status = await fetchJsonWithTimeout(`${base}/__api/dev/agents/status?agent=openclaw`, {}, 2500);
+    if (status.ok) {
+      const setupStatus = normalizeOpenClawGatewaySetupRequired(status.data, "dev-status");
+      if (setupStatus.needsSetup) return setupStatus;
+      if (isOpenClawGatewayReadyStatus(status.data)) {
+        return { ok: true, source: "dev-status", data: status.data };
+      }
+    }
+  } catch (error) {
+    // Direct health below remains the fallback when dev status is temporarily unavailable.
+  }
+  return { ok: false, needsSetup: false };
+}
+
 async function probeOpenClawGatewayReady(base) {
   try {
     const status = await fetchJsonWithTimeout(`${base}/__api/dev/agents/status?agent=openclaw`, {}, 2500);
+    const setupStatus = normalizeOpenClawGatewaySetupRequired(status.data, "dev-status");
+    if (setupStatus.needsSetup) return setupStatus;
     if (status.ok && isOpenClawGatewayReadyStatus(status.data)) {
       return { ok: true, source: "dev-status", data: status.data };
     }
@@ -416,6 +470,7 @@ async function waitForOpenClawGatewayReadyFromSuperclaw(base, options = {}) {
   while (Date.now() - startedAt < timeoutMs) {
     last = await probeOpenClawGatewayReady(base);
     if (last.ok) return last;
+    if (last.needsSetup) return last;
     await waitMs(intervalMs);
   }
   return {
@@ -430,10 +485,13 @@ function setConsoleSwitchError(overlay, message) {
   const meta = overlay?.querySelector(".console-switch-progress-meta");
   if (meta) meta.textContent = message;
   const title = overlay?.querySelector(".console-switch-progress-title");
-  if (title) title.textContent = "OpenClaw 暂未 ready";
+  if (title) title.textContent = message?.includes("模型 Key") ? "OpenClaw 需要配置" : "OpenClaw 暂未 ready";
 }
 
 function openClawConsoleSwitchErrorMessage(result) {
+  if (result?.needsSetup || result?.configMissing || result?.kind === "openclaw_model_config_required") {
+    return result.message || "请先配置 OpenClaw 模型 Key。";
+  }
   if (result?.error === "timeout") return "OpenClaw 启动超时，请稍后重试。";
   if (result?.error) return `OpenClaw 正在启动但未 ready：${result.error}`;
   return "OpenClaw 正在启动但未 ready，请稍后重试。";
