@@ -3,7 +3,7 @@
  */
 import { api, invalidate } from '../lib/tauri-api.js'
 import { toast } from '../components/toast.js'
-import { getActiveInstance, onGatewayChange, refreshGatewayStatus } from '../lib/app-state.js'
+import { confirmGatewayRunningFromLiveConnection, getActiveInstance, onGatewayChange, refreshGatewayStatus } from '../lib/app-state.js'
 import { isForeignGatewayError, isForeignGatewayService, maybeShowForeignGatewayBindingPrompt, showGatewayConflictGuidance, showInstallationCleanup } from '../lib/gateway-ownership.js'
 import { navigate } from '../router.js'
 import { t } from '../lib/i18n.js'
@@ -95,6 +95,14 @@ function openclawInstallationIdentity(installation) {
     .replace(/\//g, '\\')
     .replace(/\\openclaw(?:\.exe|\.ps1)?$/i, '\\openclaw.cmd')
     .toLowerCase()
+}
+
+function isDashboardGatewayConnected() {
+  return wsClient.gatewayReady === true || wsClient.connected === true
+}
+
+function isDashboardForeignGatewayActive(service) {
+  return isForeignGatewayService(service) && !isDashboardGatewayConnected()
 }
 
 function dedupeOpenclawInstallations(list = []) {
@@ -207,7 +215,7 @@ async function _loadDashboardDataInner(page, fullRefresh) {
   }
 
   renderStatCards(page, services, version, [], config, panelConfig)
-  if (gw) {
+  if (gw && !isDashboardGatewayConnected()) {
     maybeShowForeignGatewayBindingPrompt({
       service: gw,
       onRefresh: () => loadDashboardData(page, true),
@@ -259,6 +267,9 @@ function scheduleDashboardWsStatusRefresh(page) {
 function refreshDashboardWsStatus(page) {
   const root = page?.querySelector?.('#dashboard-ws-status')
   if (!root) return
+  if (isDashboardGatewayConnected()) {
+    confirmGatewayRunningFromLiveConnection()
+  }
   root.innerHTML = renderWsStatus()
 }
 
@@ -299,7 +310,7 @@ async function openGatewayConflict(page, error = null, reason = null) {
 function renderStatCards(page, services, version, agents, config, panelConfig) {
   const cardsEl = page.querySelector('#stat-cards')
   const gw = services.find(s => s.label === 'ai.openclaw.gateway')
-  const foreignGateway = isForeignGatewayService(gw)
+  const foreignGateway = isDashboardForeignGatewayActive(gw)
   const runningCount = services.filter(s => s.running).length
   const versionMeta = version.recommended
     ? `${version.ahead_of_recommended ? t('dashboard.versionAhead', { version: version.recommended }) : version.is_recommended ? t('dashboard.versionStable', { version: version.recommended }) : t('dashboard.versionRecommend', { version: version.recommended })}${version.latest_update_available && version.latest ? ' · ' + t('dashboard.versionLatest', { version: version.latest }) : ''}`
@@ -383,7 +394,7 @@ function renderStatCards(page, services, version, agents, config, panelConfig) {
 function renderOverview(page, services, mcpConfig, backups, config, agents, statusSummary, channels) {
   const containerEl = page.querySelector('#dashboard-overview-container')
   const gw = services.find(s => s.label === 'ai.openclaw.gateway')
-  const foreignGateway = isForeignGatewayService(gw)
+  const foreignGateway = isDashboardForeignGatewayActive(gw)
   const mcpCount = mcpConfig?.mcpServers ? Object.keys(mcpConfig.mcpServers).length : 0
 
   const formatDate = (timestamp) => {
