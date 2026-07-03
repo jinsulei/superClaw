@@ -259,6 +259,10 @@ export function render() {
     const version = PRODUCT_DISPLAY_VERSION
     const modelName = formModel || hermesConfig?.model || health?.model || info?.model || ''
     const displayModel = modelName || t('engine.dashNoModel')
+    const modelReady = info?.modelReady !== false
+    const modelStatusMessage = info?.modelReady === false
+      ? (info?.modelStatusMessage || info?.message || 'Gateway 在线，但模型配置不可用，请配置 MiniMax API Key。')
+      : ''
     const openclawRunning = !!openclawStatus?.running
     const claudeConnected = !!claudeStatus?.connected || !!claudeStatus?.version
     const claudeVersion = claudeStatus?.version || 'Claude Code CLI'
@@ -293,6 +297,15 @@ export function render() {
         </div>
       </div>
 
+      ${gwRunning && !modelReady ? `
+        <div class="hm-panel" data-hermes-model-warning style="border-color:rgba(245,158,11,.38);background:rgba(245,158,11,.08);margin-top:-10px;margin-bottom:18px">
+          <div class="hm-panel-body" style="display:flex;align-items:center;gap:10px;color:var(--hm-warning,#b45309);font-weight:700">
+            <span>⚠</span>
+            <span>${esc(modelStatusMessage)}</span>
+          </div>
+        </div>
+      ` : ''}
+
       <!-- KPI grid: 5 cards with tone indicators -->
       <div class="hm-kpi-grid">
         <div class="hm-kpi" data-tone="${gwRunning ? 'success' : 'error'}">
@@ -303,10 +316,10 @@ export function render() {
           </div>
           <div class="hm-kpi-foot">${t('engine.dashPort')} <span style="color:var(--hm-text-secondary)">:${port}</span></div>
         </div>
-        <div class="hm-kpi" data-tone="accent">
+        <div class="hm-kpi" data-tone="${modelReady ? 'accent' : 'warning'}">
           <div class="hm-kpi-label">${t('engine.dashModel')}</div>
           <div class="hm-kpi-value" style="font-size:13px;word-break:break-all">${esc(displayModel)}</div>
-          <div class="hm-kpi-foot">${t('engine.dashProvider')} <code class="hm-code" style="padding:0 5px;font-size:10px">${esc(hermesConfig?.provider || activePreset?.id || '—')}</code></div>
+          <div class="hm-kpi-foot">${modelReady ? t('engine.dashProvider') : '模型配置不可用'} <code class="hm-code" style="padding:0 5px;font-size:10px">${esc(hermesConfig?.provider || info?.provider || activePreset?.id || '—')}</code></div>
         </div>
         <div class="hm-kpi">
           <div class="hm-kpi-label">${t('engine.dashVersion')}</div>

@@ -1037,6 +1037,77 @@ function hermesProviderUsesMiniMax(provider) {
   return String(provider || '').trim().toLowerCase().includes('minimax')
 }
 
+function readHermesModelConfigSummary() {
+  const home = hermesHome()
+  const envPath = path.join(home, '.env')
+  const configPath = path.join(home, 'config.yaml')
+  const localEnv = readDotEnvVars(envPath)
+  let model = ''
+  let provider = ''
+  let baseUrl = ''
+
+  try {
+    const content = fs.readFileSync(configPath, 'utf8')
+    let inModel = false
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      if (trimmed.startsWith('model:')) {
+        inModel = true
+        const value = trimmed.slice(6).trim().replace(/^["']|["']$/g, '')
+        if (value && !value.includes(':')) model = value
+        continue
+      }
+      if (!inModel) continue
+      if (!/^\s/.test(line) && trimmed) break
+      if (trimmed.startsWith('default:')) model = trimmed.slice(8).trim().replace(/^["']|["']$/g, '')
+      else if (trimmed.startsWith('provider:')) provider = trimmed.slice(9).trim().replace(/^["']|["']$/g, '')
+      else if (trimmed.startsWith('base_url:')) baseUrl = trimmed.slice(9).trim().replace(/^["']|["']$/g, '')
+    }
+  } catch {}
+
+  provider = provider || localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || ''
+  if (!provider && /minimax/i.test(`${baseUrl} ${model}`)) provider = 'minimax'
+  const providerKey = String(provider || '').trim().toLowerCase()
+  const usesMiniMax = hermesProviderUsesMiniMax(providerKey)
+  const displayProvider = providerKey || (usesMiniMax ? 'minimax' : '')
+  const displayModel = (model || localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || (usesMiniMax ? 'MiniMax-M3' : '')).replace(/^.*\//, '')
+  const resolvedBaseUrl = baseUrl
+    || (usesMiniMax
+      ? normalizeHermesMiniMaxBaseUrl(localEnv.MINIMAX_BASE_URL || localEnv.MINIMAX_CN_BASE_URL || process.env.MINIMAX_BASE_URL || process.env.MINIMAX_CN_BASE_URL || localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || '')
+      : (localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || ''))
+  const apiKey = usesMiniMax
+    ? (localEnv.MINIMAX_API_KEY || localEnv.MINIMAX_CN_API_KEY || process.env.MINIMAX_API_KEY || process.env.MINIMAX_CN_API_KEY || localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || '')
+    : (localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || localEnv.CUSTOM_API_KEY || process.env.CUSTOM_API_KEY || '')
+  const keyConfigured = String(apiKey || '').trim().length > 0
+  const baseUrlConfigured = String(resolvedBaseUrl || '').trim().length > 0
+  const modelConfigured = String(displayModel || '').trim().length > 0
+  let kind = 'model_config_ready'
+  let lastModelError = ''
+  let message = 'Gateway ready.'
+  if (!keyConfigured) {
+    kind = 'model_config_missing'
+    lastModelError = usesMiniMax ? 'MINIMAX_API_KEY missing' : 'API key missing'
+    message = usesMiniMax
+      ? 'Gateway 在线，但 MiniMax API Key 未配置。'
+      : 'Gateway 在线，但模型 API Key 未配置。'
+  } else if (!baseUrlConfigured || !modelConfigured) {
+    kind = 'model_config_incomplete'
+    lastModelError = !baseUrlConfigured ? 'base_url missing' : 'model missing'
+    message = 'Gateway 在线，但模型 base_url 或模型名称未配置。'
+  }
+  return {
+    provider: displayProvider || null,
+    model: displayModel || null,
+    baseUrlConfigured,
+    keyConfigured,
+    modelReady: keyConfigured && baseUrlConfigured && modelConfigured,
+    kind,
+    lastModelError,
+    message,
+  }
+}
+
 function hermesRuntimeEnv(extra = {}) {
   const localEnv = readDotEnvVars(path.join(hermesHome(), '.env'))
   const configuredProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || ''
@@ -1684,6 +1755,39 @@ async function createDevAgentStatus(agent) {
         ? (relayStatus.relayReady ? 'Claude panel ready.' : 'Claude panel ready; relay is not configured.')
         : probe.message || `Claude panel probe not ready: ${probe.status || 'unknown'}`,
       error: panelReady ? null : (probe.error || null),
+      health: {
+        ready: !!probe.ready,
+        httpOk: !!probe.httpOk,
+        status: probe.status || 'unknown',
+        path: probe.path || '/health',
+      },
+    }
+  }
+
+  if (agent === 'hermes') {
+    const modelStatus = readHermesModelConfigSummary()
+    return {
+      ...base,
+      ready,
+      connected: ready,
+      gatewayReady: ready,
+      modelReady: modelStatus.modelReady,
+      keyConfigured: modelStatus.keyConfigured,
+      baseUrlConfigured: modelStatus.baseUrlConfigured,
+      modelConfigured: !!modelStatus.model,
+      configMissing: !modelStatus.modelReady,
+      canConnectWebSocket: false,
+      shouldReconnect: false,
+      kind: modelStatus.modelReady ? 'gateway' : modelStatus.kind,
+      provider: modelStatus.provider,
+      model: modelStatus.model,
+      lastModelError: modelStatus.lastModelError,
+      reason: modelStatus.modelReady ? '' : modelStatus.kind,
+      status: ready ? (modelStatus.modelReady ? 'ready' : modelStatus.kind) : status,
+      message: ready
+        ? (modelStatus.modelReady ? 'Gateway ready.' : modelStatus.message)
+        : probe.message || `Health probe not ready: ${probe.status || 'unknown'}`,
+      error: ready ? null : (probe.error || null),
       health: {
         ready: !!probe.ready,
         httpOk: !!probe.httpOk,
@@ -11243,6 +11347,16 @@ const handlers = {
     result.gatewayRunning = gatewayRunning
     result.gatewayPort = port
     result.gatewayUrl = gwUrl
+    const modelStatus = readHermesModelConfigSummary()
+    result.gatewayReady = gatewayRunning
+    result.modelReady = modelStatus.modelReady
+    result.keyConfigured = modelStatus.keyConfigured
+    result.baseUrlConfigured = modelStatus.baseUrlConfigured
+    result.provider = modelStatus.provider || result.provider || ''
+    result.model = result.model || modelStatus.model || ''
+    result.kind = modelStatus.modelReady ? 'gateway' : modelStatus.kind
+    result.lastModelError = modelStatus.lastModelError
+    result.modelStatusMessage = modelStatus.message
     // Portable/dev fallback: if a bundled config exists or the gateway is already
     // healthy, do not send the UI back to the first-run installer just because
     // `hermes version` is not on PATH.
