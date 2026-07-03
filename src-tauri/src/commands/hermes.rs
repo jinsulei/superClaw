@@ -200,24 +200,15 @@ fn kill_gateway_pid() -> bool {
 #[cfg(target_os = "windows")]
 fn kill_hermes_gateway_port_owner() -> bool {
     let port = hermes_gateway_port();
-    let script = format!(
-        "$pids = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; \
-         foreach ($ownerPid in $pids) {{ if ($ownerPid -and $ownerPid -ne $PID) {{ taskkill /F /T /PID $ownerPid 2>$null | Out-Null }} }}"
+    let cleaned = crate::agent_lifecycle::cleanup_verified_stale_port_owners(
+        port,
+        Some(crate::agent_lifecycle::ManagedAgent::Hermes),
+        "hermes-gateway-restart",
     );
-    let mut cmd = std::process::Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        &script,
-    ]);
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    let ok = cmd.output().map(|o| o.status.success()).unwrap_or(false);
-    if ok {
+    if cleaned {
         GW_PID.store(0, Ordering::SeqCst);
     }
-    ok
+    cleaned
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3879,7 +3870,7 @@ pub async fn hermes_gateway_action(
 
                 // 2. 先精准杀掉之前我们 spawn 的进程
                 kill_gateway_pid();
-                // 如果仍有残留（非我们启动的），再 taskkill
+                // 如果仍有残留（非我们启动的），只清理已验证的旧 Hermes 端口占用者。
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 if std::net::TcpStream::connect_timeout(
                     &addr,
@@ -3887,11 +3878,7 @@ pub async fn hermes_gateway_action(
                 )
                 .is_ok()
                 {
-                    // 端口仍被占用，有残留进程
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/IM", "hermes.exe"])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
+                    let _ = kill_hermes_gateway_port_owner();
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
 
@@ -4108,7 +4095,7 @@ pub async fn hermes_gateway_action(
             cmd.creation_flags(CREATE_NO_WINDOW);
             let stop_result = cmd.output().await;
 
-            // 3. 如果以上都没成功，Windows 上 taskkill 兜底
+            // 3. 如果以上都没成功，Windows 上只清理已验证的旧 Hermes 端口占用者。
             #[cfg(target_os = "windows")]
             if !killed {
                 let port = hermes_gateway_port();
@@ -4120,10 +4107,6 @@ pub async fn hermes_gateway_action(
                 )
                 .is_ok()
                 {
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/IM", "hermes.exe"])
-                        .creation_flags(CREATE_NO_WINDOW)
-                        .output();
                     let _ = kill_hermes_gateway_port_owner();
                 }
             }
@@ -4133,10 +4116,6 @@ pub async fn hermes_gateway_action(
             let stopped = if stopped {
                 true
             } else {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/IM", "hermes.exe"])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output();
                 let _ = kill_hermes_gateway_port_owner();
                 wait_gateway_stopped(3000).await
             };

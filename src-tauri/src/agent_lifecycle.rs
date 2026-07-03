@@ -55,9 +55,7 @@ pub fn parse_managed_agent(name: &str) -> Result<ManagedAgent, String> {
     match name.to_ascii_lowercase().as_str() {
         "hermes" => Ok(ManagedAgent::Hermes),
         "openclaw" => Ok(ManagedAgent::OpenClaw),
-        "claudecode" | "claude_code" | "claude-code" | "claude" => {
-            Ok(ManagedAgent::ClaudeCode)
-        }
+        "claudecode" | "claude_code" | "claude-code" | "claude" => Ok(ManagedAgent::ClaudeCode),
         other => Err(format!("unsupported agent: {other}")),
     }
 }
@@ -292,6 +290,9 @@ fn load_registry_records() -> Vec<ManagedAgentProcessRecord> {
 
 #[derive(Clone, Debug)]
 struct ProcessDetails {
+    pid: u32,
+    parent_pid: Option<u32>,
+    name: String,
     exe: String,
     command_line: String,
 }
@@ -306,10 +307,16 @@ fn process_details(pid: u32) -> Option<ProcessDetails> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         let script = format!(
-            "$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; if($p){{[Console]::WriteLine($p.ExecutablePath); [Console]::WriteLine($p.CommandLine)}}"
+            "$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}'; if($p){{[Console]::WriteLine($p.ProcessId); [Console]::WriteLine($p.ParentProcessId); [Console]::WriteLine($p.Name); [Console]::WriteLine($p.ExecutablePath); [Console]::WriteLine($p.CommandLine)}}"
         );
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
             .ok()?;
@@ -318,12 +325,26 @@ fn process_details(pid: u32) -> Option<ProcessDetails> {
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut lines = stdout.lines();
+        let parsed_pid = lines
+            .next()
+            .and_then(|line| line.trim().parse::<u32>().ok())
+            .unwrap_or(pid);
+        let parent_pid = lines
+            .next()
+            .and_then(|line| line.trim().parse::<u32>().ok());
+        let name = lines.next().unwrap_or_default().trim().to_string();
         let exe = lines.next().unwrap_or_default().trim().to_string();
         let command_line = lines.collect::<Vec<_>>().join("\n");
         if exe.is_empty() && command_line.is_empty() {
             return None;
         }
-        Some(ProcessDetails { exe, command_line })
+        Some(ProcessDetails {
+            pid: parsed_pid,
+            parent_pid,
+            name,
+            exe,
+            command_line,
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -334,6 +355,9 @@ fn process_details(pid: u32) -> Option<ProcessDetails> {
             .ok()?;
         if output.status.success() {
             Some(ProcessDetails {
+                pid,
+                parent_pid: None,
+                name: String::new(),
                 exe: String::new(),
                 command_line: String::new(),
             })
@@ -341,6 +365,219 @@ fn process_details(pid: u32) -> Option<ProcessDetails> {
             None
         }
     }
+}
+
+pub fn cleanup_stale_project_port_owners_on_startup() {
+    for (port, agent) in [
+        (1420, None),
+        (8642, Some(ManagedAgent::Hermes)),
+        (3020, Some(ManagedAgent::ClaudeCode)),
+        (18789, Some(ManagedAgent::OpenClaw)),
+    ] {
+        cleanup_verified_stale_port_owners(port, agent, "startup");
+    }
+}
+
+pub fn cleanup_verified_stale_port_owners(
+    port: u16,
+    expected_agent: Option<ManagedAgent>,
+    reason: &str,
+) -> bool {
+    let mut cleaned = false;
+    for details in port_owner_details(port) {
+        let label = expected_agent
+            .map(managed_agent_name)
+            .unwrap_or("superclaw-dev");
+        match stale_port_owner_reason(port, expected_agent, &details) {
+            Some(cleanup_reason) => {
+                eprintln!(
+                    "[agent-lifecycle] cleanup stale port owner: reason={} port={} agent={} pid={} parent={:?} name={} exe={} command={} match={}",
+                    reason,
+                    port,
+                    label,
+                    details.pid,
+                    details.parent_pid,
+                    details.name,
+                    details.exe,
+                    details.command_line,
+                    cleanup_reason
+                );
+                match stop_pid_tree(details.pid) {
+                    Ok(()) => {
+                        cleaned = true;
+                        eprintln!(
+                            "[agent-lifecycle] cleaned stale port owner pid={} port={}",
+                            details.pid, port
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[agent-lifecycle] failed to clean stale port owner pid={} port={}: {}",
+                            details.pid, port, error
+                        );
+                    }
+                }
+            }
+            None => {
+                eprintln!(
+                    "[agent-lifecycle] skip port owner: port={} agent={} pid={} parent={:?} name={} exe={} command={}",
+                    port,
+                    label,
+                    details.pid,
+                    details.parent_pid,
+                    details.name,
+                    details.exe,
+                    details.command_line
+                );
+            }
+        }
+    }
+    cleaned
+}
+
+#[cfg(target_os = "windows")]
+fn port_owner_details(port: u16) -> Vec<ProcessDetails> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let script = format!(
+        "$pids = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; \
+         foreach ($ownerPid in $pids) {{ \
+           $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$ownerPid\" -ErrorAction SilentlyContinue; \
+           if ($p) {{ \
+             [Console]::WriteLine('SC_PORT_OWNER_BEGIN'); \
+             [Console]::WriteLine($p.ProcessId); \
+             [Console]::WriteLine($p.ParentProcessId); \
+             [Console]::WriteLine($p.Name); \
+             [Console]::WriteLine($p.ExecutablePath); \
+             [Console]::WriteLine(($p.CommandLine -replace \"`r?`n\", \" \")); \
+           }} \
+         }}"
+    );
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut out = Vec::new();
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != "SC_PORT_OWNER_BEGIN" {
+            continue;
+        }
+        let pid = lines
+            .next()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let parent_pid = lines
+            .next()
+            .and_then(|value| value.trim().parse::<u32>().ok());
+        let name = lines.next().unwrap_or_default().trim().to_string();
+        let exe = lines.next().unwrap_or_default().trim().to_string();
+        let command_line = lines.next().unwrap_or_default().trim().to_string();
+        if pid != 0 {
+            out.push(ProcessDetails {
+                pid,
+                parent_pid,
+                name,
+                exe,
+                command_line,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+fn port_owner_details(_port: u16) -> Vec<ProcessDetails> {
+    Vec::new()
+}
+
+fn stale_port_owner_reason(
+    port: u16,
+    expected_agent: Option<ManagedAgent>,
+    details: &ProcessDetails,
+) -> Option<String> {
+    let current_pid = std::process::id();
+    if details.pid == 0 || details.pid == current_pid {
+        return None;
+    }
+
+    let current_root = current_package_root();
+    if process_details_match_root(details, &current_root) {
+        return None;
+    }
+
+    let text = normalized_text(&format!(
+        "{}\n{}\n{}",
+        details.name, details.exe, details.command_line
+    ));
+    let service_match = match expected_agent {
+        Some(ManagedAgent::Hermes) => {
+            text.contains("hermes")
+                || text.contains("hermes_cli")
+                || (port == 8642 && text.contains("python"))
+        }
+        Some(ManagedAgent::OpenClaw) => {
+            text.contains("openclaw") && (text.contains("gateway") || port == 18789)
+        }
+        Some(ManagedAgent::ClaudeCode) => {
+            text.contains("claude-panel")
+                || text.contains("clean_panel")
+                || text.contains("claude code panel")
+                || (port == 3020 && text.contains("server.js"))
+        }
+        None => port == 1420 && (text.contains("vite") || text.contains("superclaw")),
+    };
+    if !service_match {
+        return None;
+    }
+
+    let stale_root_match = stale_superclaw_marker(&text);
+    let project_process = text.contains("superclaw")
+        || text.contains("openclaw")
+        || text.contains("hermes")
+        || text.contains("claude-panel");
+
+    if stale_root_match {
+        return Some("old-superclaw-path".to_string());
+    }
+
+    if project_process && !current_root.trim().is_empty() {
+        return Some("project-port-owner-outside-current-root".to_string());
+    }
+
+    None
+}
+
+fn process_details_match_root(details: &ProcessDetails, root: &str) -> bool {
+    !root.trim().is_empty()
+        && (path_is_under(&details.exe, root)
+            || normalized_text(&details.command_line).contains(&normalized_text(root)))
+}
+
+fn stale_superclaw_marker(text: &str) -> bool {
+    [
+        "restore-hermes-chat-features",
+        "superclaw-1.0.3",
+        "superclaw-1.0.2",
+        "superclaw-1.0.4",
+        "1.0.3-exe-rc1",
+        "openclaw-clean-test",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 fn record_belongs_to_managed_root(

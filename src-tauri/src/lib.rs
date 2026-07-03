@@ -128,6 +128,7 @@ pub fn run() {
         })
         .setup(|app| {
             agent_lifecycle::cleanup_stale_managed_agents_on_startup();
+            agent_lifecycle::cleanup_stale_project_port_owners_on_startup();
             service::start_backend_guardian(app.handle().clone());
             tauri::async_runtime::spawn(async {
                 if let Err(err) = claude_code::claude_code_start().await {
