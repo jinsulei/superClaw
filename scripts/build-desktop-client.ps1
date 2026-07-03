@@ -390,6 +390,53 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
   Ok "Portable Hermes runtime"
 }
 
+function Ensure-HermesDashboardWebDist([string]$PackagedResources) {
+  $HermesTool = Find-PackagedHermesToolRoot $PackagedResources
+  $Target = Join-Path $HermesTool "Lib\site-packages\hermes_cli\web_dist"
+  if (Test-Path (Join-Path $Target "index.html") -PathType Leaf) {
+    Ok "Hermes native dashboard frontend"
+    return
+  }
+
+  $HermesZip = Join-Path $PackagedResources "hermes-agent-main.zip"
+  Assert-File $HermesZip "Packaged Hermes source archive"
+
+  $TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("superclaw-hermes-web-" + [Guid]::NewGuid().ToString("N"))
+  try {
+    Step "Building Hermes native dashboard frontend"
+    New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
+    Expand-Archive -LiteralPath $HermesZip -DestinationPath $TempRoot -Force
+
+    $WebDir = Join-Path $TempRoot "hermes-agent-main\web"
+    $BuiltDist = Join-Path $TempRoot "hermes-agent-main\hermes_cli\web_dist"
+    Assert-Dir $WebDir "Hermes dashboard web source"
+
+    Push-Location $WebDir
+    try {
+      if (Test-Path "package-lock.json" -PathType Leaf) {
+        npm ci
+      } else {
+        npm install
+      }
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install Hermes dashboard frontend dependencies"
+      }
+      npm run build
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build Hermes dashboard frontend"
+      }
+    } finally {
+      Pop-Location
+    }
+
+    Assert-File (Join-Path $BuiltDist "index.html") "Built Hermes dashboard frontend"
+    Copy-Directory $BuiltDist $Target
+    Assert-File (Join-Path $Target "index.html") "Hermes native dashboard frontend"
+  } finally {
+    Remove-IfExists $TempRoot
+  }
+}
+
 function Assert-File([string]$Path, [string]$Label) {
   if (-not (Test-Path $Path -PathType Leaf)) {
     Fail "$Label not found: $Path"
@@ -1283,6 +1330,7 @@ Ok "Removed local sessions, logs, locks, and machine-specific OpenClaw state"
 Step "Preparing packaged Hermes runtime"
 $PackagedPython = Ensure-PackagedPythonRuntime $PackagedResources
 Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
+Ensure-HermesDashboardWebDist $PackagedResources
 
 if ($SanitizedTest) {
   $SanitizedReadmeLines = @(
@@ -1351,6 +1399,7 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
+Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Lib\site-packages\hermes_cli\web_dist\index.html") "Hermes native dashboard frontend"
 Assert-File (Join-Path $PackagedResources "runtime\uv-tools\uv.exe") "Packaged UV tools executable"
 $PackagedPythonProbe = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $PackagedPythonProbe) {
