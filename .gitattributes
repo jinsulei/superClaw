@@ -24,3 +24,6 @@
 
 # Rust 锁文件
 Cargo.lock text eol=lf
+
+# Bundled third-party OCR runtime dependencies are vendored resources.
+src-tauri/resources/runtime/ocr/node_modules/** binary
