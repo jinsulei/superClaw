@@ -34,13 +34,18 @@ const sandbox = {}
 vm.runInNewContext(`
 ${extractFunctionSource('isOpenClawSkillsQuestion')}
 ${extractFunctionSource('isOpenClawCapabilitySummaryQuestion')}
+${extractFunctionSource('hasOpenClawConcreteTaskIntent')}
+${extractFunctionSource('isOpenClawExplicitCapabilityAuditQuestion')}
 globalThis.isOpenClawSkillsQuestion = isOpenClawSkillsQuestion
 globalThis.isOpenClawCapabilitySummaryQuestion = isOpenClawCapabilitySummaryQuestion
+globalThis.hasOpenClawConcreteTaskIntent = hasOpenClawConcreteTaskIntent
+globalThis.isOpenClawExplicitCapabilityAuditQuestion = isOpenClawExplicitCapabilityAuditQuestion
 `, sandbox)
 
 const {
   isOpenClawSkillsQuestion,
   isOpenClawCapabilitySummaryQuestion,
+  isOpenClawExplicitCapabilityAuditQuestion,
 } = sandbox
 
 assert(
@@ -63,7 +68,7 @@ assert(
 
 const maybeLocalAnswer = extractFunctionSource('maybeHandleOpenClawLocalAnswer')
 const skillsBranch = maybeLocalAnswer.indexOf('isOpenClawSkillsQuestion(value)')
-const capabilityBranch = maybeLocalAnswer.indexOf('isOpenClawCapabilitySummaryQuestion(value)')
+const capabilityBranch = maybeLocalAnswer.indexOf('isOpenClawExplicitCapabilityAuditQuestion(value)')
 
 assert(
   skillsBranch >= 0 &&
@@ -77,9 +82,14 @@ assert(
 const intentPrompt = extractFunctionSource('buildIntentTriggeredToolPrompt')
 
 assert(
-  /const\s+skillsIntent\s*=\s*isOpenClawSkillsQuestion\(base\)/.test(intentPrompt) &&
-    /const\s+capabilityAuditIntent\s*=\s*skillsIntent\s*\|\|/.test(intentPrompt),
+  /const\s+capabilityAuditIntent\s*=\s*isOpenClawExplicitCapabilityAuditQuestion\(base\)/.test(intentPrompt),
   'OPENCLAW_SKILLS_ROUTE_ENTERS_TOOL_AUDIT_PROMPT',
+)
+
+assert(
+  isOpenClawExplicitCapabilityAuditQuestion('介绍一下你的 skills') &&
+    !isOpenClawExplicitCapabilityAuditQuestion('调用浏览器搜索这个商品并整理卖点'),
+  'OPENCLAW_EXPLICIT_CAPABILITY_ONLY',
 )
 
 assert(

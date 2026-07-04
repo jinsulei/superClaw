@@ -3175,6 +3175,24 @@ function isOpenClawCapabilitySummaryQuestion(text) {
   return /(?:\u4f60\u6709\u4ec0\u4e48\u6280\u80fd|\u6709\u54ea\u4e9b\u6280\u80fd|\u53ef\u7528\u7684\s*skills?|\u6280\u80fd\u5217\u8868|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u6709\u4ec0\u4e48\u80fd\u529b|what can you do|skills?)/i.test(value)
 }
 
+function hasOpenClawConcreteTaskIntent(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return /(?:帮我|请|麻烦|给我|直接|现在|开始|去|把|将|需要你|让你|我要).{0,18}(?:打开|读取|读|截图|截屏|OCR|识别|搜索|检索|执行|运行|调用|分析|整理|处理|操作|点击|输入|抓取|采集|生成|写|改写|提炼|总结|检查)|(?:打开|读取|读|截图|截屏|OCR|识别|搜索|检索|执行|运行|调用|分析|整理|处理|操作|点击|输入|抓取|采集|生成|写|改写|提炼|总结|检查).{0,24}(?:网页|网站|链接|文件|图片|截图|命令|浏览器|桌面|商品|订单|页面|内容|信息|文档|表格|任务|这个|一下|给我)|https?:\/\//i.test(value)
+}
+
+function isOpenClawExplicitCapabilityAuditQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 180) return false
+  if (hasOpenClawConcreteTaskIntent(value)) return false
+  if (isOpenClawSkillsQuestion(value) || isOpenClawCapabilitySummaryQuestion(value)) return true
+  return (
+    /(?:你|OpenClaw|当前|现在|这个(?:agent|助手)?|本地).{0,20}(?:有什么|有哪些|支持哪些|可用|能做什么|能干什么|能力|工具|插件|skills?|skill|plugin|tool)/i.test(value) ||
+    /(?:介绍|说明|列出|查看|查询|汇总|检查).{0,12}(?:你|OpenClaw|当前|现在|可用)?.{0,12}(?:能力|工具|插件|skills?|skill|plugin|tool)/i.test(value) ||
+    /(?:能力|工具|插件|skills?|skill|plugin|tool).{0,12}(?:清单|列表|介绍|说明|有哪些|有什么|可用|支持哪些)/i.test(value)
+  )
+}
+
 function isOpenClawOcrCapabilityQuestion(text) {
   const value = String(text || '').trim()
   if (!value || value.length > 80) return false
@@ -3201,9 +3219,11 @@ function buildOpenClawFinanceCapabilityReply() {
 
 function buildOpenClawCapabilitySummaryReply() {
   return [
-    '\u6211\u662f OpenClaw Agent\uff0c\u4e3b\u8981\u8d1f\u8d23\u6d4f\u89c8\u5668\u3001\u684c\u9762\u548c\u5de5\u5177\u6267\u884c\u7c7b\u4efb\u52a1\u3002',
-    '\u5e38\u7528\u80fd\u529b\u5305\u62ec\uff1a\u7f51\u9875\u8bfb\u53d6\u548c\u622a\u56fe\u3001\u684c\u9762\u534f\u52a9\u3001OCR \u8bc6\u522b\u3001\u6587\u4ef6/\u8868\u683c\u6574\u7406\u3001Skills \u548c\u63d2\u4ef6\u6267\u884c\u3001\u7535\u5546\u9875\u9762\u534f\u52a9\u3002',
-    '\u4ed8\u6b3e\u3001\u4e0b\u5355\u3001\u53d1\u5e03\u3001\u767b\u5f55\u3001\u5220\u9664\u7b49\u9ad8\u98ce\u9669\u64cd\u4f5c\uff0c\u6211\u4f1a\u5148\u505c\u4e0b\u6765\u8ba9\u4f60\u624b\u52a8\u786e\u8ba4\u3002',
+    '当前可用：浏览器/网页读取、桌面协助、文件与工作区处理、命令执行、截图/OCR、Skills 和工具调用。',
+    '需要 Gateway：浏览器、桌面、文件、命令和跨工具任务需要 OpenClaw Gateway 正常运行；如果模型 Key 或 Gateway 未就绪，我会明确提示配置缺失或服务未 ready。',
+    '需要 Key/配置：模型对话、视觉/OCR、部分联网或插件能力依赖模型配置和对应运行时资源；没有配置时不会假装已执行。',
+    '需要用户确认：登录、付款、下单、提交、发布、删除、安装插件、修改配置等高风险动作，我会先停下来让你确认。',
+    '当前受限：没有目标页面、文件、图片或明确任务时，我只能说明能力边界；给出具体目标后会走任务执行路径，而不是只做能力介绍。',
   ].join('\n\n')
 }
 
@@ -3242,7 +3262,7 @@ function maybeHandleOpenClawLocalAnswer(text) {
   if (isOpenClawSkillsQuestion(value)) {
     return { handled: false, kind: 'skills-intent' }
   }
-  if (isOpenClawCapabilitySummaryQuestion(value)) {
+  if (isOpenClawExplicitCapabilityAuditQuestion(value)) {
     return {
       handled: true,
       kind: 'capability',
@@ -3834,13 +3854,13 @@ function isOpenClawLetteredListFragment(text) {
 }
 
 function buildOpenClawCapabilitySummaryFallback(userText = '', text = '') {
-  const scope = `${userText}\n${text}`
-  if (/OCR|识别|图片|截图|文字/i.test(scope)) {
+  const userScope = String(userText || '').trim()
+  if (!isOpenClawExplicitCapabilityAuditQuestion(userScope)) return ''
+  if (/OCR|识别|图片|截图|文字/i.test(userScope) && isOpenClawOcrCapabilityQuestion(userScope)) {
     return '当前具备 OCR 相关能力：可以识别上传图片或截图中的文字，也可以配合浏览器/桌面截图读取页面内容。需要识别哪张图或哪个窗口时，请直接告诉我。'
   }
-  if (/电商|抖店|小红书|订单|商品|付款|支付/.test(scope)) return ''
-  if (!/(能力|工具|可用|OCR|截图|浏览器|桌面|协作|Skills?|skill|tool|能做|能帮|检查一下当前)/i.test(scope)) return ''
-  return '当前可用：浏览器/桌面协助、文件与工作区处理、命令执行、截图/OCR、Skills 和工具调用。涉及登录、付款、提交、删除等高风险动作时，我会先停下来让你确认。'
+  if (/电商|抖店|小红书|订单|商品|付款|支付/.test(userScope)) return ''
+  return buildOpenClawCapabilitySummaryReply()
 }
 
 function looksIncompleteOpenClawVisibleReply(text) {
@@ -4547,10 +4567,7 @@ function buildIntentTriggeredToolPrompt(text) {
   const base = String(text || '').trim()
   if (!base) return base
   const lower = base.toLowerCase()
-  const skillsIntent = isOpenClawSkillsQuestion(base)
-  const capabilityAuditIntent =
-    skillsIntent ||
-    /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
+  const capabilityAuditIntent = isOpenClawExplicitCapabilityAuditQuestion(base)
   const hasUrl = /https?:\/\//i.test(base)
   const desktopIntent =
     /(桌面端|客户端|本地应用|应用程序|桌面应用|app)\s*(里|上|中)?\s*(打开|搜索|点击|输入|查看|读取|采集|操作)/i.test(base) ||
