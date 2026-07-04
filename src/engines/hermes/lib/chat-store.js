@@ -742,12 +742,23 @@ function createStore() {
     return { status, reason, error }
   }
 
-  function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
+  function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt(), options = {}) {
+    const phase = String(options.phase || 'final').toLowerCase()
     const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
+    if (phase === 'stream') {
+      const guardedDraft = guardAgentIdentityReply({
+        agentName: 'hermes',
+        userText: prompt,
+        assistantText: stripInternalStatusText(visible),
+      })
+      return stripInternalStatusText(guardedDraft).replace(/\n{3,}/g, '\n\n').trim()
+    }
     const normalized = normalizeHermesVisibleReplyText(visible, {
       prompt,
       userText: prompt,
       toolEvents: state.liveTools,
+      allowFallbackReplacement: options.allowFallbackReplacement,
+      preserveOriginalOnIncomplete: options.preserveOriginalOnIncomplete,
     })
     const guarded = guardAgentIdentityReply({
       agentName: 'hermes',
@@ -1438,7 +1449,7 @@ function createStore() {
       const s = runSession()
       if (!s) return
       const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-      msg.content = sanitizeHermesVisibleReply(msg.content + delta)
+      msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { phase: 'stream' })
       notify()
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
@@ -1504,7 +1515,7 @@ function createStore() {
       if (!accepted) return
       if (accepted.text) {
         const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-        msg.content = sanitizeHermesVisibleReply(msg.content + accepted.text)
+        msg.content = sanitizeHermesVisibleReply(msg.content + accepted.text, currentVisibleUserPrompt(), { phase: 'stream' })
       }
       const runTools = dedupeToolEvents([...state.liveTools])
 
@@ -1590,7 +1601,7 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-    msg.content = sanitizeHermesVisibleReply(msg.content + delta)
+    msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { phase: 'stream' })
     notify()
   }
 

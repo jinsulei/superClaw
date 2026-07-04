@@ -763,6 +763,9 @@ export function normalizeHermesVisibleReply(text, options = {}) {
       agent: 'hermes',
       userText: options.userText || options.prompt || '',
       maxChars: options.maxLength || 760,
+      allowFallbackReplacement: options.allowFallbackReplacement,
+      preserveOriginalOnIncomplete: options.preserveOriginalOnIncomplete,
+      phase: options.phase,
     })
     if (repaired) return repaired
   }
@@ -773,6 +776,9 @@ export function normalizeHermesVisibleReply(text, options = {}) {
       agent: 'hermes',
       userText: options.userText || options.prompt || '',
       maxChars: options.maxLength || 760,
+      allowFallbackReplacement: options.allowFallbackReplacement,
+      preserveOriginalOnIncomplete: options.preserveOriginalOnIncomplete,
+      phase: options.phase,
     })
   }
   const fallback = applyHermesCleanReplyStyle(formatHermesToolSummaryForUser({
@@ -783,6 +789,9 @@ export function normalizeHermesVisibleReply(text, options = {}) {
     agent: 'hermes',
     userText: options.userText || options.prompt || '',
     maxChars: options.maxLength || 760,
+    allowFallbackReplacement: options.allowFallbackReplacement,
+    preserveOriginalOnIncomplete: options.preserveOriginalOnIncomplete,
+    phase: options.phase,
   })
 }
 

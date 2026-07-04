@@ -262,7 +262,12 @@ function isEcommerceVisibleReplyContext(text = '') {
   return /电商|外卖|美团|饿了么|热词|店铺|商品|订单|评论|发布|上下架|抖音|抖店|快手|小红书|淘宝|天猫|拼多多|ecommerce|shop|order/i.test(String(text || ''))
 }
 
-function repairIncompleteVisibleReply(text = '', { agent = '', userText = '' } = {}) {
+function repairIncompleteVisibleReply(text = '', {
+  agent = '',
+  userText = '',
+  allowFallbackReplacement = true,
+  preserveOriginalOnIncomplete = false,
+} = {}) {
   const s = String(text || '').trim()
   const context = `${userText}\n${s}`
 
@@ -299,6 +304,8 @@ function repairIncompleteVisibleReply(text = '', { agent = '', userText = '' } =
   }
 
   const safe = trimAtSafeSentenceBoundary(s, 520)
+  if (!safe) return ''
+  if (looksIncompleteVisibleReply(safe) && (allowFallbackReplacement === false || preserveOriginalOnIncomplete)) return safe
   if (!safe || looksIncompleteVisibleReply(safe)) {
     return '这次回复没有完整生成。请你再发一次问题，我会重新整理成完整结论。'
   }
@@ -309,8 +316,12 @@ export function ensureCompleteVisibleReply(text = '', options = {}) {
   const raw = String(text || '').trim()
   if (!raw) return ''
 
-  let next = trimAtSafeSentenceBoundary(raw, Number(options.maxChars || 680))
+  const phase = String(options.phase || 'final').toLowerCase()
+  let next = phase === 'stream'
+    ? stripInternalStatusText(raw).replace(/\n{3,}/g, '\n\n').trim()
+    : trimAtSafeSentenceBoundary(raw, Number(options.maxChars || 680))
   if (looksIncompleteVisibleReply(next)) {
+    if (phase === 'stream') return String(next || '').replace(/\n{3,}/g, '\n\n').trim()
     next = repairIncompleteVisibleReply(next, options)
   }
 
