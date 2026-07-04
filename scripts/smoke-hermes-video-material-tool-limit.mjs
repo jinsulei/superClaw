@@ -8,6 +8,11 @@ const devApi = readFileSync(resolve(root, 'scripts/dev-api.js'), 'utf8')
 
 const requiredChatPhrases = [
   'materialLevel=metadata_only',
+  'repoBundledAvailable=false',
+  'systemPathAvailable=ignored_for_portable',
+  'portableReady=false',
+  'packagedRuntimeAvailable=false',
+  'fullVideoParsingAvailable=false',
   'ocrRuntimeAvailable=false',
   'ffmpegAvailable=false',
   'videoDownloaderAvailable=false',
@@ -17,6 +22,7 @@ const requiredChatPhrases = [
   'transcriptAvailable=false',
   'missingTools=ffmpeg,video_downloader,asr,subtitle_extractor,video_frame_pipeline',
   'OCR runtime 只能识别已取得的图片/截图文字',
+  '不能视为 U 盘绿色版可用',
   '不能单独生成视频逐字稿、字幕、音频转写或视频分镜',
   '没有 ffmpeg、yt-dlp/视频下载器、ASR、字幕提取器和视频抽帧流水线时',
   '短视频/社媒链接必须判定为 metadata_only',
@@ -67,6 +73,11 @@ assert.doesNotMatch(
 
 const requiredDevApiPhrases = [
   'materialLevel=metadata_only',
+  'repoBundledAvailable=false',
+  'systemPathAvailable=ignored_for_portable',
+  'portableReady=false',
+  'packagedRuntimeAvailable=false',
+  'fullVideoParsingAvailable=false',
   'transcriptAvailable=false',
   'frameOcrAvailable=false',
   'missingTools=ffmpeg,video_downloader,asr,subtitle_extractor,video_frame_pipeline',
