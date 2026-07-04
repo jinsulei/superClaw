@@ -557,6 +557,42 @@ function stripFirstHttpUrl(text) {
   return String(text || '').replace(/https?:\/\/[^\s"'<>，。；、]+/i, '').trim()
 }
 
+function formatVideoShareFallbackSections({ url, fetchedContent = '', userShareText = '' } = {}) {
+  const platform = videoPlatformLabel(url)
+  const fetched = String(fetchedContent || '').trim()
+  const shareText = String(userShareText || '').trim()
+  const hasReadableContent = fetched && !isFetchedContentFailure(fetched)
+  const hasShareText = !!shareText
+  return [
+    '[视频素材状态]',
+    `platform=${platform}`,
+    `url=${url}`,
+    `materialLevel=${hasReadableContent ? 'webpage_text' : 'metadata_only'}`,
+    `webpageTextAvailable=${hasReadableContent ? 'true' : 'false'}`,
+    `shareTextAvailable=${hasShareText ? 'true' : 'false'}`,
+    'transcriptAvailable=false',
+    'subtitleAvailable=false',
+    'audioTranscriptAvailable=false',
+    'frameOcrAvailable=false',
+    'fullVideoParsingAvailable=false',
+    fetched ? `fetchStatus=${hasReadableContent ? 'link_fetch_success' : 'link_fetch_failed'}` : 'fetchStatus=not_available',
+    fetched && !hasReadableContent ? `fetchFailure=${fetched}` : '',
+    hasShareText ? '[用户粘贴分享文本]' : '',
+    hasShareText ? shareText : '',
+    hasShareText ? '[/用户粘贴分享文本]' : '',
+    '[/视频素材状态]',
+    '',
+    '[视频分享链接兜底分析规则]',
+    '如果抓取失败、超时、被反爬、跳登录页或只有短链，禁止直接输出“任务失败”，必须进入 metadata_only / fallback 分析。',
+    '如果用户粘贴了分享文案、标题、多行描述或短视频平台口令，必须基于这些文本做有限分析；如果用户只给短链且没有标题/正文，则明确说只能拿到链接和平台，无法做具体内容拆解。',
+    '输出结构必须包含：1. 当前素材状态；2. 已能基于什么分析；3. 有限分析；4. 限制说明；5. 主动下一步。',
+    '有限分析至少覆盖：选题方向、可能内容结构、受众/场景判断、金句/重点推断、有限时间轴推断、可仿写方向。',
+    '主动下一步必须询问：是否要基于当前公开字段仿写、提炼卖点/金句、改成直播口播，或让用户补充逐字稿/字幕/截图/口播文本后继续完整拆解。',
+    '禁止声称已经完整解析视频、拿到真实逐字稿、完成字幕提取、完成音频转写、完成视频帧 OCR 或完成完整视频分镜。',
+    '[/视频分享链接兜底分析规则]',
+  ].filter(Boolean).join('\n')
+}
+
 function formatVideoLinkFallbackPrompt(url, failureText) {
   const platform = videoPlatformLabel(url)
   return [
@@ -565,13 +601,14 @@ function formatVideoLinkFallbackPrompt(url, failureText) {
     `URL: ${url}`,
     `读取状态: ${failureText || '抓取失败，暂时无法直接读取视频内容'}`,
     ...formatVideoMaterialCompletenessRules(platform),
-    '下一步: 优先后台读取链接页面可公开访问的信息；不要展示、截图保存、播放或建议打开平台页面。若仍失败，明确说明后台读取失败并进入素材补充流程。',
+    formatVideoShareFallbackSections({ url, fetchedContent: failureText }),
+    '下一步: 优先后台读取链接页面可公开访问的信息；不要展示、截图保存、播放或建议打开平台页面。若仍失败，明确说明后台读取失败并进入 metadata_only / fallback 分析，而不是直接任务失败。',
     '处理目标: 先做文字型拆解，再询问是否继续仿写/改写或生成标题、口播稿、分镜、拍摄清单、发布文案。',
     '[/视频链接]',
   ].join('\n')
 }
 
-function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
+function formatVideoLinkAnalysisRequest(url, fetchedContent = '', userShareText = '') {
   const platform = videoPlatformLabel(url)
   const clipped = String(fetchedContent || '').trim()
   const lines = [
@@ -585,6 +622,8 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
     '合规边界: 不保存账号 Cookie，不保存或提及平台截图，不主动要求用户提供截图，不询问是否打开平台页面，不绕过登录、付费、权限、robots 或平台限制；只把公开可见的标题、字幕、口播、页面文字、封面说明等转成文字结果。',
     '处理目标: 先做文字型视频拆解，再询问是否继续仿写/改写，或生成标题、口播稿、分镜、拍摄清单、发布文案。',
     ...formatVideoMaterialCompletenessRules(platform),
+    '',
+    formatVideoShareFallbackSections({ url, fetchedContent: clipped, userShareText }),
   ]
   if (clipped && !isFetchedContentFailure(clipped)) {
     lines.push('', '[前置读取内容]', clipped, '[/前置读取内容]')
@@ -2891,7 +2930,7 @@ export function render() {
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个${platform}视频链接：${url}`
-        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent), supplement)
+        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent, supplement), supplement)
         const instructions = formatShortVideoWorkflowInstructions(platform)
         resetInput()
         forceScrollBottom = true
@@ -2939,7 +2978,7 @@ export function render() {
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个${platform}视频链接：${url}`
-        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, `抓取失败: ${message}`), supplement)
+        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, `抓取失败: ${message}`, supplement), supplement)
         linkMenuOpen = false
         linkDraft = ''
         resetInput()
@@ -3839,7 +3878,7 @@ export function render() {
           fetchedContent = `抓取失败: ${fetchErr?.message || String(fetchErr)}`
         }
         const supplement = stripFirstHttpUrl(text)
-        sendModelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(directVideoUrl, fetchedContent), supplement)
+        sendModelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(directVideoUrl, fetchedContent, supplement), supplement)
         sendInstructions = [
           sendInstructions,
           formatShortVideoWorkflowInstructions(platform),
