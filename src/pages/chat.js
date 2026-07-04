@@ -887,6 +887,14 @@ function escapeAttr(str) {
   return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+function normalizeOpenClawSessionKey(key) {
+  return String(key || '').trim()
+}
+
+function isOpenClawCurrentSessionKey(key) {
+  return normalizeOpenClawSessionKey(key) === normalizeOpenClawSessionKey(_sessionKey)
+}
+
 async function copyText(text) {
   try {
     if (navigator.clipboard?.writeText) {
@@ -1015,8 +1023,10 @@ function saveLocalSessions(rows) {
 }
 
 function upsertLocalSession(key, agentId, title) {
+  key = normalizeOpenClawSessionKey(key)
+  if (!key) return
   const now = Date.now()
-  const rows = getLocalSessions().filter(s => (s.sessionKey || s.key) !== key)
+  const rows = getLocalSessions().filter(s => normalizeOpenClawSessionKey(s.sessionKey || s.key) !== key)
   rows.unshift({
     sessionKey: key,
     key,
@@ -1031,21 +1041,23 @@ function upsertLocalSession(key, agentId, title) {
 }
 
 function removeLocalSession(key) {
-  saveLocalSessions(getLocalSessions().filter(s => (s.sessionKey || s.key) !== key))
+  key = normalizeOpenClawSessionKey(key)
+  saveLocalSessions(getLocalSessions().filter(s => normalizeOpenClawSessionKey(s.sessionKey || s.key) !== key))
 }
 
 function isLocalSession(key) {
-  return getLocalSessions().some(s => (s.sessionKey || s.key) === key)
+  key = normalizeOpenClawSessionKey(key)
+  return getLocalSessions().some(s => normalizeOpenClawSessionKey(s.sessionKey || s.key) === key)
 }
 
 function mergeLocalSessions(remoteSessions) {
   const map = new Map()
   for (const s of getLocalSessions()) {
-    const key = s.sessionKey || s.key
+    const key = normalizeOpenClawSessionKey(s.sessionKey || s.key)
     if (key) map.set(key, s)
   }
   for (const s of remoteSessions || []) {
-    const key = s.sessionKey || s.key
+    const key = normalizeOpenClawSessionKey(s.sessionKey || s.key)
     if (!key) continue
     const local = map.get(key)
     map.set(key, local ? { ...local, ...s, localOnly: false } : s)
@@ -2340,7 +2352,7 @@ async function connectGateway(options = {}) {
 
     // 如果已连接且 Gateway 就绪，直接复用
     if (wsClient.connected && wsClient.gatewayReady) {
-      _sessionKey = resolveGatewaySessionKey(wsClient.sessionKey)
+      if (!_sessionKey) _sessionKey = resolveGatewaySessionKey(wsClient.sessionKey)
       markOpenClawGatewayReady('reuse-existing-ws')
       showTyping(false)  // 确保关闭加载动画
       updateSessionTitle()
@@ -2458,7 +2470,11 @@ async function ensureOpenClawGatewayReadyForSend() {
 }
 
 async function refreshSessionList() {
-  if (!_sessionListEl || !wsClient.gatewayReady) return
+  if (!_sessionListEl) return
+  if (!wsClient.gatewayReady) {
+    renderSessionList(getLocalSessions())
+    return
+  }
   try {
     const result = await wsClient.sessionsList(50)
     const sessions = result?.sessions || result || []
@@ -2558,8 +2574,8 @@ async function maybeConsumeCollaborationDispatch() {
 }
 
 function resolveGatewaySessionKey(gatewaySessionKey) {
-  const fallback = gatewaySessionKey || wsClient.sessionKey || 'agent:main:main'
-  const saved = localStorage.getItem(STORAGE_SESSION_KEY)
+  const fallback = normalizeOpenClawSessionKey(gatewaySessionKey || wsClient.sessionKey || 'agent:main:main')
+  const saved = normalizeOpenClawSessionKey(localStorage.getItem(STORAGE_SESSION_KEY))
   if (!saved || saved === fallback) return fallback
   const defaults = wsClient.snapshot?.sessionDefaults || {}
   const known = new Set([
@@ -2567,7 +2583,7 @@ function resolveGatewaySessionKey(gatewaySessionKey) {
     defaults.mainSessionKey,
     defaults.defaultSessionKey,
     defaults.lastSessionKey,
-  ].filter(Boolean))
+  ].map(normalizeOpenClawSessionKey).filter(Boolean))
   if (known.has(saved)) return saved
   const savedAgent = parseSessionAgent(saved)
   const fallbackAgent = parseSessionAgent(fallback)
@@ -2586,8 +2602,8 @@ function renderSessionList(sessions) {
   }
   sessions.sort((a, b) => (b.updatedAt || b.lastActivity || 0) - (a.updatedAt || a.lastActivity || 0))
   _sessionListEl.innerHTML = sessions.map(s => {
-    const key = s.sessionKey || s.key || ''
-    const active = key === _sessionKey ? ' active' : ''
+    const key = normalizeOpenClawSessionKey(s.sessionKey || s.key)
+    const active = isOpenClawCurrentSessionKey(key) ? ' active' : ''
     const label = parseSessionLabel(key)
     const ts = s.updatedAt || s.lastActivity || s.createdAt || 0
     const timeStr = ts ? formatSessionTime(ts) : ''
@@ -2627,7 +2643,7 @@ function renderSessionList(sessions) {
     const delBtn = e.target.closest('[data-del]')
     if (delBtn) { e.stopPropagation(); deleteSession(delBtn.dataset.del); return }
     const item = e.target.closest('[data-key]')
-    if (item) void switchSession(item.dataset.key)
+    if (item) void switchSession(normalizeOpenClawSessionKey(item.dataset.key))
   }
   _sessionListEl.ondblclick = (e) => {
     const labelEl = e.target.closest('.chat-session-label')
@@ -2668,18 +2684,19 @@ function parseSessionLabel(key) {
 
 async function switchSession(newKey, options = {}) {
   const { forceWorkspace = false } = options
-  if (newKey === _sessionKey) return false
+  const targetSessionKey = normalizeOpenClawSessionKey(newKey)
+  if (!targetSessionKey || isOpenClawCurrentSessionKey(targetSessionKey)) return false
   snapshotCurrentChatState('switch-session')
   _voicePlaybackController?.stop()
   syncMessageVoiceButtons(null)
-  const nextAgentId = parseSessionAgent(newKey) || 'main'
+  const nextAgentId = parseSessionAgent(targetSessionKey) || 'main'
   if (!forceWorkspace && _workspaceDirty && nextAgentId !== _workspaceCurrentAgentId) {
     const yes = await confirmWorkspaceDiscardIfNeeded()
     if (!yes) return false
     discardWorkspaceChanges()
   }
-  _sessionKey = newKey
-  localStorage.setItem(STORAGE_SESSION_KEY, newKey)
+  _sessionKey = targetSessionKey
+  localStorage.setItem(STORAGE_SESSION_KEY, targetSessionKey)
   _lastHistoryHash = ''
   resetStreamState()
   updateSessionTitle()
@@ -5776,9 +5793,11 @@ function handleEvent(msg) {
 }
 
 function handleChatEvent(payload, eventId = '') {
-  const hostedSessionKey = getHostedBoundSessionKey()
-  const isCurrentSession = !payload.sessionKey || !_sessionKey || payload.sessionKey === _sessionKey
-  const isHostedSession = !!payload.sessionKey && !!hostedSessionKey && payload.sessionKey === hostedSessionKey
+  const payloadSessionKey = normalizeOpenClawSessionKey(payload.sessionKey)
+  const currentSessionKey = normalizeOpenClawSessionKey(_sessionKey)
+  const hostedSessionKey = normalizeOpenClawSessionKey(getHostedBoundSessionKey())
+  const isCurrentSession = !payloadSessionKey || !currentSessionKey || payloadSessionKey === currentSessionKey
+  const isHostedSession = !!payloadSessionKey && !!hostedSessionKey && payloadSessionKey === hostedSessionKey
 
   // sessionKey 过滤：当前会话照常渲染；托管绑定会话在后台继续驱动循环
   if (!isCurrentSession && !isHostedSession) return
@@ -7192,7 +7211,7 @@ function snapshotCurrentChatState(reason = '') {
 }
 
 function restoreOpenClawChatSnapshot(sessionKey, reason = '') {
-  const key = sessionKey || ''
+  const key = normalizeOpenClawSessionKey(sessionKey)
   if (!key || !_messagesEl || !_typingEl) return false
   pruneOpenClawChatViewSnapshots()
   const snapshot = getOpenClawChatViewSnapshot(key)
@@ -7539,11 +7558,16 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
 
 async function loadHistory() {
   if (!_sessionKey || !_messagesEl) return
+  const requestedSessionKey = normalizeOpenClawSessionKey(_sessionKey)
+  const isLoadHistoryForCurrentSession = () => isOpenClawCurrentSessionKey(requestedSessionKey)
   _isLoadingHistory = true
   let hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
   if (!hasExisting && isStorageAvailable()) {
-    const local = await getLocalMessages(_sessionKey, 200)
-    if (!_messagesEl) return
+    const local = await getLocalMessages(requestedSessionKey, 200)
+    if (!_messagesEl || !isLoadHistoryForCurrentSession()) {
+      _isLoadingHistory = false
+      return
+    }
     if (local.length) {
       const localDeduped = dedupeHistoryStable(local)
       if (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) {
@@ -7564,13 +7588,13 @@ async function loadHistory() {
           ]
           appendUserMessage(openClawVisibleUserText(msg.text || ''), userAttachments.length ? userAttachments : null, msgTime, {
             dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
-            sessionKey: msg.sessionKey || _sessionKey,
+            sessionKey: msg.sessionKey || requestedSessionKey,
           })
         }
         else if (msg.role === 'assistant') {
           appendAiMessage(msg.text || '', msgTime, msg.images || [], msg.videos || [], msg.audios || [], msg.files || [], msg.tools || [], msg.screenshotCards || [], msg.confirmations || [], {
             dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
-            sessionKey: msg.sessionKey || _sessionKey,
+            sessionKey: msg.sessionKey || requestedSessionKey,
           })
         }
       })
@@ -7581,7 +7605,8 @@ async function loadHistory() {
   }
   if (!wsClient.gatewayReady) { _isLoadingHistory = false; return }
   try {
-    const result = await wsClient.chatHistory(_sessionKey, 200)
+    const result = await wsClient.chatHistory(requestedSessionKey, 200)
+    if (!isLoadHistoryForCurrentSession()) return
     if (!result?.messages?.length) {
       if (_messagesEl && !_messagesEl.querySelector('.msg')) appendSystemMessage(t('chat.noMessages'))
       return
@@ -7596,7 +7621,7 @@ async function loadHistory() {
       && displayedCount > deduped.length
     if (refreshIsSparse) {
       console.warn('[chat] sparse history refresh merged to preserve visible messages:', {
-        sessionKey: _sessionKey,
+        sessionKey: requestedSessionKey,
         displayedCount,
         historyCount: deduped.length,
       })
@@ -7642,13 +7667,13 @@ async function loadHistory() {
         if (msg.images?.length && !userAtts.length) hasOmittedImages = true
         appendUserMessage(openClawVisibleUserText(msg.text || ''), userAtts, msgTime, {
           dedupeKey: msg.dedupeKey,
-          sessionKey: msg.sessionKey || _sessionKey,
+          sessionKey: msg.sessionKey || requestedSessionKey,
         })
       } else if (msg.role === 'assistant') {
         if (isOpenClawHistoryTransientFallbackMessage(msg)) return
         appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations, {
           dedupeKey: msg.dedupeKey,
-          sessionKey: msg.sessionKey || _sessionKey,
+          sessionKey: msg.sessionKey || requestedSessionKey,
         })
       }
     })
