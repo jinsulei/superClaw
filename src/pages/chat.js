@@ -4270,6 +4270,7 @@ async function sendMessage(event) {
     appendOpenClawLocalAnswer(text, attachments, clientRequestId, localAnswer)
     return
   }
+  if (!(await ensureOpenClawGatewayReadyForSend())) return
   hideCmdPanel()
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
   const requestFingerprint = getOpenClawRequestFingerprint(text, attachments)
@@ -4356,6 +4357,7 @@ async function sendMessage(event) {
 }
 
 async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId(), requestFingerprint = getOpenClawRequestFingerprint(text, attachments)) {
+  if (!(await ensureOpenClawGatewayReadyForSend())) return
   if (isOpenClawDuplicatePendingRequest(requestFingerprint)) {
     updateSendState()
     return
