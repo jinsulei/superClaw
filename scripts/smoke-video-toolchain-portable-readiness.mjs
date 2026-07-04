@@ -12,11 +12,13 @@ const repoPaths = {
     'src-tauri/resources/bin/ffmpeg.exe',
     'src-tauri/resources/runtime/ffmpeg/ffmpeg.exe',
     'src-tauri/resources/runtime/video-tools/ffmpeg.exe',
+    'src-tauri/resources/runtime/video-tools/ffmpeg/bin/ffmpeg.exe',
   ],
   ffprobe: [
     'src-tauri/resources/bin/ffprobe.exe',
     'src-tauri/resources/runtime/ffmpeg/ffprobe.exe',
     'src-tauri/resources/runtime/video-tools/ffprobe.exe',
+    'src-tauri/resources/runtime/video-tools/ffmpeg/bin/ffprobe.exe',
   ],
   ytdlp: [
     'src-tauri/resources/bin/yt-dlp.exe',
@@ -60,7 +62,8 @@ const ocrRuntime = {
   wasm: existsSync(resolve(root, 'src-tauri/resources/runtime/ocr/node_modules/tesseract.js-core/tesseract-core.wasm')),
 }
 
-assert.equal(repoBundled.ffmpeg, false, 'Current branch must not claim bundled ffmpeg')
+assert.equal(repoBundled.ffmpeg, true, 'Current branch should include bundled ffmpeg')
+assert.equal(repoBundled.ffprobe, true, 'Current branch should include bundled ffprobe')
 assert.equal(repoBundled.ytdlp, false, 'Current branch must not claim bundled yt-dlp')
 assert.equal(repoBundled.asr, false, 'Current branch must not claim bundled ASR')
 
@@ -70,14 +73,19 @@ assert.ok(
 )
 
 const requiredPhrases = [
-  'repoBundledAvailable=false',
+  'repoBundledAvailable=partial',
+  'ffmpegAvailable=true',
+  'ffprobeAvailable=true',
   'systemPathAvailable=ignored_for_portable',
   'portableReady=false',
   'packagedRuntimeAvailable=false',
   'fullVideoParsingAvailable=false',
   'transcriptAvailable=false',
   'frameOcrAvailable=false',
-  'missingTools=ffmpeg,video_downloader,asr,subtitle_extractor,video_frame_pipeline',
+  'missingTools=video_downloader,asr,subtitle_extractor,video_frame_pipeline',
+  'videoToolchainPartial=true',
+  'mediaProcessingAvailable=true',
+  'videoDownloadAvailable=false',
   '系统 PATH',
   '不能视为 U 盘绿色版可用',
   '不能单独生成视频逐字稿、字幕、音频转写',
@@ -103,5 +111,8 @@ console.log('VIDEO_TOOLCHAIN_PORTABLE_READINESS: PASS', {
   systemPath,
   ocrRuntime,
   portableReady: false,
+  videoToolchainPartial: true,
+  mediaProcessingAvailable: true,
+  videoDownloadAvailable: false,
   materialLevel: 'metadata_only',
 })
