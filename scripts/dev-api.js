@@ -15,6 +15,7 @@ import https from 'https'
 import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
 import { getEffectiveModelConfig } from './lib/model-config-source-guard.mjs'
+import { analyzeVideoLink, formatVideoMaterialPackageForHermes } from './lib/video-link-analyzer.mjs'
 import { sanitizeMediaVisibleText } from '../src/shared/chat-output-guard.js'
 import {
   buildAgentIdentitySystemPrompt,
@@ -7570,6 +7571,22 @@ async function fetchReadableUrlContent(rawUrl) {
   const isVideo = isShortVideoShareUrl(rawUrl)
   let readerError = ''
 
+  if (isVideo) {
+    try {
+      const material = analyzeVideoLink(rawUrl, {
+        root: appRootDir(),
+        env: process.env,
+        enableDownload: false,
+      })
+      if (material.ok || material.kind === 'cookie_required') {
+        return formatVideoMaterialPackageForHermes(material)
+      }
+      readerError = material.message || material.kind || ''
+    } catch (err) {
+      readerError = err?.message || String(err)
+    }
+  }
+
   try {
     const jinaUrl = 'https://r.jina.ai/' + rawUrl
     const { body } = await requestTextWithRedirects(jinaUrl, { timeout: 15000, maxBytes: 100000, redirects: 2 })
@@ -7609,6 +7626,7 @@ async function fetchReadableUrlContent(rawUrl) {
       '',
       '[读取限制]',
       'materialLevel=metadata_or_tool_extracted',
+      'metadataOnlyFallback=materialLevel=metadata_only',
       'repoBundledAvailable=true',
       'videoToolchainPartial=false',
       'systemPathAvailable=ignored_for_portable',

@@ -17,6 +17,36 @@ export function getVideoToolchainPaths(root = repoRoot) {
   }
 }
 
+export function detectVideoPlatform(rawUrl = '') {
+  const text = String(rawUrl || '').toLowerCase()
+  if (/douyin\.com|iesdouyin\.com/.test(text)) return 'douyin'
+  if (/xiaohongshu\.com|xhslink\.com|xhslink\.com/.test(text)) return 'xiaohongshu'
+  if (/kuaishou\.com|v\.kuaishou\.com/.test(text)) return 'kuaishou'
+  return 'generic'
+}
+
+export function getVideoCookiePaths(root = repoRoot, platform = 'generic', env = process.env) {
+  const dataRoot = resolve(root, 'src-tauri/resources/data/video-tools/cookies')
+  const configured = String(env.VIDEO_TOOLCHAIN_COOKIES_FILE || '').trim()
+  const safePlatform = /^[a-z0-9_-]+$/i.test(String(platform || '')) ? platform : 'generic'
+  return {
+    root: dataRoot,
+    configured: configured || null,
+    platform: resolve(dataRoot, `${safePlatform}.cookies.txt`),
+    default: resolve(dataRoot, 'default.cookies.txt'),
+  }
+}
+
+export function resolveVideoCookiesFile({ root = repoRoot, platform = 'generic', env = process.env } = {}) {
+  const paths = getVideoCookiePaths(root, platform, env)
+  const candidates = [
+    paths.configured,
+    paths.platform,
+    paths.default,
+  ].filter(Boolean)
+  return candidates.find(file => existsSync(file)) || null
+}
+
 export function getVideoToolchainStatus(root = repoRoot) {
   const paths = getVideoToolchainPaths(root)
   const available = {

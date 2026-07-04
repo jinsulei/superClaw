@@ -390,12 +390,20 @@ function videoPlatformLabel(url) {
 }
 
 function isFetchedContentFailure(text) {
-  return /抓取失败|抓取超时|读取失败|无法读取|无法抓取|timeout|timed out|fetch failed|network error|econnreset|socket hang up|und_err|connection reset|连接被断开/i.test(String(text || ''))
+  const value = String(text || '')
+  if (/\[VIDEO_MATERIAL_PACKAGE\]/.test(value)) return false
+  return /抓取失败|抓取超时|读取失败|无法读取|无法抓取|timeout|timed out|fetch failed|network error|econnreset|socket hang up|und_err|connection reset|连接被断开/i.test(value)
 }
 
 function classifyHermesLinkFetchStatus(text) {
   const value = String(text || '').trim()
   if (!value) return { kind: 'link_fetch_failed', message: '网页抓取失败：没有读取到可分析的网页内容。' }
+  if (/\[VIDEO_MATERIAL_PACKAGE\]/.test(value)) {
+    if (/failureKind=cookie_required|status=cookie_required/.test(value)) {
+      return { kind: 'social_video_link_fallback', message: '已识别为视频平台需要 cookie/登录状态，将基于已有公开字段做有限分析。' }
+    }
+    return { kind: 'link_fetch_success', message: '视频素材包已生成，正在交给 Hermes 做有限分析。' }
+  }
   if (/抓取超时|timeout|timed out/i.test(value)) return { kind: 'link_fetch_timeout', message: '网页抓取失败：抓取超时，请稍后重试或换一个链接。' }
   if (isFetchedContentFailure(value)) return { kind: 'link_fetch_failed', message: `网页抓取失败：${value.replace(/^抓取失败[:：]?\s*/i, '')}` }
   return { kind: 'link_fetch_success', message: '链接内容已读取，正在交给 Hermes 分析。' }
@@ -467,6 +475,7 @@ function formatVideoMaterialCompletenessRules(platform = '短视频平台') {
     '[MATERIAL_COMPLETENESS_REQUIREMENT]',
     `platform=${platform}`,
     'materialLevel=metadata_or_tool_extracted',
+    'metadataOnlyFallback=materialLevel=metadata_only',
     'repoBundledAvailable=true',
     'videoToolchainPartial=false',
     'systemPathAvailable=ignored_for_portable',
