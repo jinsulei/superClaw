@@ -393,6 +393,38 @@ function isFetchedContentFailure(text) {
   return /抓取失败|抓取超时|读取失败|无法读取|无法抓取|timeout|timed out|fetch failed|network error|econnreset|socket hang up|und_err|connection reset|连接被断开/i.test(String(text || ''))
 }
 
+function classifyHermesLinkFetchStatus(text) {
+  const raw = String(text || '').trim()
+  if (!raw) {
+    return { kind: 'link_fetch_failed', message: '网页抓取失败：没有读取到可分析的网页内容。' }
+  }
+  if (/抓取超时|timeout|timed out/i.test(raw)) {
+    return { kind: 'link_fetch_timeout', message: '网页抓取失败：抓取超时，请稍后重试或换一个链接。' }
+  }
+  if (isFetchedContentFailure(raw)) {
+    return { kind: 'link_fetch_failed', message: raw.slice(0, 180) }
+  }
+  return { kind: 'link_fetch_success', message: '链接内容已读取，正在交给 Hermes 分析。' }
+}
+
+const HERMES_LINK_FETCH_TIMEOUT_MS = 15000
+
+function withHermesLinkTimeout(promise, timeoutMs = HERMES_LINK_FETCH_TIMEOUT_MS) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`抓取超时：${Math.round(timeoutMs / 1000)} 秒内没有完成链接读取。`))
+    }, timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+async function assistantFetchUrlWithTimeout(url) {
+  return withHermesLinkTimeout(api.assistantFetchUrl(url))
+}
+
 function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
   return [
     '重要补充：如果第一次 browser_navigate 只返回首页、登录态、短内容或空内容，不要立即失败；必须继续尝试 browser_snapshot，再用 browser_console 读取 document.title、meta description、JSON-LD、document.body.innerText 的前 8000 字。',
@@ -512,12 +544,23 @@ function formatVideoLinkFallbackPrompt(url, failureText) {
 function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
   const platform = videoPlatformLabel(url)
   const clipped = String(fetchedContent || '').trim()
+  const fetchFailed = !clipped || isFetchedContentFailure(clipped)
+  const materialLevel = fetchFailed
+    ? 'fetch_failed'
+    : clipped.includes('[短视频页面可读取信息]')
+      ? 'metadata_only'
+      : 'webpage_text'
   const lines = [
     '[SHORT_VIDEO_LINK_REQUEST]',
     '[视频链接分析请求]',
     `平台: ${platform}`,
     `URL: ${url}`,
-    '来源: 用户通过加号入口提交，已授权后台读取该链接或用户已打开页面中的公开可见信息。',
+    `materialLevel: ${materialLevel}`,
+    'transcriptAvailable: false',
+    'subtitleAvailable: false',
+    'audioTranscriptAvailable: false',
+    'frameOcrAvailable: false',
+    '来源: 用户提交的视频/社媒链接。当前版本不会直接解析视频正文、画面或字幕，只会把链接和公开可见信息交给 Hermes 进行文本化有限分析。',
     '读取策略: 优先使用 browser_navigate / browser_snapshot / computer_use 等可用后台浏览器工具读取公开可见信息；不要展示、播放、嵌入、截图回传、保存或主动建议打开平台页面。',
     '读取兜底: browser_navigate 后如果只拿到首页、登录态、空白页或很短的结果，必须继续调用 browser_snapshot 和 browser_console 读取标题、meta、JSON-LD、可见正文；只有这些都失败后才进入素材补充流程。',
     '合规边界: 不保存账号 Cookie，不保存或提及平台截图，不主动要求用户提供截图，不询问是否打开平台页面，不绕过登录、付费、权限、robots 或平台限制；只把公开可见的标题、字幕、口播、页面文字、封面说明等转成文字结果。',
@@ -530,6 +573,31 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
   }
   lines.push('[/视频链接分析请求]', '[/SHORT_VIDEO_LINK_REQUEST]')
   return lines.join('\n')
+}
+
+async function buildHermesVideoLinkAnalysisPayload(url, { visibleText = '', supplement = '' } = {}) {
+  const platform = videoPlatformLabel(url)
+  let fetchedContent = ''
+  let fetchStatus = { kind: 'link_fetch_failed', message: '网页抓取失败：没有读取到可分析的网页内容。' }
+  try {
+    fetchedContent = await assistantFetchUrlWithTimeout(url)
+    fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+  } catch (err) {
+    const message = err?.message || String(err)
+    fetchedContent = `抓取失败: ${message}`
+    fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+  }
+  const cleanSupplement = String(supplement || '').trim()
+  const displayText = String(visibleText || '').trim()
+    || (cleanSupplement ? `${cleanSupplement}\n${url}` : `请分析这个${platform}视频链接：${url}`)
+  const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent), cleanSupplement)
+  const instructions = [
+    formatShortVideoWorkflowInstructions(platform),
+    fetchStatus.kind === 'link_fetch_success'
+      ? '本轮已经先尝试读取链接公开页面信息。请基于前置读取内容做有限视频/社媒链接分析；如果只是 metadata 或页面文本，必须说明素材限制。'
+      : '本轮前置链接抓取失败或超时。不要直接报任务失败；请基于用户粘贴文本、平台类型和链接做 metadata_only 有限分析，并明确要求补充标题、口播、字幕、截图或正文素材。',
+  ].join('\n\n')
+  return { platform, visibleText: displayText, modelContent, instructions, fetchStatus }
 }
 
 function formatVideoLinkSuccessPrompt(url, clipped) {
@@ -562,6 +630,26 @@ function formatFetchedLinkForPrompt(url, content) {
     '',
     clipped || '（链接内容为空）',
     '[/外部链接内容]',
+  ].join('\n')
+}
+
+function formatLinkFetchLimitedReply(url, fetchStatus) {
+  const statusText = fetchStatus?.message || '网页抓取失败：暂时无法完整读取链接内容。'
+  return [
+    '【链接读取结果】',
+    '',
+    `链接：${url}`,
+    `抓取状态：${statusText}`,
+    '',
+    '当前无法确认已经完整读取网页正文，所以不会把它当成完整页面素材。',
+    '我目前只能基于 URL、你粘贴的文字和可能读取到的公开 metadata 做有限分析。',
+    '',
+    '你可以继续补充：',
+    '- 页面正文或关键段落',
+    '- 标题/摘要',
+    '- 需要我优化、拆解或仿写的方向',
+    '',
+    '拿到这些素材后，我可以继续做结构拆解、文案优化和仿写素材。',
   ].join('\n')
 }
 
@@ -2788,22 +2876,44 @@ export function render() {
       linkMenuOpen = false
       linkDraft = ''
       if (isVideoShareUrl(url)) {
-        const platform = videoPlatformLabel(url)
-        const visibleText = supplement
-          ? `${supplement}\n${url}`
-          : `请分析这个${platform}视频链接：${url}`
-        const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url), supplement)
-        const instructions = formatShortVideoWorkflowInstructions(platform)
+        const payload = await buildHermesVideoLinkAnalysisPayload(url, { supplement })
         resetInput()
         forceScrollBottom = true
         draw()
-        await store.sendMessage(visibleText, { modelContent, instructions })
-        toast('已开始后台读取并拆解视频链接', 'success')
+        await store.sendMessage(payload.visibleText, {
+          modelContent: payload.modelContent,
+          instructions: payload.instructions,
+        })
+        toast(
+          payload.fetchStatus.kind === 'link_fetch_success'
+            ? '已读取视频/社媒链接公开信息，正在交给 Hermes 做有限分析。'
+            : '视频/社媒链接抓取未完整成功，已进入 metadata_only 有限分析。',
+          payload.fetchStatus.kind === 'link_fetch_success' ? 'success' : 'warning',
+        )
       } else {
-        const content = await api.assistantFetchUrl(url)
+        let content = ''
+        let fetchStatus = null
+        try {
+          content = await assistantFetchUrlWithTimeout(url)
+          fetchStatus = classifyHermesLinkFetchStatus(content)
+        } catch (err) {
+          content = `抓取失败: ${err?.message || String(err)}`
+          fetchStatus = classifyHermesLinkFetchStatus(content)
+        }
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个链接：${url}`
+        if (fetchStatus.kind !== 'link_fetch_success') {
+          linkMenuOpen = false
+          linkDraft = ''
+          resetInput()
+          store.pushLocalUser(visibleText)
+          store.pushLocalAssistant(formatLinkFetchLimitedReply(url, fetchStatus))
+          forceScrollBottom = true
+          draw()
+          toast('链接读取失败或超时，已生成有限分析提示。', 'warning')
+          return
+        }
         const modelContent = appendUserSupplement(formatFetchedLinkForPrompt(url, content), supplement)
         resetInput()
         forceScrollBottom = true
@@ -3686,6 +3796,50 @@ export function render() {
       clearDraftForSend()
       hermesSendInFlight = false
       return
+    }
+
+    const directUrl = extractFirstHttpUrl(text)
+    if (!attachments.length && directUrl && isVideoShareUrl(directUrl)) {
+      try {
+        const payload = await buildHermesVideoLinkAnalysisPayload(directUrl, {
+          visibleText: text,
+          supplement: stripFirstHttpUrl(text),
+        })
+        clearDraftForSend()
+        await store.sendMessage(payload.visibleText, {
+          clientRequestId,
+          modelContent: payload.modelContent,
+          instructions: [
+            restoreInstructions,
+            payload.instructions,
+            buildIntentTriggeredToolInstructions(text),
+          ].filter(Boolean).join('\n\n'),
+          attachments,
+        })
+        toast(
+          payload.fetchStatus.kind === 'link_fetch_success'
+            ? '已读取视频/社媒链接公开信息，正在交给 Hermes 做有限分析。'
+            : '视频/社媒链接抓取未完整成功，已进入 metadata_only 有限分析。',
+          payload.fetchStatus.kind === 'link_fetch_success' ? 'success' : 'warning',
+        )
+        hermesSendInFlight = false
+        return
+      } catch (err) {
+        suppressTextareaCaptureUntil = 0
+        inputValue = restoreText
+        inputCaret = restoreCaret
+        pendingAttachments = restoreAttachments
+        pendingAttachmentInstructions = restoreInstructions
+        restoreLiveTextareaDomValue(restoreText, restoreCaret)
+        toast(err?.message || String(err), 'error')
+        hermesSendInFlight = false
+        throw err
+      } finally {
+        suppressTextareaCaptureUntil = Date.now() + 250
+        inputFocused = true
+        inputCaret = inputValue.length
+        draw()
+      }
     }
 
     let sendInstructions = [
