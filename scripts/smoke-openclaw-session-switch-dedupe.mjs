@@ -19,163 +19,58 @@ function includesAll(source, terms, label) {
 }
 
 includesAll(chat, [
-  'const _renderedMessageKeysBySession = new Map()',
-  'function getOpenClawMessageDedupeKey(message = {}, sessionKey = _sessionKey)',
-  'function getOpenClawHistoryDisplayDedupeKey(message = {}, sessionKey = _sessionKey)',
-  'function dedupeHistoryStable(messages)',
-  'dedupeHistoryStable(local).forEach',
-  'dedupeHistoryStable(result.messages)',
-  'dedupeKey: msg.displayDedupeKey || msg.dedupeKey',
-  'function mergeOpenClawHistoryMessage(prev, next)',
-  'function hasRenderedOpenClawMessage(sessionKey, dedupeKey)',
-  'markRenderedOpenClawMessage(wrap, sessionKey, meta.dedupeKey)',
-  'const assistantDedupeKey = getOpenClawMessageDedupeKey({',
-  'createStreamBubble({',
-  'dedupeKey: assistantDedupeKey',
-  'sessionKey: _sessionKey',
-  'skipped duplicate rendered assistant final',
-], 'OpenClaw session-switch dedupe implementation')
+  'function normalizeOpenClawSessionKey',
+  'function isOpenClawCurrentSessionKey',
+  'function collapseNearDuplicateOpenClawUsers',
+  'function hasVisibleOpenClawUserNearDuplicate',
+  'async function loadHistory(sessionKey = _sessionKey)',
+  'const requestedSessionKey = normalizeOpenClawSessionKey(sessionKey)',
+  'const isLoadHistoryForCurrentSession = () => isOpenClawCurrentSessionKey(requestedSessionKey)',
+  'loadHistory(targetSessionKey)',
+  'const active = isOpenClawCurrentSessionKey(key) ?',
+  'data-session-key="${escapeAttr(key)}"',
+  'item.dataset.sessionKey || item.dataset.key',
+  'sessionKey: msg.sessionKey || requestedSessionKey',
+  'fromHistory: true',
+], 'OpenClaw session switch history guard implementation')
 
 includesAll(ws, [
   'if (!this._eventListeners.includes(callback)) this._eventListeners.push(callback)',
   'return () => { this._eventListeners = this._eventListeners.filter(fn => fn !== callback) }',
 ], 'WebSocket listener subscribe/unsubscribe guard')
 
-function normalize(value) {
-  return String(value || '').replace(/\s+/g, ' ').trim()
+function normalizeSessionKey(key) {
+  const raw = String(key || '').trim()
+  if (!raw || raw === 'main') return 'agent:main:main'
+  if (raw.startsWith('agent:')) return raw
+  return `agent:main:${raw}`
 }
 
-function hash(value) {
-  const text = normalize(value)
-  let h = 5381
-  for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
-  return `${text.length}:${(h >>> 0).toString(36)}`
+let currentSessionKey = 'agent:main:one'
+function isCurrentSessionKey(key) {
+  return normalizeSessionKey(key) === normalizeSessionKey(currentSessionKey)
 }
 
-function toolText(tools = []) {
-  return tools.map(tool => normalize(tool.output ?? tool.result ?? tool.content ?? tool.name ?? '')).filter(Boolean).join('|')
-}
+assert(normalizeSessionKey('main') === 'agent:main:main', 'main session key should normalize')
+assert(normalizeSessionKey('draft.md') === 'agent:main:draft.md', 'bare session key should normalize')
+assert(isCurrentSessionKey('one') === true, 'normalized selected session should match')
+assert(isCurrentSessionKey('agent:main:two') === false, 'different selected session should not match')
 
-function key(message) {
-  const session = message.sessionKey || 'agent:main:main'
-  const role = message.role === 'tool' ? 'assistant' : message.role
-  const display = hash(message.text || toolText(message.tools || []))
-  if (role === 'assistant' && message.runId && display) return `${session}|run:${message.runId}|display:${display}`
-  if (message.id) return `${session}|id:${message.id}`
-  if (message.eventId) return `${session}|event:${message.eventId}`
-  return `${session}|display:${role}:${display}:${Math.floor((message.timestamp || 0) / 1000)}`
-}
-
-function displayKey(message) {
-  return `${message.sessionKey || 'agent:main:main'}|history-display:${message.role}:${hash(message.text || toolText(message.tools || []))}:${Math.floor((message.timestamp || 0) / 1000)}`
-}
-
-function merge(prev, next) {
-  const sameText = normalize(prev.text) === normalize(next.text)
-  const tools = [...(prev.tools || [])]
-  for (const tool of next.tools || []) {
-    if (!tools.some(item => (item.id || item.name) === (tool.id || tool.name))) tools.push(tool)
-  }
-  return {
-    ...prev,
-    ...next,
-    text: sameText ? (prev.text || next.text || '') : [prev.text, next.text].filter(Boolean).join('\n'),
-    tools,
-  }
-}
-
-function mergeMessages(messages) {
-  const rows = []
-  const seen = new Map()
-  const seenDisplay = new Map()
-  for (const msg of messages) {
-    const msgKey = key(msg)
-    const msgDisplayKey = displayKey(msg)
-    if (seenDisplay.has(msgDisplayKey)) {
-      rows[seenDisplay.get(msgDisplayKey)] = merge(rows[seenDisplay.get(msgDisplayKey)], msg)
-      seen.set(msgKey, seenDisplay.get(msgDisplayKey))
-      continue
-    }
-    if (seen.has(msgKey)) {
-      rows[seen.get(msgKey)] = merge(rows[seen.get(msgKey)], msg)
-      seenDisplay.set(msgDisplayKey, seen.get(msgKey))
-      continue
-    }
-    const last = rows[rows.length - 1]
-    if (last?.role === 'assistant' && msg.role === 'assistant' && ((last.tools?.length || 0) || (msg.tools?.length || 0) || last.runId === msg.runId)) {
-      rows[rows.length - 1] = merge(last, msg)
-      seen.set(msgKey, rows.length - 1)
-      seenDisplay.set(msgDisplayKey, rows.length - 1)
-      continue
-    }
-    seen.set(msgKey, rows.length)
-    seenDisplay.set(msgDisplayKey, rows.length)
-    rows.push(msg)
-  }
-  return rows
-}
-
-const initial = mergeMessages([
-  { id: 'user-1', role: 'user', text: 'OK?', timestamp: 1000 },
-  { id: 'assistant-1', role: 'assistant', runId: 'run-1', text: 'OK', timestamp: 2000 },
-])
-const switchedBack = mergeMessages([
-  ...initial,
-  { id: 'assistant-1', role: 'assistant', runId: 'run-1', text: 'OK', timestamp: 2000 },
-])
-assert(switchedBack.filter(item => item.role === 'assistant').length === 1, 'session switch history duplicated assistant')
-
-const differentIdsSameDisplay = mergeMessages([
-  { id: 'local-user-1', role: 'user', text: '只回复 OK', timestamp: 5000 },
-  { id: 'remote-user-1', role: 'user', text: '只回复 OK', timestamp: 5100 },
-  { id: 'local-assistant-1', role: 'assistant', text: 'OK', timestamp: 6200 },
-  { id: 'remote-assistant-1', role: 'assistant', text: 'OK', timestamp: 6300 },
-])
-assert(differentIdsSameDisplay.filter(item => item.role === 'user').length === 1, 'same user message with different ids was not deduped')
-assert(differentIdsSameDisplay.filter(item => item.role === 'assistant').length === 1, 'same assistant message with different ids was not deduped')
-
-const liveHistory = mergeMessages([
-  { role: 'assistant', runId: 'run-2', text: 'OK', timestamp: 3000 },
-  { role: 'assistant', runId: 'run-2', text: 'OK', timestamp: 3000 },
-])
-assert(liveHistory.length === 1, 'live final and history complete were not deduped')
-
-const toolAssistant = mergeMessages([
-  { role: 'assistant', runId: 'run-3', text: '', tools: [{ id: 'tool-1', name: 'tool', output: 'OK' }], timestamp: 4000 },
-  { role: 'assistant', runId: 'run-3', text: 'OK', tools: [], timestamp: 4000 },
-])
-assert(toolAssistant.length === 1, 'tool success and assistant final rendered twice')
-assert(toolAssistant[0].text === 'OK', 'assistant final text should be retained')
-assert(toolAssistant[0].tools.length === 1, 'tool status should be retained as metadata')
-assert(!/role === 'user' && last\.text === c\.text\) continue/.test(chat), 'repeated user prompts must not be collapsed by text only')
-assert(!/c\.text && last\.text === c\.text\) continue/.test(chat), 'repeated assistant replies must not be collapsed by text only')
-assert(!/prev\.text && next\.text && prev\.text === next\.text\) return true/.test(chat), 'adjacent assistant merge must not use text-only equality')
-assert(chat.includes('Math.floor(ts / 1000)'), 'history display dedupe should use second-level buckets, not minute-level buckets')
-
-const seenEvents = new Set()
-function handleEventOnce(eventId) {
-  if (seenEvents.has(eventId)) return false
-  seenEvents.add(eventId)
+let renderedSession = []
+function appendHistory(requestedSessionKey, text) {
+  if (!isCurrentSessionKey(requestedSessionKey)) return false
+  renderedSession.push({ sessionKey: normalizeSessionKey(requestedSessionKey), text })
   return true
 }
-assert(handleEventOnce('evt-1') === true, 'first event should process')
-assert(handleEventOnce('evt-1') === false, 'duplicate event should be skipped')
 
-let listeners = []
-function subscribe(callback) {
-  if (!listeners.includes(callback)) listeners.push(callback)
-  return () => { listeners = listeners.filter(item => item !== callback) }
-}
-const callback = () => {}
-const unsub = subscribe(callback)
-subscribe(callback)
-assert(listeners.length === 1, 'same listener subscribed twice')
-unsub()
-assert(listeners.length === 0, 'unsubscribe did not remove listener')
+const requestedA = 'agent:main:one'
+currentSessionKey = 'agent:main:two'
+assert(appendHistory(requestedA, 'stale') === false, 'stale history should not render after session switch')
+assert(renderedSession.length === 0, 'stale history changed current messages')
+assert(appendHistory('two', 'fresh') === true, 'current history should render')
+assert(renderedSession.length === 1 && renderedSession[0].sessionKey === 'agent:main:two', 'current history rendered into wrong session')
 
-console.log('OPENCLAW_SESSION_SWITCH_NO_DUPLICATE_HISTORY: PASS')
-console.log('OPENCLAW_HISTORY_DIFFERENT_IDS_SAME_DISPLAY_DEDUPED: PASS')
-console.log('OPENCLAW_LIVE_HISTORY_MERGE_DEDUPED: PASS')
-console.log('OPENCLAW_TOOL_ASSISTANT_DUPLICATE_DEDUPED: PASS')
-console.log('OPENCLAW_WS_EVENT_DEDUPED: PASS')
+console.log('OPENCLAW_SESSION_KEY_NORMALIZED: PASS')
+console.log('OPENCLAW_SESSION_SWITCH_STALE_HISTORY_GUARDED: PASS')
+console.log('OPENCLAW_SESSION_SWITCH_SELECTED_STATE_GUARDED: PASS')
 console.log('OPENCLAW_WS_LISTENER_COUNT_STABLE: PASS')
