@@ -5635,6 +5635,62 @@ function isStrongOpenClawHistoryCandidate(msg = {}, activeRun = _activeOpenClawR
   return true
 }
 
+function isRecoverableOpenClawCurrentDraft() {
+  if (!_currentAiBubble) return false
+  const row = _currentAiBubble.closest?.('.msg') || _currentAiBubble
+  const text = sanitizeOpenClawVisibleReply(getOpenClawAssistantContentText(_currentAiBubble) || _currentAiText || '')
+  return (
+    row?.dataset?.openclawIncomplete === 'true' ||
+    _currentAiBubble?.dataset?.openclawIncomplete === 'true' ||
+    !text ||
+    isOpenClawTransientFallbackText(text) ||
+    isOpenClawTextClearlyIncomplete(text)
+  )
+}
+
+function canRecoverOpenClawDraftFromLatestHistory(msg = {}) {
+  if (!msg || msg.role !== 'assistant' || !_currentAiBubble) return false
+  if (!isRecoverableOpenClawCurrentDraft()) return false
+  if (!isOpenClawSameSession(msg, _activeOpenClawRun || { sessionKey: _sessionKey })) return false
+  const text = sanitizeOpenClawVisibleReply(msg.text || '')
+  if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
+  if (_activeOpenClawRun && isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return true
+  if (!msg._openClawAfterLatestHistoryUser) return false
+  const userText = _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText || getOpenClawLastVisibleUserText()
+  return isOpenClawCandidateCompatibleWithPrompt(text, userText)
+}
+
+function ensureOpenClawHistoryRecoveryBubble(msg = {}) {
+  if (_currentAiBubble) return true
+  if (!msg || msg.role !== 'assistant' || !msg._openClawAfterLatestHistoryUser) return false
+  if (!(_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming)) return false
+  if (!isOpenClawSameSession(msg, _activeOpenClawRun || { sessionKey: _sessionKey })) return false
+  const text = sanitizeOpenClawVisibleReply(msg.text || '')
+  if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
+  const userText = _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText || getOpenClawLastVisibleUserText()
+  if (!isOpenClawCandidateCompatibleWithPrompt(text, userText)) return false
+  const stableStreamId = _activeOpenClawRun?.clientRequestId ||
+    _activeClientRequestId ||
+    msg.clientRequestId ||
+    msg.requestId ||
+    msg.idempotencyKey ||
+    msg.runId ||
+    msg.messageId ||
+    msg.id ||
+    ''
+  _currentAiBubble = createStreamBubble({
+    clientRequestId: stableStreamId,
+    requestId: stableStreamId,
+    sessionKey: msg.sessionKey || _sessionKey,
+    openclawTurnId: _activeOpenClawRun?.openclawTurnId || msg.openclawTurnId || '',
+    assistantMessageId: msg.messageId || msg.id || stableStreamId,
+    dedupeKey: msg.displayDedupeKey || msg.dedupeKey || msg.messageId || msg.id || stableStreamId,
+  })
+  if (!_currentAiBubble) return false
+  _currentAiBubbleRequestId = stableStreamId
+  return true
+}
+
 function chooseBestOpenClawAssistantText(candidates = [], options = {}) {
   const userText = options.userText || _activeOpenClawUserText || _lastVisibleUserText
   const cleaned = (candidates || [])
@@ -5792,17 +5848,15 @@ async function recoverOpenClawAssistantFromHistoryBeforeFallback(reason = 'histo
       processMessageQueue()
       return true
     }
-    if (_currentAiBubble) {
-      try {
-        const history = await wsClient.chatHistory(_sessionKey, 200)
-        if (completeOpenClawCurrentDraftFromLatestHistory(history?.messages || [])) {
-          clearOpenClawGenerationState(`${reason}-history-direct-complete`, requestId)
-          processMessageQueue()
-          return true
-        }
-      } catch (error) {
-        console.warn('[chat] OpenClaw direct history completion failed:', error)
+    try {
+      const history = await wsClient.chatHistory(_sessionKey, 200)
+      if (completeOpenClawCurrentDraftFromLatestHistory(history?.messages || [])) {
+        clearOpenClawGenerationState(`${reason}-history-direct-complete`, requestId)
+        processMessageQueue()
+        return true
       }
+    } catch (error) {
+      console.warn('[chat] OpenClaw direct history completion failed:', error)
     }
     if (index < attempts - 1) await waitOpenClawMs(delayMs)
   }
@@ -6986,6 +7040,12 @@ async function settleOpenClawActiveRunFromWatchdog(reason = 'active-run-watchdog
   }
   _activeClientRequestId = null
   finishOpenClawActiveRun(_currentAiText ? 'incomplete' : 'failed', reason)
+  recoverOpenClawAssistantFromHistoryBeforeFallback('post-incomplete-fallback-history-recovery', requestId, {
+    attempts: 12,
+    delayMs: 500,
+  }).catch(error => {
+    console.warn('[chat] post incomplete fallback history recovery failed:', error)
+  })
   showTyping(false)
   clearOpenClawGenerationNotice()
   hideOpenClawGenerationActions()
@@ -7530,6 +7590,7 @@ function replaceOpenClawPartialAssistantAfterLastUser(msg = {}) {
   if (!_messagesEl || msg.role !== 'assistant') return false
   const finalText = sanitizeOpenClawVisibleReply(msg.text || '')
   if (!finalText || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(finalText)) return false
+  const canUseLatestHistoryFallback = !_activeOpenClawRun && msg._openClawAfterLatestHistoryUser
   if (_activeOpenClawRun && !isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return false
   const rows = Array.from(_messagesEl.querySelectorAll('.msg-user, .msg-ai'))
   const lastUserIndex = rows.map(row => row.classList?.contains('msg-user')).lastIndexOf(true)
@@ -7540,7 +7601,13 @@ function replaceOpenClawPartialAssistantAfterLastUser(msg = {}) {
     const bubble = row.querySelector('.msg-bubble')
     if (!bubble) continue
     const existingText = sanitizeOpenClawVisibleReply(getOpenClawAssistantContentText(bubble))
-    if (!isOpenClawPartialAssistantText(existingText, finalText)) continue
+    const existingIsRecoverable = (
+      row.dataset?.openclawIncomplete === 'true' ||
+      bubble.dataset?.openclawIncomplete === 'true' ||
+      isOpenClawTransientFallbackText(existingText) ||
+      isOpenClawTextClearlyIncomplete(existingText)
+    )
+    if (!isOpenClawPartialAssistantText(existingText, finalText) && !(canUseLatestHistoryFallback && existingIsRecoverable)) continue
     renderCompactAssistantContent(finalText, bubble, { phase: 'completed' })
     appendImagesToEl(bubble, msg.images || [])
     appendVideosToEl(bubble, msg.videos || [])
@@ -7667,9 +7734,9 @@ function appendOpenClawHistoryMessage(msg) {
 function completeStreamingDraftFromHistory(msg) {
   if (!_currentAiBubble || msg?.role !== 'assistant') return false
   if (isOpenClawVisibleTextInternalAuditOnly(msg.text || '')) return false
-  if (!_activeOpenClawRun || !isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return false
+  if (!canRecoverOpenClawDraftFromLatestHistory(msg)) return false
   const bestText = chooseBestOpenClawAssistantText([_currentAiText, msg.text], {
-    userText: _activeOpenClawRun.userText || _activeOpenClawUserText || _lastVisibleUserText,
+    userText: _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText,
   })
   const finalText = normalizeVisibleOpenClawText(bestText)
   if (!finalText || isOpenClawTextClearlyIncomplete(finalText)) return false
@@ -7711,7 +7778,6 @@ function completeStreamingDraftFromHistory(msg) {
 }
 
 function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
-  if (!_currentAiBubble) return false
   const deduped = dedupeHistoryStable(historyMessages)
   const latestUserIndex = deduped.reduce((latest, msg, index) => (
     msg?.role === 'user' && openClawVisibleUserText(msg.text || '') ? index : latest
@@ -7734,6 +7800,7 @@ function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
     msg._openClawPreviousUserId = previousUserId
     msg._openClawPreviousUserIndex = previousUserIndex
     msg._openClawAfterLatestHistoryUser = previousUserIndex >= 0 && previousUserIndex === latestUserIndex
+    if (!_currentAiBubble && !ensureOpenClawHistoryRecoveryBubble(msg)) continue
     if (completeStreamingDraftFromHistory(msg)) return true
   }
   return false
@@ -7760,6 +7827,8 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
     } else if (lastHistoryUserText) {
       _lastVisibleUserText = lastHistoryUserText
       msg._openClawPreviousUserFingerprint = normalizeOpenClawPromptFingerprint(lastHistoryUserText)
+      msg._openClawAfterLatestHistoryUser = !!lastVisibleUserFingerprint &&
+        msg._openClawPreviousUserFingerprint === lastVisibleUserFingerprint
     }
     if (
       msg?.role === 'assistant' &&
