@@ -1687,19 +1687,35 @@ function updateOpenClawGatewayUi() {
 
 async function refreshOpenClawGatewayUiState() {
   const probe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
-  const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
-  if (state === 'ready') markOpenClawGatewayReady('dev-status-ready', { probe })
+  let effectiveProbe = probe
+  let state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+  if (state !== 'ready' && state !== 'needs_setup') {
+    const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
+    if (hasOpenClawGatewayReadySignal(healthProbe)) {
+      effectiveProbe = healthProbe
+      state = 'ready'
+    }
+  }
+  if (state === 'ready') markOpenClawGatewayReady('dev-status-ready', { probe: effectiveProbe })
   else setOpenClawGatewayUiState(state, { probe, error: probe?.error || '' })
-  return probe
+  return effectiveProbe
 }
 
 async function finalizeOpenClawProgressReady() {
   setOpenClawGatewayUiState('checking', { error: '', progress: 75 })
   const probe = await waitForAgentGatewayReady('openclaw', { attempts: 14, delayMs: 600, timeoutMs: 2000 })
-  const nextState = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
-  if (nextState === 'ready') markOpenClawGatewayReady('health-live', { probe })
+  let effectiveProbe = probe
+  let nextState = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
+  if (nextState !== 'ready' && nextState !== 'needs_setup') {
+    const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
+    if (hasOpenClawGatewayReadySignal(healthProbe)) {
+      effectiveProbe = healthProbe
+      nextState = 'ready'
+    }
+  }
+  if (nextState === 'ready') markOpenClawGatewayReady('health-live', { probe: effectiveProbe })
   else setOpenClawGatewayUiState(nextState, { probe, error: probe?.error || '', progress: 85 })
-  return { ok: nextState === 'ready', state: nextState, probe }
+  return { ok: nextState === 'ready', state: nextState, probe: effectiveProbe }
 }
 
 async function startOpenClawGateway() {

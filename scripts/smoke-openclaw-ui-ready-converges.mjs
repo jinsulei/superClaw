@@ -24,10 +24,11 @@ includesAll(chat, [
 includesAll(chat, [
   'function refreshOpenClawGatewayUiState()',
   'hasOpenClawGatewayReadySignal(probe) ? \'ready\' : normalizeGatewayUiState(probe)',
-  'if (state === \'ready\') markOpenClawGatewayReady(\'dev-status-ready\', { probe })',
+  'const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)',
+  'markOpenClawGatewayReady(\'dev-status-ready\', { probe: effectiveProbe })',
   'if (_openClawGatewayUiState === \'ready\') {',
   'clearOpenClawTransientConnectionUi()',
-], 'OpenClaw ready status hides startup UI')
+], 'OpenClaw ready status hides startup UI and falls back to live health')
 
 includesAll(chat, [
   'function clearOpenClawTransientConnectionUi()',
