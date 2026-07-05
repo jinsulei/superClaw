@@ -106,6 +106,15 @@ includesAll(cleanupMatch[0], [
   'continue;',
 ], 'OpenClaw zombie cleanup skips current packaged gateway during active generation')
 
+includesAll(tauriService, [
+  'static GATEWAY_START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);',
+  'struct GatewayStartGuard;',
+  'fn try_enter_gateway_start() -> Option<GatewayStartGuard>',
+  'let Some(_start_guard) = try_enter_gateway_start() else {',
+  '避免重复 Hidden-start',
+  'Gateway 正在启动但 30 秒内未就绪',
+], 'OpenClaw Windows startup serializes concurrent hidden-start requests')
+
 console.log('OPENCLAW_UI_READY_TRUE_SHOWS_ONLINE: PASS')
 console.log('OPENCLAW_SEND_ENABLED_WHEN_READY: PASS')
 console.log('OPENCLAW_REFRESH_STATUS_ON_AGENT_SWITCH: PASS')
@@ -115,3 +124,4 @@ console.log('OPENCLAW_PACKAGED_GATEWAY_SERVICE_STATUS_TRUSTED: PASS')
 console.log('OPENCLAW_NO_RESTART_ON_PACKAGED_GATEWAY_RUNNING: PASS')
 console.log('OPENCLAW_TAURI_START_CHECKS_RUNNING_BEFORE_CLEANUP: PASS')
 console.log('OPENCLAW_ZOMBIE_CLEANUP_SKIPS_CURRENT_PACKAGE_GATEWAY: PASS')
+console.log('OPENCLAW_TAURI_STARTUP_SINGLE_FLIGHT: PASS')

@@ -1214,6 +1214,7 @@ mod platform {
     use std::path::{Path, PathBuf};
     use std::process::Command as StdCommand;
     use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
@@ -1227,6 +1228,25 @@ mod platform {
 
     /// 记录当前活跃的 Gateway 子进程（用于 stop 时精确 kill）
     static ACTIVE_GATEWAY_CHILD: Mutex<Option<u32>> = Mutex::new(None);
+
+    /// 冷启动时多个 UI/守护入口可能同时请求启动 Gateway。端口尚未监听前无法用
+    /// check_service_status 去重，因此用轻量原子锁保证同一时间只有一个 Hidden-start。
+    static GATEWAY_START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+    struct GatewayStartGuard;
+
+    impl Drop for GatewayStartGuard {
+        fn drop(&mut self) {
+            GATEWAY_START_IN_FLIGHT.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn try_enter_gateway_start() -> Option<GatewayStartGuard> {
+        GATEWAY_START_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| GatewayStartGuard)
+    }
 
     /// 检查 Gateway 端口是否有响应（阻塞式 HTTP /health，3s 超时）
     /// 单次探测；若需要对瞬态抖动更宽容，使用 `is_gateway_port_responsive_with_retry`
@@ -1722,6 +1742,25 @@ mod platform {
                 crate::commands::gateway_listen_port()
             ));
         }
+
+        let Some(_start_guard) = try_enter_gateway_start() else {
+            super::guardian_log(
+                "Gateway 启动请求已在进行中，本次调用等待已有启动完成，避免重复 Hidden-start",
+            );
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let (running, pid) = check_service_status(0, "");
+                if running {
+                    if let Some(pid) = pid {
+                        let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
+                        *known = Some(pid);
+                    }
+                    return Ok(());
+                }
+            }
+            return Err("Gateway 正在启动但 30 秒内未就绪，请稍后重试".into());
+        };
 
         // 只有端口确认未运行后才清理残留僵尸，避免 Gateway 正在生成时被 /health 探测误杀。
         cleanup_zombie_gateway_processes();
