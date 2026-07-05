@@ -5601,6 +5601,13 @@ function getOpenClawStrongHistoryMatchReason(msg = {}, activeRun = _activeOpenCl
     return 'previousUserId'
   }
   if (
+    activeRun.userTextFingerprint &&
+    msg._openClawPreviousUserFingerprint &&
+    msg._openClawPreviousUserFingerprint === activeRun.userTextFingerprint
+  ) {
+    return 'previousUserFingerprint'
+  }
+  if (
     Number.isFinite(activeRun.userMessageIndex) &&
     activeRun.userMessageIndex >= 0 &&
     Number.isFinite(msg._openClawPreviousUserIndex) &&
@@ -7695,7 +7702,7 @@ function completeStreamingDraftFromHistory(msg) {
 }
 
 function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
-  if (!_currentAiBubble || !_currentAiText) return false
+  if (!_currentAiBubble) return false
   const deduped = dedupeHistoryStable(historyMessages)
   let previousUserIndex = -1
   let previousUserText = ''

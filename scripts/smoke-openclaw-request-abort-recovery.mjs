@@ -120,7 +120,7 @@ assert.match(
 )
 assert.match(
   chat,
-  /const displayText = openClawVisibleUserText\(text\)\s+if \(displayText\) _lastVisibleUserText = displayText/,
+  /const displayText = openClawVisibleUserText\(text\)[\s\S]*?if \(displayText\) _lastVisibleUserText = displayText/,
   'OpenClaw history restore must keep the previous user text available for literal NO_REPLY recovery',
 )
 assert.match(
