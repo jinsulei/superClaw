@@ -6194,7 +6194,8 @@ function appendAdvancedAccessCommand() {
   button.type = "button";
   button.dataset.prompt =
     "管理员授权高级访问模式指令模板：仅当外部管理员开关 CLEAN_PANEL_ADMIN_ACCESS_ENABLED=1 且本会话明确显示已授权时，才允许访问项目文件、执行命令、运行测试和修改代码。不得内置或回显完整密钥；不得绕过系统/用户确认；删除、覆盖、批量写入、安装依赖、联网推送、发送敏感数据前必须二次确认；命令必须限定在已选项目目录内；执行前说明风险、允许列表/拒绝列表和回滚方案，并记录审计日志。";
-  button.innerHTML = `${menuIcon("pin")}<span>高级访问模板</span>`;
+  const icon = menuIcon("pin").replace("<svg ", '<svg class="quick-icon" ');
+  button.innerHTML = `${icon}<span>高级访问模板</span>`;
   quickCommands.append(button);
 }
 
