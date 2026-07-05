@@ -4057,6 +4057,8 @@ async function recoverOpenClawGenerationAfterTransientDisconnect(reason = 'trans
   const now = Date.now()
   const shouldNotify = options.notify !== false && now - _lastOpenClawTransientRecoveryAt > 5000
   _lastOpenClawTransientRecoveryAt = now
+  clearOpenClawGenerationState(reason, requestId)
+  resetStreamState()
   if (shouldNotify && !isOpenClawRuntimeReadyForAbortRecovery()) {
     toast(options.message || 'OpenClaw 连接中断，已恢复发送状态；如果回复没有完整显示，请重试或继续。', 'warning')
   }
