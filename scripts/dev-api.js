@@ -3133,14 +3133,37 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
 }
 
 function openclawRuntimeEnv(extra = {}) {
+  const portableEnv = openclawPortableProcessEnv()
   return {
     ...process.env,
+    ...portableEnv,
     OPENCLAW_HOME: OPENCLAW_DIR,
     OPENCLAW_STATE_DIR: OPENCLAW_DIR,
     OPENCLAW_CONFIG_PATH: CONFIG_PATH,
+    OPENCLAW_LOG_DIR: LOGS_DIR,
     ...readDotEnvVars(path.join(OPENCLAW_DIR, '.env')),
     ...openclawMiniMaxGatewayEnv(),
     ...(extra || {}),
+  }
+}
+
+function openclawPortableHomeDir() {
+  const parent = path.dirname(OPENCLAW_DIR)
+  return parent && parent !== OPENCLAW_DIR ? parent : OPENCLAW_DIR
+}
+
+function openclawPortableProcessEnv() {
+  const home = openclawPortableHomeDir()
+  const appdata = path.join(home, 'AppData', 'Roaming')
+  const localappdata = path.join(home, 'AppData', 'Local')
+  for (const dir of [home, OPENCLAW_DIR, LOGS_DIR, appdata, localappdata]) {
+    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  }
+  return {
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appdata,
+    LOCALAPPDATA: localappdata,
   }
 }
 

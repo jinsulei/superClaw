@@ -24,17 +24,48 @@ fn bound_cli_path() -> Option<std::path::PathBuf> {
 fn apply_openclaw_dir_env(cmd: &mut std::process::Command) {
     let openclaw_dir = crate::commands::openclaw_dir();
     let config_path = openclaw_dir.join("openclaw.json");
+    let portable_home = openclaw_portable_home_dir(&openclaw_dir);
+    let appdata = portable_home.join("AppData").join("Roaming");
+    let localappdata = portable_home.join("AppData").join("Local");
+    let logs_dir = openclaw_dir.join("logs");
+    let _ = std::fs::create_dir_all(&appdata);
+    let _ = std::fs::create_dir_all(&localappdata);
+    let _ = std::fs::create_dir_all(&logs_dir);
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
+    cmd.env("OPENCLAW_LOG_DIR", &logs_dir);
+    cmd.env("HOME", &portable_home);
+    cmd.env("USERPROFILE", &portable_home);
+    cmd.env("APPDATA", &appdata);
+    cmd.env("LOCALAPPDATA", &localappdata);
 }
 
 fn apply_openclaw_dir_env_tokio(cmd: &mut tokio::process::Command) {
     let openclaw_dir = crate::commands::openclaw_dir();
     let config_path = openclaw_dir.join("openclaw.json");
+    let portable_home = openclaw_portable_home_dir(&openclaw_dir);
+    let appdata = portable_home.join("AppData").join("Roaming");
+    let localappdata = portable_home.join("AppData").join("Local");
+    let logs_dir = openclaw_dir.join("logs");
+    let _ = std::fs::create_dir_all(&appdata);
+    let _ = std::fs::create_dir_all(&localappdata);
+    let _ = std::fs::create_dir_all(&logs_dir);
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
+    cmd.env("OPENCLAW_LOG_DIR", &logs_dir);
+    cmd.env("HOME", &portable_home);
+    cmd.env("USERPROFILE", &portable_home);
+    cmd.env("APPDATA", &appdata);
+    cmd.env("LOCALAPPDATA", &localappdata);
+}
+
+fn openclaw_portable_home_dir(openclaw_dir: &std::path::Path) -> std::path::PathBuf {
+    openclaw_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| openclaw_dir.to_path_buf())
 }
 
 /// 便携模式下内置 OpenClaw CLI 路径
