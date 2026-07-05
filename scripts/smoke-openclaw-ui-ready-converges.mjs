@@ -7,6 +7,7 @@ const chat = readFileSync(join(root, 'src', 'pages', 'chat.js'), 'utf8')
 const sidebar = readFileSync(join(root, 'src', 'components', 'sidebar.js'), 'utf8')
 const appState = readFileSync(join(root, 'src', 'lib', 'app-state.js'), 'utf8')
 const openclawEngine = readFileSync(join(root, 'src', 'engines', 'openclaw', 'index.js'), 'utf8')
+const tauriService = readFileSync(join(root, 'src-tauri', 'src', 'commands', 'service.rs'), 'utf8')
 
 function includesAll(source, terms, label) {
   for (const term of terms) {
@@ -88,6 +89,23 @@ assert.ok(!openclawEngine.includes("if (pairingRepaired) {\n          await api.
 assert.ok(openclawEngine.includes('await api.claimGateway().catch((e) => {'),
   'OpenClaw engine boot should claim a running gateway without restarting it')
 
+const windowsStartMatch = tauriService.match(/pub async fn start_service_impl\(_label: &str\) -> Result<\(\), String> \{[\s\S]*?let \(stdout_log, stderr_log\) = create_gateway_log_files\(\)\?;/)
+assert.ok(windowsStartMatch, 'Windows start_service_impl block must be present')
+const windowsStartBlock = windowsStartMatch[0]
+const startStatusCheck = windowsStartBlock.indexOf('let (running, pid) = check_service_status(0, "");')
+const zombieCleanup = windowsStartBlock.indexOf('cleanup_zombie_gateway_processes();')
+assert.ok(startStatusCheck >= 0 && zombieCleanup >= 0 && startStatusCheck < zombieCleanup,
+  'Windows start_service_impl must check an already-running gateway before zombie cleanup')
+
+const cleanupMatch = tauriService.match(/pub\(crate\) fn cleanup_zombie_gateway_processes\(\) \{[\s\S]*?fn get_gateway_pid_by_port/)
+assert.ok(cleanupMatch, 'cleanup_zombie_gateway_processes block must be present')
+includesAll(cleanupMatch[0], [
+  'if gateway_pid_belongs_to_current_project(pid) {',
+  '跳过僵尸清理以避免中断正在执行的请求',
+  '*known = Some(pid);',
+  'continue;',
+], 'OpenClaw zombie cleanup skips current packaged gateway during active generation')
+
 console.log('OPENCLAW_UI_READY_TRUE_SHOWS_ONLINE: PASS')
 console.log('OPENCLAW_SEND_ENABLED_WHEN_READY: PASS')
 console.log('OPENCLAW_REFRESH_STATUS_ON_AGENT_SWITCH: PASS')
@@ -95,3 +113,5 @@ console.log('OPENCLAW_NO_RESTART_WHEN_READY: PASS')
 console.log('OPENCLAW_HEALTH_READY_UI_CONSISTENT: PASS')
 console.log('OPENCLAW_PACKAGED_GATEWAY_SERVICE_STATUS_TRUSTED: PASS')
 console.log('OPENCLAW_NO_RESTART_ON_PACKAGED_GATEWAY_RUNNING: PASS')
+console.log('OPENCLAW_TAURI_START_CHECKS_RUNNING_BEFORE_CLEANUP: PASS')
+console.log('OPENCLAW_ZOMBIE_CLEANUP_SKIPS_CURRENT_PACKAGE_GATEWAY: PASS')

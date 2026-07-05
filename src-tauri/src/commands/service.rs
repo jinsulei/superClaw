@@ -1330,6 +1330,16 @@ mod platform {
 
                 if is_gateway {
                     if !responsive {
+                        if gateway_pid_belongs_to_current_project(pid) {
+                            // 当前包内 Gateway 可能正忙于模型生成，/health 短暂无响应不等于僵尸。
+                            // 这里不能误杀，否则会打断正在进行的聊天并触发新的 Hidden-start。
+                            super::guardian_log(&format!(
+                                "检测到当前包内 Gateway 进程 (PID {pid})：/health 暂时无响应，跳过僵尸清理以避免中断正在执行的请求"
+                            ));
+                            let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
+                            *known = Some(pid);
+                            continue;
+                        }
                         // 3 次 /health 全部失败 → 僵尸进程，强制终止
                         super::guardian_log(&format!(
                             "检测到僵尸 Gateway 进程 (PID {pid})：端口 {port} 占用但 /health 连续 3 次无响应，强制终止"
@@ -1695,14 +1705,15 @@ mod platform {
             );
         }
 
-        // Windows 重启后清理残留的僵尸 Gateway 进程（防止多进程堆积）
-        cleanup_zombie_gateway_processes();
-
         // 端口已通 → 检查是不是我们的进程
         let (running, pid) = check_service_status(0, "");
         if running {
             // 有 PID 说明就是我们的进程在跑，可以直接返回
             if pid.is_some() {
+                if let Some(pid) = pid {
+                    let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
+                    *known = Some(pid);
+                }
                 return Ok(());
             }
             // 无 PID 但端口通 → 可能是其他进程占用，拒绝启动
@@ -1711,6 +1722,9 @@ mod platform {
                 crate::commands::gateway_listen_port()
             ));
         }
+
+        // 只有端口确认未运行后才清理残留僵尸，避免 Gateway 正在生成时被 /health 探测误杀。
+        cleanup_zombie_gateway_processes();
 
         let (stdout_log, stderr_log) = create_gateway_log_files()?;
 
