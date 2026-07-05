@@ -2,6 +2,7 @@ const TASKS_KEY = 'superclaw-collab-tasks-v1'
 const PENDING_KEY = 'superclaw-collab-pending-dispatch-v1'
 const MESSAGES_KEY = 'superclaw-agent-task-messages-v1'
 const MEMORY_KEY = 'superclaw-shared-agent-memory-v1'
+const CHECKPOINTS_KEY = 'superclaw-collab-task-checkpoints-v1'
 
 export const SHARED_MEMORY_CONFIG = {
   enabled: true,
@@ -100,6 +101,150 @@ export function listSharedMemory(filter = {}) {
     })
   } catch {
     return []
+  }
+}
+
+export function listTaskCheckpoints(filter = {}) {
+  try {
+    const taskId = typeof filter === 'string' ? filter : (filter?.taskId || filter?.task_id || '')
+    const rows = JSON.parse(localStorage.getItem(CHECKPOINTS_KEY) || '[]')
+    const list = Array.isArray(rows) ? rows : []
+    return taskId ? list.filter(item => item?.task_id === taskId) : list
+  } catch {
+    return []
+  }
+}
+
+export function createTaskCheckpoint(input = {}) {
+  const now = input.created_at || input.timestamp || new Date().toISOString()
+  const taskId = input.task_id || input.taskId || input.snapshot?.task?.task_id || input.snapshot?.pending_dispatch?.taskId || ''
+  const agents = normalizeCheckpointAgents(input)
+  const checkpoint = {
+    checkpoint_id: input.checkpoint_id || input.checkpointId || buildCheckpointId(taskId, now),
+    task_id: taskId,
+    snapshot: redactSensitiveValue(input.snapshot || buildCheckpointSnapshot(input, taskId, agents)),
+    agents,
+    status: normalizeWatchTaskStatus(input.status || input.snapshot?.task?.status || 'running'),
+    created_at: now,
+    timestamp: input.timestamp || now,
+    task_events: [createTaskEvent({
+      task_id: taskId,
+      task_type: 'collaboration',
+      event_type: 'agent_checkpoint_saved',
+      actor: input.actor || input.requested_by || COLLAB_TARGETS.hermes,
+      source: 'collaboration.checkpoint',
+      status: 'recovering',
+      visible_text: input.visible_text || `Checkpoint saved for ${taskId || 'collaboration task'}`,
+      raw_payload: {
+        checkpoint_id: input.checkpoint_id || input.checkpointId || buildCheckpointId(taskId, now),
+        agents,
+        status: input.status || input.snapshot?.task?.status || 'running',
+      },
+      visibility: 'debug',
+      severity: 'info',
+      created_at: now,
+    })],
+  }
+  const rows = listTaskCheckpoints().filter(item => item.checkpoint_id !== checkpoint.checkpoint_id)
+  rows.unshift(checkpoint)
+  localStorage.setItem(CHECKPOINTS_KEY, JSON.stringify(rows.slice(0, 200)))
+  return checkpoint
+}
+
+export function resumeTaskFromCheckpoint(input = {}) {
+  const checkpoint = input.checkpoint || findCheckpoint(input.checkpoint_id || input.checkpointId, input.task_id || input.taskId)
+  const taskId = input.task_id || input.taskId || checkpoint?.task_id || ''
+  const checkpointId = input.checkpoint_id || input.checkpointId || checkpoint?.checkpoint_id || ''
+  const targetAgent = normalizeAgentId(input.target_agent || input.targetAgent || input.agent || input.target || checkpoint?.agents?.[0] || COLLAB_TARGETS.hermes)
+  const createdAt = input.created_at || input.requested_at || new Date().toISOString()
+  return {
+    task_id: taskId,
+    checkpoint_id: checkpointId,
+    target_agent: targetAgent,
+    agent: targetAgent,
+    target: targetAgent,
+    status: 'running',
+    resume_from: checkpointId,
+    created_at: createdAt,
+    task_events: [createTaskEvent({
+      task_id: taskId,
+      task_type: 'collaboration',
+      event_type: 'agent_resume_requested',
+      actor: input.requested_by || input.actor || COLLAB_TARGETS.hermes,
+      source: 'collaboration.resume_task',
+      status: 'recovering',
+      visible_text: input.visible_text || `Resume ${targetLabel(targetAgent)} from checkpoint`,
+      raw_payload: {
+        checkpoint_id: checkpointId,
+        target_agent: targetAgent,
+      },
+      visibility: 'normal',
+      severity: 'warning',
+      created_at: createdAt,
+    })],
+  }
+}
+
+export function evaluateCollaborationWatchdog(input = {}) {
+  const taskId = input.task_id || input.taskId || input.pending_dispatch?.taskId || input.pending_dispatch?.task_id || ''
+  const status = normalizeWatchTaskStatus(input.status || input.task?.status || 'running')
+  const nowMs = toTimestamp(input.now, Date.now())
+  const staleAfterMs = Number(input.stale_after_ms || input.staleAfterMs || 300000)
+  let reason = 'healthy'
+  let shouldRecover = false
+  let recoveryStatus = status
+
+  if (status === 'completed' || status === 'failed' || status === 'blocked') {
+    reason = 'terminal_state'
+  } else if (status === 'waiting_human') {
+    reason = 'waiting_human'
+  } else if (String(input.status || '').trim() === 'offline') {
+    reason = 'agent_offline'
+    shouldRecover = true
+    recoveryStatus = 'recovering'
+  } else if (String(input.status || '').trim() === 'stuck') {
+    reason = 'running_timeout'
+    shouldRecover = true
+    recoveryStatus = 'recovering'
+  } else if (isPendingDispatchStale(input.pending_dispatch, nowMs, staleAfterMs)) {
+    reason = 'pending_dispatch_timeout'
+    shouldRecover = true
+    recoveryStatus = 'recovering'
+  } else if (isAgentOffline(input.agent_status)) {
+    reason = 'agent_offline'
+    shouldRecover = true
+    recoveryStatus = 'recovering'
+  } else if (isHeartbeatStale(input.last_heartbeat || input.heartbeat_at || input.agent_status?.heartbeat_at || input.agent_status?.last_seen_at, nowMs, staleAfterMs)) {
+    reason = 'running_timeout'
+    shouldRecover = true
+    recoveryStatus = 'recovering'
+  }
+
+  return {
+    task_id: taskId,
+    status: recoveryStatus,
+    reason,
+    should_recover: shouldRecover,
+    recovery_status: shouldRecover ? 'recovering' : status,
+    checkpoint_required: shouldRecover,
+    task_events: [createTaskEvent({
+      task_id: taskId,
+      task_type: 'collaboration',
+      event_type: shouldRecover ? 'task_recovering' : 'agent_status_update',
+      actor: input.agent_status?.agent || input.agent || 'system',
+      source: 'collaboration.watchdog',
+      status: shouldRecover ? 'recovering' : status,
+      visible_text: shouldRecover ? `Collaboration watchdog detected ${reason}` : `Collaboration watchdog status: ${reason}`,
+      raw_payload: {
+        reason,
+        status,
+        recovery_status: shouldRecover ? 'recovering' : status,
+        agent_status: input.agent_status || null,
+      },
+      visibility: shouldRecover ? 'normal' : 'debug',
+      severity: shouldRecover ? 'warning' : 'info',
+      created_at: new Date(nowMs).toISOString(),
+    })],
   }
 }
 
@@ -308,6 +453,91 @@ function normalizeAgentId(agent) {
   if (value === COLLAB_TARGETS.openclaw) return COLLAB_TARGETS.openclaw
   if (value === COLLAB_TARGETS.hermes) return COLLAB_TARGETS.hermes
   return value || COLLAB_TARGETS.hermes
+}
+
+function normalizeCheckpointAgents(input = {}) {
+  const raw = [
+    ...(Array.isArray(input.agents) ? input.agents : []),
+    input.agent,
+    input.target_agent,
+    input.targetAgent,
+    input.from_agent,
+    input.fromAgent,
+    input.to_agent,
+    input.toAgent,
+    input.snapshot?.agent_status?.agent,
+    input.snapshot?.pending_dispatch?.target,
+    input.snapshot?.task?.target,
+  ]
+  const seen = new Set()
+  return raw
+    .map(item => normalizeAgentId(item))
+    .filter(item => {
+      if (!item || seen.has(item)) return false
+      seen.add(item)
+      return true
+    })
+}
+
+function buildCheckpointSnapshot(input = {}, taskId = '', agents = []) {
+  return {
+    task: {
+      task_id: taskId,
+      status: normalizeWatchTaskStatus(input.status || 'running'),
+      stage: input.stage || input.pending_dispatch?.stage || null,
+      target: input.target || input.target_agent || agents[0] || null,
+    },
+    agent_status: input.agent_status || {
+      agent: agents[0] || input.agent || null,
+      status: input.agent_status?.status || input.status || 'running',
+      heartbeat_at: input.heartbeat_at || input.last_heartbeat || null,
+    },
+    pending_dispatch: input.pending_dispatch || null,
+  }
+}
+
+function buildCheckpointId(taskId, createdAt) {
+  const normalizedTask = String(taskId || 'task').replace(/[^a-z0-9_-]+/gi, '-')
+  const normalizedTime = String(createdAt || new Date().toISOString()).replace(/[^a-z0-9]+/gi, '-').replace(/-+$/g, '')
+  return `checkpoint-${normalizedTask}-${normalizedTime}`
+}
+
+function findCheckpoint(checkpointId, taskId) {
+  const rows = listTaskCheckpoints(taskId || '')
+  if (checkpointId) return rows.find(item => item.checkpoint_id === checkpointId) || null
+  return rows[0] || null
+}
+
+function normalizeWatchTaskStatus(status) {
+  const value = String(status || '').trim()
+  if (['created', 'running', 'waiting_human', 'recovering', 'completed', 'failed', 'blocked'].includes(value)) return value
+  if (value === 'pending' || value === 'draft') return 'created'
+  if (value === 'stuck' || value === 'offline' || value === 'checkpointed' || value === 'resumed') return 'running'
+  return 'running'
+}
+
+function toTimestamp(value, fallback) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.getTime()
+  const parsed = Date.parse(String(value || ''))
+  return Number.isNaN(parsed) ? fallback : parsed
+}
+
+function isPendingDispatchStale(pending, nowMs, staleAfterMs) {
+  if (!pending) return false
+  const createdAt = toTimestamp(pending.createdAt || pending.created_at || pending.timestamp, nowMs)
+  return nowMs - createdAt >= staleAfterMs
+}
+
+function isHeartbeatStale(value, nowMs, staleAfterMs) {
+  if (!value) return false
+  const heartbeatAt = toTimestamp(value, nowMs)
+  return nowMs - heartbeatAt >= staleAfterMs
+}
+
+function isAgentOffline(agentStatus = {}) {
+  const status = String(agentStatus?.status || '').trim().toLowerCase()
+  return ['offline', 'failed', 'error', 'unreachable', 'disconnected'].includes(status)
 }
 
 export function shortGoal(text, maxLen = 24) {
