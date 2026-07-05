@@ -5607,6 +5607,9 @@ function getOpenClawStrongHistoryMatchReason(msg = {}, activeRun = _activeOpenCl
   ) {
     return 'previousUserFingerprint'
   }
+  if (msg._openClawAfterLatestHistoryUser) {
+    return 'latestHistoryUserTurn'
+  }
   if (
     Number.isFinite(activeRun.userMessageIndex) &&
     activeRun.userMessageIndex >= 0 &&
@@ -7704,6 +7707,9 @@ function completeStreamingDraftFromHistory(msg) {
 function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
   if (!_currentAiBubble) return false
   const deduped = dedupeHistoryStable(historyMessages)
+  const latestUserIndex = deduped.reduce((latest, msg, index) => (
+    msg?.role === 'user' && openClawVisibleUserText(msg.text || '') ? index : latest
+  ), -1)
   let previousUserIndex = -1
   let previousUserText = ''
   let previousUserId = ''
@@ -7721,6 +7727,7 @@ function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
     msg._openClawPreviousUserFingerprint = normalizeOpenClawPromptFingerprint(previousUserText)
     msg._openClawPreviousUserId = previousUserId
     msg._openClawPreviousUserIndex = previousUserIndex
+    msg._openClawAfterLatestHistoryUser = previousUserIndex >= 0 && previousUserIndex === latestUserIndex
     if (completeStreamingDraftFromHistory(msg)) return true
   }
   return false

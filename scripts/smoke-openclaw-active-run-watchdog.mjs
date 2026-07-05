@@ -27,8 +27,8 @@ assert.match(
 )
 assert.match(
   chat,
-  /function\s+getOpenClawStrongHistoryMatchReason\s*\([\s\S]*assistantMessageId[\s\S]*openclawTurnId[\s\S]*clientRequestId[\s\S]*runId[\s\S]*previousUserId[\s\S]*previousUserFingerprint/,
-  'OpenClaw history recovery must check strong turn identifiers and previous user text fallback',
+  /function\s+getOpenClawStrongHistoryMatchReason\s*\([\s\S]*assistantMessageId[\s\S]*openclawTurnId[\s\S]*clientRequestId[\s\S]*runId[\s\S]*previousUserId[\s\S]*previousUserFingerprint[\s\S]*latestHistoryUserTurn/,
+  'OpenClaw history recovery must check strong turn identifiers and latest history user fallback',
 )
 assert.match(
   chat,
@@ -44,10 +44,11 @@ console.log('OPENCLAW_SINGLE_RUN_ONE_ASSISTANT_BUBBLE: PASS')
 console.log('OPENCLAW_DELTA_FINAL_HISTORY_UPDATE_SAME_BUBBLE: PASS')
 console.log('OPENCLAW_HISTORY_CANDIDATE_REQUIRES_STRONG_TURN_MATCH: PASS')
 console.log('OPENCLAW_HISTORY_CANDIDATE_ALLOWS_PREVIOUS_USER_TEXT_FALLBACK: PASS')
+console.log('OPENCLAW_HISTORY_CANDIDATE_ALLOWS_LATEST_HISTORY_USER_FALLBACK: PASS')
 
 assert.match(
   chat,
-  /function\s+completeOpenClawCurrentDraftFromLatestHistory\s*\([\s\S]*if\s*\(!_currentAiBubble\)\s*return false[\s\S]*completeStreamingDraftFromHistory\(msg\)/,
+  /function\s+completeOpenClawCurrentDraftFromLatestHistory\s*\([\s\S]*latestUserIndex[\s\S]*_openClawAfterLatestHistoryUser[\s\S]*completeStreamingDraftFromHistory\(msg\)/,
   'OpenClaw history recovery must complete an empty assistant draft when gateway history has the final reply',
 )
 console.log('OPENCLAW_EMPTY_DRAFT_HISTORY_RECOVERY: PASS')
