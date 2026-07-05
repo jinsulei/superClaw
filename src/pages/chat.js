@@ -5887,6 +5887,10 @@ function stopGeneration() {
 
 // ── 事件处理（参照 clawapp 实现） ──
 
+function isOpenClawChatEvent(event) {
+  return event === 'chat' || event === 'chat.message'
+}
+
 function handleEvent(msg) {
   const { event, payload } = msg
   if (!payload) return
@@ -5978,7 +5982,7 @@ function handleEvent(msg) {
     }
   }
 
-  if (event === 'chat') handleChatEvent(payload, msg.id)
+  if (isOpenClawChatEvent(event)) handleChatEvent(payload, msg.id)
 
   // Compaction 状态指示：上游 2026.3.12 新增 status_reaction 事件
   if (event === 'chat.status_reaction' || event === 'status_reaction') {
