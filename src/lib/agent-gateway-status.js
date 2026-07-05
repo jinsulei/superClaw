@@ -19,6 +19,184 @@ const AGENT_CONFIG = {
   },
 }
 
+function stableAgentIsoTime(value, fallback = null) {
+  if (typeof value === 'string' && value.trim()) {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  if (fallback != null) return stableAgentIsoTime(fallback)
+  return new Date().toISOString()
+}
+
+function isSensitiveAgentRunKey(key) {
+  return /api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|secret|password/i.test(String(key || ''))
+}
+
+function sanitizeAgentRunText(value) {
+  return String(value ?? '').replace(
+    /(fake-[a-z0-9-]*(?:api-key|token|cookie|secret|access-token|refresh-token|password)[a-z0-9-]*)/gi,
+    '[REDACTED]',
+  )
+}
+
+function summarizeAgentValue(value) {
+  if (value == null || value === '') return ''
+  const redacted = redactAgentRunPayload(value)
+  const text = typeof redacted === 'string' ? redacted : JSON.stringify(redacted)
+  return sanitizeAgentRunText(text)
+}
+
+function canonicalAgentRunName(agent) {
+  const raw = String(agent || '').trim().toLowerCase()
+  if (raw === 'hermes') return 'hermes'
+  if (raw === 'openclaw') return 'openclaw'
+  if (raw === 'claude' || raw === 'claude-code' || raw === 'claude_code' || raw === 'claudecode') return 'claude_code'
+  if (raw === 'codex') return 'codex'
+  return raw || 'unknown'
+}
+
+function agentAdapterName(snapshot = {}) {
+  const agent = canonicalAgentRunName(snapshot.agent || snapshot.agentName || snapshot.agent_name)
+  if (agent === 'codex') {
+    return snapshot.implemented === true ? 'codex_adapter' : 'codex_reserved'
+  }
+  if (agent === 'claude_code') return 'claude_code_panel_bridge'
+  if (agent === 'openclaw') return 'openclaw_gateway_bridge'
+  if (agent === 'hermes') return 'hermes_gateway_bridge'
+  return `${agent || 'unknown'}_status_bridge`
+}
+
+function stableAgentErrorCode(error, fallback = 'AGENT_RUN_FAILED') {
+  const raw = typeof error === 'object' && error
+    ? (error.code || error.error_code || error.name || fallback)
+    : (error || fallback)
+  const code = String(raw || fallback)
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase()
+  return code || fallback
+}
+
+function agentCurrentStep(snapshot = {}) {
+  if (snapshot.message) return summarizeAgentValue(snapshot.message)
+  if (snapshot.error) return `Agent status error: ${summarizeAgentValue(typeof snapshot.error === 'object' ? snapshot.error.message || snapshot.error : snapshot.error)}`
+  const agent = canonicalAgentRunName(snapshot.agent || snapshot.agentName || snapshot.agent_name)
+  const status = normalizeAgentRunStatus(snapshot.status)
+  if (status === 'running') return `${agent} is running`
+  if (status === 'created') return `${agent} is starting`
+  if (status === 'recovering') return `${agent} is reconnecting`
+  if (status === 'cancelled') return `${agent} is stopped`
+  if (status === 'blocked') return `${agent} is reserved or blocked`
+  return `${agent} status is ${status}`
+}
+
+export function normalizeAgentRunStatus(status) {
+  const value = String(status || '').trim().toLowerCase()
+  if (value === 'ready' || value === 'connected' || value === 'running' || value === 'online' || value === 'ok' || value === 'checking') return 'running'
+  if (value === 'starting' || value === 'created' || value === 'initializing') return 'created'
+  if (value === 'waiting_human' || value === 'waiting') return 'waiting_human'
+  if (value === 'recovering' || value === 'reconnecting') return 'recovering'
+  if (value === 'completed' || value === 'complete' || value === 'done' || value === 'success' || value === 'succeeded') return 'completed'
+  if (value === 'failed' || value === 'error' || value === 'offline' || value === 'unreachable' || value === 'disconnected' || value === 'listening_unverified') return 'failed'
+  if (value === 'stopped' || value === 'cancelled' || value === 'canceled') return 'cancelled'
+  if (value === 'blocked' || value === 'reserved' || value === 'planned' || value === 'needs_setup') return 'blocked'
+  return 'failed'
+}
+
+export function redactAgentRunPayload(value) {
+  if (Array.isArray(value)) return value.map(item => redactAgentRunPayload(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (isSensitiveAgentRunKey(key)) return [key, '[REDACTED]']
+      return [key, redactAgentRunPayload(item)]
+    }))
+  }
+  if (typeof value === 'string') return sanitizeAgentRunText(value)
+  return value
+}
+
+export function mapAgentGatewayStatusToAgentRun(statusSnapshot = {}) {
+  const agentName = canonicalAgentRunName(statusSnapshot.agent || statusSnapshot.agentName || statusSnapshot.agent_name)
+  const status = normalizeAgentRunStatus(statusSnapshot.status || (statusSnapshot.ready || statusSnapshot.connected || statusSnapshot.running ? 'running' : 'failed'))
+  const startedAt = stableAgentIsoTime(statusSnapshot.started_at || statusSnapshot.startedAt || statusSnapshot.checkedAt || statusSnapshot.created_at)
+  const completedAt = status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'blocked'
+    ? stableAgentIsoTime(statusSnapshot.completed_at || statusSnapshot.completedAt || statusSnapshot.checkedAt || statusSnapshot.updated_at, startedAt)
+    : null
+  const error = statusSnapshot.error || statusSnapshot.error_message || null
+  const agentRunId = String(
+    statusSnapshot.agent_run_id
+    || statusSnapshot.run_id
+    || statusSnapshot.runId
+    || `${agentName}-${statusSnapshot.pid || statusSnapshot.task_id || statusSnapshot.taskId || 'status'}`,
+  )
+
+  return {
+    agent_run_id: agentRunId,
+    task_id: String(statusSnapshot.task_id || statusSnapshot.taskId || statusSnapshot.run_id || statusSnapshot.runId || `${agentName}-status-task`),
+    agent_name: agentName,
+    adapter_name: agentAdapterName(statusSnapshot),
+    status,
+    current_step: agentCurrentStep(statusSnapshot),
+    heartbeat_at: status === 'running' ? stableAgentIsoTime(statusSnapshot.heartbeat_at || statusSnapshot.lastMessageAt || statusSnapshot.checkedAt, startedAt) : null,
+    checkpoint_id: statusSnapshot.checkpoint_id || statusSnapshot.checkpointId || null,
+    resume_supported: Boolean(statusSnapshot.resume_supported || statusSnapshot.resumeSupported),
+    error_code: status === 'failed' ? stableAgentErrorCode(error) : null,
+    error_message: status === 'failed' ? summarizeAgentValue(typeof error === 'object' && error ? (error.message || error) : error) : null,
+    started_at: startedAt,
+    completed_at: completedAt,
+  }
+}
+
+export function mapAgentHeartbeatToAgentRun(heartbeat = {}) {
+  return {
+    ...mapAgentGatewayStatusToAgentRun({ ...heartbeat, status: 'running' }),
+    status: 'running',
+    heartbeat_at: stableAgentIsoTime(heartbeat.heartbeat_at || heartbeat.lastMessageAt || heartbeat.checkedAt),
+    completed_at: null,
+  }
+}
+
+export function mapAgentStatusToTaskEvent(statusSnapshot = {}, options = {}) {
+  const agentName = canonicalAgentRunName(statusSnapshot.agent || statusSnapshot.agentName || statusSnapshot.agent_name)
+  const eventType = options.event_type || options.eventType || 'agent_status_update'
+  const status = normalizeAgentRunStatus(statusSnapshot.status || (statusSnapshot.connected || statusSnapshot.ready || statusSnapshot.running ? 'running' : 'failed'))
+  const createdAt = stableAgentIsoTime(statusSnapshot.checkedAt || statusSnapshot.lastMessageAt || statusSnapshot.created_at)
+  const agentRunId = statusSnapshot.agent_run_id || statusSnapshot.run_id || statusSnapshot.runId || `${agentName}-${statusSnapshot.pid || statusSnapshot.task_id || statusSnapshot.taskId || 'status'}`
+
+  return {
+    event_id: `evt-${eventType}-${agentRunId}`,
+    task_id: String(statusSnapshot.task_id || statusSnapshot.taskId || statusSnapshot.run_id || statusSnapshot.runId || `${agentName}-status-task`),
+    task_type: 'agent_status',
+    event_type: eventType,
+    actor: agentName,
+    source: `${agentAdapterName(statusSnapshot)}.status`,
+    status,
+    visible_text: summarizeAgentValue(statusSnapshot.message || statusSnapshot.error?.message || `${agentName} ${eventType === 'agent_heartbeat' ? 'heartbeat' : 'status'}: ${status}`),
+    raw_payload: redactAgentRunPayload({
+      agent: agentName,
+      status: statusSnapshot.status,
+      connected: statusSnapshot.connected,
+      ready: statusSnapshot.ready,
+      running: statusSnapshot.running,
+      portListening: statusSnapshot.portListening,
+      pid: statusSnapshot.pid,
+      error: statusSnapshot.error,
+      checkedAt: statusSnapshot.checkedAt,
+      lastMessageAt: statusSnapshot.lastMessageAt,
+    }),
+    visibility: eventType === 'agent_heartbeat' ? 'debug' : 'normal',
+    severity: status === 'failed' || status === 'blocked' ? 'warning' : 'info',
+    linked_agent_run_id: String(agentRunId),
+    created_at: createdAt,
+  }
+}
+
 export const OPENCLAW_GATEWAY_STATES = {
   STOPPED: 'stopped',
   STARTING: 'starting',
