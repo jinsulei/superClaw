@@ -7,6 +7,7 @@ import { stopAgentOnPageClose } from '../lib/agent-lifecycle.js'
 import {
   assertAgentReadyBeforeSend,
   getOpenClawGatewayCopy,
+  isOpenClawModelConfigRequired,
   normalizeGatewayUiState,
   probeAgentGateway,
   waitForAgentGatewayReady,
@@ -432,13 +433,13 @@ export async function render() {
           <div class="chat-connect-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"/></svg>
           </div>
-          <div class="chat-connect-title" id="chat-connect-title">Gateway 未启动</div>
-          <div class="chat-connect-desc" id="chat-connect-desc">${t('chat.connectingGateway')}</div>
+          <div class="chat-connect-title" id="chat-connect-title">正在检查 OpenClaw 状态</div>
+          <div class="chat-connect-desc" id="chat-connect-desc">正在确认 Gateway 和模型配置...</div>
           <div class="chat-connect-actions">
-            <button class="btn btn-primary btn-sm" id="btn-fix-connect">${t('chat.fixAndReconnect')}</button>
+            <button class="btn btn-primary btn-sm" id="btn-fix-connect" style="display:none">${t('chat.fixAndReconnect')}</button>
             <!-- HIDDEN: Gateway settings entry is intentionally not exposed in the customer panel. -->
           </div>
-          <div class="chat-connect-hint">${t('chat.firstUseHint')}</div>
+          <div class="chat-connect-hint">请稍候，正在读取本地配置。</div>
         </div>
       </div>
     </div>
@@ -1693,14 +1694,15 @@ function updateOpenClawGatewayUi() {
   if (hint) {
     if (_openClawGatewayUiState === 'stopped') hint.textContent = '点击“启动 Gateway”后，系统会自动检查服务是否真正可用。'
     else if (_openClawGatewayUiState === 'starting' || _openClawGatewayUiState === 'checking') hint.textContent = '正在确认 Gateway 状态，请稍候。'
-    else if (_openClawGatewayUiState === 'needs_setup') hint.textContent = '请先完成 OpenClaw 模型或 Key 配置。'
+    else if (_openClawGatewayUiState === 'needs_setup') hint.textContent = '无需登录或激活；请先填写 MiniMax API Key。'
     else if (_openClawGatewayUiState === 'error') hint.textContent = '请重新启动 Gateway，系统会重新执行可用性检查。'
     else hint.textContent = ''
   }
   if (action) {
-    action.textContent = _openClawGatewayActionBusy ? '启动中...' : copy.action || '重新检查'
-    action.disabled = _openClawGatewayActionBusy || _openClawGatewayUiState === 'ready'
-    action.style.display = !_openClawGatewayActionBusy && (copy.showStartButton || copy.showReconnectButton) ? '' : 'none'
+    const isModelConfigAction = copy.showModelConfigButton === true
+    action.textContent = _openClawGatewayActionBusy && !isModelConfigAction ? '启动中...' : copy.action || '重新检查'
+    action.disabled = (_openClawGatewayActionBusy && !isModelConfigAction) || _openClawGatewayUiState === 'ready'
+    action.style.display = !_openClawGatewayActionBusy && (copy.showStartButton || copy.showReconnectButton || isModelConfigAction) ? '' : 'none'
   }
 
   if (_openClawGatewayUiState === 'ready') {
@@ -1854,13 +1856,6 @@ function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
 async function autoStartOpenClawGatewayOnEnter() {
   if (_openClawGatewayAutoStartPromise) return _openClawGatewayAutoStartPromise
   _openClawGatewayAutoStartPromise = (async () => {
-    const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
-    if (!_pageActive) return false
-    if (hasOpenClawGatewayReadySignal(healthProbe)) {
-      await connectGateway({ skipProbe: true })
-      markOpenClawGatewayReady('auto-enter-health-ready', { probe: healthProbe })
-      return true
-    }
     const probe = await refreshOpenClawGatewayUiState()
     if (!_pageActive) return false
     const state = hasOpenClawGatewayReadySignal(probe) ? 'ready' : normalizeGatewayUiState(probe)
@@ -1870,6 +1865,13 @@ async function autoStartOpenClawGatewayOnEnter() {
       return true
     }
     if (state === 'needs_setup') return false
+    const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
+    if (!_pageActive) return false
+    if (hasOpenClawGatewayReadySignal(healthProbe)) {
+      await connectGateway({ skipProbe: true })
+      markOpenClawGatewayReady('auto-enter-health-ready', { probe: healthProbe })
+      return true
+    }
     if (state === 'checking') {
       const result = await finalizeOpenClawProgressReady()
       if (!result.ok || !_pageActive) return false
@@ -1889,6 +1891,10 @@ function bindConnectOverlay(page) {
 
   if (fixBtn) {
     fixBtn.addEventListener('click', async () => {
+      if (_openClawGatewayUiState === 'needs_setup') {
+        navigate('/models')
+        return
+      }
       await startOrRepairOpenClawGateway()
     })
   }
@@ -2449,6 +2455,14 @@ async function ensureOpenClawGatewayReadyForSend() {
     return true
   }
   const statusProbe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
+  if (isOpenClawModelConfigRequired(statusProbe)) {
+    setOpenClawGatewayUiState('needs_setup', {
+      probe: statusProbe,
+      error: statusProbe?.message || statusProbe?.error || '',
+    })
+    toast('OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。', 'warning')
+    return false
+  }
   const healthProbe = hasOpenClawGatewayReadySignal(statusProbe)
     ? statusProbe
     : await probeOpenClawGatewayHealthForSend()
@@ -2466,6 +2480,10 @@ async function ensureOpenClawGatewayReadyForSend() {
       probe: readyCheck.state,
       error: readyCheck.state?.error || '',
     })
+  }
+  if (isOpenClawModelConfigRequired(readyCheck.state)) {
+    toast(readyCheck.message || 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。', 'warning')
+    return false
   }
   if (!readyCheck.ok && !readyProbe && !hasOpenClawGatewayReadySignal(readyCheck.state)) {
     toast(readyCheck.message || 'OpenClaw Gateway 尚未就绪。', 'warning')

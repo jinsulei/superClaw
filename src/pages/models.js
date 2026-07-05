@@ -226,8 +226,9 @@ function maskApiKey(key = '') {
   return `${value.slice(0, 6)}****${value.slice(-4)}`
 }
 
-function shouldShowMiniMaxTestPanel() {
-  return isMiniMaxOnlyMode() || isTestBuildMode()
+function shouldShowMiniMaxTestPanel(status = null) {
+  if (isMiniMaxOnlyMode() || isTestBuildMode()) return true
+  return status?.providerId === 'minimax' && status?.model === 'MiniMax-M3' && status?.hasApiKey === false
 }
 
 function miniMaxSyncBadge(label, ok) {
@@ -239,14 +240,14 @@ function miniMaxSyncBadge(label, ok) {
 async function renderMiniMaxTestPanel(page) {
   const panel = page.querySelector('#minimax-test-panel')
   if (!panel) return
-  if (!shouldShowMiniMaxTestPanel()) {
+  const status = await readMiniMaxTestConfig()
+  if (!shouldShowMiniMaxTestPanel(status)) {
     panel.style.display = 'none'
     panel.innerHTML = ''
     return
   }
 
   const defaults = getMiniMaxTestDefaults()
-  const status = await readMiniMaxTestConfig()
   const baseUrl = status.baseUrl || defaults.baseUrl
   const masked = status.maskedKey || ''
   const configuredText = status.hasApiKey

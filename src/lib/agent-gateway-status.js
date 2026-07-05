@@ -64,12 +64,32 @@ export function isAgentGatewayUsable(state) {
   return state.ready === true && state.connected === true && state.needsSetup !== true
 }
 
+export function isOpenClawModelConfigRequired(status) {
+  if (!status) return false
+  const value = typeof status === 'object' ? status : { message: String(status) }
+  const text = JSON.stringify(value).toLowerCase()
+  return value.needsSetup === true
+    || value.needs_setup === true
+    || value.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
+    || value.code === 'OPENCLAW_MODEL_CONFIG_REQUIRED'
+    || value.errorCode === 'OPENCLAW_MODEL_CONFIG_REQUIRED'
+    || text.includes('openclaw_model_config_required')
+    || text.includes('openclaw_minimax_api_key_required')
+    || text.includes('model_config_required')
+    || text.includes('model config')
+    || text.includes('api key')
+    || text.includes('apikey')
+    || text.includes('minimax key')
+    || text.includes('模型配置')
+    || text.includes('未配置')
+}
+
 export function normalizeGatewayUiState(raw) {
   if (!raw) return OPENCLAW_GATEWAY_STATES.STOPPED
   if (raw.ready === true || raw.connected === true || raw.status === OPENCLAW_GATEWAY_STATES.READY) {
     return OPENCLAW_GATEWAY_STATES.READY
   }
-  if (raw.needsSetup || raw.needs_setup || raw.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP) {
+  if (isOpenClawModelConfigRequired(raw)) {
     return OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
   }
   if (raw.status === OPENCLAW_GATEWAY_STATES.STARTING) return OPENCLAW_GATEWAY_STATES.STARTING
@@ -134,12 +154,13 @@ export function getOpenClawGatewayCopy(state, errorText = '') {
       }
     case OPENCLAW_GATEWAY_STATES.NEEDS_SETUP:
       return {
-        title: '模型配置未完成',
-        desc: 'OpenClaw 模型或 Key 未配置，请先完成配置。',
-        action: '去配置',
+        title: 'OpenClaw 模型配置未完成',
+        desc: '请先到模型设置中填写 MiniMax API Key，保存并测试连接后再开始聊天。',
+        action: '去模型设置',
         canSend: false,
         showStartButton: false,
         showReconnectButton: false,
+        showModelConfigButton: true,
       }
     case OPENCLAW_GATEWAY_STATES.READY:
       return {
@@ -165,7 +186,7 @@ export function getOpenClawGatewayCopy(state, errorText = '') {
 
 export function getAgentGatewayUserMessage(state) {
   if (!state) return '正在检查网关状态...'
-  if (state.needsSetup) return '模型或网关配置未完成，请先完成配置。'
+  if (isOpenClawModelConfigRequired(state)) return 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。'
   if (state.status === OPENCLAW_GATEWAY_STATES.STOPPED) return '网关未启动。'
   if (state.status === OPENCLAW_GATEWAY_STATES.STARTING) return '网关正在启动...'
   if (state.status === 'listening' || state.status === 'listening_unverified') {
@@ -219,12 +240,7 @@ function normalizeProbePayload(agent, payload = {}) {
     || source.port === cfg?.port
   )
   const verified = Boolean(source.verified || source.isVerified)
-  const needsSetup = Boolean(
-    source.needsSetup
-    || source.needs_setup
-    || source.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
-    || /OPENCLAW_MINIMAX_API_KEY_REQUIRED|api key|config|配置|未配置|needs_setup/i.test(text)
-  )
+  const needsSetup = isOpenClawModelConfigRequired(source) || /OPENCLAW_MINIMAX_API_KEY_REQUIRED|api key|config|配置|未配置|needs_setup/i.test(text)
   const ready = Boolean(source.ready || source.usable || source.status === OPENCLAW_GATEWAY_STATES.READY)
 
   let status = 'unknown'
@@ -294,11 +310,11 @@ export async function waitForAgentGatewayReady(agent, options = {}) {
 export async function assertAgentReadyBeforeSend(agent, options = {}) {
   const state = await waitForAgentGatewayReady(agent, options)
 
-  if (state.needsSetup) {
+  if (isOpenClawModelConfigRequired(state)) {
     return {
       ok: false,
       state,
-      message: '模型或网关配置未完成，当前不能发送请求。',
+      message: 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。',
     }
   }
 
