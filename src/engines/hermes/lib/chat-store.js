@@ -136,6 +136,19 @@ function sanitizeToolRunText(value) {
   )
 }
 
+function sanitizeFrontendObservabilityText(value) {
+  return sanitizeToolRunText(value)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '[REDACTED]')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '[REDACTED]')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '[REDACTED]')
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '[REDACTED]')
+    .replace(/private (?:model )?reasoning/gi, '[REDACTED]')
+    .replace(/private chain of thought/gi, '[REDACTED]')
+    .replace(/[A-Z]:\\Users\\[^"'\s]+/gi, '[REDACTED_PATH]')
+    .replace(/\/Users\/[^"'\s]+/gi, '[REDACTED_PATH]')
+    .replace(/(?:runtime\/data\/secrets|src-tauri\/resources\/data\/secrets|relay-config\.json|\.env)/gi, '[REDACTED_PATH]')
+}
+
 function summarizeToolRunValue(value) {
   if (value == null || value === '') return ''
   const redacted = redactToolRunPayload(value)
@@ -177,6 +190,22 @@ export function redactToolRunPayload(value) {
   if (typeof value === 'string') return sanitizeToolRunText(value)
   return value
 }
+
+export function redactFrontendObservabilityPayload(value) {
+  if (Array.isArray(value)) return value.map(item => redactFrontendObservabilityPayload(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (isSensitiveToolRunKey(key) || /hidden[_-]?reasoning|reasoning|chain[_-]?of[_-]?thought|local[_-]?path/i.test(String(key || ''))) {
+        return [key, '[REDACTED]']
+      }
+      return [key, redactFrontendObservabilityPayload(item)]
+    }))
+  }
+  if (typeof value === 'string') return sanitizeFrontendObservabilityText(value)
+  return value
+}
+
+export const redactObservabilityViewModelPayload = redactFrontendObservabilityPayload
 
 export function mapHermesLiveToolToToolRun(liveTool = {}) {
   const status = normalizeToolRunStatus(liveTool.status)
@@ -222,6 +251,143 @@ export function mapHermesToolMessageToToolRun(message = {}) {
     completed_at: completedAt,
   }
 }
+
+function visibleFrontendEvents(events = []) {
+  return (Array.isArray(events) ? events : [])
+    .filter(event => event && event.visibility !== 'hidden_sensitive')
+    .filter(event => event.visibility !== 'audit_only')
+}
+
+function frontendEventPriority(event = {}) {
+  if (event.event_type === 'approval_required' || event.status === 'waiting_human') return 100
+  if (event.status === 'failed' || event.status === 'blocked') return 90
+  if (event.status === 'recovering') return 80
+  if (event.status === 'running') return 70
+  if (event.status === 'completed') return 60
+  return 10
+}
+
+function pickFrontendProgressEvent(events = []) {
+  const visible = visibleFrontendEvents(events)
+  if (!visible.length) return null
+  return visible
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => {
+      const priority = frontendEventPriority(b.event) - frontendEventPriority(a.event)
+      if (priority !== 0) return priority
+      return b.index - a.index
+    })[0].event
+}
+
+function normalizeFrontendAgentStatus(status = '') {
+  const value = String(status || '').trim().toLowerCase()
+  if (value === 'agent_heartbeat' || value === 'heartbeat') return 'running'
+  if (['created', 'running', 'waiting_human', 'recovering', 'completed', 'failed', 'cancelled', 'blocked'].includes(value)) return value
+  if (value === 'ready' || value === 'connected' || value === 'online' || value === 'ok') return 'running'
+  if (value === 'error' || value === 'offline' || value === 'disconnected') return 'failed'
+  return value || 'running'
+}
+
+export function buildFrontendProgressBubbleViewModel(input = {}) {
+  const mode = input.mode === 'debug' ? 'debug' : 'normal'
+  const events = visibleFrontendEvents(input.task_events || input.taskEvents || [])
+  const selected = pickFrontendProgressEvent(events)
+  const taskId = selected?.task_id || events.find(event => event?.task_id)?.task_id || input.task_id || input.taskId || ''
+  const status = selected?.event_type === 'approval_required'
+    ? 'waiting_human'
+    : normalizeFrontendAgentStatus(selected?.status || input.status || 'running')
+  const summary = sanitizeFrontendObservabilityText(
+    selected?.visible_text
+      || selected?.message
+      || selected?.event_type
+      || input.summary
+      || 'Task is running.',
+  )
+
+  return {
+    mode,
+    task_id: taskId,
+    status,
+    severity: selected?.severity || (status === 'waiting_human' ? 'warning' : 'info'),
+    summary,
+    event_type: selected?.event_type || '',
+    actor: selected?.actor || '',
+    source: selected?.source || '',
+    updated_at: selected?.created_at || '',
+    events: events.map(event => ({
+      event_id: event.event_id || '',
+      event_type: event.event_type || '',
+      status: normalizeFrontendAgentStatus(event.status || ''),
+      severity: event.severity || 'info',
+      visible_text: sanitizeFrontendObservabilityText(event.visible_text || ''),
+      created_at: event.created_at || '',
+    })),
+  }
+}
+
+export const buildProgressBubbleViewModel = buildFrontendProgressBubbleViewModel
+export const mapTaskEventsToProgressBubbleViewModel = buildFrontendProgressBubbleViewModel
+
+export function buildFrontendDebugRowViewModel(input = {}) {
+  const mode = input.mode === 'normal' ? 'normal' : 'debug'
+  const toolRuns = Array.isArray(input.tool_runs) ? input.tool_runs : (input.toolRuns || [])
+  const rows = toolRuns.map(run => {
+    const redacted = redactFrontendObservabilityPayload(run || {})
+    return {
+      tool_run_id: String(redacted.tool_run_id || ''),
+      task_id: String(redacted.task_id || ''),
+      tool_name: String(redacted.tool_name || redacted.toolName || ''),
+      provider: String(redacted.provider || ''),
+      status: normalizeToolRunStatus(redacted.status),
+      error_code: redacted.error_code || null,
+      error_message: redacted.error_message ? sanitizeFrontendObservabilityText(redacted.error_message) : null,
+      input_summary: sanitizeFrontendObservabilityText(redacted.input_summary || ''),
+      output_summary: sanitizeFrontendObservabilityText(redacted.output_summary || ''),
+      started_at: redacted.started_at || '',
+      completed_at: redacted.completed_at || null,
+    }
+  })
+
+  return {
+    mode,
+    rows,
+  }
+}
+
+export const buildDebugRowViewModel = buildFrontendDebugRowViewModel
+export const mapToolRunsToDebugRowViewModel = buildFrontendDebugRowViewModel
+
+export function buildFrontendAgentStatusViewModel(input = {}) {
+  const mode = input.mode === 'debug' ? 'debug' : 'normal'
+  const agentRuns = Array.isArray(input.agent_runs) ? input.agent_runs : (input.agentRuns || [])
+  const agents = agentRuns.map(run => {
+    const redacted = redactFrontendObservabilityPayload(run || {})
+    const status = normalizeFrontendAgentStatus(redacted.status)
+    const row = {
+      agent_name: String(redacted.agent_name || redacted.agentName || ''),
+      status,
+      current_step: sanitizeFrontendObservabilityText(redacted.current_step || ''),
+      heartbeat_at: redacted.heartbeat_at || null,
+      resume_supported: Boolean(redacted.resume_supported),
+    }
+    if (mode === 'debug') {
+      row.agent_run_id = String(redacted.agent_run_id || '')
+      row.task_id = String(redacted.task_id || '')
+      row.adapter_name = String(redacted.adapter_name || '')
+      row.error_code = redacted.error_code || null
+      row.error_message = redacted.error_message ? sanitizeFrontendObservabilityText(redacted.error_message) : null
+    }
+    return row
+  })
+
+  return {
+    mode,
+    agents,
+  }
+}
+
+export const buildAgentStatusViewModel = buildFrontendAgentStatusViewModel
+export const mapAgentRunsToAgentStatusViewModel = buildFrontendAgentStatusViewModel
 
 function safeGet(key) {
   try { return localStorage.getItem(key) } catch { return null }
