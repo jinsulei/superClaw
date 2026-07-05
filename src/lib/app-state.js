@@ -170,10 +170,15 @@ export async function detectOpenclawStatus() {
     if (services.status === 'fulfilled' && services.value?.length > 0) {
       const gw = services.value.find?.(s => s.label === 'ai.openclaw.gateway') || services.value[0]
       const foreign = gw?.running === true && gw?.owned_by_current_instance === false
-      const health = gw?.running === true && !foreign
+      const ownedRunning = _isOwnedGatewayServiceRunning(gw)
+      if (ownedRunning && isTauri) {
+        _setGatewayRunning(true, false)
+      } else {
+        const health = gw?.running === true && !foreign
         ? await probeOpenclawGatewayHealth()
         : { ready: false }
-      _setGatewayRunning(gw?.running === true && !foreign && health.ready, foreign)
+        _setGatewayRunning(gw?.running === true && !foreign && health.ready, foreign)
+      }
     }
   } catch {
     _openclawReady = false
@@ -210,13 +215,22 @@ export function confirmGatewayRunningFromLiveConnection() {
 
 /** 刷新 Gateway 运行状态（轻量，仅查服务状态）
  *  防抖：running→stopped 需要连续 3 次检测才切换，避免瞬态误判 */
+function _isOwnedGatewayServiceRunning(gateway) {
+  return gateway?.running === true && gateway?.owned_by_current_instance !== false
+}
+
 export async function refreshGatewayStatus() {
   try {
     const services = await api.getServicesStatus()
     if (services?.length > 0) {
       const gw = services.find?.(s => s.label === 'ai.openclaw.gateway') || services[0]
-      const ownedRunning = gw?.running === true && gw?.owned_by_current_instance !== false
+      const ownedRunning = _isOwnedGatewayServiceRunning(gw)
       const foreignRunning = gw?.running === true && gw?.owned_by_current_instance === false
+      if (ownedRunning && isTauri) {
+        _gwStopCount = 0
+        _setGatewayRunning(true, false)
+        return _gatewayRunning
+      }
       const health = await probeOpenclawGatewayHealth()
       const nowRunning = (ownedRunning || !foreignRunning) && health.ready
       if (nowRunning) {

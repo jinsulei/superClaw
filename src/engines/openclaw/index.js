@@ -35,13 +35,9 @@ async function ensureGatewayReadyOnBoot() {
       const gateway = services?.find?.(s => s.label === 'ai.openclaw.gateway') || services?.[0]
 
       if (gateway?.running) {
-        if (pairingRepaired) {
-          await api.restartService('ai.openclaw.gateway')
-        } else {
-          await api.claimGateway().catch((e) => {
-            console.warn('[openclaw] claim running gateway failed:', e)
-          })
-        }
+        await api.claimGateway().catch((e) => {
+          console.warn('[openclaw] claim running gateway failed:', e)
+        })
       } else {
         await api.startService('ai.openclaw.gateway')
       }

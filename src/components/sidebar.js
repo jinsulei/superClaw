@@ -4,7 +4,7 @@
 import { navigate, getCurrentRoute, reloadCurrentRoute } from '../router.js'
 import { toggleTheme, getTheme, getColorTheme, setColorTheme } from '../lib/theme.js'
 import { isOpenclawReady } from '../lib/app-state.js'
-import { api } from '../lib/tauri-api.js'
+import { api, isTauriRuntime } from '../lib/tauri-api.js'
 import { toast } from './toast.js'
 import { APP_BUILD_VERSION, PRODUCT_DISPLAY_VERSION } from '../lib/product-version.js'
 import { t, getLang, setLang, getAvailableLangs } from '../lib/i18n.js'
@@ -251,6 +251,35 @@ function _findOpenClawGateway(services) {
   return services?.find?.(s => s.label === 'ai.openclaw.gateway') || services?.[0] || null
 }
 
+function _isOwnedOpenClawGatewayRunning(gateway) {
+  return gateway?.running === true && gateway?.owned_by_current_instance !== false
+}
+
+function _statusFromOwnedOpenClawGateway(gateway, source = 'tauri-service-status') {
+  if (!_isOwnedOpenClawGatewayRunning(gateway)) return null
+  return {
+    ready: true,
+    connected: true,
+    verified: true,
+    status: 'ready',
+    portListening: true,
+    healthStatus: 'service-running',
+    health: { ready: true, live: true, status: 'service-running' },
+    source,
+    service: gateway,
+  }
+}
+
+async function _readOwnedOpenClawGatewayServiceStatus() {
+  if (!isTauriRuntime()) return null
+  try {
+    const services = await api.getServicesStatus().catch(() => [])
+    return _statusFromOwnedOpenClawGateway(_findOpenClawGateway(services))
+  } catch {
+    return null
+  }
+}
+
 async function _readOpenClawGatewayPort() {
   try {
     const config = await api.readOpenclawConfig()
@@ -303,13 +332,14 @@ function _isOpenClawGatewaySwitchReady(status) {
 }
 
 async function _readOpenClawGatewaySwitchStatus() {
+  let devStatus = null
   try {
     const resp = await fetch('/__api/dev/agents/status?agent=openclaw', { cache: 'no-store' })
-    if (!resp.ok) return null
-    return await resp.json().catch(() => null)
+    if (resp.ok) devStatus = await resp.json().catch(() => null)
   } catch {
-    return null
   }
+  if (_isOpenClawGatewaySwitchReady(devStatus)) return devStatus
+  return await _readOwnedOpenClawGatewayServiceStatus() || devStatus
 }
 
 async function _waitForOpenClawGatewayHealth(progress, start = 78, end = 92, timeoutMs = 18000) {
@@ -321,6 +351,11 @@ async function _waitForOpenClawGatewayHealth(progress, start = 78, end = 92, tim
     if (await _probeOpenClawGatewayHealth(port)) {
       progress?.setProgress(end)
       return { port, attempts: attempt }
+    }
+    const serviceStatus = await _readOwnedOpenClawGatewayServiceStatus()
+    if (_isOpenClawGatewaySwitchReady(serviceStatus)) {
+      progress?.setProgress(end)
+      return { port, attempts: attempt, source: 'tauri-service-status' }
     }
     const elapsedRatio = Math.min(1, (Date.now() - startedAt) / timeoutMs)
     progress?.setProgress(start + (end - start - 2) * elapsedRatio)
@@ -374,7 +409,7 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
       return gw
     }
     if (pairingRepaired) {
-      await _runSwitchProgressStep(progress, 50, 64, () => api.restartService('ai.openclaw.gateway'))
+      await _runSwitchProgressStep(progress, 50, 64, () => api.claimGateway().catch(() => null))
     }
     try {
       await _waitForOpenClawGatewayHealth(progress, pairingRepaired ? 64 : 46, 84, 9000)
@@ -384,6 +419,12 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
       if (_isOpenClawGatewaySwitchReady(readyStatus)) {
         progress?.setProgress(90)
         return gw
+      }
+      const latestServices = await _runSwitchProgressStep(progress, 88, 90, () => api.getServicesStatus().catch(() => []))
+      const ownedGateway = _findOpenClawGateway(latestServices)
+      if (_isOwnedOpenClawGatewayRunning(ownedGateway)) {
+        progress?.setProgress(90)
+        return ownedGateway
       }
       console.warn('[sidebar] OpenClaw Gateway running but unhealthy, restarting once:', e)
       await _runSwitchProgressStep(progress, 58, 78, () => api.restartService('ai.openclaw.gateway'))
