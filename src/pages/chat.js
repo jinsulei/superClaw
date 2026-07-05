@@ -1510,6 +1510,7 @@ function hasOpenClawGatewayReadySignal(probe) {
 async function probeOpenClawGatewayHealthForSend() {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 1800)
+  let webError = null
   try {
     const res = await fetch('http://127.0.0.1:18789/health', {
       method: 'GET',
@@ -1533,18 +1534,56 @@ async function probeOpenClawGatewayHealthForSend() {
       error: live ? null : (json?.error || json?.message || `HTTP ${res.status}`),
     }
   } catch (error) {
-    return {
-      ready: false,
-      connected: false,
-      verified: false,
-      portListening: false,
-      listening: false,
-      status: 'error',
-      healthStatus: 'error',
-      error: error?.message || String(error),
-    }
+    webError = error
   } finally {
     clearTimeout(timer)
+  }
+
+  if (isTauriRuntime()) {
+    try {
+      const services = await api.getServicesStatus()
+      const gateway = Array.isArray(services)
+        ? services.find(item => item?.label === 'ai.openclaw.gateway') || services[0]
+        : null
+      const running = gateway?.running === true && gateway?.owned_by_current_instance !== false
+      if (running) {
+        return {
+          ready: true,
+          connected: true,
+          verified: true,
+          portListening: true,
+          listening: true,
+          status: 'live',
+          healthStatus: 'service-running',
+          health: { ok: true, status: 'service-running', service: gateway?.label || 'ai.openclaw.gateway' },
+          pid: gateway?.pid || null,
+          error: null,
+        }
+      }
+      return {
+        ready: false,
+        connected: false,
+        verified: false,
+        portListening: Boolean(gateway?.pid),
+        listening: Boolean(gateway?.pid),
+        status: 'error',
+        healthStatus: 'service-stopped',
+        error: webError?.message || 'OpenClaw Gateway service is not running',
+      }
+    } catch (error) {
+      webError = error || webError
+    }
+  }
+
+  return {
+    ready: false,
+    connected: false,
+    verified: false,
+    portListening: false,
+    listening: false,
+    status: 'error',
+    healthStatus: 'error',
+    error: webError?.message || String(webError || 'OpenClaw Gateway health probe failed'),
   }
 }
 
