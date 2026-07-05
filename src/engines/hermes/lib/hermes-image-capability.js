@@ -68,6 +68,113 @@ function flattenSkills(skills = []) {
   return flat
 }
 
+function asArray(value) {
+  if (Array.isArray(value)) return value
+  if (value === undefined || value === null || value === '') return []
+  return [value]
+}
+
+function stableGenerationState(value, fallback = 'planned') {
+  const state = lower(value || fallback)
+  if (['implemented', 'partial', 'planned', 'reserved', 'unknown'].includes(state)) return state
+  return fallback
+}
+
+function generationCapabilityState({ supported = false, configured = false, executable = false, fallback = 'planned' } = {}) {
+  if (!supported) return stableGenerationState(fallback)
+  if (executable) return 'partial'
+  return configured ? 'partial' : stableGenerationState(fallback)
+}
+
+export function normalizeGenerationModelCapability(input = {}) {
+  const status = input.capabilities || input.status || input
+  const caps = status.capabilities || input.model_capabilities || {}
+  const provider = clean(input.provider || status.provider)
+  const model = clean(input.model || input.model_id || status.model)
+  const endpointCallable = status.endpointCallable === true || input.endpoint_callable === true
+  const modelConfigured = status.modelConfigured === true || Boolean(provider && model)
+  const textToImageSupported = caps.image_generation === true || caps.text_to_image === true
+  const imageToImageSupported = caps.image_edit === true || caps.image_to_image === true
+
+  return {
+    provider,
+    model,
+    model_id: model,
+    adapter_name: clean(input.adapter_name || input.adapter || 'hermes_image_capability_wrapper'),
+    capabilities: {
+      text_to_image: generationCapabilityState({
+        supported: textToImageSupported,
+        configured: modelConfigured,
+        executable: endpointCallable && textToImageSupported,
+        fallback: 'partial',
+      }),
+      image_to_image: generationCapabilityState({
+        supported: imageToImageSupported,
+        configured: modelConfigured,
+        executable: false,
+        fallback: 'planned',
+      }),
+      image_to_video: stableGenerationState(input.image_to_video_state, 'planned'),
+      ppt: stableGenerationState(input.ppt_state, 'planned'),
+    },
+    executable: {
+      text_to_image: endpointCallable && textToImageSupported,
+      image_to_image: false,
+      image_to_video: false,
+      ppt: false,
+    },
+    notes: [
+      'Model Adapter boundary only; this helper does not execute generation.',
+      'image_to_image, image_to_video, and ppt stay non-executable until dedicated contracts exist.',
+    ],
+  }
+}
+
+export function normalizeGenerationPrompt(input = {}) {
+  return {
+    task_id: clean(input.task_id || input.taskId),
+    goal: clean(input.goal || input.hermes_goal || input.prompt),
+    style: clean(input.style),
+    output_type: clean(input.output_type || input.outputType || 'text_to_image'),
+    aspect_ratio: clean(input.aspect_ratio || input.aspectRatio),
+    page_count: Number.isFinite(Number(input.page_count || input.pageCount)) ? Number(input.page_count || input.pageCount) : null,
+    input_assets: asArray(input.input_assets || input.inputAssets).map((asset) => ({
+      asset_id: clean(asset?.asset_id || asset?.id),
+      kind: clean(asset?.kind || asset?.type),
+      source: clean(asset?.source || 'user'),
+      path: asset?.path || null,
+    })),
+    acceptance_criteria: asArray(input.acceptance_criteria || input.acceptanceCriteria).map(clean).filter(Boolean),
+    model_id: clean(input.model_id || input.modelId || input.model),
+    provider: clean(input.provider),
+    forbidden_actions: asArray(input.forbidden_actions || input.forbiddenActions).map(clean).filter(Boolean),
+    adapter_policy: {
+      preserve_hermes_instruction: true,
+      openclaw_memory_must_not_replace_instruction: true,
+      no_parallel_generation_runner: true,
+    },
+  }
+}
+
+export function normalizeGenerationResult(input = {}) {
+  return {
+    task_id: clean(input.task_id || input.taskId),
+    status: stableGenerationState(input.status, 'planned'),
+    artifacts: asArray(input.artifacts).map((artifact) => ({
+      artifact_id: clean(artifact?.artifact_id || artifact?.id),
+      kind: clean(artifact?.kind || artifact?.type),
+      uri: artifact?.uri || null,
+      summary: clean(artifact?.summary || artifact?.title),
+    })),
+    task_events: asArray(input.task_events || input.taskEvents),
+    tool_runs: asArray(input.tool_runs || input.toolRuns),
+    acceptance_summary: input.acceptance_summary || input.acceptanceSummary || {
+      status: 'not_evaluated',
+      reason: 'Generation acceptance has not been evaluated yet.',
+    },
+  }
+}
+
 export function isHermesImageCapabilityQuestion(text = '') {
   const s = clean(text)
   if (!s) return false
