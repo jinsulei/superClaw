@@ -3467,8 +3467,14 @@ function stripOpenClawRuntimePromptBlocks(text) {
     .trim()
 }
 
+function stripOpenClawHistoryUserTimestamp(text = '') {
+  return String(text || '')
+    .replace(/^\[[A-Z][a-z]{2}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s+GMT[+-]\d+\]\s*/u, '')
+    .trim()
+}
+
 function openClawVisibleUserText(text) {
-  return stripOpenClawRuntimePromptBlocks(text)
+  return stripOpenClawHistoryUserTimestamp(stripOpenClawRuntimePromptBlocks(text))
 }
 
 const OPENCLAW_INTERNAL_REASONING_VISIBLE_FALLBACK =
@@ -5786,7 +5792,7 @@ async function recoverOpenClawAssistantFromHistoryBeforeFallback(reason = 'histo
       processMessageQueue()
       return true
     }
-    if (_currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete(_currentAiText)) {
+    if (_currentAiBubble) {
       try {
         const history = await wsClient.chatHistory(_sessionKey, 200)
         if (completeOpenClawCurrentDraftFromLatestHistory(history?.messages || [])) {
@@ -7866,7 +7872,8 @@ async function loadHistory(sessionKey = _sessionKey) {
       .map(m => `${m.dedupeKey || m.displayDedupeKey || m.id || m.messageId || m.runId || m.timestamp || ''}:${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
       .join('|')
     const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete(_currentAiText)
-    if (hash === _lastHistoryHash && hasExisting && !hasIncompleteDraft) return
+    const hasActiveOpenClawGeneration = Boolean(_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming || _currentAiBubble)
+    if (hash === _lastHistoryHash && hasExisting && !hasIncompleteDraft && !hasActiveOpenClawGeneration) return
     _lastHistoryHash = hash
 
     // Same-session reloads merge history into the visible chat instead of repainting over drafts.
