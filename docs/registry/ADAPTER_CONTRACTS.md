@@ -74,7 +74,7 @@ Every adapter contract must define input, output, required events, required logs
 
 ## Observability Requirements for Adapters
 
-- OpenClaw Adapter must emit `agent_runs` and `agent_heartbeat` events.
+- OpenClaw Adapter must emit `agent_runs` lifecycle records and `task_events.event_type = agent_heartbeat` events. `agent_heartbeat` is not an `agent_runs.status` value.
 - Claude Code Adapter must emit `agent_runs` and task result events.
 - Tool Adapter must emit `tool_runs`.
 - Platform Adapter must emit `tool_runs`.

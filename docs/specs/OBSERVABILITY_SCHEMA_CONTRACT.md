@@ -67,7 +67,7 @@ Version 1 defines schemas. It must not rewrite chat, split `scripts/dev-api.js`,
 | `task_id` | yes | Parent task id. |
 | `agent_name` | yes | `hermes`, `openclaw`, `claude_code`, `codex`, or future normalized agent name. |
 | `adapter_name` | yes | Adapter or bridge name. Use current bridge name until a real Adapter exists. |
-| `status` | yes | `queued`, `started`, `running`, `waiting_human`, `completed`, `failed`, or `cancelled`. |
+| `status` | yes | Lifecycle state: `created`, `running`, `waiting_human`, `recovering`, `completed`, `failed`, `cancelled`, or `blocked`. Do not use event names such as `agent_heartbeat`, `tool_call_started`, or `task_progress` here. |
 | `current_step` | no | Sanitized current step. |
 | `heartbeat_at` | no | Latest heartbeat ISO timestamp. |
 | `checkpoint_id` | no | Checkpoint id if resumable. |
@@ -114,6 +114,10 @@ Version 1 defines schemas. It must not rewrite chat, split `scripts/dev-api.js`,
 | `hidden_sensitive` | Must not be rendered. Use only to mark redacted sensitive source fields. |
 
 Do not display hidden model reasoning. Do not display secrets. Do not display complete tokens or cookies. Only display execution trajectory, status, summaries, and sanitized error reasons.
+
+## Agent Heartbeat Rule
+
+Agent heartbeat is an event, not an agent lifecycle status. Emit heartbeat through `task_events.event_type = agent_heartbeat`, update `agent_runs.heartbeat_at`, and keep `agent_runs.status` as a lifecycle state such as `running`.
 
 ## Existing Implementation Mapping
 

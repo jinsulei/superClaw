@@ -53,3 +53,7 @@ The schema contract is defined in `docs/specs/OBSERVABILITY_SCHEMA_CONTRACT.md`.
 Normal mode shows progress bubble and execution summary. Debug mode may show ids, duration, error code, event type, and sanitized payload shape. No mode displays hidden model reasoning, credentials, tokens, or raw secrets.
 
 Do not implement a second observability stack. Existing chat/tool/collaboration events should be wrapped and normalized into the target schemas over time.
+
+## Agent Heartbeat Rule
+
+`agent_runs.status` is a lifecycle status only: `created`, `running`, `waiting_human`, `recovering`, `completed`, `failed`, `cancelled`, or `blocked`. Agent heartbeat is represented as `task_events.event_type = agent_heartbeat`, with the latest timestamp mirrored in `agent_runs.heartbeat_at`.
