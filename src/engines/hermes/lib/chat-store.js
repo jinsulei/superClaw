@@ -112,6 +112,117 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
 }
 
+function stableIsoTime(value, fallback = null) {
+  if (typeof value === 'string' && value.trim()) {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const d = new Date(value)
+    if (!Number.isNaN(d.getTime())) return d.toISOString()
+  }
+  if (fallback) return stableIsoTime(fallback)
+  return new Date().toISOString()
+}
+
+function isSensitiveToolRunKey(key) {
+  return /api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|secret|password/i.test(String(key || ''))
+}
+
+function sanitizeToolRunText(value) {
+  return String(value ?? '').replace(
+    /(fake-[a-z0-9-]*(?:api-key|token|cookie|secret|access-token|refresh-token|password)[a-z0-9-]*)/gi,
+    '[REDACTED]',
+  )
+}
+
+function summarizeToolRunValue(value) {
+  if (value == null || value === '') return ''
+  const redacted = redactToolRunPayload(value)
+  const text = typeof redacted === 'string' ? redacted : JSON.stringify(redacted)
+  return sanitizeToolRunText(text)
+}
+
+function stableToolRunErrorCode(error, fallback = 'TOOL_RUN_FAILED') {
+  const raw = typeof error === 'object' && error
+    ? (error.code || error.error_code || error.name || fallback)
+    : (error || fallback)
+  const code = String(raw || fallback)
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase()
+  return code || fallback
+}
+
+export function normalizeToolRunStatus(status) {
+  const value = String(status || '').trim().toLowerCase()
+  if (value === 'started') return 'started'
+  if (value === 'running') return 'running'
+  if (value === 'done' || value === 'complete' || value === 'completed' || value === 'success' || value === 'succeeded') return 'completed'
+  if (value === 'error' || value === 'failed' || value === 'failure') return 'failed'
+  if (value === 'cancelled' || value === 'canceled') return 'cancelled'
+  return 'running'
+}
+
+export function redactToolRunPayload(value) {
+  if (Array.isArray(value)) return value.map(item => redactToolRunPayload(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (isSensitiveToolRunKey(key)) return [key, '[REDACTED]']
+      return [key, redactToolRunPayload(item)]
+    }))
+  }
+  if (typeof value === 'string') return sanitizeToolRunText(value)
+  return value
+}
+
+export function mapHermesLiveToolToToolRun(liveTool = {}) {
+  const status = normalizeToolRunStatus(liveTool.status)
+  const startedAt = stableIsoTime(liveTool.started_at || liveTool.created_at || liveTool.timestamp || liveTool.updated_at)
+  const completedAt = status === 'completed' || status === 'failed' || status === 'cancelled'
+    ? stableIsoTime(liveTool.completed_at || liveTool.updated_at || liveTool.finished_at || liveTool.timestamp, startedAt)
+    : null
+  const error = liveTool.error || liveTool.error_message || null
+
+  return {
+    tool_run_id: String(liveTool.tool_run_id || liveTool.id || liveTool.toolCallId || liveTool.tool_call_id || `${liveTool.runId || liveTool.run_id || 'hermes'}:tool`),
+    task_id: String(liveTool.task_id || liveTool.taskId || liveTool.runId || liveTool.run_id || liveTool.clientRequestId || liveTool.client_request_id || 'hermes-tool-task'),
+    tool_name: String(liveTool.tool_name || liveTool.toolName || liveTool.name || liveTool.tool || 'tool'),
+    provider: String(liveTool.provider || 'hermes'),
+    status,
+    input_summary: summarizeToolRunValue(liveTool.args ?? liveTool.input ?? liveTool.arguments ?? liveTool.parameters ?? ''),
+    output_summary: summarizeToolRunValue(liveTool.result ?? liveTool.output ?? ''),
+    error_code: status === 'failed' ? stableToolRunErrorCode(error) : null,
+    error_message: status === 'failed' ? summarizeToolRunValue(typeof error === 'object' && error ? (error.message || error) : error) : null,
+    started_at: startedAt,
+    completed_at: completedAt,
+  }
+}
+
+export function mapHermesToolMessageToToolRun(message = {}) {
+  const status = normalizeToolRunStatus(message.toolStatus || message.status)
+  const startedAt = stableIsoTime(message.started_at || message.created_at || message.timestamp || message.updated_at)
+  const completedAt = status === 'completed' || status === 'failed' || status === 'cancelled'
+    ? stableIsoTime(message.completed_at || message.updated_at || message.timestamp, startedAt)
+    : null
+
+  return {
+    tool_run_id: String(message.tool_run_id || message.id || message.toolCallId || message.tool_call_id || `${message.runId || message.run_id || 'hermes'}:tool-message`),
+    task_id: String(message.task_id || message.taskId || message.runId || message.run_id || message.clientRequestId || message.client_request_id || 'hermes-tool-task'),
+    tool_name: String(message.toolName || message.tool_name || message.name || message.tool || 'tool'),
+    provider: String(message.provider || 'hermes'),
+    status,
+    input_summary: summarizeToolRunValue(message.toolArgs ?? message.args ?? message.arguments ?? ''),
+    output_summary: summarizeToolRunValue(message.toolResult ?? message.result ?? message.content ?? ''),
+    error_code: status === 'failed' ? stableToolRunErrorCode(message.error || message.toolResult || message.content) : null,
+    error_message: status === 'failed' ? summarizeToolRunValue(message.error || message.toolResult || message.content || '') : null,
+    started_at: startedAt,
+    completed_at: completedAt,
+  }
+}
+
 function safeGet(key) {
   try { return localStorage.getItem(key) } catch { return null }
 }
