@@ -23,8 +23,13 @@ assert.match(terminalPage, /Hermes 终端对话暂未启用受控 session。/, '
 assert.match(terminalPage, /当前不会执行系统命令。/, 'terminal page must state it will not execute commands')
 assert.match(terminalPage, /只允许用户手动输入命令/, 'terminal page must require manual user input for future terminal support')
 
-const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,900}/)?.[0] || ''
+const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,3200}/)?.[0] || ''
 assert.ok(terminalHandler.includes('openHermesTerminalLauncher'), 'terminal click handler must not be empty')
+assert.ok(terminalHandler.includes("route: '/h/native-dashboard'"), 'terminal entry must guard the native Hermes Web path')
+assert.ok(terminalHandler.includes('api.hermesDashboardProbe'), 'terminal entry must probe Hermes Web before falling back')
+assert.ok(terminalHandler.includes('api.hermesDashboardStart'), 'terminal entry must start Hermes Web when it is not running')
+assert.ok(terminalHandler.includes('openExternalUrl'), 'terminal entry must open Hermes Web at 127.0.0.1:9119 when available')
+assert.ok(terminalHandler.includes("window.location.hash = '#/h/terminal'"), 'terminal entry must keep the safe internal terminal fallback')
 assert.ok(!terminalHandler.includes("'#/chat'"), 'terminal click handler must not route to OpenClaw')
 assert.ok(!terminalHandler.includes("'#/c"), 'terminal click handler must not route to ClaudeCode')
 

@@ -634,18 +634,93 @@ export function render() {
       } catch (e) { showGwMsg(String(e).replace(/^Error:\s*/, ''), true) }
       actionBusy = false; await refresh()
     })
-    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', () => {
-      openHermesTerminalLauncher({
+    el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget
+      const origText = btn.textContent
+      const guard = openHermesTerminalLauncher({
         info,
         health,
+        route: '/h/native-dashboard',
         notify: (message, type) => {
           showGwMsg(message, type === 'warning' || type === 'error')
           toast(message, type || 'info', { duration: 5000 })
         },
-        navigate: route => {
-          window.location.hash = `#${route}`
-        },
+        navigate: () => {},
       })
+      if (!guard.ok) return
+
+      const openNativeDashboard = async (port) => {
+        await openExternalUrl(HERMES_DASHBOARD_URL.replace(/:9119(\/?$)/, ':' + (port || 9119) + '$1'))
+      }
+      const useSafeTerminalPage = (message, type = 'warning') => {
+        if (message) {
+          showGwMsg(message, type === 'warning' || type === 'error')
+          toast(message, type, { duration: 7000 })
+        }
+        window.location.hash = '#/h/terminal'
+      }
+      const isDashboardUsable = (value) => {
+        if (!value || typeof value !== 'object') return false
+        if (value.kind === 'frontend_not_built' || value.kind === 'frontend_unavailable') return false
+        if (value.running === true && value.ready !== false) return true
+        if (value.started === true && value.ready !== false) return true
+        if (value.ready === true) return true
+        return false
+      }
+
+      btn.disabled = true
+      btn.textContent = t('engine.dashNativePanelChecking')
+      try {
+        const probe = await api.hermesDashboardProbe().catch((err) => ({
+          running: false,
+          port: 9119,
+          kind: 'probe_failed',
+          log_tail: String(err?.message || err),
+        }))
+        if (isDashboardUsable(probe)) {
+          await openNativeDashboard(probe.port || 9119)
+          toast('Hermes Web 已打开。', 'success')
+          return
+        }
+
+        btn.textContent = t('engine.dashNativePanelStarting')
+        const result = await api.hermesDashboardStart().catch((err) => ({
+          started: false,
+          kind: 'spawn_failed',
+          port: probe?.port || 9119,
+          log_tail: String(err?.message || err),
+        }))
+        if (isDashboardUsable(result)) {
+          await openNativeDashboard(result.port || probe?.port || 9119)
+          toast('Hermes Web 已启动并打开。', 'success')
+          return
+        }
+
+        const port = result?.port || probe?.port || 9119
+        if (result?.kind === 'frontend_not_built' || result?.kind === 'frontend_unavailable') {
+          useSafeTerminalPage('Hermes Web 前端未构建或未内置，已切回应用内 Hermes 终端页。', 'warning')
+          return
+        }
+        if (result?.kind === 'posix_only_module') {
+          useSafeTerminalPage('Hermes Web 在当前系统下暂不可用，已切回应用内 Hermes 终端页。', 'warning')
+          return
+        }
+        if (result?.kind === 'deps_missing') {
+          useSafeTerminalPage(t('engine.dashNativePanelDepHint'), 'warning')
+          return
+        }
+        if (result?.kind === 'timeout') {
+          useSafeTerminalPage(t('engine.dashNativePanelStartTimeout', { port }), 'warning')
+          return
+        }
+        const detail = (result?.log_tail || probe?.log_tail || '').split('\n').slice(-2).join('\n').trim()
+        useSafeTerminalPage(t('engine.dashNativePanelStartGeneric') + (detail ? ': ' + detail : ''), 'error')
+      } catch (err) {
+        useSafeTerminalPage(t('engine.dashNativePanelOpenFail') + ': ' + (err?.message || err), 'error')
+      } finally {
+        btn.disabled = false
+        btn.textContent = origText
+      }
     })
     // Quick links
     el.querySelectorAll('.hm-dash-link').forEach(btn => {
