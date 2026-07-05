@@ -1,0 +1,26 @@
+# Runtime Manifest
+
+This manifest is the first Hermes 1.0.7 runtime packaging gate. It records candidate runtime assets that may be reviewed for the portable EXE. It does not mark any runtime as verified and does not contain secrets.
+
+Checksum values are intentionally `needs_review` until a release task records source, version, size, license, and hash from a clean packaging snapshot.
+
+| runtime_name | runtime_version | source | checksum | allowed_in_portable | required_for_features | package_path | dev_path | license | size | review_status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| claude-panel | needs_review | bundled runtime asset | needs_review | yes_after_review | Claude Code panel / relay surface | `resources/runtime/claude-panel/` | `src-tauri/resources/runtime/claude-panel/` | needs_review | needs_review | needs_review |
+| openclaw | needs_review | bundled runtime asset | needs_review | yes_after_review | OpenClaw agent, browser/tool bridge, ecommerce fallback | `resources/runtime/openclaw/` | `src-tauri/resources/runtime/openclaw/` | needs_review | needs_review | needs_review |
+| hermes-agent | needs_review | bundled Python runtime asset | needs_review | yes_after_review | Hermes gateway and agent runtime | `resources/runtime/hermes-agent/` | `src-tauri/resources/runtime/hermes-agent/` | needs_review | needs_review | needs_review |
+| ocr | needs_review | bundled OCR runtime asset | needs_review | yes_after_review | OCR / readable image support | `resources/runtime/ocr/` | `src-tauri/resources/runtime/ocr/` | needs_review | needs_review | needs_review |
+| video-tools | needs_review | bundled video runtime asset | needs_review | yes_after_review | video / media extraction support | `resources/runtime/video-tools/` | `src-tauri/resources/runtime/video-tools/` | needs_review | needs_review | needs_review |
+| uv.exe | needs_review | bundled executable | needs_review | yes_after_review | Python/runtime dependency installation in portable flow | `resources/bin/uv.exe` | `src-tauri/resources/bin/uv.exe` | needs_review | needs_review | needs_review |
+| uvw.exe | needs_review | bundled executable | needs_review | yes_after_review | uv Windows helper | `resources/bin/uvw.exe` | `src-tauri/resources/bin/uvw.exe` | needs_review | needs_review | needs_review |
+| uvx.exe | needs_review | bundled executable | needs_review | yes_after_review | uv tool runner | `resources/bin/uvx.exe` | `src-tauri/resources/bin/uvx.exe` | needs_review | needs_review | needs_review |
+| desktop-control-agent.exe | needs_review | bundled executable | needs_review | yes_after_review | desktop control bridge / OpenClaw plugin | `resources/bin/desktop-control-agent.exe` | `src-tauri/resources/bin/desktop-control-agent.exe` | needs_review | needs_review | needs_review |
+| hermes-agent-main.zip | needs_review | bundled source archive | needs_review | yes_after_review | Hermes source fallback / runtime setup | `resources/hermes-agent-main.zip` | `src-tauri/resources/hermes-agent-main.zip` | needs_review | needs_review | needs_review |
+
+## Packaging Rules
+
+- Do not package whole `resources/data` globs.
+- Do not package root runtime caches.
+- Do not package `.env`, relay config values, auth files, logs, sessions, memories, databases, pid files, lock files, or user state.
+- Generate sanitized portable data through the approved packaging flow.
+- Treat legacy portable scripts as deprecated entrypoints.
