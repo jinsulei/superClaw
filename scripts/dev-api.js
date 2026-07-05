@@ -926,11 +926,11 @@ function extractHermesZip(zipPath) {
 
   if (isWindows) {
     const psCmd = `Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force`
-    const result = spawnSync('powershell', ['-Command', psCmd], { timeout: 30000, windowsHide: true })
+    const result = spawnSync('powershell', ['-Command', psCmd], { timeout: 30000, windowsHide: true, encoding: 'utf8' })
     if (result.status !== 0) throw new Error(`zip 解压失败: ${(result.stderr || '').trim()}`)
   } else {
     // Unix: unzip（zip 文件用 unzip，不是 tar）
-    const result = spawnSync('unzip', ['-o', zipPath, '-d', extractDir], { timeout: 30000 })
+    const result = spawnSync('unzip', ['-o', zipPath, '-d', extractDir], { timeout: 30000, encoding: 'utf8' })
     if (result.status !== 0) throw new Error(`zip 解压失败: ${(result.stderr || '').trim()}`)
   }
 
@@ -1618,7 +1618,10 @@ async function createDevAgentStatus(agent) {
   const probe = agent === 'openclaw'
     ? await probeOpenclawGatewayHealth(port, 5000)
     : await probeLocalAgentHttp(agent, port, 1500)
-  const needsSetup = detectAgentNeedsSetup(probe)
+  const claudeRelayConfigured = agent === 'claudecode'
+    && probe?.body?.relay?.apiKeyConfigured === true
+    && probe?.body?.authConfigured === true
+  const needsSetup = claudeRelayConfigured ? false : detectAgentNeedsSetup(probe)
   const ready = !!probe.ready && !needsSetup
   const status = needsSetup
     ? 'needs_setup'
@@ -2884,7 +2887,7 @@ function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
     name: String(source.name || id),
     api: String(source.api || defaults.api || 'openai-completions'),
     reasoning: source.reasoning !== undefined ? source.reasoning : true,
-    input: Array.isArray(source.input) && source.input.length ? source.input : ['text'],
+    input: Array.isArray(source.input) && source.input.length ? source.input : ['text', 'image'],
     contextWindow: Number(source.contextWindow || defaults.contextWindow || 204800),
     maxTokens: Number(source.maxTokens || defaults.maxTokens || 131072),
   }
@@ -3100,6 +3103,15 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
   const primaryResolution = resolveOpenClawGatewayPrimaryModel({ cfg, env, minimaxConfig, testMode: isServerTestBuild() })
   ensureOpenClawGatewayResolvedProvider(cfg, primaryResolution, minimaxConfig)
   cfg.models.providers = sanitizeOpenClawGatewayProviders(cfg.models.providers)
+  if (cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object' && !Array.isArray(cfg.models.providers.minimax)) {
+    cfg.models.providers.minimax = normalizeOpenClawGatewayProvider(cfg.models.providers.minimax, {
+      api: 'openai-completions',
+      baseUrl: minimaxConfig?.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl,
+      model: primaryResolution.provider === 'minimax' ? primaryResolution.model : MINIMAX_TEST_DEFAULTS.model,
+      contextWindow: 204800,
+      maxTokens: 131072,
+    })
+  }
   if (primaryResolution.status !== 'ready' || !primaryResolution.primary || !isOpenClawGatewayModelRefAvailable(cfg, primaryResolution.primary)) {
     const error = new Error('OpenClaw model config required. Configure provider/base_url/api_key/model before starting Gateway.')
     error.code = 'OPENCLAW_MODEL_CONFIG_REQUIRED'
@@ -3109,14 +3121,18 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
     throw error
   }
   const primaryRef = applyOpenClawGatewayPrimaryModel(cfg, primaryResolution)
+  if (cfg.agents?.defaults?.models && typeof cfg.agents.defaults.models === 'object' && !Array.isArray(cfg.agents.defaults.models)) {
+    for (const key of Object.keys(cfg.agents.defaults.models)) {
+      if (key.toLowerCase() === primaryRef.toLowerCase() && key !== primaryRef) {
+        cfg.agents.defaults.models[primaryRef] = cfg.agents.defaults.models[key]
+        delete cfg.agents.defaults.models[key]
+      }
+    }
+    cfg.agents.defaults.models[primaryRef] = cfg.agents.defaults.models[primaryRef] || {}
+  }
   ensureOpenClawGatewayWorkspace(cfg)
   cfg.gateway = cfg.gateway && typeof cfg.gateway === 'object' && !Array.isArray(cfg.gateway) ? cfg.gateway : {}
-  cfg.gateway.superclawRuntimeConfig = {
-    status: primaryResolution.status,
-    source: primaryResolution.source,
-    primary: primaryRef,
-    noOpenAiFallback: true,
-  }
+  delete cfg.gateway.superclawRuntimeConfig
 
   const dir = openclawGatewayLaunchConfigDir()
   fs.mkdirSync(dir, { recursive: true })
@@ -6836,6 +6852,9 @@ function miniMaxResourcesDir() {
   for (const candidate of candidates) {
     const resolved = path.resolve(candidate)
     const key = resolved.toLowerCase()
+    const appRootKey = path.resolve(appRootDir()).toLowerCase()
+    const insideAppRoot = key === appRootKey || key.startsWith(appRootKey + path.sep.toLowerCase())
+    if (insideAppRoot && (fs.existsSync(resolved) || candidate === candidates[candidates.length - 1])) return resolved
     if (blocked.some(dir => key === dir || key.startsWith(dir + path.sep.toLowerCase()))) continue
     if (fs.existsSync(resolved) || candidate === candidates[candidates.length - 1]) return resolved
   }
@@ -6928,7 +6947,7 @@ function miniMaxOpenClawModelDefinition() {
     name: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
     api: 'openai-completions',
     reasoning: true,
-    input: ['text'],
+    input: ['text', 'image'],
     contextWindow: 204800,
     maxTokens: 131072,
   }
