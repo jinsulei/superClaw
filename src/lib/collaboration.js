@@ -158,6 +158,7 @@ export function saveAgentTaskMessage(message = {}) {
     created_at: message.created_at || now,
     updated_at: now,
   }
+  row.task_events = buildTaskEventsForAgentTaskMessage(row)
   const rows = listAgentTaskMessages()
     .filter(item => !(item.task_id === row.task_id && item.message_type === row.message_type && item.from_agent === row.from_agent && item.content === row.content))
   rows.unshift(row)
@@ -473,11 +474,162 @@ export function setPendingDispatch(dispatch) {
     mode_warning: modeInfo?.warning || dispatch?.mode_warning || null,
     createdAt: Date.now(),
   }
+  payload.task_events = buildTaskEventsForPendingDispatch(payload)
   const queue = readPendingQueue()
     .filter(item => !(item?.taskId === payload.taskId && item?.target === payload.target && item?.stage === payload.stage))
   queue.push(payload)
   localStorage.setItem(PENDING_KEY, JSON.stringify(queue.slice(-20)))
   return payload
+}
+
+function buildTaskEventsForAgentTaskMessage(row = {}) {
+  const primary = taskEventTypeForMessage(row.message_type)
+  const events = []
+  if (primary) {
+    events.push(createCollaborationTaskEvent(row, {
+      eventType: primary,
+      status: taskEventStatusForMessage(row.message_type, row.status),
+      actor: row.from_agent,
+    }))
+  }
+  if (row.requires_confirmation) {
+    events.push(createCollaborationTaskEvent(row, {
+      eventType: 'approval_required',
+      status: 'waiting_human',
+      actor: row.from_agent || 'system',
+    }))
+  }
+  return events
+}
+
+function buildTaskEventsForPendingDispatch(payload = {}) {
+  const taskId = payload.taskId || payload.task_id || ''
+  const actor = normalizeAgentId(payload.fromAgent || payload.from_agent || COLLAB_TARGETS.hermes)
+  const createdAt = new Date(payload.createdAt || Date.now()).toISOString()
+  return [createTaskEvent({
+    task_id: taskId,
+    task_type: 'collaboration',
+    event_type: 'agent_command_sent',
+    actor,
+    source: 'collaboration.pending_dispatch',
+    status: 'running',
+    visible_text: payload.title || payload.message || `Dispatch to ${payload.target || 'agent'}`,
+    raw_payload: {
+      taskId,
+      target: payload.target || null,
+      stage: payload.stage || null,
+      title: payload.title || null,
+      message: payload.message || null,
+      mode: payload.mode || null,
+      permission_level: payload.permission_level || null,
+      requires_confirmation: !!payload.requires_confirmation,
+    },
+    visibility: 'normal',
+    severity: 'info',
+    created_at: createdAt,
+  })]
+}
+
+function taskEventTypeForMessage(messageType) {
+  if (messageType === 'task_request') return 'task_created'
+  if (messageType === 'task_progress') return 'task_progress'
+  if (messageType === 'task_result') return 'task_completed'
+  if (messageType === 'task_error') return 'task_failed'
+  if (messageType === 'task_delegate') return 'agent_command_sent'
+  return ''
+}
+
+function taskEventStatusForMessage(messageType, status) {
+  if (messageType === 'task_request') return 'created'
+  if (messageType === 'task_progress') return 'running'
+  if (messageType === 'task_result') return 'completed'
+  if (messageType === 'task_error') return 'failed'
+  if (messageType === 'task_delegate') return 'running'
+  return normalizeTaskEventStatus(status)
+}
+
+function normalizeTaskEventStatus(status) {
+  const value = String(status || '').trim()
+  if (['created', 'running', 'waiting_human', 'completed', 'failed', 'blocked'].includes(value)) return value
+  if (value === 'pending') return 'created'
+  if (value === 'delegated' || value === 'dispatched') return 'running'
+  return 'running'
+}
+
+function createCollaborationTaskEvent(row, options = {}) {
+  return createTaskEvent({
+    task_id: row.task_id,
+    task_type: 'collaboration',
+    event_type: options.eventType,
+    actor: options.actor || row.from_agent || 'system',
+    source: 'collaboration.local_message',
+    status: options.status || normalizeTaskEventStatus(row.status),
+    visible_text: buildTaskEventVisibleText(row),
+    raw_payload: {
+      session_id: row.session_id,
+      parent_task_id: row.parent_task_id,
+      from_agent: row.from_agent,
+      to_agent: row.to_agent,
+      message_type: row.message_type,
+      status: row.status,
+      title: row.title,
+      content: row.content,
+      mode: row.mode,
+      permission_level: row.permission_level,
+      requires_confirmation: row.requires_confirmation,
+      tool: row.tool,
+      context: row.context,
+      artifacts: row.artifacts,
+    },
+    visibility: row.requires_confirmation && options.eventType === 'approval_required' ? 'normal' : 'debug',
+    severity: row.message_type === 'task_error' ? 'error' : row.requires_confirmation ? 'warning' : 'info',
+    created_at: row.created_at || new Date().toISOString(),
+  })
+}
+
+function createTaskEvent(input = {}) {
+  return {
+    event_id: `evt-${String(input.event_type || 'task_event').replace(/[^a-z0-9_]+/gi, '-')}-${String(input.task_id || Date.now()).replace(/[^a-z0-9_-]+/gi, '-')}`,
+    task_id: input.task_id || '',
+    task_type: input.task_type || 'collaboration',
+    event_type: input.event_type,
+    actor: input.actor || 'system',
+    source: input.source || 'collaboration',
+    status: input.status || 'running',
+    visible_text: redactSensitiveValue(String(input.visible_text || '').trim() || 'Task event'),
+    raw_payload: redactSensitiveValue(input.raw_payload || {}),
+    visibility: input.visibility || 'debug',
+    severity: input.severity || 'info',
+    created_at: input.created_at || new Date().toISOString(),
+  }
+}
+
+function buildTaskEventVisibleText(row = {}) {
+  const title = String(row.title || '').trim()
+  const content = String(row.content || '').trim()
+  const text = title && content ? `${title}: ${content}` : title || content || row.message_type || 'Task event'
+  return clampText(text, 500)
+}
+
+function redactSensitiveValue(value) {
+  if (Array.isArray(value)) return value.map(item => redactSensitiveValue(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (isSensitiveKey(key)) return [key, '[REDACTED]']
+      return [key, redactSensitiveValue(item)]
+    }))
+  }
+  if (typeof value === 'string') {
+    return value
+      .replace(/fake-(?:api-key|token|cookie|secret|access-token|refresh-token|password)-should-be-redacted/gi, '[REDACTED]')
+      .replace(/\b(?:sk|sk-proj)-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED]')
+      .replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, 'Bearer [REDACTED]')
+  }
+  return value
+}
+
+function isSensitiveKey(key) {
+  return /api_key|access_token|refresh_token|token|cookie|secret|password/i.test(String(key || ''))
 }
 
 function normalizeContext(context = {}) {
