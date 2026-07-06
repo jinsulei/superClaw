@@ -1357,6 +1357,44 @@ export function render() {
     localStorage.setItem('superclaw-hermes-rendered-task-messages-v1', JSON.stringify(Array.from(renderedInboxMessages).slice(-300)))
   }
 
+  function isOpenClawInboxResultMessage(item = {}) {
+    return item.from_agent === COLLAB_TARGETS.openclaw
+      && ['task_result', 'task_error'].includes(item.message_type)
+  }
+
+  function redactHermesInboxFullContent(value = '') {
+    return String(value || '')
+      .replace(/<think>[\s\S]*?<\/think>/gi, '[REDACTED]')
+      .replace(/private\s+(model\s+)?reasoning|private\s+chain\s+of\s+thought/gi, '[REDACTED]')
+      .replace(/fake-[a-z0-9_-]+-should-be-redacted/gi, '[REDACTED]')
+      .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|secret|password|authorization)\b\s*[:=]\s*["']?[^"'\s,;]+/gi, '$1=[REDACTED]')
+      .trim()
+  }
+
+  function openclawInboxSummary(item = {}, full_content = '') {
+    const eventSummary = Array.isArray(item.task_events)
+      ? item.task_events.map(event => event?.visible_text).find(Boolean)
+      : ''
+    const raw = item.summary || item.result_summary || eventSummary || item.title || full_content.slice(0, 360)
+    return redactHermesInboxFullContent(raw)
+  }
+
+  function formatHermesInboxMessageBody(item = {}) {
+    if (!isOpenClawInboxResultMessage(item)) return item.content || '（没有正文）'
+    const full_content = redactHermesInboxFullContent(item.full_content || item.fullContent || item.content || '')
+    if (!full_content) return '（没有正文）'
+    const summary = openclawInboxSummary(item, full_content)
+    return [
+      summary || 'OpenClaw returned a result.',
+      '',
+      '**OpenClaw full_content / 查看完整结果**',
+      '',
+      '```text',
+      full_content,
+      '```',
+    ].join('\n')
+  }
+
   function renderHermesInboxMessages() {
     const rows = listAgentTaskMessages({ toAgent: COLLAB_TARGETS.hermes })
       .filter(item => ['task_request', 'task_result', 'task_error', 'task_delegate'].includes(item.message_type))
@@ -1384,7 +1422,7 @@ export function render() {
         item.tool ? `- 工具：${item.tool}` : '',
         item.title ? `- 标题：${item.title}` : '',
         '',
-        item.content || '（没有正文）',
+        formatHermesInboxMessageBody(item),
       ].filter(Boolean).join('\n'))
     }
     persistRenderedInboxMessages()
