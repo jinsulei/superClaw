@@ -113,7 +113,7 @@ function sanitizeGenerationPath(value) {
 
 export function normalizeGenerationModelCapability(input = {}) {
   const status = input.capabilities || input.status || input
-  const caps = status.capabilities || input.model_capabilities || {}
+  const caps = status.capabilities || input.model_capabilities || (input.capabilities && !input.capabilities.capabilities ? input.capabilities : {})
   const provider = clean(input.provider || status.provider)
   const model = clean(input.model || input.model_id || status.model)
   const endpointCallable = status.endpointCallable === true || input.endpoint_callable === true
@@ -198,6 +198,67 @@ export function normalizeGenerationResult(input = {}) {
       status: 'not_evaluated',
       reason: 'Generation acceptance has not been evaluated yet.',
     },
+  }
+}
+
+export function buildGenerationExecutorRequest(input = {}) {
+  const prompt = normalizeGenerationPrompt(input)
+  const capability = normalizeGenerationModelCapability(input)
+  const outputType = prompt.output_type || 'text_to_image'
+  const executable = outputType === 'text_to_image' && capability.executable?.text_to_image === true
+
+  return {
+    task_id: prompt.task_id,
+    source: 'hermes.generation_executor_boundary',
+    executor: 'generation_executor_boundary',
+    output_type: outputType,
+    status: executable ? 'adapter_ready' : 'unsupported',
+    adapter_facing: true,
+    executable,
+    executed: false,
+    completed: false,
+    prompt,
+    capability,
+    artifacts: [],
+    notes: [
+      'Boundary contract only; no generation is executed here.',
+      'Executor responses must be normalized before any UI or observability surface.',
+    ],
+  }
+}
+
+export function normalizeGenerationExecutorResponse(input = {}, request = {}) {
+  const boundary = request?.prompt ? request : buildGenerationExecutorRequest(input)
+  const canSurfaceArtifacts = boundary.executable === true && boundary.output_type === 'text_to_image'
+  const result = normalizeGenerationResult({
+    ...input,
+    task_id: input.task_id || input.taskId || boundary.task_id,
+    status: input.status === 'implemented' || input.status === 'completed' || input.status === 'success'
+      ? 'partial'
+      : input.status,
+    artifacts: canSurfaceArtifacts ? input.artifacts : [],
+  })
+  const status = canSurfaceArtifacts ? result.status : 'skipped'
+
+  return {
+    task_id: result.task_id || boundary.task_id,
+    source: 'hermes.generation_executor_boundary',
+    executor: boundary.executor || 'generation_executor_boundary',
+    output_type: boundary.output_type || 'text_to_image',
+    status,
+    adapter_facing: true,
+    executable: boundary.executable === true,
+    executed: false,
+    completed: false,
+    artifacts: status === 'skipped' ? [] : result.artifacts,
+    result: {
+      ...result,
+      status,
+      artifacts: status === 'skipped' ? [] : result.artifacts,
+    },
+    acceptance_summary: result.acceptance_summary,
+    task_events: result.task_events,
+    tool_runs: result.tool_runs,
   }
 }
 

@@ -23,6 +23,7 @@ const gates = [
       ['node', '--test', 'tests/regression/ecommerce-stage-guard-integration.test.js'],
       ['node', '--test', 'tests/regression/generation-ppt-regression.test.js'],
       ['node', '--test', 'tests/regression/generation-ppt-chat-integration.test.js'],
+      ['node', '--test', 'tests/regression/generation-executor-boundary-integration.test.js'],
       ['node', '--test', 'tests/regression/wechat-customer-ops-regression.test.js'],
       ['node', '--test', 'tests/regression/wechat-customer-stage56-integration.test.js'],
       ['node', '--test', 'tests/regression/wechat-ocr-runtime-bridge-integration.test.js'],
