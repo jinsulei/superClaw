@@ -21,6 +21,7 @@ import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { renderAgentMessageContent } from '../../../components/chat/agent-message-content.js'
 import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
 import { classifyHermesEcommerceWorkflowIntent } from '../lib/ecommerce-workflow-guard.js'
+import { normalizeLinkReaderResult } from '../lib/hermes-ecommerce-link-reader.js'
 import {
   buildHermesFoodDeliveryPlan,
   detectHermesFoodDeliveryIntent,
@@ -425,6 +426,37 @@ async function assistantFetchUrlWithTimeout(url) {
   return withHermesLinkTimeout(api.assistantFetchUrl(url))
 }
 
+function buildLinkReaderNormalizedMetadata(url, {
+  platform = '',
+  content = '',
+  visibleText = '',
+  fetchStatus = null,
+  status = '',
+  materialLevel = '',
+  errorMessage = '',
+} = {}) {
+  const kind = fetchStatus?.kind || ''
+  const fetchSucceeded = kind === 'link_fetch_success'
+  const videoLink = isVideoShareUrl(url)
+  return normalizeLinkReaderResult({
+    url,
+    platform: platform || (videoLink ? videoPlatformLabel(url) : 'webpage'),
+    status: status || (fetchSucceeded ? 'partial' : 'failed'),
+    material_level: materialLevel || (fetchSucceeded ? (videoLink ? 'metadata_only' : 'webpage_text') : 'fetch_failed'),
+    visible_text: visibleText || url,
+    description: String(content || '').slice(0, 500),
+    error_code: fetchSucceeded ? '' : kind || 'link_fetch_failed',
+    error_message: fetchSucceeded ? '' : (errorMessage || fetchStatus?.message || ''),
+    transcript_available: false,
+    subtitle_available: false,
+    audio_transcript_available: false,
+    frame_ocr_available: false,
+    material_limitations: videoLink
+      ? ['metadata_only', 'no_transcript', 'no_ocr', 'no_asr']
+      : [],
+  })
+}
+
 function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
   return [
     '重要补充：如果第一次 browser_navigate 只返回首页、登录态、短内容或空内容，不要立即失败；必须继续尝试 browser_snapshot，再用 browser_console 读取 document.title、meta description、JSON-LD、document.body.innerText 的前 8000 字。',
@@ -597,7 +629,13 @@ async function buildHermesVideoLinkAnalysisPayload(url, { visibleText = '', supp
       ? '本轮已经先尝试读取链接公开页面信息。请基于前置读取内容做有限视频/社媒链接分析；如果只是 metadata 或页面文本，必须说明素材限制。'
       : '本轮前置链接抓取失败或超时。不要直接报任务失败；请基于用户粘贴文本、平台类型和链接做 metadata_only 有限分析，并明确要求补充标题、口播、字幕、截图或正文素材。',
   ].join('\n\n')
-  return { platform, visibleText: displayText, modelContent, instructions, fetchStatus }
+  const normalizedLinkReaderResult = buildLinkReaderNormalizedMetadata(url, {
+    platform,
+    content: fetchedContent,
+    visibleText: displayText,
+    fetchStatus,
+  })
+  return { platform, visibleText: displayText, modelContent, instructions, fetchStatus, normalizedLinkReaderResult }
 }
 
 function formatVideoLinkSuccessPrompt(url, clipped) {
@@ -2883,6 +2921,10 @@ export function render() {
         await store.sendMessage(payload.visibleText, {
           modelContent: payload.modelContent,
           instructions: payload.instructions,
+          linkReaderResult: payload.normalizedLinkReaderResult,
+          metadata: {
+            link_reader_result: payload.normalizedLinkReaderResult,
+          },
         })
         toast(
           payload.fetchStatus.kind === 'link_fetch_success'
@@ -2903,6 +2945,11 @@ export function render() {
         const visibleText = supplement
           ? `${supplement}\n${url}`
           : `请分析这个链接：${url}`
+        const normalizedLinkReaderResult = buildLinkReaderNormalizedMetadata(url, {
+          content,
+          visibleText,
+          fetchStatus,
+        })
         if (fetchStatus.kind !== 'link_fetch_success') {
           linkMenuOpen = false
           linkDraft = ''
@@ -2918,7 +2965,13 @@ export function render() {
         resetInput()
         forceScrollBottom = true
         draw()
-        await store.sendMessage(visibleText, { modelContent })
+        await store.sendMessage(visibleText, {
+          modelContent,
+          linkReaderResult: normalizedLinkReaderResult,
+          metadata: {
+            link_reader_result: normalizedLinkReaderResult,
+          },
+        })
         toast('已开始分析链接内容', 'success')
       }
     } catch (e) {
@@ -2930,6 +2983,13 @@ export function render() {
           ? `${supplement}\n${url}`
           : `请分析这个${platform}视频链接：${url}`
         const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, `抓取失败: ${message}`), supplement)
+        const normalizedLinkReaderResult = buildLinkReaderNormalizedMetadata(url, {
+          platform,
+          content: `link fetch failed: ${message}`,
+          visibleText,
+          fetchStatus: { kind: 'link_fetch_failed', message },
+          errorMessage: message,
+        })
         linkMenuOpen = false
         linkDraft = ''
         resetInput()
@@ -2938,6 +2998,10 @@ export function render() {
         await store.sendMessage(visibleText, {
           modelContent,
           instructions: formatShortVideoWorkflowInstructions(platform),
+          linkReaderResult: normalizedLinkReaderResult,
+          metadata: {
+            link_reader_result: normalizedLinkReaderResult,
+          },
         })
         toast('已交给 Hermes 后台继续读取', 'warning')
       } else {
@@ -3815,6 +3879,10 @@ export function render() {
             buildIntentTriggeredToolInstructions(text),
           ].filter(Boolean).join('\n\n'),
           attachments,
+          linkReaderResult: payload.normalizedLinkReaderResult,
+          metadata: {
+            link_reader_result: payload.normalizedLinkReaderResult,
+          },
         })
         toast(
           payload.fetchStatus.kind === 'link_fetch_success'
