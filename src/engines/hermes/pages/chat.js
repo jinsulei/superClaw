@@ -3472,6 +3472,29 @@ export function render() {
     return result
   }
 
+  function createStage56HermesOcrAdapter() {
+    const extract = async (screenshot = {}) => {
+      if (!screenshot) return ''
+      const imagePath = screenshot.savedPath || screenshot.path || screenshot.filePath || ''
+      const imageData = screenshot.dataUrl || screenshot.imageData || ''
+      const mimeType = screenshot.mimeType || 'image/png'
+      const result = imagePath
+        ? await ocr.extractTextFromImage(imagePath, { sourceType: 'stage56_live_screen' })
+        : imageData
+          ? await ocr.extractTextFromImageData(imageData, { mimeType, sourceType: 'stage56_live_screen' })
+          : await ocr.extractTextFromCurrentBrowserPage({
+              imageData: screenshot.imageUrl && String(screenshot.imageUrl).startsWith('data:') ? screenshot.imageUrl : '',
+              mimeType,
+              sourceType: 'stage56_live_screen',
+            })
+      return result?.ok ? String(result.text || '') : ''
+    }
+    return {
+      recognize: extract,
+      imageToText: extract,
+    }
+  }
+
   function createEcommerceBrowserContext(stageLabel = 'OpenClaw') {
     const notConnected = `${stageLabel} browser adapter is not connected in this Hermes page.`
     const fail = (extra = {}) => ({ ok: false, error: notConnected, ...extra })
@@ -3684,7 +3707,7 @@ export function render() {
           userText,
           runStage56Ops,
           { intent: stage56.intent, platforms: stage56.platforms },
-          { hermes: {}, ocr: null, materialRecords: [] },
+          { hermes: {}, ocr: createStage56HermesOcrAdapter(), materialRecords: [] },
         )
       }
     }
