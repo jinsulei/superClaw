@@ -83,6 +83,7 @@ const HISTORY_MAX_MESSAGES = 18
 const HISTORY_MAX_CHARS = 14000
 const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
 const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
+const HERMES_RUN_TIMEOUT_MS = 180 * 1000
 const HERMES_REPLY_STYLE_INSTRUCTION = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
@@ -1109,6 +1110,73 @@ function createStore() {
     return { status, reason, error }
   }
 
+  function createHermesRunTimeoutError(timeoutMs = HERMES_RUN_TIMEOUT_MS) {
+    const seconds = Math.max(1, Math.round(Number(timeoutMs || HERMES_RUN_TIMEOUT_MS) / 1000))
+    const error = new Error(`Hermes run timeout after ${seconds}s`)
+    error.code = 'HERMES_RUN_TIMEOUT'
+    error.timeout_ms = timeoutMs
+    return error
+  }
+
+  function clearHermesRunTimeoutGuard() {
+    if (hermesRunTimeoutTimer) {
+      clearTimeout(hermesRunTimeoutTimer)
+      hermesRunTimeoutTimer = null
+    }
+  }
+
+  function startHermesRunTimeoutGuard({ clientRequestId, sessionId, timeoutMs = HERMES_RUN_TIMEOUT_MS } = {}) {
+    clearHermesRunTimeoutGuard()
+    hermesRunTimeoutTimer = setTimeout(() => {
+      handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs })
+    }, timeoutMs)
+  }
+
+  function handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs = HERMES_RUN_TIMEOUT_MS } = {}) {
+    if (clientRequestId && state.runningClientRequestId && state.runningClientRequestId !== clientRequestId) return false
+    if (!state.streaming && !state.runningClientRequestId) return false
+    const error = createHermesRunTimeoutError(timeoutMs)
+    const s = state.sessions.find(item => item.id === (sessionId || state.runningSessionId)) || taskSession() || activeSession()
+    if (s) {
+      const msg = ensureAssistantMessage(s, clientRequestId || state.runningClientRequestId)
+      const visible = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(error), currentVisibleUserPrompt())
+      if (msg) {
+        delete msg.isStreaming
+        msg.error = visible
+        msg.content = visible
+        msg.task_events = [
+          ...(Array.isArray(msg.task_events) ? msg.task_events : []),
+          {
+            event_id: `evt-hermes-run-timeout-${clientRequestId || Date.now()}`,
+            task_id: clientRequestId || state.runningClientRequestId || '',
+            event_type: 'task_failed',
+            actor: 'hermes',
+            source: 'hermes.chat_store.timeout',
+            status: 'failed',
+            visible_text: visible,
+            severity: 'error',
+            created_at: new Date().toISOString(),
+          },
+        ]
+      }
+      persistSessionMessages(s.id)
+      persistSessions()
+    }
+    if (streamAbortController) {
+      try { streamAbortController.abort() } catch {}
+    }
+    finalizeHermesRequestState({
+      status: 'failed',
+      reason: 'run-timeout',
+      clientRequestId,
+      error,
+      summary: 'Hermes run timed out before producing a final result.',
+    })
+    inFlightSendByRequestId.delete(clientRequestId)
+    visibleUserPromptByRequestId.delete(clientRequestId)
+    return true
+  }
+
   function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
     const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
     const normalized = normalizeHermesVisibleReplyText(visible, {
@@ -1773,6 +1841,7 @@ function createStore() {
   const unlisteners = []
   let streamAbortController = null
   let activeResponseAssembler = null
+  let hermesRunTimeoutTimer = null
   const forceRemoteRefreshIds = new Set()
   async function attachStreamListeners(runSessionId, clientRequestId) {
     detachStreamListeners()
@@ -2129,6 +2198,7 @@ function createStore() {
   }
 
   function cleanupAfterRun(meta = {}) {
+    clearHermesRunTimeoutGuard()
     const completedSessionId = state.runningSessionId
     const s = completedSessionId ? state.sessions.find(x => x.id === completedSessionId) : null
     if (s && meta.status && meta.status !== 'success') {
@@ -2579,6 +2649,7 @@ function createStore() {
     state.liveTools = []
     state.pendingAssistantId = assistantMessage.id
     activeResponseAssembler = new HermesResponseAssembler({ clientRequestId })
+    startHermesRunTimeoutGuard({ clientRequestId, sessionId: s.id })
     notify()
 
     const runPromise = Promise.resolve().then(async () => {
@@ -2625,18 +2696,6 @@ function createStore() {
       })
       persistSessionMessages(s.id)
       cleanupAfterRun({ status: 'failed', reason: 'send-error', error: e })
-      throw e
-      assistantMessage.error = e?.message || String(e)
-      delete assistantMessage.isStreaming
-      if (!assistantMessage.content.trim()) assistantMessage.content = `Agent 运行失败：${e?.message || e}`
-      if (!assistantMessage.content.trim()) s.messages.push({
-        id: uid(),
-        role: 'system',
-        content: `⚠️ ${e?.message || e}`,
-        timestamp: Date.now(),
-      })
-      persistSessionMessages(s.id)
-      cleanupAfterRun()
       throw e
     } finally {
       inFlightSendByRequestId.delete(clientRequestId)
