@@ -263,6 +263,47 @@ export function evaluateCollaborationWatchdog(input = {}) {
   }
 }
 
+export function createTaskHeartbeat(input = {}) {
+  const taskId = input.task_id || input.taskId || ''
+  const sessionId = input.session_id || input.sessionId || getDefaultSessionId()
+  const agent = normalizeAgentId(input.agent || input.agent_name || input.agentName || input.from_agent || input.fromAgent || COLLAB_TARGETS.hermes)
+  const heartbeatAt = normalizeHeartbeatTimestamp(input.heartbeat_at || input.heartbeatAt || input.last_heartbeat || input.lastHeartbeat || input.checkedAt || input.lastMessageAt)
+  const status = normalizeTaskEventStatus(input.status || 'running')
+  const event = createTaskEvent({
+    task_id: taskId,
+    session_id: sessionId,
+    task_type: 'collaboration',
+    event_type: 'agent_heartbeat',
+    actor: agent,
+    source: 'collaboration.heartbeat',
+    status,
+    visible_text: input.visible_text || `${targetLabel(agent)} heartbeat`,
+    raw_payload: {
+      session_id: sessionId,
+      agent,
+      status,
+      heartbeat_at: heartbeatAt,
+      message: input.message || null,
+      token: input.token,
+      apiKey: input.apiKey,
+      secret: input.secret,
+      cookie: input.cookie,
+    },
+    visibility: 'debug',
+    severity: 'info',
+    created_at: heartbeatAt,
+  })
+  return {
+    task_id: taskId,
+    session_id: sessionId,
+    agent,
+    agent_name: agent,
+    status,
+    heartbeat_at: heartbeatAt,
+    task_events: [event],
+  }
+}
+
 export function buildTaskContext(input = {}) {
   const sessionId = input.session_id || input.sessionId || input.session?.id || getDefaultSessionId()
   const taskId = input.task_id || input.taskId || ''
@@ -874,6 +915,7 @@ function createTaskEvent(input = {}) {
   return {
     event_id: `evt-${String(input.event_type || 'task_event').replace(/[^a-z0-9_]+/gi, '-')}-${String(input.task_id || Date.now()).replace(/[^a-z0-9_-]+/gi, '-')}`,
     task_id: input.task_id || '',
+    ...(input.session_id ? { session_id: input.session_id } : {}),
     task_type: input.task_type || 'collaboration',
     event_type: input.event_type,
     actor: input.actor || 'system',
@@ -885,6 +927,18 @@ function createTaskEvent(input = {}) {
     severity: input.severity || 'info',
     created_at: input.created_at || new Date().toISOString(),
   }
+}
+
+function normalizeHeartbeatTimestamp(value) {
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = new Date(value)
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString()
+  }
+  return new Date().toISOString()
 }
 
 function buildTaskEventVisibleText(row = {}) {

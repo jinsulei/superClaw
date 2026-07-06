@@ -139,6 +139,7 @@ export function mapAgentGatewayStatusToAgentRun(statusSnapshot = {}) {
   return {
     agent_run_id: agentRunId,
     task_id: String(statusSnapshot.task_id || statusSnapshot.taskId || statusSnapshot.run_id || statusSnapshot.runId || `${agentName}-status-task`),
+    session_id: String(statusSnapshot.session_id || statusSnapshot.sessionId || ''),
     agent_name: agentName,
     adapter_name: agentAdapterName(statusSnapshot),
     status,
@@ -172,6 +173,7 @@ export function mapAgentStatusToTaskEvent(statusSnapshot = {}, options = {}) {
   return {
     event_id: `evt-${eventType}-${agentRunId}`,
     task_id: String(statusSnapshot.task_id || statusSnapshot.taskId || statusSnapshot.run_id || statusSnapshot.runId || `${agentName}-status-task`),
+    session_id: String(statusSnapshot.session_id || statusSnapshot.sessionId || ''),
     task_type: 'agent_status',
     event_type: eventType,
     actor: agentName,
@@ -189,11 +191,32 @@ export function mapAgentStatusToTaskEvent(statusSnapshot = {}, options = {}) {
       error: statusSnapshot.error,
       checkedAt: statusSnapshot.checkedAt,
       lastMessageAt: statusSnapshot.lastMessageAt,
+      heartbeat_at: statusSnapshot.heartbeat_at,
+      session_id: statusSnapshot.session_id || statusSnapshot.sessionId,
     }),
     visibility: eventType === 'agent_heartbeat' ? 'debug' : 'normal',
     severity: status === 'failed' || status === 'blocked' ? 'warning' : 'info',
     linked_agent_run_id: String(agentRunId),
     created_at: createdAt,
+  }
+}
+
+export function mapTaskBoundAgentHeartbeat(heartbeat = {}) {
+  const heartbeatAt = stableAgentIsoTime(heartbeat.heartbeat_at || heartbeat.lastMessageAt || heartbeat.checkedAt)
+  const snapshot = {
+    ...heartbeat,
+    status: 'running',
+    heartbeat_at: heartbeatAt,
+  }
+  const agentRun = mapAgentHeartbeatToAgentRun(snapshot)
+  const event = mapAgentStatusToTaskEvent(snapshot, { event_type: 'agent_heartbeat' })
+  return {
+    task_id: agentRun.task_id,
+    session_id: agentRun.session_id,
+    agent_name: agentRun.agent_name,
+    heartbeat_at: heartbeatAt,
+    agent_run: agentRun,
+    task_events: [event],
   }
 }
 
