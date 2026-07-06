@@ -19,7 +19,12 @@ import { stopAgentOnPageClose } from '../../../lib/agent-lifecycle.js'
 import { toast } from '../../../components/toast.js'
 import { showConfirm, showContentModal } from '../../../components/modal.js'
 import { renderAgentMessageContent } from '../../../components/chat/agent-message-content.js'
-import { getChatStore, getSourceLabel } from '../lib/chat-store.js'
+import {
+  buildFrontendDebugRowViewModel,
+  buildFrontendProgressBubbleViewModel,
+  getChatStore,
+  getSourceLabel,
+} from '../lib/chat-store.js'
 import { classifyHermesEcommerceWorkflowIntent } from '../lib/ecommerce-workflow-guard.js'
 import { normalizeLinkReaderResult } from '../lib/hermes-ecommerce-link-reader.js'
 import {
@@ -226,6 +231,44 @@ function prettyJson(val) {
     return val
   }
   try { return JSON.stringify(val, null, 2) } catch { return String(val) }
+}
+
+function normalizeFrontendToolStatus(status) {
+  const value = String(status || '').toLowerCase()
+  if (value === 'done') return 'completed'
+  if (value === 'error') return 'failed'
+  if (value === 'cancelled' || value === 'canceled') return 'cancelled'
+  return value || 'running'
+}
+
+function renderFrontendProgressBubble(viewModel = {}) {
+  if (!viewModel.summary) return ''
+  const status = viewModel.status || 'running'
+  const severity = viewModel.severity || 'info'
+  return `
+    <div class="hm-chat-progress-bubble" data-progress-status="${escAttr(status)}" data-progress-severity="${escAttr(severity)}">
+      <span class="hm-chat-progress-status">${escHtml(status)}</span>
+      <span class="hm-chat-progress-summary">${escHtml(viewModel.summary)}</span>
+    </div>
+  `
+}
+
+function renderFrontendDebugRows(viewModel = {}) {
+  const rows = Array.isArray(viewModel.rows) ? viewModel.rows : []
+  if (!rows.length) return ''
+  return `
+    <div class="hm-chat-debug-rows">
+      ${rows.map(row => `
+        <div class="hm-chat-debug-row">
+          <span class="hm-chat-debug-tool">${escHtml(row.tool_name || 'tool')}</span>
+          <span class="hm-chat-debug-status">${escHtml(row.status || '')}</span>
+          ${row.tool_run_id ? `<span class="hm-chat-debug-id">${escHtml(row.tool_run_id)}</span>` : ''}
+          ${row.error_code ? `<span class="hm-chat-debug-error">${escHtml(row.error_code)}</span>` : ''}
+          ${row.output_summary ? `<span class="hm-chat-debug-output">${escHtml(row.output_summary)}</span>` : ''}
+        </div>
+      `).join('')}
+    </div>
+  `
 }
 
 function formatTime(ts) {
@@ -1395,6 +1438,22 @@ export function render() {
     ].join('\n')
   }
 
+  function buildFrontendTaskEventsFromInboxMessage(item = {}) {
+    if (Array.isArray(item.task_events) && item.task_events.length) return item.task_events
+    return [{
+      event_id: `frontend-${item.task_id || item.created_at || Date.now()}`,
+      task_id: item.task_id || '',
+      event_type: item.message_type === 'task_error' ? 'task_failed' : 'task_progress',
+      actor: item.from_agent || '',
+      status: item.requires_confirmation ? 'waiting_human' : (item.status || 'running'),
+      visible_text: [item.title, item.content || item.summary || item.result_summary].filter(Boolean).join(': ')
+        || item.message_type
+        || 'Task update',
+      severity: item.message_type === 'task_error' ? 'error' : (item.requires_confirmation ? 'warning' : 'info'),
+      created_at: item.created_at || '',
+    }]
+  }
+
   function renderHermesInboxMessages() {
     const rows = listAgentTaskMessages({ toAgent: COLLAB_TARGETS.hermes })
       .filter(item => ['task_request', 'task_result', 'task_error', 'task_delegate'].includes(item.message_type))
@@ -1421,6 +1480,11 @@ export function render() {
         item.mode_warning ? `- Mode warning: ${item.mode_warning}` : '',
         item.tool ? `- 工具：${item.tool}` : '',
         item.title ? `- 标题：${item.title}` : '',
+        '',
+        renderFrontendProgressBubble(buildFrontendProgressBubbleViewModel({
+          task_events: buildFrontendTaskEventsFromInboxMessage(item),
+          mode: 'normal',
+        })),
         '',
         formatHermesInboxMessageBody(item),
       ].filter(Boolean).join('\n'))
@@ -1814,6 +1878,38 @@ export function render() {
     `
   }
 
+  function buildFrontendToolRunFromMessage(message = {}) {
+    const status = normalizeFrontendToolStatus(message.toolStatus)
+    return {
+      tool_run_id: message.id || '',
+      task_id: message.task_id || message.clientRequestId || '',
+      tool_name: message.toolName || 'tool',
+      status,
+      error_code: status === 'failed' ? 'TOOL_ERROR' : null,
+      error_message: status === 'failed' ? (message.toolPreview || message.toolResult || '') : '',
+      input_summary: message.toolArgs || '',
+      output_summary: message.toolResult || message.toolPreview || '',
+      started_at: message.started_at || message.timestamp || '',
+      completed_at: status === 'completed' ? (message.completed_at || message.timestamp || '') : null,
+    }
+  }
+
+  function buildFrontendToolRunFromLiveTool(tool = {}) {
+    const status = normalizeFrontendToolStatus(tool.status)
+    return {
+      tool_run_id: tool.id || tool.tool_run_id || '',
+      task_id: tool.task_id || tool.clientRequestId || '',
+      tool_name: tool.name || tool.toolName || 'tool',
+      status,
+      error_code: status === 'failed' ? 'TOOL_ERROR' : null,
+      error_message: status === 'failed' ? (tool.error || tool.preview || '') : '',
+      input_summary: prettyJson(tool.args || tool.input_summary || ''),
+      output_summary: prettyJson(tool.result ?? tool.output_summary ?? tool.error ?? tool.preview ?? ''),
+      started_at: tool.started_at || tool.created_at || '',
+      completed_at: status === 'completed' ? (tool.completed_at || tool.updated_at || '') : null,
+    }
+  }
+
   function renderToolMessage(m) {
     if (!isHermesDebugToolsVisible()) return ''
     const expanded = expandedToolIds.has(m.id)
@@ -1863,6 +1959,10 @@ export function render() {
             ` : ''}
           </div>
         ` : ''}
+        ${renderFrontendDebugRows(buildFrontendDebugRowViewModel({
+          tool_runs: [buildFrontendToolRunFromMessage(m)],
+          mode: 'debug',
+        }))}
       </div>
     `
   }
@@ -2148,6 +2248,12 @@ export function render() {
     const tools = isHermesDebugToolsVisible()
       ? store.state.liveTools.filter(tc => !shouldHideToolRow(tc))
       : []
+    const debugRows = tools.length
+      ? renderFrontendDebugRows(buildFrontendDebugRowViewModel({
+          tool_runs: tools.map(buildFrontendToolRunFromLiveTool),
+          mode: 'debug',
+        }))
+      : ''
     return `
       <div class="hm-chat-streaming">
         <div class="hm-chat-streaming-mark">
@@ -2167,6 +2273,7 @@ export function render() {
             `).join('')}
           </div>
         ` : ''}
+        ${debugRows}
       </div>
     `
   }
