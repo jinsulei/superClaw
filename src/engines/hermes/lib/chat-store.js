@@ -57,6 +57,9 @@ import {
   formatHermesImageCapabilityReply,
   formatHermesImageCapabilityReadFailureReply,
   isHermesImageCapabilityQuestion,
+  normalizeGenerationModelCapability,
+  normalizeGenerationPrompt,
+  normalizeGenerationResult,
 } from './hermes-image-capability.js'
 
 const formatToolResultsForUser = formatHermesToolSummaryForUser
@@ -99,6 +102,39 @@ const SOURCE_LABELS = {
   bluebubbles: 'iMessage',
   mattermost: 'Mattermost',
   cron: 'Cron',
+}
+
+export function buildHermesGenerationStatusMetadata(input = {}) {
+  const capability = normalizeGenerationModelCapability(input)
+  const prompt = normalizeGenerationPrompt({
+    ...input,
+    forbidden_actions: [
+      ...(Array.isArray(input.forbidden_actions) ? input.forbidden_actions : []),
+      ...(Array.isArray(input.forbiddenActions) ? input.forbiddenActions : []),
+      'create_local_export_file',
+      'read_runtime_data_secrets',
+    ],
+  })
+  const result = normalizeGenerationResult({
+    ...input,
+    status: input.status || capability.capabilities?.[prompt.output_type] || 'planned',
+    artifacts: capability.executable?.[prompt.output_type] === true ? input.artifacts : [],
+    task_events: input.task_events || input.taskEvents || [],
+    tool_runs: input.tool_runs || input.toolRuns || [],
+    acceptance_summary: input.acceptance_summary || input.acceptanceSummary,
+  })
+
+  return {
+    source: 'hermes.chat_store.generation_status',
+    status: result.status,
+    capability,
+    prompt,
+    result,
+    task_events: result.task_events,
+    tool_runs: result.tool_runs,
+    acceptance_summary: result.acceptance_summary,
+    adapter_policy: prompt.adapter_policy,
+  }
 }
 
 export function getSourceLabel(source) {

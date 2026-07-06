@@ -80,10 +80,35 @@ function stableGenerationState(value, fallback = 'planned') {
   return fallback
 }
 
+function nonExecutableGenerationState(value, fallback = 'planned') {
+  const state = stableGenerationState(value, fallback)
+  if (state === 'implemented' || state === 'partial') return fallback
+  return state
+}
+
 function generationCapabilityState({ supported = false, configured = false, executable = false, fallback = 'planned' } = {}) {
   if (!supported) return stableGenerationState(fallback)
   if (executable) return 'partial'
   return configured ? 'partial' : stableGenerationState(fallback)
+}
+
+function isUnsafeGenerationPath(value) {
+  const text = clean(value)
+  if (!text) return false
+  return /^[a-z]:[\\/]/i.test(text)
+    || /^\\\\/.test(text)
+    || /^\//.test(text)
+    || /^file:/i.test(text)
+    || /(?:^|[\\/])(?:runtime[\\/]data[\\/]secrets|src-tauri[\\/]resources[\\/]data[\\/]secrets|node_modules|src-tauri[\\/]target)(?:[\\/]|$)/i.test(text)
+    || /(?:^|[\\/])(?:\.env|relay-config\.json)(?:$|[\\/])/i.test(text)
+    || /fake[-_\s]?generated|generated[-_\s]?fake|exported/i.test(text)
+}
+
+function sanitizeGenerationPath(value) {
+  const text = clean(value)
+  if (!text) return null
+  if (isUnsafeGenerationPath(text)) return null
+  return text
 }
 
 export function normalizeGenerationModelCapability(input = {}) {
@@ -94,7 +119,6 @@ export function normalizeGenerationModelCapability(input = {}) {
   const endpointCallable = status.endpointCallable === true || input.endpoint_callable === true
   const modelConfigured = status.modelConfigured === true || Boolean(provider && model)
   const textToImageSupported = caps.image_generation === true || caps.text_to_image === true
-  const imageToImageSupported = caps.image_edit === true || caps.image_to_image === true
 
   return {
     provider,
@@ -108,14 +132,9 @@ export function normalizeGenerationModelCapability(input = {}) {
         executable: endpointCallable && textToImageSupported,
         fallback: 'partial',
       }),
-      image_to_image: generationCapabilityState({
-        supported: imageToImageSupported,
-        configured: modelConfigured,
-        executable: false,
-        fallback: 'planned',
-      }),
-      image_to_video: stableGenerationState(input.image_to_video_state, 'planned'),
-      ppt: stableGenerationState(input.ppt_state, 'planned'),
+      image_to_image: nonExecutableGenerationState(input.image_to_image_state, 'planned'),
+      image_to_video: nonExecutableGenerationState(input.image_to_video_state, 'planned'),
+      ppt: nonExecutableGenerationState(input.ppt_state, 'planned'),
     },
     executable: {
       text_to_image: endpointCallable && textToImageSupported,
@@ -142,7 +161,7 @@ export function normalizeGenerationPrompt(input = {}) {
       asset_id: clean(asset?.asset_id || asset?.id),
       kind: clean(asset?.kind || asset?.type),
       source: clean(asset?.source || 'user'),
-      path: asset?.path || null,
+      path: sanitizeGenerationPath(asset?.path),
     })),
     acceptance_criteria: asArray(input.acceptance_criteria || input.acceptanceCriteria).map(clean).filter(Boolean),
     model_id: clean(input.model_id || input.modelId || input.model),
@@ -157,15 +176,22 @@ export function normalizeGenerationPrompt(input = {}) {
 }
 
 export function normalizeGenerationResult(input = {}) {
-  return {
-    task_id: clean(input.task_id || input.taskId),
-    status: stableGenerationState(input.status, 'planned'),
-    artifacts: asArray(input.artifacts).map((artifact) => ({
+  const status = stableGenerationState(input.status, 'planned')
+  const artifacts = asArray(input.artifacts).map((artifact) => {
+    const uri = sanitizeGenerationPath(artifact?.uri)
+    if (!uri) return null
+    return {
       artifact_id: clean(artifact?.artifact_id || artifact?.id),
       kind: clean(artifact?.kind || artifact?.type),
-      uri: artifact?.uri || null,
+      uri,
       summary: clean(artifact?.summary || artifact?.title),
-    })),
+    }
+  }).filter(Boolean)
+
+  return {
+    task_id: clean(input.task_id || input.taskId),
+    status: status === 'implemented' ? 'planned' : status,
+    artifacts,
     task_events: asArray(input.task_events || input.taskEvents),
     tool_runs: asArray(input.tool_runs || input.toolRuns),
     acceptance_summary: input.acceptance_summary || input.acceptanceSummary || {
