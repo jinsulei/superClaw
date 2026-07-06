@@ -157,7 +157,7 @@ export function resumeTaskFromCheckpoint(input = {}) {
   const checkpointId = input.checkpoint_id || input.checkpointId || checkpoint?.checkpoint_id || ''
   const targetAgent = normalizeAgentId(input.target_agent || input.targetAgent || input.agent || input.target || checkpoint?.agents?.[0] || COLLAB_TARGETS.hermes)
   const createdAt = input.created_at || input.requested_at || new Date().toISOString()
-  return {
+  const resumeTask = {
     task_id: taskId,
     checkpoint_id: checkpointId,
     target_agent: targetAgent,
@@ -183,6 +183,21 @@ export function resumeTaskFromCheckpoint(input = {}) {
       created_at: createdAt,
     })],
   }
+  if (input.dispatch !== false && taskId && targetAgent) {
+    resumeTask.pending_dispatch = setPendingDispatch({
+      target: targetAgent,
+      taskId,
+      sessionId: input.session_id || input.sessionId || checkpoint?.snapshot?.task?.session_id || checkpoint?.snapshot?.context?.session_id,
+      stage: 'resume',
+      title: input.title || `Resume ${targetLabel(targetAgent)} task`,
+      message: input.message || `Resume task ${taskId} from checkpoint ${checkpointId}`,
+      context: checkpoint?.snapshot?.context || checkpoint?.snapshot?.task_request?.context || checkpoint?.snapshot || {},
+      artifacts: checkpoint?.snapshot?.artifacts || checkpoint?.snapshot?.task_request?.artifacts || [],
+      fromAgent: input.requested_by || input.actor || COLLAB_TARGETS.hermes,
+      requires_confirmation: !!input.requires_confirmation,
+    })
+  }
+  return resumeTask
 }
 
 export function evaluateCollaborationWatchdog(input = {}) {
@@ -693,8 +708,10 @@ export function setPendingDispatch(dispatch) {
   const modeInfo = dispatch?.target === COLLAB_TARGETS.claudeCode ? normalizeClaudeCodeMode(dispatch) : null
   const sessionId = dispatch?.session_id || dispatch?.sessionId || getDefaultSessionId()
   const context = buildTaskContext({ ...dispatch, session_id: sessionId, task_id: dispatch?.taskId || dispatch?.task_id, content: dispatch?.message || dispatch?.content })
+  const taskId = dispatch?.taskId || dispatch?.task_id || ''
   const payload = {
     ...dispatch,
+    taskId,
     session_id: sessionId,
     context,
     artifacts: normalizeArtifacts(dispatch?.artifacts),
@@ -705,6 +722,42 @@ export function setPendingDispatch(dispatch) {
     createdAt: Date.now(),
   }
   payload.task_events = buildTaskEventsForPendingDispatch(payload)
+  if (taskId) {
+    const checkpoint = createTaskCheckpoint({
+      task_id: taskId,
+      agents: [payload.target],
+      status: 'running',
+      stage: payload.stage,
+      actor: payload.fromAgent || payload.from_agent || COLLAB_TARGETS.hermes,
+      created_at: new Date(payload.createdAt).toISOString(),
+      visible_text: `Checkpoint saved before dispatch to ${targetLabel(payload.target)}`,
+      snapshot: {
+        task: {
+          task_id: taskId,
+          session_id: sessionId,
+          status: 'running',
+          stage: payload.stage || null,
+          target: payload.target || null,
+        },
+        agent_status: {
+          agent: payload.target || null,
+          status: 'running',
+          heartbeat_at: null,
+        },
+        pending_dispatch: {
+          taskId,
+          target: payload.target || null,
+          stage: payload.stage || null,
+          title: payload.title || null,
+          message: payload.message || null,
+          createdAt: payload.createdAt,
+        },
+        context,
+        artifacts: payload.artifacts,
+      },
+    })
+    payload.checkpoint_id = checkpoint.checkpoint_id
+  }
   const queue = readPendingQueue()
     .filter(item => !(item?.taskId === payload.taskId && item?.target === payload.target && item?.stage === payload.stage))
   queue.push(payload)
