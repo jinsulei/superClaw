@@ -26,7 +26,7 @@ Recovery work must not create a second Agent Dispatcher, a second tool runtime, 
 
 - Owns token/secrets handling, profile restrictions, LAN exposure review, command ownership, and release gate eligibility.
 - Codex must not directly repair or print OpenClaw secrets. Secret migration requires explicit human confirmation.
-- tools.profile changes must happen after token/secrets migration, not before.
+- tools.profile changes require explicit human confirmation. The current OpenClaw runtime supports only `minimal`, `coding`, `messaging`, and `full`; `default` is not a valid profile.
 
 ### Workspace Bootstrap
 
@@ -50,27 +50,31 @@ Recovery work must not create a second Agent Dispatcher, a second tool runtime, 
 
 ## Required Recovery Order
 
-1. token / secrets
-   - Move or rebind OpenClaw gateway token and provider credentials into approved secret storage.
+1. token / secrets deferred release blocker
+   - Move or rebind OpenClaw gateway token and provider credentials into approved secret storage before release.
    - Do not print tokens in logs or docs.
-   - Do not unlock broader tools.profile permissions while secrets are still exposed.
+   - Codex must not directly repair OpenClaw secrets; secret migration requires explicit human confirmation.
+   - If token/secrets migration is deferred for local development, do not use `full` as the default recovery profile.
 
-2. bootstrap threshold
+2. bootstrap threshold verified
    - Verify OpenClaw workspace bootstrap files are complete and not truncated.
    - Verify required runtime/template files exist before gateway restart.
-   - Block recovery if bootstrap files cannot be trusted.
+   - Treat bootstrap truncation as fixed only after `doctor --lint` reports no bootstrap truncation warnings.
 
-3. tools.profile default
-   - Review current minimal profile restrictions only after secrets are safe.
-   - Restore the minimum required tool capability set for Hermes 1.0.7 use cases.
+3. tools.profile selection: coding first
+   - Valid profiles in the current runtime are `minimal`, `coding`, `messaging`, and `full`.
+   - `minimal` is too narrow for current development because it hides required file, session, memory, web, and generation tools.
+   - `messaging` is not suitable for current development repair because it is scoped to chat/session messaging and does not provide the full coding/session orchestration surface.
+   - `coding` is the recommended first recovery profile for local development capability restoration.
+   - `full` is high risk and should be used only for trusted operator-controlled recovery after explicit confirmation; it is not recommended while token/secrets migration is deferred.
    - Keep high-risk write/send/spend/publish actions behind Action Guard / permission checks.
 
-4. gateway restart
+4. gateway restart after profile change
    - Restart only through the approved gateway/runtime path.
    - Verify port ownership, health, provider/model visibility, and log redaction.
    - Do not use old package startup scripts as the main path.
 
-5. memory index
+5. memory index after tools restored
    - Verify memory directory and index exist.
    - Rebuild or rebind memory only from reviewed runtime state.
    - Do not package local memory into portable EXE assets.
