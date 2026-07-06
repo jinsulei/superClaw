@@ -835,6 +835,28 @@ function buildTaskEventsForAgentTaskMessage(row = {}) {
   return events
 }
 
+export function mapCollaborationTaskMessageToTaskEvents(message = {}) {
+  return buildTaskEventsForAgentTaskMessage({
+    ...message,
+    session_id: message.session_id || message.sessionId || '',
+    task_id: message.task_id || message.taskId || '',
+    parent_task_id: message.parent_task_id || message.parentTaskId || null,
+    from_agent: message.from_agent || message.fromAgent || COLLAB_TARGETS.hermes,
+    to_agent: message.to_agent || message.toAgent || COLLAB_TARGETS.hermes,
+    message_type: message.message_type || message.messageType || 'task_progress',
+    status: message.status || 'running',
+    title: message.title || '',
+    content: String(message.content || ''),
+    mode: message.mode || null,
+    permission_level: message.permission_level || message.permissionLevel || null,
+    requires_confirmation: !!(message.requires_confirmation || message.requiresConfirmation),
+    tool: message.tool || null,
+    context: message.context || {},
+    artifacts: Array.isArray(message.artifacts) ? message.artifacts : [],
+    created_at: message.created_at || message.createdAt || new Date().toISOString(),
+  })
+}
+
 function buildTaskEventsForPendingDispatch(payload = {}) {
   const taskId = payload.taskId || payload.task_id || ''
   const actor = normalizeAgentId(payload.fromAgent || payload.from_agent || COLLAB_TARGETS.hermes)

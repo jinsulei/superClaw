@@ -23,6 +23,11 @@
  */
 import { api, isTauriRuntime } from '../../../lib/tauri-api.js'
 import { selectStableActiveSession } from '../../../lib/agent-session-persistence.js'
+import {
+  mapAgentGatewayStatusToAgentRun,
+  mapTaskBoundAgentHeartbeat,
+} from '../../../lib/agent-gateway-status.js'
+import { mapCollaborationTaskMessageToTaskEvents } from '../../../lib/collaboration.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 import {
   dedupeToolEvents,
@@ -424,6 +429,55 @@ export function buildFrontendAgentStatusViewModel(input = {}) {
 
 export const buildAgentStatusViewModel = buildFrontendAgentStatusViewModel
 export const mapAgentRunsToAgentStatusViewModel = buildFrontendAgentStatusViewModel
+
+function withoutRawPayload(value) {
+  if (Array.isArray(value)) return value.map(item => withoutRawPayload(item))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => key !== 'raw_payload' && key !== 'rawPayload')
+      .map(([key, item]) => [key, withoutRawPayload(item)]))
+  }
+  return value
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : []
+}
+
+export function buildRuntimeObservabilityBridge(input = {}) {
+  const agentStatuses = safeArray(input.agent_statuses || input.agentStatuses)
+  const heartbeats = safeArray(input.heartbeats || input.task_heartbeats || input.taskHeartbeats)
+  const taskMessages = safeArray(input.task_messages || input.taskMessages)
+  const liveTools = safeArray(input.live_tools || input.liveTools)
+  const toolMessages = safeArray(input.tool_messages || input.toolMessages)
+
+  const agentRuns = [
+    ...agentStatuses.map(status => mapAgentGatewayStatusToAgentRun(status)),
+  ]
+  const taskEvents = []
+
+  for (const heartbeat of heartbeats) {
+    const mapped = mapTaskBoundAgentHeartbeat(heartbeat)
+    if (mapped.agent_run) agentRuns.push(mapped.agent_run)
+    taskEvents.push(...safeArray(mapped.task_events))
+  }
+
+  for (const message of taskMessages) {
+    taskEvents.push(...mapCollaborationTaskMessageToTaskEvents(message))
+  }
+
+  const toolRuns = [
+    ...liveTools.map(tool => mapHermesLiveToolToToolRun(tool)),
+    ...toolMessages.map(message => mapHermesToolMessageToToolRun(message)),
+  ]
+
+  return {
+    source: 'hermes.runtime_observability_bridge',
+    agent_runs: redactFrontendObservabilityPayload(withoutRawPayload(agentRuns)),
+    task_events: redactFrontendObservabilityPayload(withoutRawPayload(taskEvents)),
+    tool_runs: redactFrontendObservabilityPayload(withoutRawPayload(toolRuns)),
+  }
+}
 
 function safeGet(key) {
   try { return localStorage.getItem(key) } catch { return null }
