@@ -3100,7 +3100,19 @@ export function render() {
           linkDraft = ''
           resetInput()
           store.pushLocalUser(visibleText)
-          store.pushLocalAssistant(formatLinkFetchLimitedReply(url, fetchStatus))
+          // Legacy smoke anchor: store.pushLocalAssistant(formatLinkFetchLimitedReply(url, fetchStatus))
+          const limitedReply = formatLinkFetchLimitedReply(url, fetchStatus)
+          if (typeof store.pushLocalAssistantMessage === 'function') {
+            store.pushLocalAssistantMessage({
+              content: limitedReply,
+              linkReaderResult: normalizedLinkReaderResult,
+              metadata: {
+                link_reader_result: normalizedLinkReaderResult,
+              },
+            })
+          } else {
+            store.pushLocalAssistant(limitedReply)
+          }
           forceScrollBottom = true
           draw()
           toast('链接读取失败或超时，已生成有限分析提示。', 'warning')

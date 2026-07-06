@@ -12,6 +12,7 @@ const gates = [
     group: 'Regression',
     commands: [
       ['node', '--test', 'tests/regression/link-reader-regression.test.js'],
+      ['node', '--test', 'tests/regression/link-reader-status-ui-regression.test.js'],
       ['node', '--test', 'tests/regression/collaboration-watch-tasks.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-ops-regression.test.js'],
       ['node', '--test', 'tests/regression/generation-ppt-regression.test.js'],
