@@ -20,6 +20,7 @@ const gates = [
       ['node', '--test', 'tests/regression/collaboration-resume-dispatch-integration.test.js'],
       ['node', '--test', 'tests/regression/runtime-observability-bridge-integration.test.js'],
       ['node', '--test', 'tests/regression/hermes-run-timeout-final-state-regression.test.js'],
+      ['node', '--test', 'tests/regression/openclaw-run-timeout-final-state-regression.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-ops-regression.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-stage-guard-integration.test.js'],
       ['node', '--test', 'tests/regression/generation-ppt-regression.test.js'],

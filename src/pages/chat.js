@@ -168,6 +168,7 @@ const OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS = 5 * 60 * 1000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT = 350000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION = 4
 const OPENCLAW_ACTIVE_RUN_WATCHDOG_MS = 75 * 1000
+const OPENCLAW_RUN_TIMEOUT_MS = OPENCLAW_ACTIVE_RUN_WATCHDOG_MS
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
 const _toolRunIndex = new Map()
@@ -7002,6 +7003,60 @@ function doRender() {
 const WATCHDOG_INTERVAL = 15000  // 15s 轮询间隔
 const ULTIMATE_TIMEOUT = 180000  // 3 分钟长等待提示
 
+function buildOpenClawRunTimeoutFallback(timeoutMs = OPENCLAW_RUN_TIMEOUT_MS) {
+  const seconds = Math.max(1, Math.round(Number(timeoutMs || OPENCLAW_RUN_TIMEOUT_MS) / 1000))
+  return `OpenClaw response timed out after ${seconds}s. The run was finalized so it will not stay in processing forever. Please retry, or refresh the session to check whether a late result was saved.`
+}
+
+function finalizeOpenClawRunTimeoutState(reason = 'openclaw-run-timeout', requestId = null, options = {}) {
+  const activeRequestId = requestId || _activeOpenClawRun?.clientRequestId || _activeClientRequestId || _currentAiBubbleRequestId || null
+  if (activeRequestId && _activeClientRequestId && activeRequestId !== _activeClientRequestId) return false
+  if (_openClawActiveRequestClosed && !_openClawPendingResponse && !_isSending && !_isStreaming) return false
+
+  const message = options.message || buildOpenClawRunTimeoutFallback(options.timeoutMs || OPENCLAW_RUN_TIMEOUT_MS)
+  const now = Date.now()
+  const hasVisibleAssistant = activeRequestId ? hasOpenClawAssistantVisibleContentForRequest(activeRequestId) : false
+
+  if (_currentAiBubble) {
+    if (!_currentAiText) _currentAiText = message
+    renderCompactAssistantContent(_currentAiText, _currentAiBubble, { phase: 'incomplete' })
+    _lastRenderedAiText = _currentAiText
+  } else if (!hasVisibleAssistant) {
+    appendAiMessage(message, new Date(now), [], [], [], [], [], [], [], {
+      dedupeKey: `openclaw-run-timeout-${activeRequestId || now}`,
+      sessionKey: _sessionKey,
+    })
+  }
+
+  if (_sessionKey && !hasVisibleAssistant) {
+    saveMessage({
+      id: `openclaw-run-timeout-${activeRequestId || now}`,
+      sessionKey: _sessionKey,
+      role: 'assistant',
+      content: message,
+      timestamp: now,
+      createdAt: now,
+      clientRequestId: activeRequestId || undefined,
+      status: 'failed',
+      error: {
+        code: 'OPENCLAW_RUN_TIMEOUT',
+        reason,
+      },
+    })
+  }
+
+  updateOpenClawActiveRun({
+    clientRequestId: activeRequestId || '',
+    assistantMessageId: _currentAiBubbleRequestId || `openclaw-run-timeout-${activeRequestId || now}`,
+    accumulatedText: _currentAiText || message,
+    status: 'failed',
+    reason,
+  })
+  clearOpenClawGenerationState('openclaw-run-timeout-error', activeRequestId)
+  processMessageQueue()
+  return true
+}
+
 async function settleOpenClawActiveRunFromWatchdog(reason = 'active-run-watchdog') {
   const requestId = _activeOpenClawRun?.clientRequestId || _activeClientRequestId || _currentAiBubbleRequestId || null
   if (!_sessionKey || !_messagesEl) return false
@@ -7013,6 +7068,10 @@ async function settleOpenClawActiveRunFromWatchdog(reason = 'active-run-watchdog
     if (recovered) return true
   } catch (error) {
     console.warn('[chat] OpenClaw active run watchdog recovery failed:', error)
+  }
+
+  if (reason === 'active-run-watchdog-timeout') {
+    return finalizeOpenClawRunTimeoutState('active-run-watchdog-timeout', requestId)
   }
 
   if (_currentAiBubble && _currentAiText) {
