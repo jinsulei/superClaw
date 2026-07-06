@@ -572,6 +572,11 @@ function normalizeWatchTaskStatus(status) {
   return 'running'
 }
 
+function isTerminalWatchStatus(status) {
+  const value = normalizeWatchTaskStatus(status)
+  return value === 'completed' || value === 'failed' || value === 'blocked'
+}
+
 function toTimestamp(value, fallback) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.getTime()
@@ -1170,6 +1175,42 @@ function readPendingQueue() {
   }
 }
 
+function buildWatchdogCandidates({ pendingDispatches = [], activeTasks = [], agentStatuses = [] } = {}) {
+  const byTaskId = new Map()
+  const ensure = taskId => {
+    const id = String(taskId || '').trim()
+    if (!id) return null
+    if (!byTaskId.has(id)) byTaskId.set(id, { task_id: id })
+    return byTaskId.get(id)
+  }
+
+  for (const pending of pendingDispatches) {
+    const candidate = ensure(pending?.taskId || pending?.task_id)
+    if (!candidate) continue
+    candidate.pending_dispatch = pending
+    candidate.session_id = candidate.session_id || pending.session_id || pending.sessionId || ''
+    candidate.status = candidate.status || 'running'
+  }
+
+  for (const task of activeTasks) {
+    const candidate = ensure(task?.task_id || task?.taskId || task?.id)
+    if (!candidate) continue
+    candidate.task = task
+    candidate.session_id = candidate.session_id || task.session_id || task.sessionId || ''
+    candidate.status = task.status || candidate.status || 'running'
+  }
+
+  for (const agentStatus of agentStatuses) {
+    const candidate = ensure(agentStatus?.task_id || agentStatus?.taskId)
+    if (!candidate) continue
+    candidate.agent_status = agentStatus
+    candidate.session_id = candidate.session_id || agentStatus.session_id || agentStatus.sessionId || ''
+    candidate.status = candidate.status || agentStatus.status || 'running'
+  }
+
+  return Array.from(byTaskId.values())
+}
+
 export function consumePendingDispatch(target) {
   const queue = readPendingQueue()
   const idx = queue.findIndex(item => item?.target === target)
@@ -1178,4 +1219,72 @@ export function consumePendingDispatch(target) {
   if (queue.length) localStorage.setItem(PENDING_KEY, JSON.stringify(queue))
   else localStorage.removeItem(PENDING_KEY)
   return pending
+}
+
+export function runCollaborationWatchdogOnce(input = {}) {
+  const now = input.now || new Date().toISOString()
+  const staleAfterMs = Number(input.stale_after_ms || input.staleAfterMs || 300000)
+  const pendingDispatches = Array.isArray(input.pending_dispatches)
+    ? input.pending_dispatches
+    : Array.isArray(input.pendingDispatches)
+      ? input.pendingDispatches
+      : readPendingQueue()
+  const activeTasks = Array.isArray(input.active_tasks)
+    ? input.active_tasks
+    : Array.isArray(input.activeTasks)
+      ? input.activeTasks
+      : listCollaborationTasks().filter(item => !isTerminalWatchStatus(item?.status))
+  const agentStatuses = Array.isArray(input.agent_statuses)
+    ? input.agent_statuses
+    : Array.isArray(input.agentStatuses)
+      ? input.agentStatuses
+      : []
+  const candidates = buildWatchdogCandidates({ pendingDispatches, activeTasks, agentStatuses })
+  const decisions = candidates.map(candidate => {
+    const taskId = candidate.task_id || candidate.taskId || candidate.pending_dispatch?.taskId || ''
+    const checkpoint = findCheckpoint('', taskId)
+    const decision = evaluateCollaborationWatchdog({
+      task_id: taskId,
+      session_id: candidate.session_id || candidate.sessionId || candidate.pending_dispatch?.session_id || candidate.pending_dispatch?.sessionId || candidate.agent_status?.session_id,
+      status: candidate.status || candidate.task?.status || 'running',
+      task: candidate.task || null,
+      pending_dispatch: candidate.pending_dispatch || null,
+      agent_status: candidate.agent_status || null,
+      now,
+      stale_after_ms: staleAfterMs,
+    })
+    const out = {
+      ...decision,
+      session_id: candidate.session_id || candidate.sessionId || candidate.pending_dispatch?.session_id || candidate.pending_dispatch?.sessionId || candidate.agent_status?.session_id || '',
+      checkpoint: checkpoint || null,
+      task: candidate.task || null,
+      pending_dispatch: candidate.pending_dispatch || null,
+      agent_status: candidate.agent_status || null,
+      resume: null,
+    }
+    if (input.resume === true && decision.should_recover && checkpoint) {
+      out.resume = resumeTaskFromCheckpoint({
+        task_id: taskId,
+        checkpoint_id: checkpoint.checkpoint_id,
+        checkpoint,
+        target_agent: candidate.pending_dispatch?.target || candidate.agent_status?.agent || candidate.agent_status?.agent_name || checkpoint.agents?.[0],
+        requested_by: input.requested_by || input.actor || COLLAB_TARGETS.hermes,
+      })
+    }
+    return out
+  })
+  const taskEvents = decisions.flatMap(item => Array.isArray(item.task_events) ? item.task_events : [])
+  const resumed = decisions.filter(item => item.resume).length
+  return {
+    summary: {
+      total: decisions.length,
+      recovering: decisions.filter(item => item.should_recover).length,
+      healthy: decisions.filter(item => !item.should_recover).length,
+      resumed,
+    },
+    decisions,
+    task_events: taskEvents,
+    resumed,
+    checked_at: new Date(toTimestamp(now, Date.now())).toISOString(),
+  }
 }
