@@ -1,4 +1,5 @@
 import { guardStage1Action } from "./risk-guard.js";
+import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
 import {
   Stage1ActionType,
   Stage1MessageType,
@@ -10,6 +11,25 @@ import { buildStage1Plan } from "./planner.js";
 export async function runStage1DesktopAssist(input = {}, context = {}) {
   const emit = createEmitter(context);
   const browser = context.browser || {};
+  const stageGuard = buildStage1GuardMetadata(input);
+
+  if (stageGuard.ecommerce_guard.blocked) {
+    emit({
+      role: "assistant",
+      type: Stage1MessageType.USER_CONFIRMATION,
+      confirmation: stageGuard.ecommerce_guard.confirmation,
+      createdAt: Date.now(),
+    });
+
+    return {
+      ok: false,
+      blocked: true,
+      reason: stageGuard.ecommerce_guard.reason,
+      confirmation: stageGuard.ecommerce_guard.confirmation,
+      state: {},
+      ...stageGuard,
+    };
+  }
 
   const plan = buildStage1Plan({
     intent: input.intent,
@@ -42,6 +62,11 @@ export async function runStage1DesktopAssist(input = {}, context = {}) {
         reason: guard.reason,
         confirmation: guard.confirmation,
         state,
+        ...buildStage1GuardMetadata({
+          ...input,
+          action_type: guardedAction.type || input.action_type || input.actionType,
+          risk_level: "high",
+        }),
       };
     }
 
@@ -55,6 +80,7 @@ export async function runStage1DesktopAssist(input = {}, context = {}) {
     blocked: false,
     intent: plan.intent,
     state,
+    ...stageGuard,
   };
 }
 
@@ -182,6 +208,16 @@ function createEmitter(context) {
     if (!emit) return;
     emit(event);
   };
+}
+
+function buildStage1GuardMetadata(input = {}) {
+  return normalizeEcommerceStageGuardResult({
+    ...input,
+    stage: "stage1",
+    action_type: input.action_type || input.actionType || "read_dashboard",
+    text: input.query || input.userText || input.prompt || "",
+    source: "ecommerce.stage1.runner",
+  });
 }
 
 async function safeCallBrowser(fn, fallback) {

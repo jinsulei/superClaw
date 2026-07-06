@@ -14,6 +14,7 @@ import {
   createVideoCandidateCard,
   createVideoDecomposeCard,
 } from "./types.js";
+import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
 import { detectStage56Intent, extractVideoCandidatesFromText, scoreVideoCandidates } from "./video-patrol.js";
 
 const FORBIDDEN_ACTIONS = new Set([
@@ -30,6 +31,19 @@ export async function runStage56Ops(input = {}, context = {}) {
   const emit = createEmitter(context);
   const browser = context.browser || {};
   const query = input.query || input.userText || input.prompt || "";
+  const stageGuard = buildStage56GuardMetadata(input);
+
+  if (stageGuard.ecommerce_guard.blocked) {
+    emit(createUnsafeConfirmation(query, { platforms: input.platforms || [] }));
+    return {
+      ok: false,
+      blocked: true,
+      reason: stageGuard.ecommerce_guard.reason,
+      state: {},
+      ...stageGuard,
+    };
+  }
+
   const detected = detectStage56Intent(query);
 
   if (!detected.matched) {
@@ -38,16 +52,23 @@ export async function runStage56Ops(input = {}, context = {}) {
       blocked: false,
       reason: detected.reason,
       state: {},
+      ...stageGuard,
     };
   }
 
   if (detected.unsafe) {
+    const blockedGuard = buildStage56GuardMetadata({
+      ...input,
+      action_type: input.action_type || input.actionType || "send_live_comment",
+      risk_level: "high",
+    });
     emit(createUnsafeConfirmation(query, detected));
     return {
       ok: false,
       blocked: true,
       reason: detected.reason,
       state: {},
+      ...blockedGuard,
     };
   }
 
@@ -99,6 +120,7 @@ export async function runStage56Ops(input = {}, context = {}) {
         byPlatform: Object.fromEntries(state.patrol.byPlatform.entries()),
       },
     },
+    ...stageGuard,
   };
 }
 
@@ -423,6 +445,16 @@ function createEmitter(context) {
   return (event) => {
     if (emit) emit(event);
   };
+}
+
+function buildStage56GuardMetadata(input = {}) {
+  return normalizeEcommerceStageGuardResult({
+    ...input,
+    stage: "stage56",
+    action_type: input.action_type || input.actionType || "generate_reply_draft",
+    text: input.query || input.userText || input.prompt || "",
+    source: "ecommerce.stage56.runner",
+  });
 }
 
 async function runOptionalOcr(ocr, screenshot) {

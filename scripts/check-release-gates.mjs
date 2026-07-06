@@ -16,6 +16,7 @@ const gates = [
       ['node', '--test', 'tests/regression/collaboration-watch-tasks.test.js'],
       ['node', '--test', 'tests/regression/collaboration-watch-integration.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-ops-regression.test.js'],
+      ['node', '--test', 'tests/regression/ecommerce-stage-guard-integration.test.js'],
       ['node', '--test', 'tests/regression/generation-ppt-regression.test.js'],
       ['node', '--test', 'tests/regression/wechat-customer-ops-regression.test.js'],
       ['node', '--test', 'tests/regression/frontend-observability-regression.test.js'],

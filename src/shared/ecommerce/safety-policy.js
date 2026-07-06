@@ -175,7 +175,10 @@ export function redactEcommerceGuardPayload(value) {
 export function classifyEcommerceActionGuard(action = {}) {
   const actionType = normalizeActionType(action)
   const permissionLevel = normalizePermissionLevel(action.permission_level || action.permissionLevel)
-  const highRisk = isHighRiskActionType(actionType) || action.risk_level === 'high' || action.riskLevel === 'high'
+  const explicitLowRiskAction = LOW_RISK_ACTION_TYPES.has(actionType)
+  const highRisk = !explicitLowRiskAction && (
+    isHighRiskActionType(actionType) || action.risk_level === 'high' || action.riskLevel === 'high'
+  )
   const safeLowRiskAction = LOW_RISK_ACTION_TYPES.has(actionType) && !highRisk
   const text = [
     actionType,
@@ -254,6 +257,47 @@ export function classifyEcommerceActionGuard(action = {}) {
   }
 
   return redactEcommerceGuardPayload(result)
+}
+
+export function normalizeEcommerceStageGuardResult(input = {}) {
+  const actionType = normalizeActionType(input) || 'ecommerce_stage'
+  const taskId = input.task_id || input.taskId || `ecommerce_stage_${actionType}`
+  const guard = classifyEcommerceActionGuard({
+    ...input,
+    action_type: actionType,
+    task_id: taskId,
+    source: input.source || 'ecommerce.stage_runner',
+  })
+  const result = normalizeEcommerceOpsResult({
+    ...input,
+    action_type: actionType,
+    task_id: taskId,
+    status: guard.status,
+    allowed: guard.allowed,
+    blocked: guard.blocked,
+    requires_confirmation: guard.requires_confirmation,
+    permission_level: guard.permission_level,
+    required_permission_level: guard.required_permission_level,
+    risk_level: guard.risk_level,
+    reason: guard.reason,
+    visible_text: guard.visible_text,
+    task_events: guard.task_events,
+    raw_payload: {
+      stage: input.stage || '',
+      action_type: actionType,
+      allowed: guard.allowed,
+      blocked: guard.blocked,
+      requires_confirmation: guard.requires_confirmation,
+      reason: guard.reason,
+    },
+  })
+
+  return {
+    ecommerce_guard: guard,
+    ecommerce_result: result,
+    task_events: result.task_events,
+    tool_runs: result.tool_runs,
+  }
 }
 
 export function normalizeWeChatCustomerMessage(input = {}) {

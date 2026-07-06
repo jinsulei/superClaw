@@ -10,6 +10,7 @@ import {
   createStage4Status,
   createSubmitReviewConfirmationCard,
 } from "./types.js";
+import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
 
 const FORBIDDEN_FINAL_ACTIONS = new Set([
   Stage4ActionType.SUBMIT_REVIEW,
@@ -23,6 +24,19 @@ export async function runStage4DoudianListing(input = {}, context = {}) {
   const emit = createEmitter(context);
   const browser = context.browser || {};
   const query = input.query || input.userText || input.prompt || "";
+  const stageGuard = buildStage4GuardMetadata(input);
+
+  if (stageGuard.ecommerce_guard.blocked) {
+    emit(createUnsafeConfirmation(query));
+    return {
+      ok: false,
+      blocked: true,
+      reason: stageGuard.ecommerce_guard.reason,
+      state: {},
+      ...stageGuard,
+    };
+  }
+
   const detected = detectStage4Intent(query);
 
   if (!detected.matched) {
@@ -31,16 +45,23 @@ export async function runStage4DoudianListing(input = {}, context = {}) {
       blocked: false,
       reason: detected.reason,
       state: {},
+      ...stageGuard,
     };
   }
 
   if (detected.unsafe) {
+    const blockedGuard = buildStage4GuardMetadata({
+      ...input,
+      action_type: input.action_type || input.actionType || "product_listing_submit",
+      risk_level: "high",
+    });
     emit(createUnsafeConfirmation(query));
     return {
       ok: false,
       blocked: true,
       reason: detected.reason,
       state: {},
+      ...blockedGuard,
     };
   }
 
@@ -95,6 +116,7 @@ export async function runStage4DoudianListing(input = {}, context = {}) {
     blocked: false,
     intent: plan.intent,
     state,
+    ...stageGuard,
   };
 }
 
@@ -388,6 +410,16 @@ function createEmitter(context) {
   return (event) => {
     if (emit) emit(event);
   };
+}
+
+function buildStage4GuardMetadata(input = {}) {
+  return normalizeEcommerceStageGuardResult({
+    ...input,
+    stage: "stage4",
+    action_type: input.action_type || input.actionType || "prepare_product_listing",
+    text: input.query || input.userText || input.prompt || "",
+    source: "ecommerce.stage4.runner",
+  });
 }
 
 async function safeCall(fn, args = [], fallback) {

@@ -7,6 +7,7 @@ import {
   createPlatformPrepCard,
   createStage3Status,
 } from "./types.js";
+import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
 
 const FORBIDDEN_FINAL_ACTIONS = new Set([
   Stage3ActionType.CLICK_PUBLISH,
@@ -20,6 +21,19 @@ export async function runStage3PublishPrep(input = {}, context = {}) {
   const emit = createEmitter(context);
   const browser = context.browser || {};
   const query = input.query || input.userText || input.prompt || "";
+  const stageGuard = buildStage3GuardMetadata(input);
+
+  if (stageGuard.ecommerce_guard.blocked) {
+    emit(createUnsafeConfirmation(query, { platforms: input.platforms || [] }));
+    return {
+      ok: false,
+      blocked: true,
+      reason: stageGuard.ecommerce_guard.reason,
+      state: {},
+      ...stageGuard,
+    };
+  }
+
   const plan = buildStage3Plan({
     userText: query,
     intent: input.intent,
@@ -36,16 +50,23 @@ export async function runStage3PublishPrep(input = {}, context = {}) {
       blocked: false,
       reason: plan.reason,
       state: {},
+      ...stageGuard,
     };
   }
 
   if (plan.unsafe) {
+    const blockedGuard = buildStage3GuardMetadata({
+      ...input,
+      action_type: input.action_type || input.actionType || "publish_video",
+      risk_level: "high",
+    });
     emit(createUnsafeConfirmation(query, plan));
     return {
       ok: false,
       blocked: true,
       reason: plan.reason,
       state: {},
+      ...blockedGuard,
     };
   }
 
@@ -91,6 +112,7 @@ export async function runStage3PublishPrep(input = {}, context = {}) {
       ...state,
       platformStates: Object.fromEntries(state.platformStates.entries()),
     },
+    ...stageGuard,
   };
 }
 
@@ -332,6 +354,16 @@ function createEmitter(context) {
   return (event) => {
     if (emit) emit(event);
   };
+}
+
+function buildStage3GuardMetadata(input = {}) {
+  return normalizeEcommerceStageGuardResult({
+    ...input,
+    stage: "stage3",
+    action_type: input.action_type || input.actionType || "prepare_publish_draft",
+    text: input.query || input.userText || input.prompt || "",
+    source: "ecommerce.stage3.runner",
+  });
 }
 
 async function safeCall(fn, args = [], fallback) {

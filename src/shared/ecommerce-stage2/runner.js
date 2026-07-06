@@ -16,22 +16,42 @@ import {
   createVideoLinkCard,
 } from "./types.js";
 import { buildTrendInsight, guessPlatformFromUrl } from "./trend-parser.js";
+import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
 
 export async function runStage2LowRiskOps(input = {}, context = {}) {
   const emit = createEmitter(context);
   const browser = context.browser || {};
   const hermes = context.hermes || {};
   const query = input.query || input.userText || input.prompt || "";
+  const stageGuard = buildStage2GuardMetadata(input);
+
+  if (stageGuard.ecommerce_guard.blocked) {
+    emit(createStage2Status("E-Commerce Action Guard blocked this Stage2 action until human confirmation."));
+    return {
+      ok: false,
+      blocked: true,
+      reason: stageGuard.ecommerce_guard.reason,
+      state: {},
+      ...stageGuard,
+    };
+  }
+
   const detected = detectStage2Intent(query);
 
   if (!detected.matched) {
     if (detected.reason === "HIGH_RISK_TEXT_BLOCKED_BY_STAGE1") {
+      const blockedGuard = buildStage2GuardMetadata({
+        ...input,
+        action_type: input.action_type || input.actionType || "publish_video",
+        risk_level: "high",
+      });
       emit(createStage2Status("第二阶段只允许搜索、读取、截图和生成文案；涉及发布、上架、付款、评论、私信等动作已停止，并交给第一阶段安全确认。"));
       return {
         ok: false,
         blocked: true,
         reason: detected.reason,
         state: {},
+        ...blockedGuard,
       };
     }
 
@@ -40,6 +60,7 @@ export async function runStage2LowRiskOps(input = {}, context = {}) {
       blocked: false,
       reason: detected.reason,
       state: {},
+      ...stageGuard,
     };
   }
 
@@ -87,6 +108,7 @@ export async function runStage2LowRiskOps(input = {}, context = {}) {
     blocked: false,
     intent: plan.intent,
     state,
+    ...stageGuard,
   };
 }
 
@@ -342,6 +364,16 @@ function createEmitter(context) {
     if (!emit) return;
     emit(event);
   };
+}
+
+function buildStage2GuardMetadata(input = {}) {
+  return normalizeEcommerceStageGuardResult({
+    ...input,
+    stage: "stage2",
+    action_type: input.action_type || input.actionType || "generate_product_suggestion",
+    text: input.query || input.userText || input.prompt || "",
+    source: "ecommerce.stage2.runner",
+  });
 }
 
 async function safeCallBrowser(fn, args = [], fallback) {
