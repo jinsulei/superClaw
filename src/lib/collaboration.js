@@ -177,6 +177,8 @@ export function resumeTaskFromCheckpoint(input = {}) {
       raw_payload: {
         checkpoint_id: checkpointId,
         target_agent: targetAgent,
+        stage: 'resume',
+        requeued: input.dispatch !== false,
       },
       visibility: 'normal',
       severity: 'warning',
@@ -189,6 +191,8 @@ export function resumeTaskFromCheckpoint(input = {}) {
       taskId,
       sessionId: input.session_id || input.sessionId || checkpoint?.snapshot?.task?.session_id || checkpoint?.snapshot?.context?.session_id,
       stage: 'resume',
+      checkpoint_id: checkpointId,
+      resume_from: checkpointId,
       title: input.title || `Resume ${targetLabel(targetAgent)} task`,
       message: input.message || `Resume task ${taskId} from checkpoint ${checkpointId}`,
       context: checkpoint?.snapshot?.context || checkpoint?.snapshot?.task_request?.context || checkpoint?.snapshot || {},
@@ -768,7 +772,7 @@ export function setPendingDispatch(dispatch) {
     createdAt: Date.now(),
   }
   payload.task_events = buildTaskEventsForPendingDispatch(payload)
-  if (taskId) {
+  if (taskId && !payload.checkpoint_id) {
     const checkpoint = createTaskCheckpoint({
       task_id: taskId,
       agents: [payload.target],
