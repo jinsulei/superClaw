@@ -14,7 +14,11 @@ import {
   createVideoCandidateCard,
   createVideoDecomposeCard,
 } from "./types.js";
-import { normalizeEcommerceStageGuardResult } from "../ecommerce/safety-policy.js";
+import {
+  normalizeEcommerceStageGuardResult,
+  normalizeWeChatCustomerMessage,
+  normalizeWeChatCustomerOpsResult,
+} from "../ecommerce/safety-policy.js";
 import { detectStage56Intent, extractVideoCandidatesFromText, scoreVideoCandidates } from "./video-patrol.js";
 
 const FORBIDDEN_ACTIONS = new Set([
@@ -44,7 +48,7 @@ export async function runStage56Ops(input = {}, context = {}) {
     };
   }
 
-  const detected = detectStage56Intent(query);
+  const detected = normalizeStage56DetectedIntent(input, query);
 
   if (!detected.matched) {
     return {
@@ -72,11 +76,13 @@ export async function runStage56Ops(input = {}, context = {}) {
     };
   }
 
-  const plan = buildStage56Plan({
-    userText: query,
-    intent: input.intent || detected.intent,
-    platforms: input.platforms || detected.platforms,
-  });
+  const plan = detected.reason === "WECHAT_CUSTOMER_REPLY_DRAFT"
+    ? buildStage56WechatReplyDraftPlan(detected)
+    : buildStage56Plan({
+        userText: query,
+        intent: input.intent || detected.intent,
+        platforms: input.platforms || detected.platforms,
+      });
   const state = {
     query,
     intent: plan.intent,
@@ -108,6 +114,7 @@ export async function runStage56Ops(input = {}, context = {}) {
   }
 
   emit(createStage56Status("第五/第六阶段已完成：未自动发送、点赞、关注、评论、下载或发布。"));
+  const wechatCustomer = buildStage56WechatCustomerMetadata(input, state, stageGuard);
 
   return {
     ok: true,
@@ -121,6 +128,55 @@ export async function runStage56Ops(input = {}, context = {}) {
       },
     },
     ...stageGuard,
+    ...wechatCustomer,
+    task_events: [
+      ...(stageGuard.task_events || []),
+      ...(wechatCustomer.task_events || []),
+    ],
+    tool_runs: [
+      ...(stageGuard.tool_runs || []),
+      ...(wechatCustomer.tool_runs || []),
+    ],
+  };
+}
+
+function normalizeStage56DetectedIntent(input = {}, query = "") {
+  const detected = detectStage56Intent(query);
+  if (detected.matched) {
+    return detected;
+  }
+
+  const actionType = input.action_type || input.actionType || "";
+  if (actionType === "generate_reply_draft" || actionType === "generate_wechat_reply_draft") {
+    return {
+      matched: true,
+      intent: Stage56TaskKind.LIVE_COMMENT_ASSIST,
+      unsafe: false,
+      reason: "WECHAT_CUSTOMER_REPLY_DRAFT",
+      platforms: Array.isArray(input.platforms) ? input.platforms : [],
+    };
+  }
+
+  return detected;
+}
+
+function buildStage56WechatReplyDraftPlan(detected = {}) {
+  return {
+    matched: true,
+    unsafe: false,
+    reason: detected.reason || "WECHAT_CUSTOMER_REPLY_DRAFT",
+    intent: Stage56TaskKind.LIVE_COMMENT_ASSIST,
+    platforms: Array.isArray(detected.platforms) ? detected.platforms : [],
+    steps: [
+      { type: Stage56ActionType.CAPTURE_LIVE_SCREEN, label: "capture live screen" },
+      { type: Stage56ActionType.READ_LIVE_VISIBLE_TEXT, label: "read live visible text" },
+      { type: Stage56ActionType.OCR_LIVE_SCREENSHOT, label: "ocr live screenshot" },
+      { type: Stage56ActionType.EXTRACT_LIVE_COMMENTS, label: "extract live comments" },
+      { type: Stage56ActionType.CLASSIFY_LIVE_COMMENTS, label: "classify live comments" },
+      { type: Stage56ActionType.GENERATE_LIVE_REPLIES, label: "generate live replies" },
+      { type: Stage56ActionType.FILL_LIVE_REPLY_DRAFT, label: "fill reply draft" },
+      { type: Stage56ActionType.STOP_BEFORE_SEND_LIVE_REPLY, label: "stop before send" },
+    ],
   };
 }
 
@@ -455,6 +511,67 @@ function buildStage56GuardMetadata(input = {}) {
     text: input.query || input.userText || input.prompt || "",
     source: "ecommerce.stage56.runner",
   });
+}
+
+function buildStage56WechatCustomerMetadata(input = {}, state = {}, stageGuard = {}) {
+  const actionType = input.action_type || input.actionType || "generate_reply_draft";
+  const taskId = input.task_id || input.taskId || `stage56_wechat_${actionType}`;
+  const firstReply = state.live?.replies?.find((reply) => reply?.reply) || null;
+  const sourceText = [
+    state.live?.visibleText?.text,
+    state.live?.ocrText,
+    ...(state.live?.comments || []).map((comment) => comment.text || comment.raw || ""),
+  ].filter(Boolean).join("\n");
+  const customerMessage = normalizeWeChatCustomerMessage({
+    ...input,
+    task_id: taskId,
+    source: "stage56_live_reply",
+    platform: "wechat",
+    channel: "wechat",
+    ocr_text: sourceText,
+    content: sourceText || input.query || input.userText || input.prompt || "",
+    customer_state: {
+      stage: "live_comment_assist",
+      platforms: state.platforms || [],
+      intent: state.intent || "",
+      comment_count: state.live?.comments?.length || 0,
+    },
+  });
+  const replyDraft = {
+    draft_id: `stage56_wechat_draft_${taskId}`,
+    channel: "wechat",
+    customer_id: customerMessage.customer_id || input.customer_id || "",
+    reply_text: firstReply?.reply || input.reply_text || input.replyText || "",
+    status: "draft",
+    auto_send: false,
+    requires_confirmation: true,
+  };
+  const result = normalizeWeChatCustomerOpsResult({
+    ...input,
+    task_id: taskId,
+    action_type: actionType,
+    status: "draft",
+    visible_text: replyDraft.reply_text || customerMessage.visible_text || "WeChat reply draft prepared.",
+    customer_message: customerMessage,
+    reply_draft: replyDraft,
+    raw_payload: {
+      stage: "stage56",
+      platforms: state.platforms || [],
+      action_type: actionType,
+      blocked: Boolean(stageGuard.ecommerce_guard?.blocked),
+      auto_send: false,
+      visible_text: sourceText,
+      reply_draft: replyDraft,
+    },
+  });
+
+  return {
+    wechat_customer_message: result.customer_message,
+    wechat_customer_result: result,
+    reply_draft: result.reply_draft,
+    task_events: result.task_events,
+    tool_runs: result.tool_runs,
+  };
 }
 
 async function runOptionalOcr(ocr, screenshot) {
