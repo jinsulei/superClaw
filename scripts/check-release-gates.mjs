@@ -34,6 +34,7 @@ const gates = [
       ['node', '--test', 'tests/contract/collaboration-observability-wrapper.test.js'],
       ['node', '--test', 'tests/contract/hermes-tool-runs-wrapper.test.js'],
       ['node', '--test', 'tests/contract/agent-runs-wrapper.test.js'],
+      ['node', '--test', 'tests/contract/runtime-agents-smoke-contract.test.js'],
     ],
   },
   {
