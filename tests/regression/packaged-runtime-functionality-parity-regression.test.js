@@ -25,9 +25,15 @@ test('Hermes packaged chat history does not replay previous long assistant repli
   assert.ok(compacted.length < 120, 'compacted assistant history should stay small')
 })
 
-test('Hermes keeps short assistant history and user context intact', () => {
-  assert.equal(compactHermesHistoryContentForPrompt('assistant', '短回复'), '短回复')
+test('Hermes omits old assistant history even when the previous reply is short', () => {
+  const contaminated = compactHermesHistoryContentForPrompt('assistant', '聂总，上一轮完整回复不应该进入下一轮 prompt')
 
+  assert.match(contaminated, /previous assistant response omitted to avoid replay/)
+  assert.equal(contaminated.includes('聂总'), false)
+  assert.equal(contaminated.includes('上一轮完整回复'), false)
+})
+
+test('Hermes keeps user context intact while omitting assistant history', () => {
   const userContext = '请继续围绕这个商品标题优化，不要改变品牌名。' + ' 用户补充'.repeat(100)
   assert.equal(compactHermesHistoryContentForPrompt('user', userContext), userContext)
 })
