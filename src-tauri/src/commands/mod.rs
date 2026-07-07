@@ -1,3 +1,4 @@
+use rand::Rng;
 use std::net::IpAddr;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -14,6 +15,7 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
     });
 
 const OPENCLAW_EFFECTIVE_TOOLS_PROFILE: &str = "coding";
+const PORTABLE_GATEWAY_TOKEN_PREFIX: &str = "superclaw-local-";
 
 pub mod agent;
 pub mod assistant;
@@ -35,6 +37,22 @@ pub mod shared_memory;
 pub mod skillhub;
 pub mod skills;
 pub mod update;
+
+fn new_portable_gateway_token() -> String {
+    let suffix: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(40)
+        .map(char::from)
+        .collect();
+    format!("{PORTABLE_GATEWAY_TOKEN_PREFIX}{suffix}")
+}
+
+fn is_placeholder_or_legacy_gateway_token(value: Option<&str>) -> bool {
+    let token = value.unwrap_or("").trim();
+    token.is_empty()
+        || token == "superclaw-portable-local"
+        || (token.starts_with("${") && token.ends_with('}'))
+}
 
 /// 默认 OpenClaw 配置目录
 /// Windows 上优先使用 USERPROFILE（与 Node.js os.homedir() 一致），
@@ -334,19 +352,39 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         if !gateway.get("auth").is_some_and(|v| v.is_object()) {
             gateway.insert(
                 "auth".into(),
-                serde_json::json!({ "mode": "token", "token": "superclaw-portable-local" }),
+                serde_json::json!({ "mode": "token", "token": "" }),
             );
             changed = true;
         }
-        if gateway
-            .get("remote")
+        let current_auth_token = gateway
+            .get("auth")
             .and_then(|v| v.get("token"))
             .and_then(|v| v.as_str())
-            != Some("superclaw-portable-local")
+            .map(str::to_string);
+        let portable_gateway_token =
+            if is_placeholder_or_legacy_gateway_token(current_auth_token.as_deref()) {
+                let token = new_portable_gateway_token();
+                if let Some(auth) = gateway.get_mut("auth").and_then(|v| v.as_object_mut()) {
+                    if auth.get("mode").and_then(|v| v.as_str()) != Some("token") {
+                        auth.insert("mode".into(), serde_json::json!("token"));
+                    }
+                    auth.insert("token".into(), serde_json::json!(token.clone()));
+                }
+                changed = true;
+                token
+            } else {
+                current_auth_token.unwrap_or_default().trim().to_string()
+            };
+        let current_remote_token = gateway
+            .get("remote")
+            .and_then(|v| v.get("token"))
+            .and_then(|v| v.as_str());
+        if is_placeholder_or_legacy_gateway_token(current_remote_token)
+            || current_remote_token.map(str::trim) != Some(portable_gateway_token.as_str())
         {
             gateway.insert(
                 "remote".into(),
-                serde_json::json!({ "token": "superclaw-portable-local" }),
+                serde_json::json!({ "token": portable_gateway_token }),
             );
             changed = true;
         }
@@ -498,10 +536,19 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         changed = true;
     } else if let Some(tools) = obj.get_mut("tools").and_then(|v| v.as_object_mut()) {
         if tools.get("profile").and_then(|v| v.as_str()) != Some(OPENCLAW_EFFECTIVE_TOOLS_PROFILE) {
-            tools.insert("profile".into(), serde_json::json!(OPENCLAW_EFFECTIVE_TOOLS_PROFILE));
+            tools.insert(
+                "profile".into(),
+                serde_json::json!(OPENCLAW_EFFECTIVE_TOOLS_PROFILE),
+            );
             changed = true;
         }
-        let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec", "process"]);
+        let allow = serde_json::json!([
+            "browser",
+            "desktop_control",
+            "skill_manager",
+            "exec",
+            "process"
+        ]);
         if tools.get("alsoAllow") != Some(&allow) {
             tools.insert("alsoAllow".into(), allow);
             changed = true;
@@ -545,9 +592,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
 
 fn ensure_portable_device_identity(openclaw_dir: &Path) {
     if let Err(err) = pairing::ensure_pairing_for_dir(openclaw_dir) {
-        eprintln!(
-            "[portable] failed to bootstrap OpenClaw device identity: {err}"
-        );
+        eprintln!("[portable] failed to bootstrap OpenClaw device identity: {err}");
     }
 }
 

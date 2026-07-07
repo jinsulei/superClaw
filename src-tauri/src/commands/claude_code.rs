@@ -36,6 +36,35 @@ fn claude_cli_path(resources: &Path) -> PathBuf {
         .join(file_name)
 }
 
+fn effective_claude_cli_path(resources: &Path) -> PathBuf {
+    let bundled = claude_cli_path(resources);
+    if bundled.is_file() {
+        return bundled;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let candidate = PathBuf::from(appdata).join("npm").join("claude.cmd");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        if let Some(prefix) = super::windows_npm_global_prefix() {
+            let candidate = PathBuf::from(prefix).join("claude.cmd");
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    PathBuf::from(if cfg!(target_os = "windows") {
+        "claude.cmd"
+    } else {
+        "claude"
+    })
+}
+
 fn claude_home_path(resources: &Path) -> PathBuf {
     resources.join("data").join("claude-code").join("home")
 }
@@ -178,9 +207,8 @@ fn panel_status_ready(port: u16) -> bool {
     };
     let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
-    let request = format!(
-        "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
@@ -205,7 +233,8 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
     let data_dir = claude_panel_data_dir(resources);
     let appdata = home.join("AppData").join("Roaming");
     let localappdata = home.join("AppData").join("Local");
-    let claude_bin = claude_cli_path(resources)
+    let effective_claude = effective_claude_cli_path(resources);
+    let claude_bin = effective_claude
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| resources.to_path_buf());
@@ -237,7 +266,8 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
             home.join(".claude").join("skills"),
         )
         .env("CLEAN_PANEL_RELAY_CONFIG_ENABLED", "1")
-        .env("CLAUDE_CLI_PATH", claude_cli_path(resources))
+        .env("CLAUDE_CLI_PATH", effective_claude)
+        .env("CLAUDE_PANEL_ALLOW_RELAY_FALLBACK", "1")
         .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
         .env("CLAUDE_CODE_PROJECTS_DIR", projects)
         .env("SUPERCLAW_PANEL_CONFIG_PATH", panel_config_path(resources))

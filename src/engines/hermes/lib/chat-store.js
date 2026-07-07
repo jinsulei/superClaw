@@ -81,6 +81,8 @@ const STORAGE_DELETED_PREFIX = 'hermes_chat_deleted_sessions_v1_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
 const HISTORY_MAX_MESSAGES = 18
 const HISTORY_MAX_CHARS = 14000
+const HISTORY_ASSISTANT_MAX_CHARS = 700
+const HISTORY_ASSISTANT_OMITTED_MARKER = '[previous assistant response omitted to avoid replay]'
 const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
 const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 const HERMES_RUN_TIMEOUT_MS = 180 * 1000
@@ -108,6 +110,14 @@ const SOURCE_LABELS = {
   bluebubbles: 'iMessage',
   mattermost: 'Mattermost',
   cron: 'Cron',
+}
+
+export function compactHermesHistoryContentForPrompt(role, content) {
+  const text = String(content || '').trim()
+  if (!text) return ''
+  if (role !== 'assistant') return text
+  if (text.length <= HISTORY_ASSISTANT_MAX_CHARS) return text
+  return `${HISTORY_ASSISTANT_OMITTED_MARKER} (${text.length} chars)`
 }
 
 export function buildHermesGenerationStatusMetadata(input = {}) {
@@ -2301,7 +2311,7 @@ function createStore() {
     try { return JSON.stringify(val) } catch { return String(val) }
   }
 
-  function messageTextForHistory(message) {
+  function messageTextForHistory(message, role = '') {
     if (!message || message.isStreaming) return ''
     const raw = message.modelContent || message.content || ''
     let text = typeof raw === 'string' ? raw : stringifyMaybe(raw)
@@ -2313,7 +2323,7 @@ function createStore() {
         .map(name => `[attachment: ${name}]`)
         .join('\n')
     }
-    return text
+    return compactHermesHistoryContentForPrompt(role, text)
   }
 
   function buildDefaultConversationHistory(session, currentMessageId) {
@@ -2326,7 +2336,7 @@ function createStore() {
       if (!message || message.id === currentMessageId) continue
       const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : ''
       if (!role) continue
-      const content = messageTextForHistory(message)
+      const content = messageTextForHistory(message, role)
       if (!content) continue
       const size = content.length
       if (selected.length >= HISTORY_MAX_MESSAGES) break
