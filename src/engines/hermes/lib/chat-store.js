@@ -128,6 +128,24 @@ function isHermesLongTaskRequest(text) {
   return hasAction && hasLongTaskTarget
 }
 
+function getHermesExactShortReplyTarget(text) {
+  const value = String(text || '').trim().replace(/\s+/g, ' ')
+  if (!value || value.length > 80) return ''
+  const asksExactReply = /(?:\u53ea\u56de\u590d|\u53ea\u56de\u7b54|\u4ec5\u56de\u590d|\u4ec5\u56de\u7b54|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only)/i.test(value)
+  const asksShortLength = /(?:\u4e24\u4e2a\u5b57|2\s*\u4e2a\u5b57)/i.test(value)
+  if (asksExactReply && asksShortLength && /\u6536\u5230/.test(value)) return '\u6536\u5230'
+  if (!asksExactReply) return ''
+  const quoted = value.match(/(?:\u53ea\u56de\u590d|\u53ea\u56de\u7b54|\u4ec5\u56de\u590d|\u4ec5\u56de\u7b54|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only).{0,12}["'`\u201c\u201d\u300c\u300d]([^"'`\u201c\u201d\u300c\u300d\s]{1,8})["'`\u201c\u201d\u300c\u300d]/i)
+  return quoted?.[1] || ''
+}
+
+function normalizeHermesExactShortReply(userText, assistantText) {
+  const target = getHermesExactShortReplyTarget(userText)
+  if (!target) return assistantText
+  const current = String(assistantText || '').trim()
+  return current === target ? assistantText : target
+}
+
 function isHermesExecutionEvidenceText(text) {
   const value = String(text || '')
   if (!value) return false
@@ -2193,6 +2211,7 @@ function createStore() {
       if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
       msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
+      msg.content = normalizeHermesExactShortReply(currentVisibleUserPrompt(), msg.content)
       msg.content = completeHermesReplyIfNeeded(msg.content, {
         userText: currentVisibleUserPrompt(),
         toolEvents: runTools,

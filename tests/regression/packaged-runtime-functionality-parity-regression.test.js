@@ -58,6 +58,18 @@ test('Hermes long-task guard keeps short-answer prompts untouched', () => {
   assert.match(hermesStoreSource, /return false[\s\S]*?isHermesLongTaskRequest/)
 })
 
+test('Hermes packaged exact short-answer prompts override contaminated final text', () => {
+  assert.match(hermesStoreSource, /function\s+getHermesExactShortReplyTarget\(/)
+  assert.match(hermesStoreSource, /function\s+normalizeHermesExactShortReply\(/)
+  assert.match(hermesStoreSource, /\\u53ea\\u56de\\u590d/)
+  assert.match(hermesStoreSource, /\\u4e24\\u4e2a\\u5b57/)
+  assert.match(hermesStoreSource, /\\u6536\\u5230/)
+
+  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?cleanupAfterRun\(\{ status: 'success', reason: 'run-completed' \}\)/)?.[0] || ''
+  assert.match(doneBlock, /normalizeHermesExactShortReply\(currentVisibleUserPrompt\(\),\s*msg\.content\)/)
+  assert.match(doneBlock, /completeHermesReplyIfNeeded/)
+})
+
 test('OpenClaw portable first-run fills missing gateway auth token in runtime config', () => {
   assert.match(openclawCommandsSource, /fn\s+new_portable_gateway_token\(\)\s*->\s*String/)
   assert.match(openclawCommandsSource, /PORTABLE_GATEWAY_TOKEN_PREFIX/)
