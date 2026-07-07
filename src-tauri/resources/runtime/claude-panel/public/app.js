@@ -5912,6 +5912,14 @@ function confirmHighRiskRun(config) {
   return typed === "我已理解风险";
 }
 
+function buildClaudeRunBlockingConfigMessage() {
+  const missing = setupMissingItems().filter((item) =>
+    /主模型|接口地址|中转站地址|项目路径/.test(item)
+  );
+  if (!missing.length) return "";
+  return `ClaudeCode configuration is incomplete: ${missing.join(", ")}. Please open the configuration panel and finish these items before sending.`;
+}
+
 async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
   overrides = implicitBrowserRunOverrides(prompt, overrides);
@@ -5931,6 +5939,13 @@ async function startRun(prompt, overrides = {}) {
   const riskAccepted = Boolean(overrides.riskAccepted) || confirmHighRiskRun(permissionConfig);
   if (permissionConfig.highRisk && !riskAccepted) {
     addMessage("system", "已取消", "未完成风险确认，本次高权限请求已取消。");
+    return;
+  }
+
+  const blockingConfigMessage = buildClaudeRunBlockingConfigMessage();
+  if (blockingConfigMessage) {
+    setRunState("error", "Configuration incomplete");
+    addMessage("error", "Configuration incomplete", blockingConfigMessage);
     return;
   }
 

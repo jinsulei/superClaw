@@ -190,6 +190,19 @@ test('ClaudeCode packaged chat cannot stay pending without a timeout final state
   assert.match(claudePanelServerSource, /CLAUDE_RELAY_TIMEOUT/)
 })
 
+test('ClaudeCode packaged missing run configuration fails before thinking state', () => {
+  assert.match(claudePanelSource, /function\s+buildClaudeRunBlockingConfigMessage\(\)/)
+  assert.match(claudePanelSource, /setupMissingItems\(\)\.filter/)
+  assert.match(claudePanelSource, /主模型\|接口地址\|中转站地址\|项目路径/)
+  assert.match(claudePanelSource, /Configuration incomplete/)
+
+  const startRunBlock = claudePanelSource.match(/async function startRun\(prompt, overrides = \{\}\)[\s\S]*?runController = new AbortController\(\)/)?.[0] || ''
+  assert.match(startRunBlock, /buildClaudeRunBlockingConfigMessage\(\)/)
+  assert.match(startRunBlock, /setRunState\("error",\s*"Configuration incomplete"\)/)
+  assert.match(startRunBlock, /addMessage\("error",\s*"Configuration incomplete"/)
+  assert.match(startRunBlock, /return;[\s\S]*?runController = new AbortController\(\)/)
+})
+
 test('ClaudeCode packaged stale managed project paths are restored before resolveCwd', () => {
   assert.match(claudePanelServerSource, /function\s+restoreManagedProjectFolderIfMissing\(input\)/)
   assert.match(claudePanelServerSource, /const managedRoot = getManagedProjectsRoot\(\)/)
