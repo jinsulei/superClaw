@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import { compactHermesHistoryContentForPrompt } from '../../src/engines/hermes/lib/chat-store.js'
 
 const hermesStoreSource = readFileSync('src/engines/hermes/lib/chat-store.js', 'utf8')
+const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
@@ -61,6 +62,29 @@ test('OpenClaw packaged connect frame uses gateway-compatible device metadata', 
   assert.match(createFrameBlock, /let\s+platform\s*=\s*gateway_cli_probe_platform\(\);/)
   assert.doesNotMatch(createFrameBlock, /let\s+device_family\s*=\s*"desktop"/)
   assert.doesNotMatch(createFrameBlock, /"deviceFamily":\s*device_family/)
+})
+
+test('OpenClaw packaged execution requests cannot complete with promise-only text', () => {
+  assert.match(openclawChatSource, /function\s+isOpenClawExecutionRequest\(/)
+  assert.match(openclawChatSource, /function\s+isOpenClawExecutionPromiseOnlyReply\(/)
+  assert.match(openclawChatSource, /function\s+buildOpenClawExecutionUnavailableReply\(/)
+
+  const finalBlock = openclawChatSource.match(/if \(state === 'final'\) \{[\s\S]*?clearOpenClawGenerationState\(finalTools\.length \|\| _currentAiTools\.length \? 'tool-result-completed' : 'final-completed'/)?.[0] || ''
+  assert.match(finalBlock, /isOpenClawExecutionRequest\(activeFinalUserText\)/)
+  assert.match(finalBlock, /isOpenClawExecutionPromiseOnlyReply\(visibleFinalText\)/)
+  assert.match(finalBlock, /finalTools\.length\s*\|\|\s*_currentAiTools\.length/)
+  assert.match(finalBlock, /buildOpenClawExecutionUnavailableReply\(activeFinalUserText\)/)
+  assert.match(openclawChatSource, /\\u53e3\\u5934\\u627f\\u8bfa/)
+})
+
+test('OpenClaw packaged identity and execution scopes are seeded for tool dispatch', () => {
+  assert.match(openclawCommandsSource, /OPENCLAW_EFFECTIVE_TOOLS_PROFILE:\s*&str\s*=\s*"coding"/)
+  assert.match(openclawCommandsSource, /"alsoAllow":\s*\["browser",\s*"desktop_control",\s*"skill_manager",\s*"exec",\s*"process"\]/)
+  assert.match(openclawCommandsSource, /"exec":\s*\{\s*"host":\s*"gateway",\s*"security":\s*"full",\s*"ask":\s*"off"\s*\}/)
+  assert.match(openclawDeviceSource, /"approvedScopes":\s*SCOPES/)
+  for (const scope of ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.read', 'operator.write']) {
+    assert.match(openclawDeviceSource, new RegExp(scope))
+  }
 })
 
 test('ClaudeCode packaged panel resolves native CLI path or explicitly allows relay fallback', () => {

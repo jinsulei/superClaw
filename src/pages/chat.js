@@ -3215,6 +3215,36 @@ function buildOpenClawToolUnavailableReply(userText = '') {
   ].join('\n\n')
 }
 
+function isOpenClawExecutionRequest(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  const hasExecutionVerb = /(?:\u8dd1|\u6267\u884c|\u6d4b\u8bd5|\u68c0\u6d4b|\u68c0\u67e5|\u8dd1\u4e00\u904d|\u7ed9\u6211\u8dd1|\u5e2e\u6211\u8dd1|run|execute|test|check|smoke|gate)/i.test(value)
+  const hasExecutionTarget = /(?:P0|P1|P2|P3|P4|P0\s*[-~到至]\s*P4|check-p0-p4|priority\s+gate|\u95e8\u7981|\u5b8c\u6574\u6027|\u547d\u4ee4|\u7ec8\u7aef|\u5de5\u5177|\u811a\u672c|tool|command|terminal|script)/i.test(value)
+  return hasExecutionVerb && hasExecutionTarget
+}
+
+function isOpenClawExecutionEvidenceText(text) {
+  const value = String(text || '')
+  if (!value) return false
+  return /(?:toolResult|tool_run|command_run|task_event|stdout|stderr|exit\s*code|exitCode|\u9000\u51fa\u7801|\u547d\u4ee4\u8f93\u51fa|\u7ec8\u7aef\u8f93\u51fa|\u6267\u884c\u7ed3\u679c|\u5b8c\u6574\u6027\u6d4b\u8bd5\u62a5\u544a|\u6d4b\u8bd5\u62a5\u544a|P0\s*[:：]|P1\s*[:：]|P2\s*[:：]|P3\s*[:：]|P4\s*[:：])/.test(value)
+}
+
+function isOpenClawExecutionPromiseOnlyReply(text) {
+  const value = String(text || '').trim()
+  if (!value || isOpenClawExecutionEvidenceText(value)) return false
+  const promisesExecution = /(?:\u6211\u6765|\u6211\u4f1a|\u7ed9\u4f60|\u5e2e\u4f60|\u9a6c\u4e0a|\u5f00\u59cb|\u5148|\u8986\u76d6|\u6211\u81ea\u5df1\u5b9a|\u8dd1\u4e00\u904d|\u6267\u884c\u4e00\u904d|I'll|I will|let me|starting)/i.test(value)
+  const mentionsExecution = /(?:P0|P1|P2|P3|P4|\u5b8c\u6574\u6027|\u5de5\u5177\u94fe|\u6587\u4ef6\u7cfb\u7edf|\u7f51\u7edc|\u6267\u884c\u8fb9\u754c|\u8eab\u4efd|\u8bb0\u5fc6|tool|command|terminal|execute)/i.test(value)
+  return promisesExecution && mentionsExecution
+}
+
+function buildOpenClawExecutionUnavailableReply(userText = '') {
+  if (!isOpenClawExecutionRequest(userText)) return ''
+  return [
+    '\u8fd9\u6b21\u6ca1\u6709\u62ff\u5230 tool_run\u3001command_run\u3001task_event \u6216\u7ec8\u7aef\u8f93\u51fa\uff0c\u6240\u4ee5\u6211\u4e0d\u4f1a\u628a\u53e3\u5934\u627f\u8bfa\u5f53\u6210\u5df2\u6267\u884c\u6210\u529f\u3002',
+    '\u8bf7\u68c0\u67e5 OpenClaw Gateway\u3001exec \u5de5\u5177\u6743\u9650\u3001\u6253\u5305\u8def\u5f84\u4e2d\u7684\u811a\u672c\u662f\u5426\u53ef\u7528\uff1b\u5982\u679c\u6267\u884c\u5668\u4e0d\u53ef\u7528\uff0cUI \u5fc5\u987b\u663e\u793a\u660e\u786e\u5931\u8d25\u539f\u56e0\uff0c\u4e0d\u80fd\u53ea\u663e\u793a\u201c\u6211\u6765\u8dd1\u201d\u3002',
+  ].join('\n\n')
+}
+
 function buildOpenClawHighRiskSafetyReply() {
   return [
     '\u8fd9\u7c7b\u64cd\u4f5c\u5c5e\u4e8e\u9ad8\u98ce\u9669\u52a8\u4f5c\uff0c\u6211\u4e0d\u4f1a\u4ee3\u4f60\u81ea\u52a8\u4ed8\u6b3e\u3001\u4e0b\u5355\u6216\u63d0\u4ea4\u8ba2\u5355\u3002',
@@ -6279,6 +6309,14 @@ function handleChatEvent(payload, eventId = '') {
       _currentAiText = completeOpenClawVisibleReply(_currentAiText, activeFinalUserText)
     }
     let visibleFinalText = _currentAiText || finalText
+    if (
+      isOpenClawExecutionRequest(activeFinalUserText) &&
+      isOpenClawExecutionPromiseOnlyReply(visibleFinalText) &&
+      !(finalTools.length || _currentAiTools.length)
+    ) {
+      _currentAiText = buildOpenClawExecutionUnavailableReply(activeFinalUserText) || _currentAiText
+      visibleFinalText = _currentAiText || visibleFinalText
+    }
     let hasContent = hasOpenClawRenderableContent({
       text: visibleFinalText,
       images: _currentAiImages,
