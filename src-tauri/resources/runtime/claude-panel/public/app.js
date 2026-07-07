@@ -199,6 +199,7 @@ const cwdStorageKey = "cleanClaude.cwd.v2";
 const modelStorageKey = "cleanClaude.model";
 const conversationsStorageKey = "cleanClaude.conversations.v1";
 const maxConversationMessages = 80;
+const CLAUDE_RUN_TIMEOUT_MS = 120000;
 const rightPanelCollapsedKey = "cleanClaude.rightPanelCollapsed.v2";
 const themeStorageKey = "cleanClaude.theme.v1";
 const colorThemeStorageKey = "cleanClaude.colorTheme.v1";
@@ -5953,6 +5954,12 @@ async function startRun(prompt, overrides = {}) {
   window.localStorage.setItem(modelStorageKey, modelInput.value);
 
   runController = new AbortController();
+  let runTimedOut = false;
+  const runTimeoutTimer = setTimeout(() => {
+    if (!runController) return;
+    runTimedOut = true;
+    runController.abort();
+  }, CLAUDE_RUN_TIMEOUT_MS);
   voiceReplyPending = Boolean(overrides.voiceInput);
   setRunning(true);
   setRunState("thinking", "正在思考");
@@ -6021,7 +6028,13 @@ async function startRun(prompt, overrides = {}) {
     resizePromptInput();
     await readSse(response);
   } catch (error) {
-    if (error.name !== "AbortError") {
+    if (error.name === "AbortError" && runTimedOut) {
+      const timeoutMessage = "ClaudeCode request timed out before a final response. Please check model configuration, relay connectivity, or retry.";
+      setRunState("error", "Request timed out");
+      addMessage("error", "Request timed out", timeoutMessage);
+      appendActiveRunConversationMessage("error", "Request timed out", timeoutMessage);
+      updateActiveRunConversation({ status: "Request timed out", result: timeoutMessage });
+    } else if (error.name !== "AbortError") {
       setRunState("error", "连接中断");
       addMessage("error", "连接中断", error.message);
       appendActiveRunConversationMessage("error", "连接中断", error.message);
@@ -6032,6 +6045,7 @@ async function startRun(prompt, overrides = {}) {
       updateActiveRunConversation({ status: "已停止" });
     }
   } finally {
+    clearTimeout(runTimeoutTimer);
     flushAssistantTextBuffer();
     if (runController && voiceReplyPending && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();

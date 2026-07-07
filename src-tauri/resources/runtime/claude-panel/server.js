@@ -47,6 +47,7 @@ const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_REQUEST_BYTES = 32 * 1024 * 1024;
 const RELAY_TEST_TIMEOUT_MS = 12000;
+const RELAY_RUN_TIMEOUT_MS = Number(process.env.CLAUDE_PANEL_RELAY_RUN_TIMEOUT_MS || 120000);
 const NATIVE_CLAUDE_WINDOW_TITLE = "SuperClaw Claude Code Native";
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const TOOL_PROFILES = {
@@ -900,6 +901,13 @@ async function handleOpenAiRelayRun(req, res, context) {
   const thinking = minimaxThinkingOverride(relayConfig, apiModel);
   if (thinking) requestBody.thinking = thinking;
 
+  const relayController = new AbortController();
+  let relayTimedOut = false;
+  const relayTimeoutTimer = setTimeout(() => {
+    relayTimedOut = true;
+    relayController.abort();
+  }, RELAY_RUN_TIMEOUT_MS);
+
   const upstreamResp = await fetch(openAiChatUrl(relayConfig.baseUrl), {
     method: "POST",
     headers: {
@@ -907,12 +915,19 @@ async function handleOpenAiRelayRun(req, res, context) {
       authorization: `Bearer ${relayConfig.apiKey}`,
     },
     body: JSON.stringify(requestBody),
-  }).catch((error) => ({ ok: false, status: 502, text: async () => error.message }));
+    signal: relayController.signal,
+  }).catch((error) => ({
+    ok: false,
+    status: relayTimedOut ? 504 : 502,
+    text: async () => relayTimedOut ? "Claude Relay request timed out before response." : error.message,
+  }));
 
   if (!upstreamResp.ok) {
+    clearTimeout(relayTimeoutTimer);
     const text = await upstreamResp.text().catch(() => "");
     sendJson(res, upstreamResp.status || 502, {
       error: redact(text || "OpenAI-compatible relay request failed."),
+      code: relayTimedOut ? "CLAUDE_RELAY_TIMEOUT" : "CLAUDE_RELAY_REQUEST_FAILED",
       runtimeMode: "OPENAI_RELAY",
       model: apiModel,
     });
@@ -940,40 +955,49 @@ async function handleOpenAiRelayRun(req, res, context) {
   });
 
   let textSeen = false;
-  if (!requestBody.stream) {
-    const data = await upstreamResp.json().catch(() => ({}));
-    const text = extractRelayText(data);
-    if (text) {
-      textSeen = true;
-      writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
-    }
-  } else {
-    const reader = upstreamResp.body?.getReader?.();
-    if (reader) {
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const raw = trimmed.slice(5).trim();
-          if (!raw || raw === "[DONE]") continue;
-          try {
-            const chunk = JSON.parse(raw);
-            const text = extractRelayText(chunk);
-            if (text) {
-              textSeen = true;
-              writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
-            }
-          } catch {}
+  try {
+    if (!requestBody.stream) {
+      const data = await upstreamResp.json().catch(() => ({}));
+      const text = extractRelayText(data);
+      if (text) {
+        textSeen = true;
+        writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
+      }
+    } else {
+      const reader = upstreamResp.body?.getReader?.();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const raw = trimmed.slice(5).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const chunk = JSON.parse(raw);
+              const text = extractRelayText(chunk);
+              if (text) {
+                textSeen = true;
+                writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt: userPrompt }) });
+              }
+            } catch {}
+          }
         }
       }
     }
+  } catch (error) {
+    writeEvent(res, "error", {
+      text: relayTimedOut
+        ? "Claude Relay timed out while waiting for model output."
+        : redact(error.message || "Claude Relay stream failed."),
+      code: relayTimedOut ? "CLAUDE_RELAY_TIMEOUT" : "CLAUDE_RELAY_STREAM_FAILED",
+    });
   }
 
   if (!textSeen) {
@@ -982,6 +1006,7 @@ async function handleOpenAiRelayRun(req, res, context) {
       code: "CLAUDE_RELAY_RESPONSE_MAPPING_ERROR",
     });
   }
+  clearTimeout(relayTimeoutTimer);
   writeEvent(res, "done", {
     runtimeMode: "OPENAI_RELAY",
     effectiveMode: "CLAUDE_PANEL_RELAY",

@@ -10,6 +10,7 @@ const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'ut
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
+const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude-panel/server.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 
@@ -169,6 +170,24 @@ test('ClaudeCode packaged chat uses relay fallback instead of indefinite native 
   assert.match(claudeCommandsSource, /CLEAN_PANEL_RELAY_CONFIG_ENABLED",\s*"1"/)
   assert.match(claudeCommandsSource, /SUPERCLAW_PANEL_CONFIG_PATH/)
   assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+})
+
+test('ClaudeCode packaged chat cannot stay pending without a timeout final state', () => {
+  assert.match(claudePanelSource, /CLAUDE_RUN_TIMEOUT_MS/)
+  assert.match(claudePanelSource, /runTimedOut\s*=\s*true/)
+  assert.match(claudePanelSource, /runController\.abort\(\)/)
+  assert.match(claudePanelSource, /ClaudeCode request timed out before a final response/)
+
+  assert.match(claudePanelSource, /if \(error\.name === "AbortError" && runTimedOut\)/)
+  assert.match(claudePanelSource, /setRunState\("error",\s*"Request timed out"\)/)
+  assert.match(claudePanelSource, /appendActiveRunConversationMessage\("error",\s*"Request timed out"/)
+  assert.match(claudePanelSource, /clearTimeout\(runTimeoutTimer\)/)
+
+  assert.match(claudePanelServerSource, /RELAY_RUN_TIMEOUT_MS/)
+  assert.match(claudePanelServerSource, /new AbortController\(\)/)
+  assert.match(claudePanelServerSource, /relayTimedOut\s*=\s*true/)
+  assert.match(claudePanelServerSource, /signal:\s*relayController\.signal/)
+  assert.match(claudePanelServerSource, /CLAUDE_RELAY_TIMEOUT/)
 })
 
 test('ClaudeCode packaged panel renders markdown and code without unsafe HTML', () => {
