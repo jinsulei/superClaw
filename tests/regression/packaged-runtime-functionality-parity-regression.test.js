@@ -20,16 +20,16 @@ test('Hermes packaged chat history does not replay previous long assistant repli
   ].join('\n')
   const compacted = compactHermesHistoryContentForPrompt('assistant', previousAssistant)
 
-  assert.match(compacted, /previous assistant response omitted to avoid replay/)
-  assert.match(compacted, /\(\d+ chars\)/)
+  assert.equal(compacted, '')
   assert.equal(compacted.includes('OLD_ASSISTANT_REPLY_SHOULD_NOT_BE_REPLAYED'), false)
-  assert.ok(compacted.length < 120, 'compacted assistant history should stay small')
+  assert.equal(compacted.includes('previous assistant response omitted to avoid replay'), false)
 })
 
 test('Hermes omits old assistant history even when the previous reply is short', () => {
   const contaminated = compactHermesHistoryContentForPrompt('assistant', '聂总，上一轮完整回复不应该进入下一轮 prompt')
 
-  assert.match(contaminated, /previous assistant response omitted to avoid replay/)
+  assert.equal(contaminated, '')
+  assert.equal(contaminated.includes('previous assistant response omitted to avoid replay'), false)
   assert.equal(contaminated.includes('聂总'), false)
   assert.equal(contaminated.includes('上一轮完整回复'), false)
 })

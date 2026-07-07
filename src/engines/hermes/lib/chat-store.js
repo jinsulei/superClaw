@@ -116,7 +116,7 @@ export function compactHermesHistoryContentForPrompt(role, content) {
   const text = String(content || '').trim()
   if (!text) return ''
   if (role !== 'assistant') return text
-  return `${HISTORY_ASSISTANT_OMITTED_MARKER} (${text.length} chars)`
+  return ''
 }
 
 function isHermesLongTaskRequest(text) {
