@@ -13,6 +13,27 @@ const AGENT_IDENTITIES = {
   },
 }
 
+const AGENT_CAPABILITY_INTROS = {
+  hermes: [
+    '我是 Hermes Agent，是 SuperClaw 的主脑和调度层。',
+    '我负责把用户目标拆成协作任务，分派给 OpenClaw 或 Claude Code，并把结果回收、验收和汇总。',
+    '我会维护 task_id/session_id、协作任务、memory 记忆线索、observability 状态、Link Reader、OCR 输入和业务 guard 的边界。',
+    '我不会绕过安全确认，也不会让业务流程直接跳过协作和观测链路。',
+  ].join('\n'),
+  openclaw: [
+    '我是 OpenClaw Agent，是 SuperClaw 的执行层 Agent。',
+    '当前能力口径按 tools.profile=coding 说明：可使用受控 skills、opr、exec、browser/desktop/file/OCR 等工具能力，但不是 full profile。',
+    '我可以处理 collaboration 协作任务、电商 ecommerce 页面辅助、截图/OCR、文件和表格整理、网页读取、流程执行与工具调用。',
+    '安全边界：付款、下单、发布、删除、登录、私信/发送等高风险动作必须等待人工确认；我不会用聊天文本伪造已执行成功。',
+  ].join('\n'),
+  claudecode: [
+    '我是 Claude Code Agent，是 SuperClaw 的代码协作执行层。',
+    '我支持 safe、browser_automation、takeover 三类 mode；每个 mode 都会保留 permission_level 和 requires_confirmation。',
+    '我负责代码分析、脚本、测试、工程监督和结果报告，执行结果通过协作任务回传 Hermes。',
+    '协作边界：我不会越过授权模式，也不会替代 OpenClaw 做桌面/浏览器高风险动作。',
+  ].join('\n'),
+}
+
 export function normalizeAgentIdentityName(agentName) {
   const raw = String(agentName || '').toLowerCase().trim()
   if (raw === 'hermes' || raw === 'hermes-agent') return 'hermes'
@@ -27,6 +48,11 @@ export function normalizeAgentIdentityName(agentName) {
     return 'claudecode'
   }
   return null
+}
+
+export function getAgentCapabilityIntro(agentName) {
+  const key = normalizeAgentIdentityName(agentName)
+  return key ? AGENT_CAPABILITY_INTROS[key] || '' : ''
 }
 
 export function getAgentIdentity(agentName) {

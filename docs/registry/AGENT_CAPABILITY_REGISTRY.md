@@ -5,7 +5,7 @@ This registry records Hermes 1.0.7 agent capability boundaries. It does not impl
 | agent | current_state | tool_capability | available_now | disabled_by_tools_profile | needs_token | impacts_8_issues | impacts_portable_exe | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Hermes | partial | Chat orchestration, Link Reader normalization, collaboration task messages, ecommerce/generation/wechat guards, observability view models | yes | no | provider-dependent | all 8 issues | yes, Hermes runtime must remain portable-safe | Hermes is the coordinator and must not be bypassed by direct business-to-agent calls |
-| OpenClaw | partial / impaired | Browser/tool execution, visual/OCR workflows, generation execution, WeChat/window operations, ecommerce automation support | not fully reliable until recovery | yes, current `minimal` profile is too narrow | yes | Collaboration, Generation / PPT, WeChat, E-Commerce, Frontend Observability, Runtime Packaging | yes, runtime and workspace must be manifest-reviewed | Current runtime supports `minimal`, `coding`, `messaging`, and `full`; configuration repair requires human confirmation |
+| OpenClaw | partial / recovered for local runtime smoke | Browser/tool execution, visual/OCR workflows, generation execution boundary, WeChat/window operations, ecommerce automation support | yes, with local gateway smoke and `tools.profile=coding` | no current effective profile block; `coding` trims some high-risk tools by design | yes | Collaboration, Generation / PPT, WeChat, E-Commerce, Frontend Observability, Runtime Packaging | yes, runtime and workspace must be manifest-reviewed | Current runtime supports `minimal`, `coding`, `messaging`, and `full`; `coding` is the expected effective profile before release packaging review |
 | Claude Code | partial | Code/engineering panel, delegated technical tasks, result return to Hermes | yes, with current panel constraints | no known profile block in this registry | possibly, depending relay/provider | Collaboration / Watch Tasks, Engineering workflows | yes, claude-panel runtime must be reviewed | Must remain compatible after OpenClaw recovery |
 | Codex | reserved / planned adapter boundary | Repository work through this Codex environment, not a production runtime adapter | yes as development assistant, not as app runtime adapter | no | no direct OpenClaw secret access | Governance, tests, docs, code repair | no direct app runtime asset unless explicitly packaged | Codex must not directly repair OpenClaw secrets or create parallel runtime paths |
 
@@ -14,8 +14,8 @@ This registry records Hermes 1.0.7 agent capability boundaries. It does not impl
 - Codex does not directly repair OpenClaw secrets.
 - OpenClaw configuration repair requires human confirmation.
 - tools.profile changes require human confirmation and must use a valid profile: `minimal`, `coding`, `messaging`, or `full`.
-- `coding` is the recommended first recovery profile for local development capability restoration.
-- `minimal` is too narrow for the current repair phase, and `messaging` is not suitable for coding/runtime recovery.
+- `tools.profile=coding` is the expected local development and pre-release recovery profile.
+- `minimal` remains a valid low-capability profile, but it must not be described as the current OpenClaw effective profile when runtime smoke reports `coding`.
 - `full` is high risk and is not recommended while token/secrets migration is deferred; use it only for trusted operator-controlled recovery.
 - OpenClaw token/secrets migration remains a release blocker, and Codex must not directly repair or print OpenClaw secrets.
 - OpenClaw recovery must not affect the committed Hermes 1.0.7 baselines for the 8 issues.

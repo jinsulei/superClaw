@@ -36,6 +36,7 @@ import { compactChatMessage } from '../shared/compact-chat-policy.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../lib/visible-reply-language.js'
 import {
   buildAgentIdentitySystemPrompt,
+  getAgentCapabilityIntro,
   getSafeAgentIdentityReply,
   guardAgentIdentityReply,
 } from '../shared/agent-identity-guard.js'
@@ -3241,6 +3242,18 @@ function isOpenClawCapabilitySummaryQuestion(text) {
   return /(?:\u4f60\u6709\u4ec0\u4e48\u6280\u80fd|\u6709\u54ea\u4e9b\u6280\u80fd|\u53ef\u7528\u7684\s*skills?|\u6280\u80fd\u5217\u8868|\u4f60\u80fd\u505a\u4ec0\u4e48|\u4f60\u6709\u4ec0\u4e48\u80fd\u529b|what can you do|skills?)/i.test(value)
 }
 
+function isOpenClawBroadCapabilityQuestion(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 160) return false
+  if (isOpenClawSkillsQuestion(value) || isOpenClawCapabilitySummaryQuestion(value)) return true
+  return [
+    /\b(?:skills?|opr|exec|collaboration|capabilit(?:y|ies)|tools?\.profile)\b/i,
+    /(?:功能|能力|技能|权限|工具|协作|安全|确认|边界|电商).{0,16}(?:说明|介绍|清单|列表|有哪些|有什么|能做什么|怎么用|怎么协作)/i,
+    /(?:你|OpenClaw).{0,16}(?:功能|能力|技能|权限|工具|协作|电商).{0,16}(?:说明|介绍|有哪些|有什么|能做什么)/i,
+    /(?:协作任务|工具权限|安全确认|能力口径|当前能力|执行边界)/i,
+  ].some(pattern => pattern.test(value))
+}
+
 function isOpenClawOcrCapabilityQuestion(text) {
   const value = String(text || '').trim()
   if (!value || value.length > 80) return false
@@ -3266,10 +3279,10 @@ function buildOpenClawFinanceCapabilityReply() {
 }
 
 function buildOpenClawCapabilitySummaryReply() {
-  return [
-    '\u6211\u662f OpenClaw Agent\uff0c\u4e3b\u8981\u8d1f\u8d23\u6d4f\u89c8\u5668\u3001\u684c\u9762\u548c\u5de5\u5177\u6267\u884c\u7c7b\u4efb\u52a1\u3002',
-    '\u5e38\u7528\u80fd\u529b\u5305\u62ec\uff1a\u7f51\u9875\u8bfb\u53d6\u548c\u622a\u56fe\u3001\u684c\u9762\u534f\u52a9\u3001OCR \u8bc6\u522b\u3001\u6587\u4ef6/\u8868\u683c\u6574\u7406\u3001Skills \u548c\u63d2\u4ef6\u6267\u884c\u3001\u7535\u5546\u9875\u9762\u534f\u52a9\u3002',
-    '\u4ed8\u6b3e\u3001\u4e0b\u5355\u3001\u53d1\u5e03\u3001\u767b\u5f55\u3001\u5220\u9664\u7b49\u9ad8\u98ce\u9669\u64cd\u4f5c\uff0c\u6211\u4f1a\u5148\u505c\u4e0b\u6765\u8ba9\u4f60\u624b\u52a8\u786e\u8ba4\u3002',
+  return getAgentCapabilityIntro('openclaw') || [
+    '我是 OpenClaw Agent，主要负责浏览器、桌面和工具执行类任务。',
+    '当前能力口径：tools.profile=coding；包括 skills、opr、exec、collaboration、电商 ecommerce 辅助、OCR、文件/表格和网页读取。',
+    '安全 safety 边界：付款、下单、发布、登录、删除、私信/发送等高风险动作必须等待人工确认。',
   ].join('\n\n')
 }
 
@@ -3282,6 +3295,13 @@ function maybeHandleOpenClawLocalAnswer(text) {
       handled: true,
       kind: 'safety',
       reply: buildOpenClawEcommerceVisibleReply(value) || buildOpenClawHighRiskSafetyReply(),
+    }
+  }
+  if (isOpenClawBroadCapabilityQuestion(value)) {
+    return {
+      handled: true,
+      kind: 'capability',
+      reply: buildOpenClawCapabilitySummaryReply(),
     }
   }
   if (shouldAnswerOpenClawEcommerceCapability(value)) {

@@ -92,6 +92,15 @@ export function formatHermesCollaborationCapabilityReply() {
     '简单说：Hermes 负责规划、调度和最终验收，OpenClaw 负责动手执行，ClaudeCode 负责技术处理和监督验收。',
   ].join('\n')
 }
+
+export function formatThreeAgentCapabilityBoundaryReply() {
+  return [
+    'Hermes: main coordinator for planning, collaboration tasks, memory hints, observability, Link Reader, OCR input routing, and final review.',
+    'OpenClaw: execution agent for skills, opr, exec, browser/desktop/file/OCR workflows, ecommerce assistance, and tool calls under tools.profile=coding.',
+    'Claude Code: engineering agent for safe, browser_automation, and takeover modes with permission_level and requires_confirmation preserved.',
+    'All high-risk actions must keep manual confirmation and results must return through Hermes-visible collaboration or observability records.',
+  ].join('\n')
+}
 export function detectReportIntent(text) {
   const value = String(text || '')
   if (/查看图片|看图|图片里|截图里|分析图片|识别图片|图片内容/.test(value)) return 'image_inspect'
