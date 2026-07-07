@@ -193,6 +193,14 @@ test('release candidate scanner ignores dependency source sessions and cache mod
       'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.js',
       'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.d.ts',
       'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.js.map',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.js',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.d.ts',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.d.mts',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.js.map',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/@anthropic-ai/sdk/src/resources/beta/sessions/threads/index.js',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/undici/lib/web/cookies/index.js',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/undici/lib/web/cookies/index.d.ts',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/undici/lib/web/cookies/index.js.map',
     ]
 
     for (const relativePath of dependencySourceFiles) {
@@ -202,6 +210,8 @@ test('release candidate scanner ignores dependency source sessions and cache mod
     writeFixtureFile(path.join(dirtyRoot, 'resources/data/sessions/session.db'), 'sqlite')
     writeFixtureFile(path.join(dirtyRoot, 'resources/data/cache/blob.bin'), 'cache')
     writeFixtureFile(path.join(dirtyRoot, 'resources/data/browser-profile/Cookies'), 'cookies')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/browser-profile/Network/Cookies'), 'cookies')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/browser-profile/cookies.sqlite'), 'sqlite')
     writeFixtureFile(path.join(dirtyRoot, 'resources/data/logs/openclaw.log'), 'log')
     writeFixtureFile(path.join(dirtyRoot, 'resources/runtime/data/secrets/key.json'), fakeSecretValue)
     writeFixtureFile(path.join(dirtyRoot, 'resources/data/hermes/.env'), `TOKEN=${fakeSecretValue}`)
@@ -227,6 +237,8 @@ test('release candidate scanner ignores dependency source sessions and cache mod
     assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/sessions')))
     assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/cache')))
     assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/browser-profile')))
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('Network/Cookies')))
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('cookies.sqlite')))
     assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/logs')))
     assert.ok(dirty.candidateSecretLeaks.some(hit => hit.path.includes('resources/runtime/data/secrets')))
     assert.ok(dirty.candidateSecretLeaks.some(hit => hit.path.endsWith('.env')))

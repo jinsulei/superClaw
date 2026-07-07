@@ -170,10 +170,13 @@ function looksLikeCandidateUserState(relativePath) {
 
 function isDependencySourceUserStateName(normalizedPath) {
   if (!normalizedPath.includes('/node_modules/')) return false
-  if (!/\/(src|dist|lib|cjs|esm|types|dist-es|dist-types)\//.test(normalizedPath)) return false
-  if (/\/(sessions?|cache)$/.test(normalizedPath)) return true
-  if (!/\/(sessions?|cache)\//.test(normalizedPath)) return false
-  return /\.(cjs|mjs|js|jsx|ts|tsx|d\.ts|map)$/.test(normalizedPath)
+  if (!/\/(src|dist|lib|resources|cjs|esm|types|dist-es|dist-types)\//.test(normalizedPath)) return false
+  if (!/\/(sessions?|cache|cookies)(\/|$)/.test(normalizedPath)) return false
+
+  const basename = normalizedPath.split('/').pop() || ''
+  if (/^(sessions?|cache|cookies)$/.test(basename)) return true
+  if (!basename.includes('.')) return true
+  return /\.(cjs|mjs|js|jsx|ts|tsx|cts|mts|d\.ts|d\.cts|d\.mts|map)$/.test(normalizedPath)
 }
 
 function looksLikeCandidateSecretPath(relativePath) {
