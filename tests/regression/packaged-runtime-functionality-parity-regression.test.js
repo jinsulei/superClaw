@@ -211,6 +211,7 @@ test('ClaudeCode packaged missing run configuration fails before thinking state'
 test('ClaudeCode packaged stale running conversations restore as terminal errors', () => {
   assert.match(claudePanelSource, /function\s+finalizeRestoredRunningConversation\(/)
   assert.match(claudePanelSource, /ClaudeCode previous packaged run was interrupted before a final response/)
+  assert.match(claudePanelSource, /statusClassForConversation\(normalizedStatus\)\s*!==\s*"thinking"/)
   assert.match(claudePanelSource, /status:\s*"运行异常"/)
 
   const loadBlock = claudePanelSource.match(/function loadConversations\(\)[\s\S]*?function normalizeConversationStatus/)?.[0] || ''

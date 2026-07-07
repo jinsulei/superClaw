@@ -2892,7 +2892,7 @@ function setRunning(running) {
 function finalizeRestoredRunningConversation(conversation) {
   const normalizedStatus = normalizeConversationStatus(conversation.status);
   const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
-  if (normalizedStatus !== "正在思考") {
+  if (statusClassForConversation(normalizedStatus) !== "thinking") {
     return {
       ...conversation,
       status: normalizedStatus,
