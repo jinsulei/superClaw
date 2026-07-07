@@ -3255,7 +3255,7 @@ function isOpenClawExecutionPromiseOnlyReply(text) {
   const value = String(text || '').trim()
   if (!value || isOpenClawExecutionEvidenceText(value)) return false
   if (isOpenClawWorkspaceBootstrapContamination(value)) return true
-  const promisesExecution = /(?:\u6211\u6765|\u6211\u4f1a|\u7ed9\u4f60|\u5e2e\u4f60|\u9a6c\u4e0a|\u5f00\u59cb|\u5148|\u8986\u76d6|\u6211\u81ea\u5df1\u5b9a|\u8dd1\u4e00\u904d|\u6267\u884c\u4e00\u904d|I'll|I will|let me|starting)/i.test(value)
+  const promisesExecution = /(?:\u6211\u6765|\u8ba9\u6211|\u6211\u4f1a|\u7ed9\u4f60|\u5e2e\u4f60|\u9a6c\u4e0a|\u5f00\u59cb|\u5148|\u8986\u76d6|\u6211\u81ea\u5df1\u5b9a|\u8dd1\u4e00\u904d|\u6267\u884c\u4e00\u904d|I'll|I will|let me|starting)/i.test(value)
   const mentionsExecution = /(?:P0|P1|P2|P3|P4|\u5b8c\u6574\u6027|\u5de5\u5177\u94fe|\u6587\u4ef6\u7cfb\u7edf|\u7f51\u7edc|\u6267\u884c\u8fb9\u754c|\u8eab\u4efd|\u8bb0\u5fc6|tool|command|terminal|execute)/i.test(value)
   return promisesExecution && mentionsExecution
 }

@@ -113,6 +113,7 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
   assert.match(finalBlock, /buildOpenClawExecutionUnavailableReply\(activeFinalUserText\)/)
   assert.match(openclawChatSource, /\\u53e3\\u5934\\u627f\\u8bfa/)
   assert.match(openclawChatSource, /BOOTSTRAP\\\.md/)
+  assert.match(openclawChatSource, /\\u8ba9\\u6211/)
   assert.match(openclawChatSource, /工作区里/)
 })
 
