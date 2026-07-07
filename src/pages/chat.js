@@ -3229,9 +3229,32 @@ function isOpenClawExecutionEvidenceText(text) {
   return /(?:toolResult|tool_run|command_run|task_event|stdout\s*[:=]|stderr\s*[:=]|exit\s*code\s*[:=]|exitCode\s*[:=]|\u9000\u51fa\u7801\s*[:=：]|\u547d\u4ee4\u8f93\u51fa\s*[:=：]|\u7ec8\u7aef\u8f93\u51fa\s*[:=：]|\u6267\u884c\u7ed3\u679c\s*[:=：])/.test(value)
 }
 
+function getOpenClawExactShortReplyTarget(text) {
+  const value = String(text || '').trim().replace(/\s+/g, ' ')
+  if (!value || value.length > 80) return ''
+  const received = value.match(/(?:只回复|只回答|仅回复|仅回答).{0,10}(?:两个字|2\s*个字).{0,8}(收到)/i)
+  if (received) return received[1]
+  const quoted = value.match(/(?:只回复|只回答|仅回复|仅回答).{0,12}[“"']([^“”"'\s]{1,8})[”"']/i)
+  return quoted?.[1] || ''
+}
+
+function normalizeOpenClawExactShortReply(userText, assistantText) {
+  const target = getOpenClawExactShortReplyTarget(userText)
+  if (!target) return assistantText
+  const current = String(assistantText || '').trim()
+  return current === target ? assistantText : target
+}
+
+function isOpenClawWorkspaceBootstrapContamination(text) {
+  const value = String(text || '')
+  if (!value) return false
+  return /(?:BOOTSTRAP\.md|bootstrap\s+脚本|workspace\s+里|工作区里|刚上线|刚醒来|我是谁|你是谁|先打个招呼|身份脚本|启动引导)/i.test(value)
+}
+
 function isOpenClawExecutionPromiseOnlyReply(text) {
   const value = String(text || '').trim()
   if (!value || isOpenClawExecutionEvidenceText(value)) return false
+  if (isOpenClawWorkspaceBootstrapContamination(value)) return true
   const promisesExecution = /(?:\u6211\u6765|\u6211\u4f1a|\u7ed9\u4f60|\u5e2e\u4f60|\u9a6c\u4e0a|\u5f00\u59cb|\u5148|\u8986\u76d6|\u6211\u81ea\u5df1\u5b9a|\u8dd1\u4e00\u904d|\u6267\u884c\u4e00\u904d|I'll|I will|let me|starting)/i.test(value)
   const mentionsExecution = /(?:P0|P1|P2|P3|P4|\u5b8c\u6574\u6027|\u5de5\u5177\u94fe|\u6587\u4ef6\u7cfb\u7edf|\u7f51\u7edc|\u6267\u884c\u8fb9\u754c|\u8eab\u4efd|\u8bb0\u5fc6|tool|command|terminal|execute)/i.test(value)
   return promisesExecution && mentionsExecution
@@ -6316,6 +6339,11 @@ function handleChatEvent(payload, eventId = '') {
     ) {
       _currentAiText = buildOpenClawExecutionUnavailableReply(activeFinalUserText) || _currentAiText
       visibleFinalText = _currentAiText || visibleFinalText
+    }
+    const exactShortFinalText = normalizeOpenClawExactShortReply(activeFinalUserText, visibleFinalText)
+    if (exactShortFinalText !== visibleFinalText) {
+      _currentAiText = exactShortFinalText
+      visibleFinalText = exactShortFinalText
     }
     let hasContent = hasOpenClawRenderableContent({
       text: visibleFinalText,

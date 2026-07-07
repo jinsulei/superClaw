@@ -94,6 +94,7 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
   assert.match(openclawChatSource, /function\s+isOpenClawExecutionRequest\(/)
   assert.match(openclawChatSource, /function\s+isOpenClawExecutionEvidenceText\(/)
   assert.match(openclawChatSource, /function\s+isOpenClawExecutionPromiseOnlyReply\(/)
+  assert.match(openclawChatSource, /function\s+isOpenClawWorkspaceBootstrapContamination\(/)
   assert.match(openclawChatSource, /function\s+buildOpenClawExecutionUnavailableReply\(/)
 
   const evidenceBlock = openclawChatSource.match(/function\s+isOpenClawExecutionEvidenceText\([\s\S]*?\n\}/)?.[0] || ''
@@ -111,6 +112,20 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
   assert.match(finalBlock, /finalTools\.length\s*\|\|\s*_currentAiTools\.length/)
   assert.match(finalBlock, /buildOpenClawExecutionUnavailableReply\(activeFinalUserText\)/)
   assert.match(openclawChatSource, /\\u53e3\\u5934\\u627f\\u8bfa/)
+  assert.match(openclawChatSource, /BOOTSTRAP\\\.md/)
+  assert.match(openclawChatSource, /工作区里/)
+})
+
+test('OpenClaw packaged exact short-answer prompts are not overridden by workspace bootstrap text', () => {
+  assert.match(openclawChatSource, /function\s+getOpenClawExactShortReplyTarget\(/)
+  assert.match(openclawChatSource, /function\s+normalizeOpenClawExactShortReply\(/)
+  assert.match(openclawChatSource, /只回复\|只回答\|仅回复\|仅回答/)
+  assert.match(openclawChatSource, /两个字\|2\\s\*个字/)
+
+  const finalBlock = openclawChatSource.match(/let visibleFinalText = _currentAiText \|\| finalText[\s\S]*?let hasContent = hasOpenClawRenderableContent/)?.[0] || ''
+  assert.match(finalBlock, /normalizeOpenClawExactShortReply\(activeFinalUserText,\s*visibleFinalText\)/)
+  assert.match(finalBlock, /_currentAiText\s*=\s*exactShortFinalText/)
+  assert.match(finalBlock, /visibleFinalText\s*=\s*exactShortFinalText/)
 })
 
 test('OpenClaw packaged identity and execution scopes are seeded for tool dispatch', () => {
