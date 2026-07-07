@@ -4,12 +4,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use rand::RngCore;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
 const DEVICE_KEY_FILE: &str = "clawpanel-device-key.json";
+const IDENTITY_DEVICE_FILE: &str = "device.json";
+const IDENTITY_DEVICE_AUTH_FILE: &str = "device-auth.json";
+const ED25519_SPKI_PREFIX_HEX: &str = "302a300506032b6570032100";
+const ED25519_PKCS8_PRIVATE_PREFIX_HEX: &str = "302e020100300506032b657004220420";
 const SCOPES: &[&str] = &[
     "operator.admin",
     "operator.approvals",
@@ -80,6 +85,176 @@ pub(crate) fn get_or_create_key_in_dir(
 fn base64_url_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
+}
+
+fn base64_standard_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+fn pem_encode(label: &str, der: &[u8]) -> String {
+    let encoded = base64_standard_encode(der);
+    let mut body = String::new();
+    for chunk in encoded.as_bytes().chunks(64) {
+        body.push_str(std::str::from_utf8(chunk).unwrap_or(""));
+        body.push('\n');
+    }
+    format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
+}
+
+fn public_key_pem_from_raw(public_key_raw: &[u8]) -> Result<String, String> {
+    let mut der = hex::decode(ED25519_SPKI_PREFIX_HEX)?;
+    der.extend_from_slice(public_key_raw);
+    Ok(pem_encode("PUBLIC KEY", &der))
+}
+
+fn private_key_pem_from_raw(private_key_raw: &[u8]) -> Result<String, String> {
+    let mut der = hex::decode(ED25519_PKCS8_PRIVATE_PREFIX_HEX)?;
+    der.extend_from_slice(private_key_raw);
+    Ok(pem_encode("PRIVATE KEY", &der))
+}
+
+fn new_pairing_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64_url_encode(&bytes)
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+pub(crate) fn ensure_gateway_identity_store_in_dir(dir: &Path) -> Result<(), String> {
+    let identity_dir = dir.join("identity");
+    let identity_path = identity_dir.join(IDENTITY_DEVICE_FILE);
+    let device_auth_path = identity_dir.join(IDENTITY_DEVICE_AUTH_FILE);
+    if identity_path.exists() && device_auth_path.exists() {
+        return Ok(());
+    }
+
+    let (device_id, public_key, signing_key) = get_or_create_key_in_dir(dir)?;
+    fs::create_dir_all(&identity_dir).map_err(|e| format!("创建 identity 目录失败: {e}"))?;
+
+    if !identity_path.exists() {
+        let verifying_key: VerifyingKey = (&signing_key).into();
+        let identity = serde_json::json!({
+            "version": 1,
+            "deviceId": device_id,
+            "publicKeyPem": public_key_pem_from_raw(&verifying_key.to_bytes())?,
+            "privateKeyPem": private_key_pem_from_raw(&signing_key.to_bytes())?,
+            "createdAtMs": unix_now_ms()
+        });
+        fs::write(&identity_path, serde_json::to_string_pretty(&identity).unwrap())
+            .map_err(|e| format!("写入 device.json 失败: {e}"))?;
+    }
+
+    let token = ensure_paired_operator_token(dir, &device_id, &public_key)?;
+    if !device_auth_path.exists() {
+        let device_auth = serde_json::json!({
+            "version": 1,
+            "deviceId": device_id,
+            "tokens": {
+                "operator": {
+                    "token": token,
+                    "role": "operator",
+                    "scopes": SCOPES,
+                    "updatedAtMs": unix_now_ms()
+                }
+            }
+        });
+        fs::write(&device_auth_path, serde_json::to_string_pretty(&device_auth).unwrap())
+            .map_err(|e| format!("写入 device-auth.json 失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
+fn ensure_paired_operator_token(
+    dir: &Path,
+    device_id: &str,
+    public_key: &str,
+) -> Result<String, String> {
+    let devices_dir = dir.join("devices");
+    fs::create_dir_all(&devices_dir).map_err(|e| format!("创建 devices 目录失败: {e}"))?;
+    let paired_path = devices_dir.join("paired.json");
+    let mut paired = fs::read_to_string(&paired_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let now = unix_now_ms();
+    let token = {
+        let entry = paired
+            .as_object_mut()
+            .unwrap()
+            .entry(device_id.to_string())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "deviceId": device_id,
+                    "publicKey": public_key,
+                    "platform": std::env::consts::OS,
+                    "deviceFamily": "desktop",
+                    "clientId": "openclaw-control-ui",
+                    "clientMode": "ui",
+                    "role": "operator",
+                    "roles": ["operator"],
+                    "scopes": SCOPES,
+                    "approvedScopes": SCOPES,
+                    "tokens": {},
+                    "createdAtMs": now,
+                    "approvedAtMs": now
+                })
+            });
+        if !entry.is_object() {
+            *entry = serde_json::json!({});
+        }
+        let obj = entry.as_object_mut().unwrap();
+        obj.entry("deviceId").or_insert_with(|| serde_json::json!(device_id));
+        obj.entry("publicKey").or_insert_with(|| serde_json::json!(public_key));
+        obj.entry("platform").or_insert_with(|| serde_json::json!(std::env::consts::OS));
+        obj.entry("deviceFamily").or_insert_with(|| serde_json::json!("desktop"));
+        obj.entry("clientId").or_insert_with(|| serde_json::json!("openclaw-control-ui"));
+        obj.entry("clientMode").or_insert_with(|| serde_json::json!("ui"));
+        obj.entry("role").or_insert_with(|| serde_json::json!("operator"));
+        obj.entry("roles").or_insert_with(|| serde_json::json!(["operator"]));
+        obj.entry("scopes").or_insert_with(|| serde_json::json!(SCOPES));
+        obj.entry("approvedScopes").or_insert_with(|| serde_json::json!(SCOPES));
+        obj.entry("createdAtMs").or_insert_with(|| serde_json::json!(now));
+        obj.entry("approvedAtMs").or_insert_with(|| serde_json::json!(now));
+        let tokens = obj.entry("tokens").or_insert_with(|| serde_json::json!({}));
+        if !tokens.is_object() {
+            *tokens = serde_json::json!({});
+        }
+        let tokens_obj = tokens.as_object_mut().unwrap();
+        if let Some(existing) = tokens_obj
+            .get("operator")
+            .and_then(|value| value.get("token"))
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+        {
+            existing.to_string()
+        } else {
+            let next = new_pairing_token();
+            tokens_obj.insert(
+                "operator".into(),
+                serde_json::json!({
+                    "token": next,
+                    "role": "operator",
+                    "scopes": SCOPES,
+                    "createdAtMs": now,
+                    "revokedAtMs": null,
+                    "lastUsedAtMs": null
+                }),
+            );
+            next
+        }
+    };
+    fs::write(&paired_path, serde_json::to_string_pretty(&paired).unwrap())
+        .map_err(|e| format!("写入 paired.json 失败: {e}"))?;
+    Ok(token)
 }
 
 /// hex 编码（ed25519_dalek 不自带 hex）

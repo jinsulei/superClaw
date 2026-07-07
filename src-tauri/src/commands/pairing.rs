@@ -22,6 +22,7 @@ pub fn auto_pair_device() -> Result<String, String> {
 pub(crate) fn ensure_pairing_for_dir(openclaw_dir: &std::path::Path) -> Result<String, String> {
     // 获取或生成设备密钥（首次安装时自动创建）
     let (device_id, public_key, _) = super::device::get_or_create_key_in_dir(openclaw_dir)?;
+    super::device::ensure_gateway_identity_store_in_dir(openclaw_dir)?;
 
     // 读取或创建 paired.json
     let paired_path = openclaw_dir.join("devices").join("paired.json");
