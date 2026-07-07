@@ -161,10 +161,19 @@ function scanRelayConfigForLeaks(relativePath, parsed, leaks) {
 
 function looksLikeCandidateUserState(relativePath) {
   const normalized = toPosixPath(relativePath).toLowerCase()
+  if (isDependencySourceUserStateName(normalized)) return ''
   if (/(^|\/)(cookies|login data|history|session\.db)$/.test(normalized)) return 'browser profile'
   if (/(^|\/)(logs?|sessions?|browser-profile|user-data|cache)(\/|$)/.test(normalized)) return 'user state'
   if (/\.(log|db|sqlite|sqlite3)$/.test(normalized)) return 'logs/db/sessions'
   return ''
+}
+
+function isDependencySourceUserStateName(normalizedPath) {
+  if (!normalizedPath.includes('/node_modules/')) return false
+  if (!/\/(src|dist|lib|cjs|esm|types|dist-es|dist-types)\//.test(normalizedPath)) return false
+  if (/\/(sessions?|cache)$/.test(normalizedPath)) return true
+  if (!/\/(sessions?|cache)\//.test(normalizedPath)) return false
+  return /\.(cjs|mjs|js|jsx|ts|tsx|d\.ts|map)$/.test(normalizedPath)
 }
 
 function looksLikeCandidateSecretPath(relativePath) {

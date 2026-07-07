@@ -21,6 +21,11 @@ import {
   releaseNoCandidateFixture,
 } from './fixtures/p0-p4-gates.fixture.js'
 
+function writeFixtureFile(filePath, content = 'fixture') {
+  mkdirSync(path.dirname(filePath), { recursive: true })
+  writeFileSync(filePath, content)
+}
+
 test('dev mode treats deferred plaintext secrets as warning rather than blocker', () => {
   const report = buildP0P4GateReport(devFixture)
 
@@ -169,6 +174,64 @@ test('release candidate scanner accepts placeholders and blocks real candidate l
     assert.equal(dirty.candidatePresent, true)
     assert.ok(dirty.candidateSecretLeaks.length >= 2)
     assert.ok(dirty.candidateUserStateHits.length >= 1)
+    assert.doesNotMatch(JSON.stringify(dirty), new RegExp(fakeSecretValue))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('release candidate scanner ignores dependency source sessions and cache modules', () => {
+  const root = path.join(os.tmpdir(), `p0-p4-candidate-user-state-${process.pid}-${Date.now()}`)
+  const cleanRoot = path.join(root, 'clean-dependency-source')
+  const dirtyRoot = path.join(root, 'dirty-real-user-state')
+
+  try {
+    const dependencySourceFiles = [
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/sessions/index.js',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/sessions/index.d.ts',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/sessions/index.js.map',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.js',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.d.ts',
+      'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/plugin-sdk/src/config/cache/cache.js.map',
+    ]
+
+    for (const relativePath of dependencySourceFiles) {
+      writeFixtureFile(path.join(cleanRoot, relativePath), 'export const value = true\n')
+    }
+
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/sessions/session.db'), 'sqlite')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/cache/blob.bin'), 'cache')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/browser-profile/Cookies'), 'cookies')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/logs/openclaw.log'), 'log')
+    writeFixtureFile(path.join(dirtyRoot, 'resources/runtime/data/secrets/key.json'), fakeSecretValue)
+    writeFixtureFile(path.join(dirtyRoot, 'resources/data/hermes/.env'), `TOKEN=${fakeSecretValue}`)
+    writeFixtureFile(
+      path.join(dirtyRoot, 'resources/data/.openclaw/openclaw.json'),
+      JSON.stringify({
+        gateway: { auth: { token: fakeSecretValue } },
+        models: { providers: { minimax: { apiKey: 'minimax-fake-api-key-should-never-print' } } },
+      }),
+    )
+    writeFixtureFile(
+      path.join(dirtyRoot, 'resources/data/claude-panel/relay-config.json'),
+      JSON.stringify({ apiKey: fakeSecretValue }),
+    )
+
+    const clean = scanReleaseCandidate(cleanRoot)
+    const dirty = scanReleaseCandidate(dirtyRoot)
+
+    assert.equal(clean.candidatePresent, true)
+    assert.deepEqual(clean.candidateUserStateHits, [])
+
+    assert.equal(dirty.candidatePresent, true)
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/sessions')))
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/cache')))
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/browser-profile')))
+    assert.ok(dirty.candidateUserStateHits.some(hit => hit.path.includes('resources/data/logs')))
+    assert.ok(dirty.candidateSecretLeaks.some(hit => hit.path.includes('resources/runtime/data/secrets')))
+    assert.ok(dirty.candidateSecretLeaks.some(hit => hit.path.endsWith('.env')))
+    assert.ok(dirty.candidateSecretLeaks.some(hit => hit.key_path === 'gateway.auth.token'))
+    assert.ok(dirty.candidateSecretLeaks.some(hit => hit.key_path === 'apiKey'))
     assert.doesNotMatch(JSON.stringify(dirty), new RegExp(fakeSecretValue))
   } finally {
     rmSync(root, { recursive: true, force: true })
