@@ -1,14 +1,25 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
   buildP0P4GateReport,
   formatP0P4GateReport,
+  normalizeP0P4CandidatePath,
   normalizeP0P4Mode,
   sanitizeP0P4Issue,
+  scanReleaseCandidate,
 } from '../../scripts/check-p0-p4-gates.mjs'
-import { devFixture, fakeSecretValue, releaseFixture } from './fixtures/p0-p4-gates.fixture.js'
+import {
+  cleanCandidateFixture,
+  devFixture,
+  dirtyCandidateFixture,
+  fakeSecretValue,
+  releaseFixture,
+  releaseNoCandidateFixture,
+} from './fixtures/p0-p4-gates.fixture.js'
 
 test('dev mode treats deferred plaintext secrets as warning rather than blocker', () => {
   const report = buildP0P4GateReport(devFixture)
@@ -20,7 +31,7 @@ test('dev mode treats deferred plaintext secrets as warning rather than blocker'
   const secretIssue = report.issues.find(issue => issue.code === 'plaintext_secret_deferred')
   assert.ok(secretIssue)
   assert.equal(secretIssue.severity, 'P2')
-  assert.deepEqual(secretIssue.blocking_in, ['release'])
+  assert.deepEqual(secretIssue.blocking_in, ['release-candidate'])
   assert.match(secretIssue.detail, /gateway\.auth\.token/)
   assert.doesNotMatch(JSON.stringify(report), new RegExp(fakeSecretValue))
 })
@@ -31,11 +42,50 @@ test('release mode promotes release blockers to P0 without leaking secret values
 
   assert.equal(report.mode, 'release')
   assert.equal(report.blocked, true)
-  assert.ok(report.summary.P0 >= 3)
-  assert.ok(report.issues.some(issue => issue.code === 'plaintext_secret_release_blocker'))
+  assert.ok(report.summary.P0 >= 2)
+  assert.ok(report.issues.some(issue => issue.code === 'release_candidate_missing'))
   assert.ok(report.issues.some(issue => issue.code === 'runtime_data_secrets_packaging_risk'))
   assert.ok(report.issues.some(issue => issue.code === 'exe_usb_smoke_missing'))
+  assert.ok(report.issues.some(issue => issue.code === 'plaintext_secret_deferred'))
+  assert.ok(!report.issues.some(issue => issue.code === 'plaintext_secret_release_blocker'))
   assert.match(output, /gateway\.auth\.token/)
+  assert.doesNotMatch(output, new RegExp(fakeSecretValue))
+  assert.doesNotMatch(output, /should-never-print/)
+})
+
+test('release without candidate blocks smoke/candidate readiness but not private config secrets', () => {
+  const report = buildP0P4GateReport(releaseNoCandidateFixture)
+  const output = formatP0P4GateReport(report)
+
+  assert.equal(report.mode, 'release')
+  assert.equal(report.blocked, true)
+  assert.ok(report.issues.some(issue => issue.code === 'release_candidate_missing'))
+  assert.ok(report.issues.some(issue => issue.code === 'exe_usb_smoke_missing'))
+  assert.ok(report.issues.some(issue => issue.code === 'plaintext_secret_deferred'))
+  assert.ok(!report.issues.some(issue => issue.code === 'plaintext_secret_release_blocker'))
+  assert.doesNotMatch(output, new RegExp(fakeSecretValue))
+})
+
+test('clean release candidate does not trigger package secret leak blockers', () => {
+  const report = buildP0P4GateReport(cleanCandidateFixture)
+
+  assert.equal(report.mode, 'release')
+  assert.equal(report.blocked, false)
+  assert.equal(report.summary.P0, 0)
+  assert.ok(!report.issues.some(issue => issue.code === 'release_candidate_secret_leak'))
+  assert.ok(!report.issues.some(issue => issue.code === 'release_candidate_user_state_leak'))
+})
+
+test('dirty release candidate blocks release without leaking secret values', () => {
+  const report = buildP0P4GateReport(dirtyCandidateFixture)
+  const output = formatP0P4GateReport(report)
+
+  assert.equal(report.mode, 'release')
+  assert.equal(report.blocked, true)
+  assert.ok(report.issues.some(issue => issue.code === 'release_candidate_secret_leak'))
+  assert.ok(report.issues.some(issue => issue.code === 'release_candidate_user_state_leak'))
+  assert.match(output, /gateway\.auth\.token/)
+  assert.match(output, /runtime\/data\/secrets/)
   assert.doesNotMatch(output, new RegExp(fakeSecretValue))
   assert.doesNotMatch(output, /should-never-print/)
 })
@@ -65,6 +115,64 @@ test('mode parser supports dev and release with safe default', () => {
   assert.equal(normalizeP0P4Mode(['node', 'script', '--mode=dev']), 'dev')
   assert.equal(normalizeP0P4Mode(['node', 'script', '--mode=release']), 'release')
   assert.equal(normalizeP0P4Mode(['node', 'script']), 'dev')
+})
+
+test('candidate parser supports explicit release candidate paths', () => {
+  assert.equal(normalizeP0P4CandidatePath(['node', 'script']), '')
+  assert.equal(
+    normalizeP0P4CandidatePath(['node', 'script', '--candidate=C:\\tmp\\SuperClaw_Desktop_Client']),
+    'C:\\tmp\\SuperClaw_Desktop_Client',
+  )
+})
+
+test('release candidate scanner accepts placeholders and blocks real candidate leaks', () => {
+  const root = path.join(os.tmpdir(), `p0-p4-candidate-${process.pid}-${Date.now()}`)
+  const cleanRoot = path.join(root, 'clean')
+  const dirtyRoot = path.join(root, 'dirty')
+
+  try {
+    mkdirSync(path.join(cleanRoot, 'resources/data/.openclaw'), { recursive: true })
+    writeFileSync(
+      path.join(cleanRoot, 'resources/data/.openclaw/openclaw.json'),
+      JSON.stringify({
+        gateway: { auth: { token: '${OPENCLAW_GATEWAY_TOKEN}' } },
+        models: { providers: { minimax: { apiKey: '' } } },
+      }),
+    )
+    mkdirSync(path.join(cleanRoot, 'resources/data/claude-panel'), { recursive: true })
+    writeFileSync(
+      path.join(cleanRoot, 'resources/data/claude-panel/relay-config.json'),
+      JSON.stringify({ apiKey: 'REPLACE_ME' }),
+    )
+
+    mkdirSync(path.join(dirtyRoot, 'resources/data/.openclaw'), { recursive: true })
+    writeFileSync(
+      path.join(dirtyRoot, 'resources/data/.openclaw/openclaw.json'),
+      JSON.stringify({
+        gateway: { auth: { token: fakeSecretValue } },
+        models: { providers: { minimax: { apiKey: 'minimax-fake-api-key-should-never-print' } } },
+      }),
+    )
+    mkdirSync(path.join(dirtyRoot, 'resources/data/hermes'), { recursive: true })
+    writeFileSync(path.join(dirtyRoot, 'resources/data/hermes/.env'), `TOKEN=${fakeSecretValue}`)
+    mkdirSync(path.join(dirtyRoot, 'resources/runtime/data/secrets'), { recursive: true })
+    writeFileSync(path.join(dirtyRoot, 'resources/runtime/data/secrets/key.json'), fakeSecretValue)
+    mkdirSync(path.join(dirtyRoot, 'resources/data/sessions'), { recursive: true })
+    writeFileSync(path.join(dirtyRoot, 'resources/data/sessions/session.db'), 'sqlite')
+
+    const clean = scanReleaseCandidate(cleanRoot)
+    const dirty = scanReleaseCandidate(dirtyRoot)
+
+    assert.equal(clean.candidatePresent, true)
+    assert.deepEqual(clean.candidateSecretLeaks, [])
+    assert.deepEqual(clean.candidateUserStateHits, [])
+    assert.equal(dirty.candidatePresent, true)
+    assert.ok(dirty.candidateSecretLeaks.length >= 2)
+    assert.ok(dirty.candidateUserStateHits.length >= 1)
+    assert.doesNotMatch(JSON.stringify(dirty), new RegExp(fakeSecretValue))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('release gate includes only the contract test and not the local P0-P4 script', () => {

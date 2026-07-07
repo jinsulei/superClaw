@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,11 @@ export function normalizeP0P4Mode(argv = process.argv) {
   const modeArg = argv.find(arg => arg.startsWith('--mode='))
   const mode = modeArg ? modeArg.slice('--mode='.length).trim().toLowerCase() : 'dev'
   return mode === 'release' ? 'release' : 'dev'
+}
+
+export function normalizeP0P4CandidatePath(argv = process.argv) {
+  const candidateArg = argv.find(arg => arg.startsWith('--candidate='))
+  return candidateArg ? candidateArg.slice('--candidate='.length).trim() : ''
 }
 
 function run(command, args, options = {}) {
@@ -91,6 +96,159 @@ function redactCommandOutput(output) {
     .replace(/(sk-[A-Za-z0-9_-]{8,})/g, '[REDACTED_SECRET]')
     .replace(/(sk-proj-[A-Za-z0-9_-]+)/g, '[REDACTED_SECRET]')
     .replace(/([A-Za-z0-9_-]*(?:token|secret|apikey|apiKey)[A-Za-z0-9_-]*\s*[:=]\s*)["']?[^"'\s,}]+/gi, '$1[REDACTED_SECRET]')
+}
+
+function toPosixPath(value) {
+  return String(value || '').replace(/\\/g, '/')
+}
+
+function isBlankOrTemplateSecret(value) {
+  if (value === null || value === undefined) return true
+  const text = String(value).trim()
+  if (!text) return true
+  if (/^\$\{[A-Z0-9_]+\}$/i.test(text)) return true
+  if (/^(REPLACE_ME|PLACEHOLDER|YOUR_[A-Z0-9_]+|CHANGE_ME|TODO)$/i.test(text)) return true
+  if (/^<[^<>]+>$/.test(text)) return true
+  return false
+}
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function addCandidateSecretLeak(leaks, filePath, keyPath) {
+  leaks.push({
+    path: toPosixPath(filePath),
+    key_path: keyPath,
+  })
+}
+
+function addCandidateUserStateHit(hits, filePath, reason) {
+  hits.push({
+    path: toPosixPath(filePath),
+    reason,
+  })
+}
+
+function getNestedValue(root, keyPath) {
+  return keyPath.split('.').reduce((current, key) => current?.[key], root)
+}
+
+function scanOpenClawConfigForLeaks(relativePath, parsed, leaks) {
+  const directSecretKeys = ['gateway.auth.token', 'gateway.auth.password']
+  for (const keyPath of directSecretKeys) {
+    const value = getNestedValue(parsed, keyPath)
+    if (!isBlankOrTemplateSecret(value)) addCandidateSecretLeak(leaks, relativePath, keyPath)
+  }
+
+  const providers = parsed?.models?.providers || {}
+  for (const providerName of Object.keys(providers)) {
+    const apiKey = providers[providerName]?.apiKey
+    if (!isBlankOrTemplateSecret(apiKey)) {
+      addCandidateSecretLeak(leaks, relativePath, `models.providers.${providerName}.apiKey`)
+    }
+  }
+}
+
+function scanRelayConfigForLeaks(relativePath, parsed, leaks) {
+  const value = parsed?.apiKey
+  if (!isBlankOrTemplateSecret(value)) addCandidateSecretLeak(leaks, relativePath, 'apiKey')
+}
+
+function looksLikeCandidateUserState(relativePath) {
+  const normalized = toPosixPath(relativePath).toLowerCase()
+  if (/(^|\/)(cookies|login data|history|session\.db)$/.test(normalized)) return 'browser profile'
+  if (/(^|\/)(logs?|sessions?|browser-profile|user-data|cache)(\/|$)/.test(normalized)) return 'user state'
+  if (/\.(log|db|sqlite|sqlite3)$/.test(normalized)) return 'logs/db/sessions'
+  return ''
+}
+
+function looksLikeCandidateSecretPath(relativePath) {
+  const normalized = toPosixPath(relativePath).toLowerCase()
+  if (/(^|\/)\.env(\.|$|\/)?/.test(normalized)) return '.env'
+  if (/(^|\/)runtime\/data\/secrets(\/|$)/.test(normalized)) return 'runtime/data/secrets'
+  if (/(^|\/)resources\/data\/secrets(\/|$)/.test(normalized)) return 'resources/data/secrets'
+  return ''
+}
+
+function scanCandidateFile(candidateRoot, absolutePath, leaks, userStateHits) {
+  const relativePath = toPosixPath(path.relative(candidateRoot, absolutePath))
+  const secretPathKey = looksLikeCandidateSecretPath(relativePath)
+  if (secretPathKey) addCandidateSecretLeak(leaks, relativePath, secretPathKey)
+
+  const userStateReason = looksLikeCandidateUserState(relativePath)
+  if (userStateReason) addCandidateUserStateHit(userStateHits, relativePath, userStateReason)
+
+  const basename = path.basename(absolutePath).toLowerCase()
+  if (!['openclaw.json', 'relay-config.json'].includes(basename)) return
+
+  const parsed = safeJsonParse(readFileSync(absolutePath, 'utf8'))
+  if (!parsed) return
+  if (basename === 'openclaw.json') scanOpenClawConfigForLeaks(relativePath, parsed, leaks)
+  if (basename === 'relay-config.json') scanRelayConfigForLeaks(relativePath, parsed, leaks)
+}
+
+function walkCandidate(candidateRoot, currentPath, leaks, userStateHits) {
+  for (const entry of readdirSync(currentPath, { withFileTypes: true })) {
+    const absolutePath = path.join(currentPath, entry.name)
+    if (entry.isDirectory()) {
+      const relativePath = toPosixPath(path.relative(candidateRoot, absolutePath))
+      const secretPathKey = looksLikeCandidateSecretPath(relativePath)
+      if (secretPathKey) addCandidateSecretLeak(leaks, relativePath, secretPathKey)
+      const userStateReason = looksLikeCandidateUserState(relativePath)
+      if (userStateReason) addCandidateUserStateHit(userStateHits, relativePath, userStateReason)
+      walkCandidate(candidateRoot, absolutePath, leaks, userStateHits)
+      continue
+    }
+    if (entry.isFile()) scanCandidateFile(candidateRoot, absolutePath, leaks, userStateHits)
+  }
+}
+
+function uniqueCandidateFindings(findings) {
+  const seen = new Set()
+  return findings.filter(finding => {
+    const key = `${finding.path}|${finding.key_path || finding.reason || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function scanReleaseCandidate(candidatePath) {
+  const candidateRoot = path.resolve(String(candidatePath || ''))
+  if (!candidatePath || !existsSync(candidateRoot)) {
+    return {
+      candidatePath: candidatePath || '',
+      candidatePresent: false,
+      candidateSecretLeaks: [],
+      candidateUserStateHits: [],
+    }
+  }
+
+  const stats = statSync(candidateRoot)
+  if (!stats.isDirectory()) {
+    return {
+      candidatePath: candidateRoot,
+      candidatePresent: false,
+      candidateSecretLeaks: [],
+      candidateUserStateHits: [],
+    }
+  }
+
+  const candidateSecretLeaks = []
+  const candidateUserStateHits = []
+  walkCandidate(candidateRoot, candidateRoot, candidateSecretLeaks, candidateUserStateHits)
+
+  return {
+    candidatePath: candidateRoot,
+    candidatePresent: true,
+    candidateSecretLeaks: uniqueCandidateFindings(candidateSecretLeaks),
+    candidateUserStateHits: uniqueCandidateFindings(candidateUserStateHits),
+  }
 }
 
 export function buildP0P4GateReport(input = {}) {
@@ -187,13 +345,50 @@ export function buildP0P4GateReport(input = {}) {
   })
   if (secretPaths.length > 0) {
     pushIssue(issues, {
-      severity: mode === 'release' ? 'P0' : 'P2',
-      code: mode === 'release' ? 'plaintext_secret_release_blocker' : 'plaintext_secret_deferred',
-      title: mode === 'release' ? 'Plaintext secret fields block release' : 'Plaintext secret fields remain deferred',
+      severity: 'P2',
+      code: 'plaintext_secret_deferred',
+      title: 'Private plaintext secret fields remain deferred',
       detail: `Secret-bearing key paths: ${secretPaths.join(', ')}`,
-      blocking_in: mode === 'release' ? ['release'] : ['release'],
-      suggestion: 'Migrate secret-bearing values before release; keep values out of logs.',
+      blocking_in: ['release-candidate'],
+      suggestion: 'Keep development secrets private; release candidates are checked separately for leaks.',
       key_path: secretPaths.join(', '),
+    })
+  }
+
+  if (mode === 'release' && packaging.candidatePresent !== true) {
+    pushIssue(issues, {
+      severity: 'P0',
+      code: 'release_candidate_missing',
+      title: 'Release candidate path is missing',
+      detail: 'Release mode requires --candidate=<path> before package secret acceptance can pass.',
+      blocking_in: ['release'],
+      suggestion: 'Provide a built release candidate or USB output path for secret and user-state scanning.',
+    })
+  }
+
+  for (const leak of asList(packaging.candidateSecretLeaks)) {
+    const filePath = leak?.path || leak?.file || 'unknown-candidate-path'
+    const keyPath = leak?.key_path || leak?.keyPath || 'unknown.secret.path'
+    pushIssue(issues, {
+      severity: 'P0',
+      code: 'release_candidate_secret_leak',
+      title: 'Release candidate contains secret-bearing data',
+      detail: `${filePath}: ${keyPath}`,
+      blocking_in: ['release'],
+      suggestion: 'Remove real secrets from the release candidate; use blank values or environment placeholders.',
+      key_path: keyPath,
+    })
+  }
+
+  for (const hit of asList(packaging.candidateUserStateHits)) {
+    const filePath = hit?.path || hit?.file || 'unknown-candidate-path'
+    pushIssue(issues, {
+      severity: 'P0',
+      code: 'release_candidate_user_state_leak',
+      title: 'Release candidate contains user state',
+      detail: `${filePath}: ${hit?.reason || 'user state'}`,
+      blocking_in: ['release'],
+      suggestion: 'Remove browser profiles, logs, databases, sessions, and caches from the release candidate.',
     })
   }
 
@@ -416,7 +611,7 @@ function hasPath(root, segments) {
   return segments.some(segment => existsSync(path.join(root, segment)))
 }
 
-async function collectLocalP0P4Input(mode) {
+async function collectLocalP0P4Input(mode, candidatePath = '') {
   const status = run('git', ['status', '--porcelain'])
   const stashResult = run('git', ['stash', 'list', '-n', '5'])
   const releaseGate = runNode(['scripts/check-release-gates.mjs'])
@@ -444,6 +639,13 @@ async function collectLocalP0P4Input(mode) {
     'src-tauri/resources/runtime/data/secrets',
     'src-tauri/resources/data/secrets',
   ])
+
+  const candidateScan = candidatePath ? scanReleaseCandidate(candidatePath) : {
+    candidatePath: '',
+    candidatePresent: false,
+    candidateSecretLeaks: [],
+    candidateUserStateHits: [],
+  }
 
   return {
     mode,
@@ -473,6 +675,7 @@ async function collectLocalP0P4Input(mode) {
     packaging: {
       runtimeDataSecretsMayBePackaged: runtimeSecretsMayBePackaged,
       exeUsbSmokeAccepted: process.env.SUPERCLAW_EXE_USB_SMOKE_ACCEPTED === '1',
+      ...candidateScan,
     },
     regression: {
       unregisteredRegressionTests: [],
@@ -548,7 +751,8 @@ export function formatP0P4GateReport(report) {
 
 async function main() {
   const mode = normalizeP0P4Mode()
-  const input = await collectLocalP0P4Input(mode)
+  const candidatePath = normalizeP0P4CandidatePath()
+  const input = await collectLocalP0P4Input(mode, candidatePath)
   const report = buildP0P4GateReport(input)
   console.log(formatP0P4GateReport(report))
   process.exitCode = report.blocked ? 1 : 0
