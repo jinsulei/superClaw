@@ -539,6 +539,16 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             let _ = std::fs::write(config_path, content);
         }
     }
+
+    ensure_portable_device_identity(openclaw_dir);
+}
+
+fn ensure_portable_device_identity(openclaw_dir: &Path) {
+    if let Err(err) = pairing::ensure_pairing_for_dir(openclaw_dir) {
+        eprintln!(
+            "[portable] failed to bootstrap OpenClaw device identity: {err}"
+        );
+    }
 }
 
 fn panel_path_key(path: &std::path::Path) -> String {

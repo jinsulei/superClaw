@@ -15,14 +15,17 @@ pub fn auto_pair_device() -> Result<String, String> {
     // 必须在最前面，避免因设备密钥不存在而跳过
     patch_gateway_origins();
 
+    let openclaw_dir = crate::commands::openclaw_dir();
+    ensure_pairing_for_dir(&openclaw_dir)
+}
+
+pub(crate) fn ensure_pairing_for_dir(openclaw_dir: &std::path::Path) -> Result<String, String> {
     // 获取或生成设备密钥（首次安装时自动创建）
-    let (device_id, public_key, _) = super::device::get_or_create_key()?;
+    let (device_id, public_key, _) = super::device::get_or_create_key_in_dir(openclaw_dir)?;
 
     // 读取或创建 paired.json
-    let paired_path = crate::commands::openclaw_dir()
-        .join("devices")
-        .join("paired.json");
-    let devices_dir = crate::commands::openclaw_dir().join("devices");
+    let paired_path = openclaw_dir.join("devices").join("paired.json");
+    let devices_dir = openclaw_dir.join("devices");
 
     // 确保 devices 目录存在
     if !devices_dir.exists() {

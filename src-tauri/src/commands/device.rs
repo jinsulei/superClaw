@@ -3,6 +3,7 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
@@ -20,6 +21,12 @@ const SCOPES: &[&str] = &[
 /// 获取或生成设备密钥
 pub(crate) fn get_or_create_key() -> Result<(String, String, SigningKey), String> {
     let dir = super::openclaw_dir();
+    get_or_create_key_in_dir(&dir)
+}
+
+pub(crate) fn get_or_create_key_in_dir(
+    dir: &Path,
+) -> Result<(String, String, SigningKey), String> {
     let path = dir.join(DEVICE_KEY_FILE);
 
     if path.exists() {
