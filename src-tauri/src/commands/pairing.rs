@@ -9,6 +9,16 @@ const REQUIRED_SCOPES: &[&str] = &[
     "operator.write",
 ];
 
+#[cfg(target_os = "windows")]
+fn gateway_cli_probe_platform() -> &'static str {
+    "win32"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn gateway_cli_probe_platform() -> &'static str {
+    std::env::consts::OS
+}
+
 #[tauri::command]
 pub fn auto_pair_device() -> Result<String, String> {
     // 无论是否已配对，都确保 gateway.controlUi.allowedOrigins 已写入
@@ -41,7 +51,7 @@ pub(crate) fn ensure_pairing_for_dir(openclaw_dir: &std::path::Path) -> Result<S
         serde_json::json!({})
     };
 
-    let os_platform = std::env::consts::OS; // "windows" | "macos" | "linux"
+    let os_platform = gateway_cli_probe_platform();
 
     // 如果已配对，档查 platform 字段是否正确；不正确则覆盖更新，
     // 避免 Gateway 因 metadata-upgrade 拒绝静默自动配对
@@ -63,10 +73,7 @@ pub(crate) fn ensure_pairing_for_dir(openclaw_dir: &std::path::Path) -> Result<S
                     "platform".to_string(),
                     serde_json::Value::String(os_platform.to_string()),
                 );
-                obj.insert(
-                    "deviceFamily".to_string(),
-                    serde_json::Value::String("desktop".to_string()),
-                );
+                obj.remove("deviceFamily");
             }
             let new_content = serde_json::to_string_pretty(&paired)
                 .map_err(|e| format!("序列化 paired.json 失败: {e}"))?;
@@ -87,7 +94,6 @@ pub(crate) fn ensure_pairing_for_dir(openclaw_dir: &std::path::Path) -> Result<S
         "deviceId": device_id,
         "publicKey": public_key,
         "platform": os_platform,
-        "deviceFamily": "desktop",
         "clientId": "openclaw-control-ui",
         "clientMode": "ui",
         "role": "operator",
@@ -123,11 +129,7 @@ fn patch_existing_pairing_record(record: &mut serde_json::Value, os_platform: &s
         );
         changed = true;
     }
-    if obj.get("deviceFamily").and_then(|v| v.as_str()) != Some("desktop") {
-        obj.insert(
-            "deviceFamily".into(),
-            serde_json::Value::String("desktop".into()),
-        );
+    if obj.remove("deviceFamily").is_some() {
         changed = true;
     }
     if obj.get("clientId").and_then(|v| v.as_str()) != Some("openclaw-control-ui") {

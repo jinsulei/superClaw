@@ -127,6 +127,16 @@ fn unix_now_ms() -> u64 {
         .as_millis() as u64
 }
 
+#[cfg(target_os = "windows")]
+fn gateway_cli_probe_platform() -> &'static str {
+    "win32"
+}
+
+#[cfg(not(target_os = "windows"))]
+fn gateway_cli_probe_platform() -> &'static str {
+    std::env::consts::OS
+}
+
 pub(crate) fn ensure_gateway_identity_store_in_dir(dir: &Path) -> Result<(), String> {
     let identity_dir = dir.join("identity");
     let identity_path = identity_dir.join(IDENTITY_DEVICE_FILE);
@@ -195,8 +205,7 @@ fn ensure_paired_operator_token(
                 serde_json::json!({
                     "deviceId": device_id,
                     "publicKey": public_key,
-                    "platform": std::env::consts::OS,
-                    "deviceFamily": "desktop",
+                    "platform": gateway_cli_probe_platform(),
                     "clientId": "openclaw-control-ui",
                     "clientMode": "ui",
                     "role": "operator",
@@ -214,8 +223,7 @@ fn ensure_paired_operator_token(
         let obj = entry.as_object_mut().unwrap();
         obj.entry("deviceId").or_insert_with(|| serde_json::json!(device_id));
         obj.entry("publicKey").or_insert_with(|| serde_json::json!(public_key));
-        obj.entry("platform").or_insert_with(|| serde_json::json!(std::env::consts::OS));
-        obj.entry("deviceFamily").or_insert_with(|| serde_json::json!("desktop"));
+        obj.entry("platform").or_insert_with(|| serde_json::json!(gateway_cli_probe_platform()));
         obj.entry("clientId").or_insert_with(|| serde_json::json!("openclaw-control-ui"));
         obj.entry("clientMode").or_insert_with(|| serde_json::json!("ui"));
         obj.entry("role").or_insert_with(|| serde_json::json!("operator"));

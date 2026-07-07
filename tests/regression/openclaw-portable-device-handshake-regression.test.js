@@ -60,6 +60,25 @@ test('portable handshake bootstrap keeps tools profile coding and does not edit 
   }
 })
 
+test('portable first-run pairing metadata matches gateway CLI probe', () => {
+  assert.match(deviceSource, /fn\s+gateway_cli_probe_platform\(\)\s*->\s*&'static\s+str/)
+  assert.match(pairingSource, /fn\s+gateway_cli_probe_platform\(\)\s*->\s*&'static\s+str/)
+  assert.match(deviceSource, /#\[cfg\(target_os\s*=\s*"windows"\)\][\s\S]*"win32"/)
+  assert.match(pairingSource, /#\[cfg\(target_os\s*=\s*"windows"\)\][\s\S]*"win32"/)
+
+  const deviceSeedBlock = deviceSource.match(/fn ensure_paired_operator_token[\s\S]*?fs::write\(&paired_path/)?.[0] || ''
+  const pairingSeedBlock = pairingSource.match(/paired\[&device_id\]\s*=\s*serde_json::json!\(\{[\s\S]*?\}\);/)?.[0] || ''
+  assert.match(pairingSource, /let\s+os_platform\s*=\s*gateway_cli_probe_platform\(\);/)
+  assert.match(deviceSeedBlock, /"platform":\s*gateway_cli_probe_platform\(\)/)
+  assert.match(pairingSeedBlock, /"platform":\s*os_platform/)
+  assert.equal(deviceSeedBlock.includes('"deviceFamily": "desktop"'), false)
+  assert.equal(pairingSeedBlock.includes('"deviceFamily": "desktop"'), false)
+  assert.equal(deviceSeedBlock.includes('"deviceFamily".into()'), false)
+
+  assert.equal(deviceSource.includes('devices/pending.json'), false)
+  assert.equal(pairingSource.includes('pending.json'), false)
+})
+
 test('portable handshake regression is release-gated', () => {
   assert.match(
     releaseGateSource,
