@@ -120,6 +120,52 @@ export function compactHermesHistoryContentForPrompt(role, content) {
   return `${HISTORY_ASSISTANT_OMITTED_MARKER} (${text.length} chars)`
 }
 
+function isHermesLongTaskRequest(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  if (/(?:\u53ea\u56de\u590d|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only).{0,20}(?:\u4e24\u4e2a\u5b57|\u4e00\u53e5|OK|ok|\u6536\u5230)/i.test(value)) return false
+  const hasAction = /(?:\u8dd1|\u6267\u884c|\u751f\u6210|\u5199\u5165|\u521b\u5efa|\u5904\u7406|\u68c0\u6d4b|\u68c0\u67e5|\u5206\u6790|\u6574\u7406|\u5bfc\u51fa|\u8c03\u7528|\u53d1\u8d77|run|execute|generate|create|write|check|test|smoke|audit|export|dispatch)/i.test(value)
+  const hasLongTaskTarget = /(?:P0|P1|P2|P3|P4|P0\s*[-~\u5230\u81f3]\s*P4|check-p0-p4|release\s+gate|preflight|runtime\s+smoke|\u957f\u4efb\u52a1|\u6267\u884c\u4efb\u52a1|\u95e8\u7981|\u5b8c\u6574\u6027|\u811a\u672c|\u547d\u4ee4|\u7ec8\u7aef|\u5de5\u5177|\u534f\u4f5c|\u4ea7\u7269|\u6587\u4ef6|task_event|tool_run|agent_run|checkpoint|tool|command|terminal|script|artifact)/i.test(value)
+  return hasAction && hasLongTaskTarget
+}
+
+function isHermesExecutionEvidenceText(text) {
+  const value = String(text || '')
+  if (!value) return false
+  return /(?:task_event|tool_run|agent_run|checkpoint|toolResult|stdout|stderr|exit\s*code|exitCode|\u547d\u4ee4\u8f93\u51fa|\u7ec8\u7aef\u8f93\u51fa|\u6267\u884c\u7ed3\u679c|\u5b8c\u6574\u6027\u62a5\u544a|\u6d4b\u8bd5\u62a5\u544a|P0\s*[:：]|P1\s*[:：]|P2\s*[:：]|P3\s*[:：]|P4\s*[:：])/.test(value)
+}
+
+function isHermesPromiseOnlyLongTaskReply(text) {
+  const value = String(text || '').trim()
+  if (!value || isHermesExecutionEvidenceText(value)) return false
+  const promisesWork = /(?:\u6211\u6765|\u6211\u4f1a|\u597d\u7684|\u597d[，,]|\u5f00\u59cb|\u9a6c\u4e0a|\u7ed9\u4f60|\u5e2e\u4f60|\u5148|\u63a5\u4e0b\u6765|I'll|I will|let me|starting)/i.test(value)
+  const mentionsTask = /(?:\u5904\u7406|\u6267\u884c|\u8dd1|\u6d4b\u8bd5|\u68c0\u67e5|\u5206\u6790|\u751f\u6210|\u6574\u7406|P0|P1|P2|P3|P4|task|tool|command|script|artifact)/i.test(value)
+  return promisesWork && mentionsTask
+}
+
+function hasHermesExecutionEvidence(message = {}, tools = []) {
+  return !!(
+    (Array.isArray(tools) && tools.length) ||
+    (Array.isArray(message.task_events) && message.task_events.length) ||
+    (Array.isArray(message.taskEvents) && message.taskEvents.length) ||
+    (Array.isArray(message.tool_runs) && message.tool_runs.length) ||
+    (Array.isArray(message.toolRuns) && message.toolRuns.length) ||
+    (Array.isArray(message.agent_runs) && message.agent_runs.length) ||
+    (Array.isArray(message.agentRuns) && message.agentRuns.length) ||
+    message.checkpoint_id ||
+    message.checkpointId ||
+    isHermesExecutionEvidenceText(message.content)
+  )
+}
+
+function buildHermesLongTaskUnavailableReply(userText = '') {
+  if (!isHermesLongTaskRequest(userText)) return ''
+  return [
+    '\u8fd9\u6b21\u957f\u4efb\u52a1\u6ca1\u6709\u62ff\u5230 task_event\u3001tool_run\u3001agent_run \u6216 checkpoint \u7b49\u6267\u884c\u8bc1\u636e\uff0c\u6240\u4ee5\u6211\u4e0d\u4f1a\u628a\u201c\u6211\u6765\u505a\u201d\u8fd9\u7c7b\u53e3\u5934\u627f\u8bfa\u5f53\u6210\u4efb\u52a1\u5b8c\u6210\u3002',
+    '\u53ef\u80fd\u539f\u56e0\uff1a\u5f53\u524d\u6253\u5305\u7248\u6267\u884c\u5668\u672a\u542f\u52a8\u3001\u957f\u4efb\u52a1\u672a\u521b\u5efa\u3001\u5de5\u5177\u94fe\u4e0d\u53ef\u7528\uff0c\u6216\u8fd0\u884c\u8d85\u65f6\u3002\u8bf7\u68c0\u67e5 Hermes \u6267\u884c\u5668\u3001\u5de5\u5177\u94fe\u548c\u534f\u4f5c\u4efb\u52a1\u72b6\u6001\u540e\u91cd\u8bd5\u3002',
+  ].join('\n\n')
+}
+
 export function buildHermesGenerationStatusMetadata(input = {}) {
   const capability = normalizeGenerationModelCapability(input)
   const prompt = normalizeGenerationPrompt({
@@ -1985,12 +2031,35 @@ function createStore() {
           toolEvents: runTools,
           toolResult: runTools.length > 0,
         })
+        if (
+          isHermesLongTaskRequest(currentVisibleUserPrompt()) &&
+          isHermesPromiseOnlyLongTaskReply(msg.content) &&
+          !hasHermesExecutionEvidence(msg, runTools)
+        ) {
+          msg.content = sanitizeHermesVisibleReply(buildHermesLongTaskUnavailableReply(currentVisibleUserPrompt()), currentVisibleUserPrompt())
+          msg.error = msg.content
+          msg.task_events = [
+            ...(Array.isArray(msg.task_events) ? msg.task_events : []),
+            {
+              event_id: `evt-hermes-long-task-no-evidence-${state.runningClientRequestId || Date.now()}`,
+              task_id: state.runningClientRequestId || '',
+              event_type: 'task_failed',
+              actor: 'hermes',
+              source: 'hermes.chat_store.long_task_guard',
+              status: 'failed',
+              visible_text: msg.content,
+              severity: 'error',
+              created_at: new Date().toISOString(),
+            },
+          ]
+        }
       }
+      const longTaskGuardFailed = !!(msg?.error && Array.isArray(msg.task_events) && msg.task_events.some(event => event?.source === 'hermes.chat_store.long_task_guard'))
       rememberHermesTaskStatus(s, {
-        status: 'success',
+        status: longTaskGuardFailed ? 'failed' : 'success',
         lastStep: '任务已完成',
         summary: msg?.content || summarizeToolOnlyReply(runTools) || '任务已完成。',
-        error: '',
+        error: longTaskGuardFailed ? (msg?.error || msg?.content || '') : '',
       })
 
       // Update session metadata.
@@ -2000,7 +2069,7 @@ function createStore() {
 
       persistSessionMessages(s.id)
       persistSessions()
-      cleanupAfterRun({ status: 'success', reason: 'run-completed' })
+      cleanupAfterRun({ status: longTaskGuardFailed ? 'failed' : 'success', reason: longTaskGuardFailed ? 'long-task-no-evidence' : 'run-completed' })
     })
     const u4 = await tauriListen('hermes-run-error', (e) => {
       const payload = e?.payload || {}

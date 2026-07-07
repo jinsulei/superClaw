@@ -32,6 +32,25 @@ test('Hermes keeps short assistant history and user context intact', () => {
   assert.equal(compactHermesHistoryContentForPrompt('user', userContext), userContext)
 })
 
+test('Hermes packaged long-task requests cannot complete with promise-only text', () => {
+  assert.match(hermesStoreSource, /function\s+isHermesLongTaskRequest\(/)
+  assert.match(hermesStoreSource, /function\s+isHermesPromiseOnlyLongTaskReply\(/)
+  assert.match(hermesStoreSource, /function\s+hasHermesExecutionEvidence\(/)
+  assert.match(hermesStoreSource, /function\s+buildHermesLongTaskUnavailableReply\(/)
+
+  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?cleanupAfterRun\(\{ status: 'success', reason: 'run-completed' \}\)/)?.[0] || ''
+  assert.match(doneBlock, /isHermesLongTaskRequest\(currentVisibleUserPrompt\(\)\)/)
+  assert.match(doneBlock, /isHermesPromiseOnlyLongTaskReply\(msg\.content\)/)
+  assert.match(doneBlock, /hasHermesExecutionEvidence\(/)
+  assert.match(doneBlock, /buildHermesLongTaskUnavailableReply\(currentVisibleUserPrompt\(\)\)/)
+})
+
+test('Hermes long-task guard keeps short-answer prompts untouched', () => {
+  assert.match(hermesStoreSource, /\\u53ea\\u56de\\u590d/)
+  assert.match(hermesStoreSource, /\\u4e24\\u4e2a\\u5b57/)
+  assert.match(hermesStoreSource, /return false[\s\S]*?isHermesLongTaskRequest/)
+})
+
 test('OpenClaw portable first-run fills missing gateway auth token in runtime config', () => {
   assert.match(openclawCommandsSource, /fn\s+new_portable_gateway_token\(\)\s*->\s*String/)
   assert.match(openclawCommandsSource, /PORTABLE_GATEWAY_TOKEN_PREFIX/)
