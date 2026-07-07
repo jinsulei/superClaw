@@ -1956,6 +1956,174 @@ function isAgentMessageListLine(line) {
   return /^[-*]\s+/.test(value) || /^\d+[.)、]\s+/.test(value);
 }
 
+function escapeClaudeMarkdownHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function appendMarkdownFragment(parent, fragment) {
+  if (!parent || !fragment) return;
+  parent.appendChild(fragment);
+}
+
+function renderClaudeMarkdownInline(text) {
+  const fragment = document.createDocumentFragment();
+  const source = String(text || "");
+  const pattern = /(`([^`\n]+)`|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\n]+)\*|_([^_\n]+)_)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      fragment.appendChild(document.createTextNode(source.slice(lastIndex, match.index)));
+    }
+    const code = match[2];
+    const strong = match[3] || match[4];
+    const emphasis = match[5] || match[6];
+    if (code != null) {
+      const node = document.createElement("code");
+      node.className = "claude-inline-code";
+      node.textContent = code;
+      fragment.appendChild(node);
+    } else if (strong != null) {
+      const node = document.createElement("strong");
+      node.className = "claude-markdown-strong";
+      node.textContent = strong;
+      fragment.appendChild(node);
+    } else if (emphasis != null) {
+      const node = document.createElement("em");
+      node.className = "claude-markdown-em";
+      node.textContent = emphasis;
+      fragment.appendChild(node);
+    }
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < source.length) {
+    fragment.appendChild(document.createTextNode(source.slice(lastIndex)));
+  }
+  return fragment;
+}
+
+function appendClaudeMarkdownRow(parent, line, index, type = "paragraph") {
+  const row = document.createElement(type === "paragraph" ? "p" : "div");
+  row.className = `agent-message-row agent-message-${type}`;
+  const icon = document.createElement("span");
+  icon.className = "agent-message-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = chooseAgentMessageIcon(line, index, type);
+  const text = document.createElement("span");
+  text.className = "agent-message-text";
+  appendMarkdownFragment(text, renderClaudeMarkdownInline(stripAgentMessageMarkdownPrefix(line)));
+  row.append(icon, text);
+  parent.appendChild(row);
+}
+
+function appendClaudeCodeBlock(parent, codeText, lang = "") {
+  const pre = document.createElement("pre");
+  pre.className = "claude-code-block";
+  if (lang) {
+    pre.dataset.lang = lang;
+    const label = document.createElement("span");
+    label.className = "claude-code-lang";
+    label.textContent = lang;
+    pre.appendChild(label);
+  }
+  const code = document.createElement("code");
+  code.textContent = String(codeText || "");
+  pre.appendChild(code);
+  parent.appendChild(pre);
+}
+
+function renderClaudeMarkdownBlocks(value, parent) {
+  if (!parent) return;
+  const lines = String(value || "").replace(/\r\n/g, "\n").split("\n");
+  let blockIndex = 0;
+  let paragraph = [];
+  let list = null;
+  let codeFence = null;
+
+  const flushParagraph = () => {
+    const text = paragraph.join("\n").trim();
+    paragraph = [];
+    if (!text) return;
+    for (const line of text.split("\n")) {
+      appendClaudeMarkdownRow(parent, line, blockIndex, "paragraph");
+      blockIndex += 1;
+    }
+  };
+  const flushList = () => {
+    if (!list) return;
+    parent.appendChild(list);
+    list = null;
+    blockIndex += 1;
+  };
+
+  for (const rawLine of lines) {
+    const fence = rawLine.match(/^```([a-zA-Z0-9_-]*)\s*$/);
+    if (fence) {
+      if (codeFence) {
+        appendClaudeCodeBlock(parent, codeFence.lines.join("\n"), codeFence.lang);
+        codeFence = null;
+        blockIndex += 1;
+      } else {
+        flushParagraph();
+        flushList();
+        codeFence = { lang: fence[1] || "", lines: [] };
+      }
+      continue;
+    }
+    if (codeFence) {
+      codeFence.lines.push(rawLine);
+      continue;
+    }
+
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(6, heading[1].length);
+      const headingNode = document.createElement("h" + level);
+      headingNode.className = "claude-markdown-heading";
+      appendMarkdownFragment(headingNode, renderClaudeMarkdownInline(heading[2]));
+      parent.appendChild(headingNode);
+      blockIndex += 1;
+      continue;
+    }
+
+    const listItem = line.match(/^[-*\u2022]\s+(.+)$/) || line.match(/^\d+[.)]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      if (!list) {
+        list = document.createElement(/^\d+[.)]\s+/.test(line) ? "ol" : "ul");
+        list.className = "claude-markdown-list";
+      }
+      const item = document.createElement("li");
+      appendMarkdownFragment(item, renderClaudeMarkdownInline(listItem[1]));
+      list.appendChild(item);
+      continue;
+    }
+
+    paragraph.push(rawLine);
+  }
+
+  if (codeFence) {
+    appendClaudeCodeBlock(parent, codeFence.lines.join("\n"), codeFence.lang);
+    blockIndex += 1;
+  }
+  flushParagraph();
+  flushList();
+}
+
 function appendAgentMessageRow(parent, line, index, type = "paragraph") {
   const row = document.createElement(type === "paragraph" ? "p" : "div");
   row.className = `agent-message-row agent-message-${type}`;
@@ -1981,15 +2149,7 @@ function renderClaudeAgentMessageContent(value, body, details = "") {
     message.dataset.agent = "claude";
     const messageBody = document.createElement("div");
     messageBody.className = "agent-message-body";
-    let blockIndex = 0;
-    for (const rawLine of finalText.split("\n")) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      if (isAgentMessageHeadingLine(line)) appendAgentMessageRow(messageBody, line, blockIndex, "heading");
-      else if (isAgentMessageListLine(line)) appendAgentMessageRow(messageBody, line, blockIndex, "list");
-      else appendAgentMessageRow(messageBody, line, blockIndex, "paragraph");
-      blockIndex += 1;
-    }
+    renderClaudeMarkdownBlocks(finalText, messageBody);
     message.appendChild(messageBody);
     body.appendChild(message);
   }

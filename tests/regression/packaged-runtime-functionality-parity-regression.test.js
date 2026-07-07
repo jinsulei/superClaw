@@ -9,6 +9,7 @@ const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
+const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 
@@ -126,6 +127,24 @@ test('ClaudeCode packaged chat uses relay fallback instead of indefinite native 
   assert.match(claudeCommandsSource, /CLEAN_PANEL_RELAY_CONFIG_ENABLED",\s*"1"/)
   assert.match(claudeCommandsSource, /SUPERCLAW_PANEL_CONFIG_PATH/)
   assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+})
+
+test('ClaudeCode packaged panel renders markdown and code without unsafe HTML', () => {
+  assert.match(claudePanelSource, /function\s+renderClaudeMarkdownInline\(/)
+  assert.match(claudePanelSource, /function\s+renderClaudeMarkdownBlocks\(/)
+  assert.match(claudePanelSource, /function\s+escapeClaudeMarkdownHtml\(/)
+  assert.match(claudePanelSource, /claude-code-block/)
+  assert.match(claudePanelSource, /claude-inline-code/)
+  assert.match(claudePanelSource, /createElement\("h"\s*\+\s*level\)/)
+  assert.match(claudePanelSource, /\?\s*"ol"\s*:\s*"ul"/)
+  assert.match(claudePanelSource, /createElement\("pre"\)/)
+  assert.match(claudePanelSource, /createElement\("code"\)/)
+  assert.match(claudePanelSource, /appendMarkdownFragment\(text,\s*renderClaudeMarkdownInline/)
+
+  const rendererBlock = claudePanelSource.match(/function renderClaudeMarkdownBlocks[\s\S]*?function renderClaudeAgentMessageContent/)?.[0] || ''
+  assert.match(claudePanelSource, /code\.textContent\s*=\s*String\(codeText\s*\|\|\s*""\)/)
+  assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*finalText/)
+  assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*value/)
 })
 
 test('packaged runtime parity regression is release-gated and avoids forbidden edits', () => {
