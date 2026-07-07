@@ -415,9 +415,21 @@ function Ensure-ResourceDir([string]$RelativePath) {
   }
 }
 
-function Sync-SuperClawOpenClawPlugins {
+function Assert-SuperClawOpenClawPluginSources {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
-  $RuntimeExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
+  Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
+  foreach ($plugin in @("skill-manager", "desktop-control")) {
+    $source = Join-Path $SourceExtensions $plugin
+    Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
+    Assert-File (Join-Path $source "index.js") "OpenClaw plugin source entry: $plugin"
+  }
+  Assert-File (Join-Path $ResourcesDir "bin\desktop-control-agent.exe") "Desktop control sidecar source"
+  Ok "SuperClaw OpenClaw plugin sources are available"
+}
+
+function Sync-SuperClawOpenClawPlugins([string]$TargetResourcesDir) {
+  $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
+  $RuntimeExtensions = Join-Path $TargetResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
   New-Item -ItemType Directory -Path $RuntimeExtensions -Force | Out-Null
 
@@ -430,13 +442,51 @@ function Sync-SuperClawOpenClawPlugins {
   }
 
   $DesktopAgentSource = Join-Path $ResourcesDir "bin\desktop-control-agent.exe"
-  $DesktopAgentDestDir = Join-Path $ResourcesDir "runtime\openclaw\bin"
+  $DesktopAgentDestDir = Join-Path $TargetResourcesDir "runtime\openclaw\bin"
   $DesktopAgentDest = Join-Path $DesktopAgentDestDir "desktop-control-agent.exe"
   Assert-File $DesktopAgentSource "Desktop control sidecar source"
   New-Item -ItemType Directory -Path $DesktopAgentDestDir -Force | Out-Null
   Copy-Item -Path $DesktopAgentSource -Destination $DesktopAgentDest -Force
   Assert-File $DesktopAgentDest "OpenClaw desktop-control sidecar"
   Ok "SuperClaw OpenClaw plugins are installed into the runtime package path"
+}
+
+function Copy-PackagedResourcesAllowlist([string]$SourceResources, [string]$DestinationResources) {
+  if (-not (Test-Path $SourceResources -PathType Container)) {
+    Fail "Missing resources directory: $SourceResources"
+  }
+
+  New-Item -ItemType Directory -Path $DestinationResources -Force | Out-Null
+  foreach ($relative in @("runtime", "bin", "templates", "portable")) {
+    $source = Join-Path $SourceResources $relative
+    if (Test-Path $source -PathType Container) {
+      Copy-Directory $source (Join-Path $DestinationResources $relative)
+    }
+  }
+
+  $ocrSource = Join-Path $SourceResources "data\ocr"
+  if (Test-Path $ocrSource -PathType Container) {
+    Copy-Directory $ocrSource (Join-Path $DestinationResources "data\ocr")
+  }
+
+  foreach ($blocked in @(
+    "data\.openclaw",
+    "data\browser",
+    "data\browser-profile",
+    "data\claude-code\sessions",
+    "data\claude-code\home\claude-config\sessions",
+    "data\claude-panel\logs",
+    "data\claude-panel\sessions",
+    "data\hermes\logs",
+    "data\hermes\sessions",
+    "data\runtime\data\secrets",
+    "runtime\data\secrets"
+  )) {
+    $blockedPath = Join-Path $DestinationResources $blocked
+    if (Test-Path $blockedPath) {
+      Remove-IfExists $blockedPath
+    }
+  }
 }
 
 function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
@@ -499,7 +549,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         }
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
         tools = [ordered]@{
-          profile = "minimal"
+          profile = "coding"
           alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
           exec = [ordered]@{
             host = "gateway"
@@ -533,7 +583,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       limits = [ordered]@{ maxSkillsPromptChars = 12000 }
     }
     tools = [ordered]@{
-      profile = "minimal"
+      profile = "coding"
       alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
       exec = [ordered]@{
         host = "gateway"
@@ -548,10 +598,10 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       port = 18789
       auth = [ordered]@{
         mode = "token"
-        token = "superclaw-portable-local"
+        token = ""
       }
       remote = [ordered]@{
-        token = "superclaw-portable-local"
+        token = ""
       }
       controlUi = [ordered]@{
         enabled = $true
@@ -1155,7 +1205,7 @@ Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw 
 foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
   Assert-File (Join-Path $ResourcesDir "templates\openclaw-workspace\$identityFile") "OpenClaw identity template $identityFile"
 }
-Sync-SuperClawOpenClawPlugins
+Assert-SuperClawOpenClawPluginSources
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-panel") "Claude UI panel runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\server.js") "Claude UI panel server"
 if (Test-Path -LiteralPath (Join-Path $ResourcesDir "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
@@ -1182,7 +1232,7 @@ foreach ($glob in @(
   "resources/runtime/claude-code/**/*",
   "resources/runtime/claude-panel/**/*",
   "resources/runtime/ocr/**/*",
-  "resources/data/**/*"
+  "resources/data/ocr/ocr-config.json"
 )) {
   if (-not (Test-TauriResourceGlob $glob)) {
     Fail "tauri.conf.json is missing resource glob: $glob"
@@ -1234,8 +1284,7 @@ if ($PackageOnly) {
 }
 
 Step "Preparing portable resource data"
-Prepare-PortableDataState (Join-Path $ResourcesDir "data") $SanitizedTest.IsPresent
-Ok "Source resource data is sanitized for desktop packaging"
+Ok "Source resource data is left unchanged; packaged data will be generated in output staging"
 
 if (-not $PackageOnly -and $Clean) {
   Invoke-Checked -File "cargo" -Arguments @("clean", "--manifest-path", (Join-Path $TauriDir "Cargo.toml")) -Title "Cleaning Rust target"
@@ -1268,11 +1317,12 @@ Stop-PackagedProcesses $OutDir
 Remove-IfExists $OutDir
 New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 Copy-Item -Path $ExeSource -Destination $ExeDest -Force
-Copy-Directory $ResourcesDir (Join-Path $OutDir "resources")
-Ok "Copied superclaw.exe and complete resources/"
+Copy-PackagedResourcesAllowlist $ResourcesDir (Join-Path $OutDir "resources")
+Ok "Copied superclaw.exe and allowlisted resources/"
 
 Step "Cleaning packaged runtime state"
 $PackagedResources = Join-Path $OutDir "resources"
+Sync-SuperClawOpenClawPlugins $PackagedResources
 Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 if ($SanitizedTest) {
