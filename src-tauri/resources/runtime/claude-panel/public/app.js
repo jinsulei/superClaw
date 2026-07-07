@@ -2889,17 +2889,51 @@ function setRunning(running) {
   modelInput.disabled = running;
 }
 
+function finalizeRestoredRunningConversation(conversation) {
+  const normalizedStatus = normalizeConversationStatus(conversation.status);
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  if (normalizedStatus !== "正在思考") {
+    return {
+      ...conversation,
+      status: normalizedStatus,
+      messages,
+    };
+  }
+  const alreadyFinalized = messages.some((message) =>
+    message?.role === "error" &&
+    String(message?.content || "").includes("ClaudeCode previous packaged run was interrupted before a final response")
+  );
+  return {
+    ...conversation,
+    status: "运行异常",
+    messages: alreadyFinalized
+      ? messages
+      : compactConversationMessages([
+          ...messages,
+          {
+            id: makeId(),
+            role: "error",
+            title: "Run interrupted",
+            content:
+              "ClaudeCode previous packaged run was interrupted before a final response. Please resend after the run configuration is complete.",
+            timestamp: new Date().toISOString(),
+          },
+        ]),
+  };
+}
+
 function loadConversations() {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(conversationsStorageKey) || "[]");
     return Array.isArray(parsed)
-      ? parsed.map((conversation) => ({
-          ...conversation,
-          status: normalizeConversationStatus(conversation.status),
-          pinned: Boolean(conversation.pinned),
-          archived: Boolean(conversation.archived),
-          messages: Array.isArray(conversation.messages) ? conversation.messages : [],
-        }))
+      ? parsed.map((conversation) =>
+          finalizeRestoredRunningConversation({
+            ...conversation,
+            pinned: Boolean(conversation.pinned),
+            archived: Boolean(conversation.archived),
+            messages: Array.isArray(conversation.messages) ? conversation.messages : [],
+          })
+        )
       : [];
   } catch {
     return [];

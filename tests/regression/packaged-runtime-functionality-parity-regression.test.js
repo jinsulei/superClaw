@@ -203,6 +203,16 @@ test('ClaudeCode packaged missing run configuration fails before thinking state'
   assert.match(startRunBlock, /return;[\s\S]*?runController = new AbortController\(\)/)
 })
 
+test('ClaudeCode packaged stale running conversations restore as terminal errors', () => {
+  assert.match(claudePanelSource, /function\s+finalizeRestoredRunningConversation\(/)
+  assert.match(claudePanelSource, /ClaudeCode previous packaged run was interrupted before a final response/)
+  assert.match(claudePanelSource, /status:\s*"运行异常"/)
+
+  const loadBlock = claudePanelSource.match(/function loadConversations\(\)[\s\S]*?function normalizeConversationStatus/)?.[0] || ''
+  assert.match(loadBlock, /finalizeRestoredRunningConversation\(/)
+  assert.doesNotMatch(loadBlock, /status:\s*normalizeConversationStatus\(conversation\.status\),\s*pinned/)
+})
+
 test('ClaudeCode packaged stale managed project paths are restored before resolveCwd', () => {
   assert.match(claudePanelServerSource, /function\s+restoreManagedProjectFolderIfMissing\(input\)/)
   assert.match(claudePanelServerSource, /const managedRoot = getManagedProjectsRoot\(\)/)
