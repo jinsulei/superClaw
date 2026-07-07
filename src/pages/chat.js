@@ -3239,7 +3239,11 @@ function getOpenClawExactShortReplyTarget(text) {
 }
 
 function normalizeOpenClawExactShortReply(userText, assistantText) {
-  const target = getOpenClawExactShortReplyTarget(userText)
+  const stableUserText = String(userText || '').trim().replace(/\s+/g, ' ')
+  const asksExactReply = /(?:\u53ea\u56de\u590d|\u53ea\u56de\u7b54|\u4ec5\u56de\u590d|\u4ec5\u56de\u7b54)/i.test(stableUserText)
+  const asksShortLength = /(?:\u4e24\u4e2a\u5b57|2\s*\u4e2a\u5b57)/i.test(stableUserText)
+  const stableTarget = asksExactReply && asksShortLength && /\u6536\u5230/.test(stableUserText) ? '\u6536\u5230' : ''
+  const target = stableTarget || getOpenClawExactShortReplyTarget(userText)
   if (!target) return assistantText
   const current = String(assistantText || '').trim()
   return current === target ? assistantText : target

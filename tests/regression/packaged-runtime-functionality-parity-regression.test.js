@@ -120,6 +120,10 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
 test('OpenClaw packaged exact short-answer prompts are not overridden by workspace bootstrap text', () => {
   assert.match(openclawChatSource, /function\s+getOpenClawExactShortReplyTarget\(/)
   assert.match(openclawChatSource, /function\s+normalizeOpenClawExactShortReply\(/)
+  assert.match(openclawChatSource, /stableTarget/)
+  assert.match(openclawChatSource, /\\u53ea\\u56de\\u590d/)
+  assert.match(openclawChatSource, /\\u4e24\\u4e2a\\u5b57/)
+  assert.match(openclawChatSource, /\\u6536\\u5230/)
   assert.match(openclawChatSource, /只回复\|只回答\|仅回复\|仅回答/)
   assert.match(openclawChatSource, /两个字\|2\\s\*个字/)
 
