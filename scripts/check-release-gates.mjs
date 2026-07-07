@@ -41,6 +41,7 @@ const gates = [
     commands: [
       ['node', '--test', 'tests/contract/runtime-packaging-gate.test.js'],
       ['node', '--test', 'tests/contract/build-desktop-client-safety-contract.test.js'],
+      ['node', '--test', 'tests/contract/portable-runtime-source-acceptance-contract.test.js'],
       ['node', '--test', 'tests/contract/observability-contract.test.js'],
       ['node', '--test', 'tests/contract/collaboration-observability-wrapper.test.js'],
       ['node', '--test', 'tests/contract/hermes-tool-runs-wrapper.test.js'],
