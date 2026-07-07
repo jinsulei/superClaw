@@ -620,7 +620,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
           "app://",
           "null"
         )
-        allowInsecureAuth = $true
+        allowInsecureAuth = $false
       }
     }
   }

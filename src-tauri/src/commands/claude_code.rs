@@ -268,6 +268,7 @@ fn apply_panel_env(cmd: &mut Command, resources: &Path, home: &Path, projects: &
         .env("CLEAN_PANEL_RELAY_CONFIG_ENABLED", "1")
         .env("CLAUDE_CLI_PATH", effective_claude)
         .env("CLAUDE_PANEL_ALLOW_RELAY_FALLBACK", "1")
+        .env("CLAUDE_PANEL_FORCE_RELAY", "1")
         .env("CLAUDE_CONFIG_DIR", home.join("claude-config"))
         .env("CLAUDE_CODE_PROJECTS_DIR", projects)
         .env("SUPERCLAW_PANEL_CONFIG_PATH", panel_config_path(resources))

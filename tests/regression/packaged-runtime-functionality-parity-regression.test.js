@@ -6,7 +6,9 @@ import { compactHermesHistoryContentForPrompt } from '../../src/engines/hermes/l
 
 const hermesStoreSource = readFileSync('src/engines/hermes/lib/chat-store.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
+const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
+const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 
 test('Hermes packaged chat history does not replay previous long assistant replies', () => {
@@ -44,12 +46,36 @@ test('OpenClaw portable runtime token is generated on first run, not embedded as
   assert.match(openclawCommandsSource, /rand::thread_rng\(\)[\s\S]*sample_iter\(&rand::distributions::Alphanumeric\)/)
 })
 
+test('OpenClaw packaged release config does not enable insecure control UI auth', () => {
+  const packagedTemplateBlock = buildDesktopSource.match(/gateway = \[ordered\]@\{[\s\S]*?Write-Utf8NoBom \(Join-Path \$OpenClawDataDir "openclaw\.json"\)/)?.[0] || ''
+  const portableRepairBlock = openclawCommandsSource.match(/fn ensure_portable_openclaw_config[\s\S]*?fn ensure_portable_device_identity/)?.[0] || ''
+
+  assert.doesNotMatch(packagedTemplateBlock, /allowInsecureAuth\s*=\s*\$true/)
+  assert.doesNotMatch(portableRepairBlock, /"allowInsecureAuth":\s*true/)
+  assert.match(packagedTemplateBlock, /allowInsecureAuth\s*=\s*\$false/)
+})
+
+test('OpenClaw packaged connect frame uses gateway-compatible device metadata', () => {
+  const createFrameBlock = openclawDeviceSource.match(/pub fn create_connect_frame[\s\S]*?Ok\(frame\)\s*\}/)?.[0] || ''
+
+  assert.match(createFrameBlock, /let\s+platform\s*=\s*gateway_cli_probe_platform\(\);/)
+  assert.doesNotMatch(createFrameBlock, /let\s+device_family\s*=\s*"desktop"/)
+  assert.doesNotMatch(createFrameBlock, /"deviceFamily":\s*device_family/)
+})
+
 test('ClaudeCode packaged panel resolves native CLI path or explicitly allows relay fallback', () => {
   assert.match(claudeCommandsSource, /fn\s+effective_claude_cli_path\(resources:\s*&Path\)\s*->\s*PathBuf/)
   assert.match(claudeCommandsSource, /claude\.cmd/)
   assert.match(claudeCommandsSource, /windows_npm_global_prefix/)
   assert.match(claudeCommandsSource, /CLAUDE_CLI_PATH",\s*effective_claude/)
   assert.match(claudeCommandsSource, /CLAUDE_PANEL_ALLOW_RELAY_FALLBACK",\s*"1"/)
+  assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+})
+
+test('ClaudeCode packaged chat uses relay fallback instead of indefinite native CLI pending', () => {
+  assert.match(claudeCommandsSource, /CLAUDE_PANEL_FORCE_RELAY",\s*"1"/)
+  assert.match(claudeCommandsSource, /CLEAN_PANEL_RELAY_CONFIG_ENABLED",\s*"1"/)
+  assert.match(claudeCommandsSource, /SUPERCLAW_PANEL_CONFIG_PATH/)
   assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
 })
 

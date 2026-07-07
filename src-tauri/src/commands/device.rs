@@ -296,8 +296,8 @@ pub fn create_connect_frame(
         .unwrap()
         .as_millis();
 
-    let platform = std::env::consts::OS; // "windows" | "macos" | "linux"
-    let device_family = "desktop";
+    let platform = gateway_cli_probe_platform();
+    let device_family = "";
 
     // OpenClaw negotiates the Gateway protocol as a range. The current bundled
     // runtime speaks v4, while older May builds used v3, so advertise both.
@@ -342,7 +342,6 @@ pub fn create_connect_frame(
                 "id": "openclaw-control-ui",
                 "version": env!("CARGO_PKG_VERSION"),
                 "platform": platform,
-                "deviceFamily": device_family,
                 "mode": "ui"
             },
             "role": "operator",

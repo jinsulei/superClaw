@@ -406,7 +406,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                         "app://",
                         "null"
                     ],
-                    "allowInsecureAuth": true
+                    "allowInsecureAuth": false
                 }),
             );
             changed = true;
