@@ -1986,6 +1986,34 @@ function getExecutionRoots() {
   return roots;
 }
 
+function restoreManagedProjectFolderIfMissing(input) {
+  if (!input) return realPath(process.cwd());
+  const requested = path.resolve(String(input));
+  if (fs.existsSync(requested)) return realPath(requested);
+
+  const managedRoot = getManagedProjectsRoot();
+  fs.mkdirSync(managedRoot, { recursive: true });
+  const managedRootReal = realPath(managedRoot);
+  if (!isSameOrInside(requested, managedRootReal)) {
+    return realPath(requested);
+  }
+  if (containsSensitivePathSegment(requested) || isUnsafeProjectRoot(requested)) {
+    return realPath(requested);
+  }
+
+  fs.mkdirSync(requested, { recursive: true });
+  const restored = saveCustomProject(requested);
+  const folders = readManagedProjectFolders();
+  const restoredKey = restored.toLowerCase();
+  if (!folders.some((item) => path.resolve(item.path).toLowerCase() === restoredKey)) {
+    writeManagedProjectFolders([
+      { path: restored, name: path.basename(restored), createdAt: new Date().toISOString() },
+      ...folders,
+    ]);
+  }
+  return restored;
+}
+
 function containsSensitivePathSegment(projectPath) {
   const parts = path.resolve(projectPath).split(/[\\/]+/).map((part) => part.toLowerCase());
   return parts.some((part) => part === ".ssh" || part === "appdata" || part === "windows");
@@ -2735,7 +2763,7 @@ function sanitizeModelOutput(text, options = {}) {
 }
 
 function resolveCwd(input) {
-  const cwd = input ? realPath(String(input)) : realPath(process.cwd());
+  const cwd = restoreManagedProjectFolderIfMissing(input);
   const stat = fs.statSync(cwd);
   if (!stat.isDirectory()) {
     throw new Error("项目路径不是目录");

@@ -190,6 +190,19 @@ test('ClaudeCode packaged chat cannot stay pending without a timeout final state
   assert.match(claudePanelServerSource, /CLAUDE_RELAY_TIMEOUT/)
 })
 
+test('ClaudeCode packaged stale managed project paths are restored before resolveCwd', () => {
+  assert.match(claudePanelServerSource, /function\s+restoreManagedProjectFolderIfMissing\(input\)/)
+  assert.match(claudePanelServerSource, /const managedRoot = getManagedProjectsRoot\(\)/)
+  assert.match(claudePanelServerSource, /fs\.mkdirSync\(managedRoot,\s*\{\s*recursive:\s*true\s*\}\)/)
+  assert.match(claudePanelServerSource, /if \(!isSameOrInside\(requested,\s*managedRootReal\)\)/)
+  assert.match(claudePanelServerSource, /fs\.mkdirSync\(requested,\s*\{\s*recursive:\s*true\s*\}\)/)
+  assert.match(claudePanelServerSource, /writeManagedProjectFolders\(/)
+
+  const resolveBlock = claudePanelServerSource.match(/function resolveCwd\(input\)[\s\S]*?const roots = getExecutionRoots\(\)/)?.[0] || ''
+  assert.match(resolveBlock, /restoreManagedProjectFolderIfMissing\(input\)/)
+  assert.doesNotMatch(resolveBlock, /input\s*\?\s*realPath\(String\(input\)\)/)
+})
+
 test('ClaudeCode packaged panel renders markdown and code without unsafe HTML', () => {
   assert.match(claudePanelSource, /function\s+renderClaudeMarkdownInline\(/)
   assert.match(claudePanelSource, /function\s+renderClaudeMarkdownBlocks\(/)
