@@ -2948,6 +2948,15 @@ function normalizeConversationStatus(status) {
   return status;
 }
 
+function statusClassForConversation(status) {
+  const normalized = normalizeConversationStatus(status);
+  if (/正在思考|运行中|thinking|running|pending/i.test(normalized)) return "thinking";
+  if (/运行异常|连接中断|请求超时|配置不完整|error|failed|timeout|interrupted/i.test(normalized)) return "error";
+  if (/已停止|stopped|cancelled|canceled/i.test(normalized)) return "stopped";
+  if (/已完成|完成|done|success|completed/i.test(normalized)) return "done";
+  return "idle";
+}
+
 function persistConversationsNow() {
   const compacted = conversations.slice(0, 120).map((conversation) => ({
     ...conversation,
@@ -3248,10 +3257,11 @@ function restoreLastConversation() {
 
 function statusToRunState(status) {
   const normalized = normalizeConversationStatus(status);
-  if (normalized === "正在思考") return "thinking";
-  if (normalized === "运行异常" || normalized === "连接中断") return "error";
-  if (normalized === "已停止") return "stopped";
-  if (normalized === "已完成") return "done";
+  const statusClass = statusClassForConversation(normalized);
+  if (statusClass === "thinking") return "thinking";
+  if (statusClass === "error") return "error";
+  if (statusClass === "stopped") return "stopped";
+  if (statusClass === "done") return "done";
   return "idle";
 }
 
@@ -5800,6 +5810,7 @@ async function readSse(response) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let sawFinalEvent = false;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -5808,9 +5819,13 @@ async function readSse(response) {
     const packets = buffer.split("\n\n");
     buffer = packets.pop() || "";
     for (const packet of packets) {
-      handlePacket(packet);
+      if (handlePacket(packet)) sawFinalEvent = true;
     }
   }
+  if (buffer.trim()) {
+    if (handlePacket(buffer)) sawFinalEvent = true;
+  }
+  return sawFinalEvent;
 }
 
 function handlePacket(packet) {
@@ -5842,6 +5857,7 @@ function handlePacket(packet) {
     addMessage("error", "运行异常", payload.text || "执行失败");
     appendActiveRunConversationMessage("error", "运行异常", payload.text || "执行失败");
     updateActiveRunConversation({ status: "运行异常", result: payload.text || "执行失败" });
+    return true;
   } else if (event === "done") {
     flushAssistantTextBuffer();
     if (activeAssistantMessage?.body) {
@@ -5861,6 +5877,7 @@ function handlePacket(packet) {
       speakVoiceReply(replyText || "已完成。");
       voiceReplyPending = false;
     }
+    return true;
   } else if (event === "meta") {
     if (payload.sessionId) {
       updateActiveRunConversation({
@@ -5869,6 +5886,7 @@ function handlePacket(packet) {
       });
     }
   }
+  return false;
 }
 
 function attachmentSummary() {
@@ -6096,7 +6114,16 @@ async function startRun(prompt, overrides = {}) {
     clearAttachments();
     promptInput.value = "";
     resizePromptInput();
-    await readSse(response);
+    const sawFinalEvent = await readSse(response);
+    if (!sawFinalEvent) {
+      const incompleteMessage =
+        "ClaudeCode stream ended without a final response. Please check model configuration, relay connectivity, or retry.";
+      flushAssistantTextBuffer();
+      setRunState("error", "运行异常");
+      addMessage("error", "运行异常", incompleteMessage);
+      appendActiveRunConversationMessage("error", "运行异常", incompleteMessage);
+      updateActiveRunConversation({ status: "运行异常", result: incompleteMessage });
+    }
   } catch (error) {
     if (error.name === "AbortError" && runTimedOut) {
       const timeoutMessage = "ClaudeCode request timed out before a final response. Please check model configuration, relay connectivity, or retry.";

@@ -182,6 +182,10 @@ test('ClaudeCode packaged chat cannot stay pending without a timeout final state
   assert.match(claudePanelSource, /setRunState\("error",\s*"Request timed out"\)/)
   assert.match(claudePanelSource, /appendActiveRunConversationMessage\("error",\s*"Request timed out"/)
   assert.match(claudePanelSource, /clearTimeout\(runTimeoutTimer\)/)
+  assert.match(claudePanelSource, /const sawFinalEvent = await readSse\(response\)/)
+  assert.match(claudePanelSource, /ClaudeCode stream ended without a final response/)
+  assert.match(claudePanelSource, /if \(!sawFinalEvent\)[\s\S]*?setRunState\("error",\s*"运行异常"\)/)
+  assert.match(claudePanelSource, /function handlePacket\(packet\)[\s\S]*?return true;[\s\S]*?event === "done"[\s\S]*?return true;/)
 
   assert.match(claudePanelServerSource, /RELAY_RUN_TIMEOUT_MS/)
   assert.match(claudePanelServerSource, /new AbortController\(\)/)
@@ -209,9 +213,11 @@ test('ClaudeCode packaged missing run configuration fails before thinking state'
 })
 
 test('ClaudeCode packaged stale running conversations restore as terminal errors', () => {
+  assert.match(claudePanelSource, /function\s+statusClassForConversation\(status\)/)
   assert.match(claudePanelSource, /function\s+finalizeRestoredRunningConversation\(/)
   assert.match(claudePanelSource, /ClaudeCode previous packaged run was interrupted before a final response/)
   assert.match(claudePanelSource, /statusClassForConversation\(normalizedStatus\)\s*!==\s*"thinking"/)
+  assert.match(claudePanelSource, /function\s+statusToRunState\(status\)[\s\S]*?const statusClass = statusClassForConversation\(normalized\)/)
   assert.match(claudePanelSource, /status:\s*"运行异常"/)
 
   const loadBlock = claudePanelSource.match(/function loadConversations\(\)[\s\S]*?function normalizeConversationStatus/)?.[0] || ''
