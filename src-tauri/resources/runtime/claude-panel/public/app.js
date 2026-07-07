@@ -5954,6 +5954,22 @@ function buildClaudeRunBlockingConfigMessage() {
   return `ClaudeCode configuration is incomplete: ${missing.join(", ")}. Please open the configuration panel and finish these items before sending.`;
 }
 
+function buildClaudeRunBlockingConfigMessageStable() {
+  const relayConfig = latestRelay?.config || {};
+  const missing = [];
+  if (!(latestStatus?.baseHost || relayConfig.baseUrl)) {
+    missing.push("base URL / relay endpoint is not configured");
+  }
+  if (!(latestStatus?.model || relayConfig.model)) {
+    missing.push("main model is not configured");
+  }
+  if (!projectSelect.value) {
+    missing.push("project path is not configured");
+  }
+  if (!missing.length) return "";
+  return `ClaudeCode configuration is incomplete: ${missing.join(", ")}. Please open the configuration panel and finish these items before sending.`;
+}
+
 async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
   overrides = implicitBrowserRunOverrides(prompt, overrides);
@@ -5976,10 +5992,15 @@ async function startRun(prompt, overrides = {}) {
     return;
   }
 
-  const blockingConfigMessage = buildClaudeRunBlockingConfigMessage();
+  const blockingConfigMessage = buildClaudeRunBlockingConfigMessageStable();
   if (blockingConfigMessage) {
     setRunState("error", "Configuration incomplete");
     addMessage("error", "Configuration incomplete", blockingConfigMessage);
+    updateCurrentConversation({
+      status: "\u8fd0\u884c\u5f02\u5e38",
+      result: blockingConfigMessage,
+      updatedAt: new Date().toISOString(),
+    });
     return;
   }
 
