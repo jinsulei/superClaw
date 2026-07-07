@@ -13,6 +13,7 @@ static GATEWAY_PORT_CACHE: std::sync::LazyLock<std::sync::Mutex<(u16, std::time:
         std::sync::Mutex::new((18789, std::time::Instant::now() - Duration::from_secs(60)))
     });
 
+const OPENCLAW_EFFECTIVE_TOOLS_PROFILE: &str = "coding";
 
 pub mod agent;
 pub mod assistant;
@@ -422,7 +423,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "skills": [],
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
-                        "profile": "minimal",
+                        "profile": OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
                         "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"]
                     },
                     "thinkingDefault": "off",
@@ -488,7 +489,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         obj.insert(
             "tools".into(),
             serde_json::json!({
-                "profile": "minimal",
+                "profile": OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
                 "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"],
                 "exec": { "host": "gateway", "security": "full", "ask": "off" },
                 "sessions": { "visibility": "agent" }
@@ -496,8 +497,8 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         );
         changed = true;
     } else if let Some(tools) = obj.get_mut("tools").and_then(|v| v.as_object_mut()) {
-        if tools.get("profile").and_then(|v| v.as_str()) != Some("minimal") {
-            tools.insert("profile".into(), serde_json::json!("minimal"));
+        if tools.get("profile").and_then(|v| v.as_str()) != Some(OPENCLAW_EFFECTIVE_TOOLS_PROFILE) {
+            tools.insert("profile".into(), serde_json::json!(OPENCLAW_EFFECTIVE_TOOLS_PROFILE));
             changed = true;
         }
         let allow = serde_json::json!(["browser", "desktop_control", "skill_manager", "exec", "process"]);

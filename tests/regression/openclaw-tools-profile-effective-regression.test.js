@@ -1,0 +1,39 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+
+const devApi = readFileSync('scripts/dev-api.js', 'utf8')
+const tauriCommands = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
+const releaseGate = readFileSync('scripts/check-release-gates.mjs', 'utf8')
+
+test('dev-api calibration keeps OpenClaw effective tools.profile on coding', () => {
+  assert.match(devApi, /const\s+OPENCLAW_EFFECTIVE_TOOLS_PROFILE\s*=\s*'coding'/)
+  assert.doesNotMatch(devApi, /next\.profile\s*=\s*'minimal'/)
+  assert.doesNotMatch(devApi, /profile:\s*'minimal'/)
+  assert.doesNotMatch(devApi, /config\.tools\.profile\s*=\s*'minimal'/)
+  assert.match(devApi, /next\.profile\s*=\s*OPENCLAW_EFFECTIVE_TOOLS_PROFILE/)
+  assert.match(devApi, /profile:\s*OPENCLAW_EFFECTIVE_TOOLS_PROFILE/)
+  assert.match(devApi, /config\.tools\.profile\s*=\s*OPENCLAW_EFFECTIVE_TOOLS_PROFILE/)
+})
+
+test('Tauri OpenClaw config initialization does not restore minimal profile', () => {
+  assert.doesNotMatch(tauriCommands, /"profile":\s*"minimal"/)
+  assert.doesNotMatch(tauriCommands, /Some\("minimal"\)/)
+  assert.doesNotMatch(tauriCommands, /json!\("minimal"\)/)
+  assert.match(tauriCommands, /const\s+OPENCLAW_EFFECTIVE_TOOLS_PROFILE:\s*&str\s*=\s*"coding"/)
+  assert.match(tauriCommands, /"profile":\s*OPENCLAW_EFFECTIVE_TOOLS_PROFILE/)
+  assert.match(tauriCommands, /Some\(OPENCLAW_EFFECTIVE_TOOLS_PROFILE\)/)
+})
+
+test('minimal can remain a valid profile name but not the default recovery target', () => {
+  assert.match(devApi, /OPENCLAW_SUPPORTED_TOOLS_PROFILES/)
+  assert.match(devApi, /'minimal'/)
+  assert.match(devApi, /'coding'/)
+})
+
+test('OpenClaw effective profile regression is included in release gate', () => {
+  assert.match(
+    releaseGate,
+    /node',\s*'--test',\s*'tests\/regression\/openclaw-tools-profile-effective-regression\.test\.js'/,
+  )
+})

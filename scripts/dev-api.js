@@ -4621,6 +4621,8 @@ function generateCalibrationToken() {
 }
 
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec', 'process']
+const OPENCLAW_EFFECTIVE_TOOLS_PROFILE = 'coding'
+const OPENCLAW_SUPPORTED_TOOLS_PROFILES = ['minimal', 'coding']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 const OPENCLAW_STATUS_ENABLED_PLUGINS = [
   'browser',
@@ -4722,7 +4724,7 @@ function ensurePortableOpenClawTools() {
 
 function normalizeOpenClawDirectTools(tools, { includeExecConfig = false } = {}) {
   const next = tools && typeof tools === 'object' && !Array.isArray(tools) ? tools : {}
-  next.profile = 'minimal'
+  next.profile = OPENCLAW_EFFECTIVE_TOOLS_PROFILE
   next.alsoAllow = [...OPENCLAW_DIRECT_TOOL_ALLOWLIST]
   if (includeExecConfig) next.exec = { ...(next.exec && typeof next.exec === 'object' && !Array.isArray(next.exec) ? next.exec : {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
   for (const denyKey of ['deny', 'alsoDeny']) {
@@ -4803,7 +4805,7 @@ function buildCalibrationBaseline() {
           workspace: 'workspace',
           skillsLimits: { maxSkillsPromptChars: 12000 },
           tools: {
-            profile: 'minimal',
+            profile: OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
             alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
           },
           thinkingDefault: 'off',
@@ -4832,7 +4834,7 @@ function buildCalibrationBaseline() {
       limits: { maxSkillsPromptChars: 12000 },
     },
     tools: {
-      profile: 'minimal',
+      profile: OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
       alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
       exec: { ...OPENCLAW_DIRECT_EXEC_CONFIG },
       sessions: { visibility: 'agent' },
@@ -4954,7 +4956,7 @@ function normalizeCalibratedConfig(input) {
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
 
   config.tools = config.tools && typeof config.tools === 'object' && !Array.isArray(config.tools) ? config.tools : {}
-  if (!String(config.tools.profile || '').trim()) config.tools.profile = 'minimal'
+  if (!String(config.tools.profile || '').trim()) config.tools.profile = OPENCLAW_EFFECTIVE_TOOLS_PROFILE
   config.tools.sessions = config.tools.sessions && typeof config.tools.sessions === 'object' && !Array.isArray(config.tools.sessions) ? config.tools.sessions : {}
   if (!String(config.tools.sessions.visibility || '').trim()) config.tools.sessions.visibility = 'agent'
 
