@@ -92,8 +92,18 @@ test('OpenClaw packaged connect frame uses gateway-compatible device metadata', 
 
 test('OpenClaw packaged execution requests cannot complete with promise-only text', () => {
   assert.match(openclawChatSource, /function\s+isOpenClawExecutionRequest\(/)
+  assert.match(openclawChatSource, /function\s+isOpenClawExecutionEvidenceText\(/)
   assert.match(openclawChatSource, /function\s+isOpenClawExecutionPromiseOnlyReply\(/)
   assert.match(openclawChatSource, /function\s+buildOpenClawExecutionUnavailableReply\(/)
+
+  const evidenceBlock = openclawChatSource.match(/function\s+isOpenClawExecutionEvidenceText\([\s\S]*?\n\}/)?.[0] || ''
+  assert.match(evidenceBlock, /stdout\\s\*\[:=\]/)
+  assert.match(evidenceBlock, /exit\\s\*code\\s\*\[:=\]/)
+  assert.doesNotMatch(evidenceBlock, /P0\\s\*/)
+  assert.doesNotMatch(evidenceBlock, /P1\\s\*/)
+  assert.doesNotMatch(evidenceBlock, /P2\\s\*/)
+  assert.doesNotMatch(evidenceBlock, /P3\\s\*/)
+  assert.doesNotMatch(evidenceBlock, /P4\\s\*/)
 
   const finalBlock = openclawChatSource.match(/if \(state === 'final'\) \{[\s\S]*?clearOpenClawGenerationState\(finalTools\.length \|\| _currentAiTools\.length \? 'tool-result-completed' : 'final-completed'/)?.[0] || ''
   assert.match(finalBlock, /isOpenClawExecutionRequest\(activeFinalUserText\)/)

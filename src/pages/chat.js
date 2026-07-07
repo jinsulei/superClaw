@@ -3226,7 +3226,7 @@ function isOpenClawExecutionRequest(text) {
 function isOpenClawExecutionEvidenceText(text) {
   const value = String(text || '')
   if (!value) return false
-  return /(?:toolResult|tool_run|command_run|task_event|stdout|stderr|exit\s*code|exitCode|\u9000\u51fa\u7801|\u547d\u4ee4\u8f93\u51fa|\u7ec8\u7aef\u8f93\u51fa|\u6267\u884c\u7ed3\u679c|\u5b8c\u6574\u6027\u6d4b\u8bd5\u62a5\u544a|\u6d4b\u8bd5\u62a5\u544a|P0\s*[:：]|P1\s*[:：]|P2\s*[:：]|P3\s*[:：]|P4\s*[:：])/.test(value)
+  return /(?:toolResult|tool_run|command_run|task_event|stdout\s*[:=]|stderr\s*[:=]|exit\s*code\s*[:=]|exitCode\s*[:=]|\u9000\u51fa\u7801\s*[:=：]|\u547d\u4ee4\u8f93\u51fa\s*[:=：]|\u7ec8\u7aef\u8f93\u51fa\s*[:=：]|\u6267\u884c\u7ed3\u679c\s*[:=：])/.test(value)
 }
 
 function isOpenClawExecutionPromiseOnlyReply(text) {
