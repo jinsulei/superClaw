@@ -85,6 +85,20 @@ test('Hermes packaged candidate includes offline skills and keeps terminal page 
   assert.match(buildDesktopSource, /Write-PortableHermesLauncher\s+\$PackagedResources/)
 })
 
+test('Hermes packaged terminal uses bundled Git Bash instead of Windows WSL shim', () => {
+  const launcherBlock = buildDesktopSource.match(/function Write-PortableHermesLauncher[\s\S]*?^}/m)?.[0] || ''
+  assert.match(launcherBlock, /HERMES_PORTABLE_GIT_BASH=%SUPERCLAW_RUNTIME_DIR%git\\bin\\bash\.exe/)
+  assert.match(launcherBlock, /HERMES_GIT_BASH_PATH=%HERMES_PORTABLE_GIT_BASH%/)
+  assert.match(launcherBlock, /%ProgramFiles%\\Git\\bin\\bash\.exe/)
+  assert.doesNotMatch(launcherBlock, /System32\\bash\.exe/i)
+
+  assert.match(buildDesktopSource, /function\s+Find-GitForWindowsRuntimeSource\b/)
+  assert.match(buildDesktopSource, /function\s+Copy-PortableGitForHermes\b/)
+  assert.match(buildDesktopSource, /Copy-PortableGitForHermes\s+\$PackagedResources/)
+  assert.match(buildDesktopSource, /runtime\\git\\bin\\bash\.exe/)
+  assert.match(buildDesktopSource, /Packaged Git Bash for Hermes terminal/)
+})
+
 test('OpenClaw portable first-run fills missing gateway auth token in runtime config', () => {
   assert.match(openclawCommandsSource, /fn\s+new_portable_gateway_token\(\)\s*->\s*String/)
   assert.match(openclawCommandsSource, /PORTABLE_GATEWAY_TOKEN_PREFIX/)

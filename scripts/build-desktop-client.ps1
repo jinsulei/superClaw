@@ -213,6 +213,10 @@ set "HERMES_HOME=%SUPERCLAW_RUNTIME_DIR%..\data\hermes"
 set "PYTHONPATH=%SUPERCLAW_RUNTIME_DIR%hermes-agent\Lib\site-packages"
 set "VIRTUAL_ENV=%SUPERCLAW_RUNTIME_DIR%hermes-agent"
 set "HERMES_DISABLE_UPDATE_CHECK=1"
+set "HERMES_PORTABLE_GIT_BASH=%SUPERCLAW_RUNTIME_DIR%git\bin\bash.exe"
+if exist "%HERMES_PORTABLE_GIT_BASH%" set "HERMES_GIT_BASH_PATH=%HERMES_PORTABLE_GIT_BASH%"
+if not defined HERMES_GIT_BASH_PATH if exist "%ProgramFiles%\Git\bin\bash.exe" set "HERMES_GIT_BASH_PATH=%ProgramFiles%\Git\bin\bash.exe"
+if not defined HERMES_GIT_BASH_PATH if exist "%ProgramFiles(x86)%\Git\bin\bash.exe" set "HERMES_GIT_BASH_PATH=%ProgramFiles(x86)%\Git\bin\bash.exe"
 set "PYTHON_EXE=%SUPERCLAW_RUNTIME_DIR%uv-python\python\python.exe"
 if not exist "%PYTHON_EXE%" (
   echo Hermes portable Python not found: %PYTHON_EXE% 1>&2
@@ -221,6 +225,36 @@ if not exist "%PYTHON_EXE%" (
 "%PYTHON_EXE%" -m hermes_cli.main %*
 exit /b %ERRORLEVEL%
 "@)
+}
+
+function Find-GitForWindowsRuntimeSource {
+  $candidates = @(
+    (Join-Path $ResourcesDir "runtime\git"),
+    (Join-Path ${env:ProgramFiles} "Git"),
+    (Join-Path ${env:ProgramFiles(x86)} "Git"),
+    (Join-Path ${env:LOCALAPPDATA} "Programs\Git")
+  )
+  foreach ($candidate in $candidates) {
+    if (-not $candidate) { continue }
+    $bash = Join-Path $candidate "bin\bash.exe"
+    $msys = Join-Path $candidate "usr\bin\msys-2.0.dll"
+    if ((Test-Path -LiteralPath $bash -PathType Leaf) -and (Test-Path -LiteralPath $msys -PathType Leaf)) {
+      return $candidate
+    }
+  }
+  return $null
+}
+
+function Copy-PortableGitForHermes([string]$PackagedResources) {
+  $source = Find-GitForWindowsRuntimeSource
+  if (-not $source) {
+    Warn "Git for Windows runtime not found; Hermes terminal may require HERMES_GIT_BASH_PATH on this machine"
+    return
+  }
+  $target = Join-Path $PackagedResources "runtime\git"
+  Copy-Directory $source $target
+  Assert-File (Join-Path $target "bin\bash.exe") "Packaged Git Bash for Hermes terminal"
+  Ok "Packaged Git Bash runtime for Hermes terminal"
 }
 
 function Copy-FileIfMissingOrEmpty([string]$Source, [string]$Target) {
@@ -1385,6 +1419,7 @@ Ok "Removed local sessions, logs, locks, and machine-specific OpenClaw state"
 Step "Preparing packaged Hermes runtime"
 $PackagedPython = Ensure-PackagedPythonRuntime $PackagedResources
 Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
+Copy-PortableGitForHermes $PackagedResources
 Write-PortableHermesLauncher $PackagedResources
 
 if ($SanitizedTest) {
@@ -1455,6 +1490,7 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
+Assert-File (Join-Path $PackagedResources "runtime\git\bin\bash.exe") "Packaged Git Bash for Hermes terminal"
 Assert-File (Join-Path $PackagedResources "runtime\uv-tools\uv.exe") "Packaged UV tools executable"
 $PackagedPythonProbe = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $PackagedPythonProbe) {
