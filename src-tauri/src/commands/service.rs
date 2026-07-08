@@ -1728,9 +1728,12 @@ mod platform {
         // 端口已通 → 检查是不是我们的进程
         let (running, pid) = check_service_status(0, "");
         if running {
-            // 有 PID 说明就是我们的进程在跑，可以直接返回
+            // 有 PID 也必须确认属于当前便携包；不能把全局/旧包 Gateway 当作当前包可用。
             if pid.is_some() {
                 if let Some(pid) = pid {
+                    if !gateway_pid_belongs_to_current_project(pid) {
+                        return Err(super::foreign_gateway_error(Some(pid)));
+                    }
                     let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
                     *known = Some(pid);
                 }

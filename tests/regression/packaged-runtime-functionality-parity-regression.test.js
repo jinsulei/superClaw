@@ -170,6 +170,19 @@ test('OpenClaw packaged identity and execution scopes are seeded for tool dispat
   }
 })
 
+test('OpenClaw packaged gateway start refuses foreign global gateway ownership', () => {
+  const windowsStartBlock = readFileSync('src-tauri/src/commands/service.rs', 'utf8')
+    .match(/pub async fn start_service_impl\(_label: &str\) -> Result<\(\), String> \{[\s\S]*?let Some\(_start_guard\)/)?.[0] || ''
+
+  assert.match(windowsStartBlock, /gateway_pid_belongs_to_current_project\(pid\)/)
+  assert.match(windowsStartBlock, /foreign_gateway_error\(Some\(pid\)\)/)
+  assert.doesNotMatch(
+    windowsStartBlock,
+    /if pid\.is_some\(\) \{[\s\S]*?return Ok\(\);\s*\}/,
+    'packaged OpenClaw must not accept any listening OpenClaw PID as current package ownership',
+  )
+})
+
 test('ClaudeCode packaged panel resolves native CLI path or explicitly allows relay fallback', () => {
   assert.match(claudeCommandsSource, /fn\s+effective_claude_cli_path\(resources:\s*&Path\)\s*->\s*PathBuf/)
   assert.match(claudeCommandsSource, /claude\.cmd/)
