@@ -118,6 +118,36 @@ function Copy-Directory([string]$Source, [string]$Destination) {
   }
 }
 
+function Count-HermesSkillFiles([string]$Path) {
+  if (-not (Test-Path $Path -PathType Container)) {
+    return 0
+  }
+  return @(Get-ChildItem -LiteralPath $Path -Recurse -Filter "SKILL.md" -File -ErrorAction SilentlyContinue).Count
+}
+
+function Ensure-PackagedHermesSkills([string]$HermesDataDir) {
+  $skillsDir = Join-Path $HermesDataDir "skills"
+  if ((Count-HermesSkillFiles $skillsDir) -ge 20) {
+    return
+  }
+
+  $candidates = @(
+    (Join-Path $Root "src-tauri\resources\data\hermes\skills"),
+    (Join-Path $Root "data\hermes-source\hermes-agent-main\skills"),
+    (Join-Path $Root "src-tauri\resources\data\hermes-source\hermes-agent-main\skills")
+  )
+
+  foreach ($candidate in $candidates) {
+    if ((Count-HermesSkillFiles $candidate) -ge 20) {
+      Copy-Directory $candidate $skillsDir
+      Ok "Packaged Hermes offline skills seeded from $candidate"
+      return
+    }
+  }
+
+  Fail "Hermes offline skills seed is missing or incomplete"
+}
+
 function Remove-IfExists([string]$Path) {
   if (Test-Path $Path) {
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
@@ -680,6 +710,7 @@ function Prepare-HermesRuntimeConfigDirectory([string]$HermesDataDir, [bool]$San
   foreach ($name in @("config.yaml", ".env", ".env.local")) {
     Remove-IfExists (Join-Path $HermesDataDir $name)
   }
+  Ensure-PackagedHermesSkills $HermesDataDir
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -1418,6 +1449,11 @@ Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
 Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
+$PackagedHermesSkillCount = Count-HermesSkillFiles (Join-Path $PackagedResources "data\hermes\skills")
+if ($PackagedHermesSkillCount -lt 20) {
+  Fail "Packaged Hermes skills are missing or incomplete"
+}
+Ok "Packaged Hermes offline skills: $PackagedHermesSkillCount SKILL.md files"
 Assert-NoForbiddenPackageFiles $OutDir
 Assert-CleanPackageForRelease $OutDir
 Assert-NoPackagedUserState (Join-Path $PackagedResources "data")

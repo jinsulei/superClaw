@@ -71,6 +71,15 @@ test('Hermes packaged exact short-answer prompts override contaminated final tex
   assert.match(doneBlock, /completeHermesReplyIfNeeded/)
 })
 
+test('Hermes packaged candidate includes offline skills and keeps terminal page safe', () => {
+  assert.match(buildDesktopSource, /function\s+Count-HermesSkillFiles\(/)
+  assert.match(buildDesktopSource, /function\s+Ensure-PackagedHermesSkills\(/)
+  assert.match(buildDesktopSource, /data\\hermes-source\\hermes-agent-main\\skills/)
+  assert.match(buildDesktopSource, /Ensure-PackagedHermesSkills\s+\$HermesDataDir/)
+  assert.match(buildDesktopSource, /\$PackagedHermesSkillCount\s+-lt\s+20/)
+  assert.match(buildDesktopSource, /Packaged Hermes offline skills/)
+})
+
 test('OpenClaw portable first-run fills missing gateway auth token in runtime config', () => {
   assert.match(openclawCommandsSource, /fn\s+new_portable_gateway_token\(\)\s*->\s*String/)
   assert.match(openclawCommandsSource, /PORTABLE_GATEWAY_TOKEN_PREFIX/)

@@ -19,9 +19,10 @@ assert.match(launcher, /isHermesGatewayReadyForTerminal/, 'launcher must expose 
 assert.match(launcher, /route = '\/h\/terminal'/, 'launcher must default to the safe Hermes terminal route')
 assert.match(index, /path: '\/h\/terminal'/, 'Hermes routes must register /h/terminal')
 assert.match(index, /pages\/terminal\.js/, 'Hermes terminal route must load the safe terminal page')
-assert.match(terminalPage, /Hermes 终端对话暂未启用受控 session。/, 'terminal page must state controlled session is disabled')
-assert.match(terminalPage, /当前不会执行系统命令。/, 'terminal page must state it will not execute commands')
-assert.match(terminalPage, /只允许用户手动输入命令/, 'terminal page must require manual user input for future terminal support')
+assert.match(terminalPage, /Terminal tool status/, 'terminal page must render readable status text')
+assert.match(terminalPage, /terminal\/process toolset/, 'terminal page must explain Hermes terminal tools')
+assert.match(terminalPage, /does not start cmd, PowerShell, ConPTY/, 'terminal page must state it does not open a raw native terminal')
+assert.match(terminalPage, /use the full path inside this portable package/i, 'terminal page must document portable full-path command rule')
 
 const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,3200}/)?.[0] || ''
 assert.ok(terminalHandler.includes('openHermesTerminalLauncher'), 'terminal click handler must not be empty')
