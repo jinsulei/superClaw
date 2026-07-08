@@ -71,6 +71,17 @@ test('Hermes packaged exact short-answer prompts override contaminated final tex
   assert.match(doneBlock, /completeHermesReplyIfNeeded/)
 })
 
+test('Hermes packaged visible replies redact real provider secrets and config paths', () => {
+  assert.match(hermesStoreSource, /function\s+redactHermesSensitiveVisibleText\(/)
+  assert.match(hermesStoreSource, /sk-cp\|sk-proj/)
+  assert.match(hermesStoreSource, /MINIMAX_API_KEY\|OPENAI_API_KEY\|CLAUDE_API_KEY/)
+  assert.match(hermesStoreSource, /config\\\.yaml\|\\\.env\|openclaw\\\.json\|relay-config\\\.json/)
+
+  const visibleSanitizerBlock = hermesStoreSource.match(/function sanitizeHermesVisibleReply[\s\S]*?function notifySync/)?.[0] || ''
+  assert.match(visibleSanitizerBlock, /redactHermesSensitiveVisibleText\(guarded\)/)
+  assert.doesNotMatch(visibleSanitizerBlock, /return completeHermesReplyIfNeeded\(guarded/)
+})
+
 test('Hermes packaged candidate includes offline skills and keeps terminal page safe', () => {
   assert.match(buildDesktopSource, /function\s+Count-HermesSkillFiles\(/)
   assert.match(buildDesktopSource, /function\s+Ensure-PackagedHermesSkills\(/)
@@ -161,6 +172,7 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
 test('OpenClaw packaged exact short-answer prompts are not overridden by workspace bootstrap text', () => {
   assert.match(openclawChatSource, /function\s+getOpenClawExactShortReplyTarget\(/)
   assert.match(openclawChatSource, /function\s+normalizeOpenClawExactShortReply\(/)
+  assert.match(openclawChatSource, /function\s+getOpenClawRequestedShortLiteral\(/)
   assert.match(openclawChatSource, /stableTarget/)
   assert.match(openclawChatSource, /\\u53ea\\u56de\\u590d/)
   assert.match(openclawChatSource, /\\u4e24\\u4e2a\\u5b57/)
@@ -172,6 +184,10 @@ test('OpenClaw packaged exact short-answer prompts are not overridden by workspa
   assert.match(finalBlock, /normalizeOpenClawExactShortReply\(activeFinalUserText,\s*visibleFinalText\)/)
   assert.match(finalBlock, /_currentAiText\s*=\s*exactShortFinalText/)
   assert.match(finalBlock, /visibleFinalText\s*=\s*exactShortFinalText/)
+
+  const silentReplyBlock = openclawChatSource.match(/function\s+getOpenClawRequestedShortLiteral[\s\S]*?function recoverOpenClawSilentReplyForExactLiteral/)?.[0] || ''
+  assert.match(silentReplyBlock, /getOpenClawExactShortReplyTarget\(value\)/)
+  assert.match(silentReplyBlock, /if \(exactTarget\) return exactTarget/)
 })
 
 test('OpenClaw packaged identity and execution scopes are seeded for tool dispatch', () => {
@@ -251,6 +267,20 @@ test('ClaudeCode packaged missing run configuration fails before thinking state'
   assert.match(startRunBlock, /addMessage\("error",\s*"Configuration incomplete"/)
   assert.match(startRunBlock, /updateCurrentConversation\(\{\s*status:\s*"\\u8fd0\\u884c\\u5f02\\u5e38"/)
   assert.match(startRunBlock, /return;[\s\S]*?runController = new AbortController\(\)/)
+})
+
+test('ClaudeCode packaged relay model hydrates the active main model before run blocking', () => {
+  const relayLoadBlock = claudePanelSource.match(/async function loadRelayConfig\(\)[\s\S]*?function applyRelayConfigToForm/)?.[0] || ''
+  assert.match(relayLoadBlock, /const relayModel = String\(displayConfig\?\.model/)
+  assert.match(relayLoadBlock, /currentMainModel = relayModel/)
+  assert.match(relayLoadBlock, /modelInput\.value = relayModel/)
+  assert.match(relayLoadBlock, /window\.localStorage\.setItem\(modelStorageKey,\s*relayModel\)/)
+  assert.match(relayLoadBlock, /updateModelSwitchLabels\(\)/)
+  assert.match(relayLoadBlock, /renderBranchModelOptions\(\)/)
+
+  const blockingBlock = claudePanelSource.match(/function buildClaudeRunBlockingConfigMessageStable\(\)[\s\S]*?async function startRun/)?.[0] || ''
+  assert.match(blockingBlock, /relayConfig\.model/)
+  assert.match(blockingBlock, /latestStatus\?\.model/)
 })
 
 test('ClaudeCode packaged stale running conversations restore as terminal errors', () => {

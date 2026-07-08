@@ -3964,6 +3964,23 @@ async function loadRelayConfig() {
   const displayConfig = relay.config?.baseUrl || relay.config?.apiKeyConfigured ? relay.config : runtimeConfig;
   latestRelay = { ...relay, savedConfig: relay.config, config: displayConfig };
   relayWritable = Boolean(relay.writable);
+  const relayModel = String(displayConfig?.model || "").trim();
+  if (relayModel) {
+    const previousMain = String(currentMainModel || "").trim();
+    const previousInput = String(modelInput?.value || "").trim();
+    currentMainModel = relayModel;
+    currentBranchModels = uniqueModels([
+      relayModel,
+      ...effectiveBranchModels(displayConfig, latestStatus),
+      ...currentBranchModels,
+    ]);
+    if (!previousInput || previousInput === "默认模型" || previousInput === previousMain) {
+      modelInput.value = relayModel;
+      window.localStorage.setItem(modelStorageKey, relayModel);
+    }
+    updateModelSwitchLabels();
+    renderBranchModelOptions();
+  }
   relayBadge.classList.toggle("enabled", relayWritable);
   relayBadge.textContent = relayWritable ? "接口已启用" : "接口预留";
   relayWriteState.textContent = relayWritable ? "可写入" : "未启用";

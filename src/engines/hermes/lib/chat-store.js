@@ -244,8 +244,18 @@ function isSensitiveToolRunKey(key) {
   return /api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|secret|password/i.test(String(key || ''))
 }
 
+function redactHermesSensitiveVisibleText(value) {
+  return String(value ?? '')
+    .replace(/((?:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|token|cookie|secret|password|MINIMAX_API_KEY|OPENAI_API_KEY|CLAUDE_API_KEY)\s*[:=]\s*)["']?[^"'\s,;，；\]}]{8,}["']?/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk|sk-cp|sk-proj)-[A-Za-z0-9._=-]{12,}\b/g, '[REDACTED]')
+    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[REDACTED]')
+    .replace(/[A-Z]:\\Users\\[^"'\r\n]+?(?=(?:\\(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)|["'\r\n]|$))/gi, '[REDACTED_PATH]')
+    .replace(/[A-Z]:\\[^"'\r\n]*(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)/gi, '[REDACTED_PATH]')
+    .replace(/\/[^"'\r\n]*(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)/gi, '[REDACTED_PATH]')
+}
+
 function sanitizeToolRunText(value) {
-  return String(value ?? '').replace(
+  return redactHermesSensitiveVisibleText(value).replace(
     /(fake-[a-z0-9-]*(?:api-key|token|cookie|secret|access-token|refresh-token|password)[a-z0-9-]*)/gi,
     '[REDACTED]',
   )
@@ -1262,7 +1272,7 @@ function createStore() {
       userText: prompt,
       assistantText: normalized,
     })
-    return completeHermesReplyIfNeeded(guarded, {
+    return completeHermesReplyIfNeeded(redactHermesSensitiveVisibleText(guarded), {
       userText: prompt,
       toolEvents: state.liveTools,
     })

@@ -3755,6 +3755,8 @@ function stripOpenClawRepeatedLeadingStatusGlyphs(text) {
 function getOpenClawRequestedShortLiteral(text) {
   const value = String(text || '').trim()
   if (!value) return ''
+  const exactTarget = getOpenClawExactShortReplyTarget(value)
+  if (exactTarget) return exactTarget
   const match = value.match(/^(?:only\s+reply|reply\s+only|just\s+reply|respond\s+only)\s+["'`]?([A-Za-z0-9_.-]{1,40})["'`]?[.!?]?\s*$/i)
     || value.match(/(?:\u56de\u590d|\u56de\u7b54|\u8f93\u51fa)\s*["'`]?([A-Za-z0-9_.-]{1,40})["'`]?/i)
   const literal = match?.[1]?.trim() || ''
