@@ -162,6 +162,7 @@ function scanRelayConfigForLeaks(relativePath, parsed, leaks) {
 function looksLikeCandidateUserState(relativePath) {
   const normalized = toPosixPath(relativePath).toLowerCase()
   if (isDependencySourceUserStateName(normalized)) return ''
+  if (isGitForWindowsDependencySourceUserStateName(normalized)) return ''
   if (/(^|\/)(cookies|login data|history|session\.db)$/.test(normalized)) return 'browser profile'
   if (/(^|\/)(logs?|sessions?|browser-profile|user-data|cache)(\/|$)/.test(normalized)) return 'user state'
   if (/\.(log|db|sqlite|sqlite3)$/.test(normalized)) return 'logs/db/sessions'
@@ -177,6 +178,12 @@ function isDependencySourceUserStateName(normalizedPath) {
   if (/^(sessions?|cache|cookies)$/.test(basename)) return true
   if (!basename.includes('.')) return true
   return /\.(cjs|mjs|js|jsx|ts|tsx|cts|mts|d\.ts|d\.cts|d\.mts|map)$/.test(normalizedPath)
+}
+
+function isGitForWindowsDependencySourceUserStateName(normalizedPath) {
+  if (!normalizedPath.startsWith('resources/runtime/git/')) return false
+  if (!normalizedPath.includes('/usr/share/perl5/')) return false
+  return /\/http\/cookies$/.test(normalizedPath)
 }
 
 function looksLikeCandidateSecretPath(relativePath) {
