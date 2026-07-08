@@ -195,6 +195,11 @@ test('OpenClaw packaged exact short-answer prompts are not overridden by workspa
   const silentReplyBlock = openclawChatSource.match(/function\s+getOpenClawRequestedShortLiteral[\s\S]*?function recoverOpenClawSilentReplyForExactLiteral/)?.[0] || ''
   assert.match(silentReplyBlock, /getOpenClawExactShortReplyTarget\(value\)/)
   assert.match(silentReplyBlock, /if \(exactTarget\) return exactTarget/)
+
+  const historyRecoveryBlock = openclawChatSource.match(/function\s+completeStreamingDraftFromHistory\(msg\) \{[\s\S]*?function completeOpenClawCurrentDraftFromLatestHistory/)?.[0] || ''
+  assert.match(historyRecoveryBlock, /const recoveryUserText = _activeOpenClawRun\?\.userText \|\| _activeOpenClawUserText \|\| _lastVisibleUserText/)
+  assert.match(historyRecoveryBlock, /normalizeOpenClawExactShortReply\(recoveryUserText,\s*normalizeVisibleOpenClawText\(bestText\)\)/)
+  assert.match(historyRecoveryBlock, /const visibleDraftText = finalText \|\| bestText/)
 })
 
 test('OpenClaw packaged identity and execution scopes are seeded for tool dispatch', () => {

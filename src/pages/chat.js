@@ -7890,12 +7890,13 @@ function completeStreamingDraftFromHistory(msg) {
   if (!_currentAiBubble || msg?.role !== 'assistant') return false
   if (isOpenClawVisibleTextInternalAuditOnly(msg.text || '')) return false
   if (!canRecoverOpenClawDraftFromLatestHistory(msg)) return false
+  const recoveryUserText = _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText
   const bestText = chooseBestOpenClawAssistantText([_currentAiText, msg.text], {
-    userText: _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText,
+    userText: recoveryUserText,
   })
-  const finalText = normalizeVisibleOpenClawText(bestText)
+  const finalText = normalizeOpenClawExactShortReply(recoveryUserText, normalizeVisibleOpenClawText(bestText))
   if (!finalText || isOpenClawTextClearlyIncomplete(finalText)) return false
-  const visibleDraftText = bestText || msg.text || _currentAiText || ((msg.tools?.length && !isOpenClawToolDebugEnabled()) ? OPENCLAW_TOOL_ONLY_FALLBACK : '')
+  const visibleDraftText = finalText || bestText || msg.text || _currentAiText || ((msg.tools?.length && !isOpenClawToolDebugEnabled()) ? OPENCLAW_TOOL_ONLY_FALLBACK : '')
   renderCompactAssistantContent(visibleDraftText, _currentAiBubble, { phase: 'completed' })
   appendImagesToEl(_currentAiBubble, msg.images || [])
   appendVideosToEl(_currentAiBubble, msg.videos || [])
