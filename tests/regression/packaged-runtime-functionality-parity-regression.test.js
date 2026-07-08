@@ -181,6 +181,13 @@ test('OpenClaw packaged exact short-answer prompts are not overridden by workspa
   assert.match(openclawChatSource, /两个字\|2\\s\*个字/)
 
   const finalBlock = openclawChatSource.match(/let visibleFinalText = _currentAiText \|\| finalText[\s\S]*?let hasContent = hasOpenClawRenderableContent/)?.[0] || ''
+  const preIncompleteBlock = openclawChatSource.match(/const exactShortPreFinalText = normalizeOpenClawExactShortReply[\s\S]*?keepOpenClawIncompleteFinalPending/)?.[0] || ''
+  assert.match(preIncompleteBlock, /normalizeOpenClawExactShortReply\(activeFinalUserText,\s*_currentAiText\)/)
+  assert.match(preIncompleteBlock, /_currentAiText\s*=\s*exactShortPreFinalText/)
+  assert.ok(
+    preIncompleteBlock.indexOf('normalizeOpenClawExactShortReply') < preIncompleteBlock.indexOf('isOpenClawTextClearlyIncomplete'),
+    'strict short-answer normalization must run before incomplete fallback recovery'
+  )
   assert.match(finalBlock, /normalizeOpenClawExactShortReply\(activeFinalUserText,\s*visibleFinalText\)/)
   assert.match(finalBlock, /_currentAiText\s*=\s*exactShortFinalText/)
   assert.match(finalBlock, /visibleFinalText\s*=\s*exactShortFinalText/)

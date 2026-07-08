@@ -6327,6 +6327,10 @@ function handleChatEvent(payload, eventId = '') {
     ) {
       _currentAiText = buildOpenClawToolUnavailableReply(_lastVisibleUserText) || _currentAiText
     }
+    const exactShortPreFinalText = normalizeOpenClawExactShortReply(activeFinalUserText, _currentAiText)
+    if (exactShortPreFinalText !== _currentAiText) {
+      _currentAiText = exactShortPreFinalText
+    }
     if (_currentAiText && isOpenClawTextClearlyIncomplete(_currentAiText)) {
       keepOpenClawIncompleteFinalPending(_currentAiText, terminalRequestId, stableStreamId)
       recoverOpenClawAssistantFromHistoryBeforeFallback('incomplete-final-history-recovery', terminalRequestId, { attempts: 12, delayMs: 500 }).catch(error => {
