@@ -1696,10 +1696,8 @@ function shouldCollapseCompactMessage(text, options = {}) {
   const normalized = normalizeCompactChatText(text);
   if (!normalized) return false;
   const lineCount = normalized.split("\n").length;
-  const codeBlockCount = (normalized.match(COMPACT_CODE_BLOCK_RE) || []).length;
   return normalized.length > opts.collapseWhenChars
-    || lineCount > opts.collapseWhenLines
-    || codeBlockCount >= opts.collapseWhenCodeBlocks;
+    || lineCount > opts.collapseWhenLines;
 }
 
 function createCompactPanelPreview(text, options = {}) {
@@ -1866,7 +1864,7 @@ function compactPanelMarkdownSpacing(rawText) {
     }, [])
     .join("\n")
     .replace(/\n{3,}/g, "\n\n");
-  return compactPanelBulletSections(normalized)
+  return normalized
     .replace(/__PANEL_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || "")
     .replace(/(\n#{1,6} .+)\n{2,}/g, "$1\n")
     .replace(/\n{2,}([-*\u2022]\s+)/g, "\n$1")

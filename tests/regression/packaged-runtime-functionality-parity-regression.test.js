@@ -249,11 +249,17 @@ test('ClaudeCode packaged panel renders markdown and code without unsafe HTML', 
   assert.match(claudePanelSource, /createElement\("pre"\)/)
   assert.match(claudePanelSource, /createElement\("code"\)/)
   assert.match(claudePanelSource, /appendMarkdownFragment\(text,\s*renderClaudeMarkdownInline/)
+  assert.match(claudePanelSource, /return normalized\s*\n\s*\.replace\(/)
 
   const rendererBlock = claudePanelSource.match(/function renderClaudeMarkdownBlocks[\s\S]*?function renderClaudeAgentMessageContent/)?.[0] || ''
+  const collapseBlock = claudePanelSource.match(/function shouldCollapseCompactMessage[\s\S]*?function createCompactPanelPreview/)?.[0] || ''
+  const spacingBlock = claudePanelSource.match(/function compactPanelMarkdownSpacing[\s\S]*?function compactClaudePanelMessage/)?.[0] || ''
   assert.match(claudePanelSource, /code\.textContent\s*=\s*String\(codeText\s*\|\|\s*""\)/)
   assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*finalText/)
   assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*value/)
+  assert.doesNotMatch(collapseBlock, /codeBlockCount\s*>?=/)
+  assert.doesNotMatch(spacingBlock, /compactPanelBulletSections\(normalized\)/)
+  assert.doesNotMatch(spacingBlock, /\[代码块已折叠\]/)
 })
 
 test('packaged runtime parity regression is release-gated and avoids forbidden edits', () => {
