@@ -22,7 +22,7 @@ assert.match(index, /pages\/terminal\.js/, 'Hermes terminal route must load the 
 assert.match(terminalPage, /Terminal tool status/, 'terminal page must render readable status text')
 assert.match(terminalPage, /terminal\/process toolset/, 'terminal page must explain Hermes terminal tools')
 assert.match(terminalPage, /does not start cmd, PowerShell, ConPTY/, 'terminal page must state it does not open a raw native terminal')
-assert.match(terminalPage, /use the full path inside this portable package/i, 'terminal page must document portable full-path command rule')
+assert.match(terminalPage, /resources\\\\runtime\\\\hermes\.cmd/, 'terminal page must document the portable Hermes launcher path')
 
 const terminalHandler = dashboard.match(/querySelector\('\.hm-dash-terminal-chat'\)[\s\S]{0,3200}/)?.[0] || ''
 assert.ok(terminalHandler.includes('openHermesTerminalLauncher'), 'terminal click handler must not be empty')

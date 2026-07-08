@@ -23,7 +23,7 @@ export function render() {
     },
     {
       title: 'Portable path rule',
-      body: 'When a command needs a bundled runtime, use the full path inside this portable package. Do not rely on global Hermes, Python, uv, or shell shims.',
+      body: 'When a command needs Hermes, use the full path to resources\\runtime\\hermes.cmd inside this portable package. Do not rely on global Hermes, Python, uv, or virtualenv shell shims.',
     },
   ]
 

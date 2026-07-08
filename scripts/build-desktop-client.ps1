@@ -202,6 +202,27 @@ set "PATH=%CLAUDE_BIN%;%PATH%"
 "@)
 }
 
+function Write-PortableHermesLauncher([string]$PackagedResources) {
+  $RuntimeDir = Join-Path $PackagedResources "runtime"
+  New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
+  Write-Utf8NoBom (Join-Path $RuntimeDir "hermes.cmd") (@"
+@echo off
+setlocal
+set "SUPERCLAW_RUNTIME_DIR=%~dp0"
+set "HERMES_HOME=%SUPERCLAW_RUNTIME_DIR%..\data\hermes"
+set "PYTHONPATH=%SUPERCLAW_RUNTIME_DIR%hermes-agent\Lib\site-packages"
+set "VIRTUAL_ENV=%SUPERCLAW_RUNTIME_DIR%hermes-agent"
+set "HERMES_DISABLE_UPDATE_CHECK=1"
+set "PYTHON_EXE=%SUPERCLAW_RUNTIME_DIR%uv-python\python\python.exe"
+if not exist "%PYTHON_EXE%" (
+  echo Hermes portable Python not found: %PYTHON_EXE% 1>&2
+  exit /b 2
+)
+"%PYTHON_EXE%" -m hermes_cli.main %*
+exit /b %ERRORLEVEL%
+"@)
+}
+
 function Copy-FileIfMissingOrEmpty([string]$Source, [string]$Target) {
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Fail "Missing OpenClaw identity template: $Source"
@@ -1364,6 +1385,7 @@ Ok "Removed local sessions, logs, locks, and machine-specific OpenClaw state"
 Step "Preparing packaged Hermes runtime"
 $PackagedPython = Ensure-PackagedPythonRuntime $PackagedResources
 Ensure-PackagedHermesRuntime $PackagedResources $PackagedPython
+Write-PortableHermesLauncher $PackagedResources
 
 if ($SanitizedTest) {
   $SanitizedReadmeLines = @(
@@ -1432,6 +1454,7 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
+Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
 Assert-File (Join-Path $PackagedResources "runtime\uv-tools\uv.exe") "Packaged UV tools executable"
 $PackagedPythonProbe = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $PackagedPythonProbe) {

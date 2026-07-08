@@ -78,6 +78,11 @@ test('Hermes packaged candidate includes offline skills and keeps terminal page 
   assert.match(buildDesktopSource, /Ensure-PackagedHermesSkills\s+\$HermesDataDir/)
   assert.match(buildDesktopSource, /\$PackagedHermesSkillCount\s+-lt\s+20/)
   assert.match(buildDesktopSource, /Packaged Hermes offline skills/)
+  assert.match(buildDesktopSource, /function\s+Write-PortableHermesLauncher\(/)
+  assert.match(buildDesktopSource, /runtime\\hermes\.cmd/)
+  assert.match(buildDesktopSource, /PYTHON_EXE/)
+  assert.match(buildDesktopSource, /-m hermes_cli\.main/)
+  assert.match(buildDesktopSource, /Write-PortableHermesLauncher\s+\$PackagedResources/)
 })
 
 test('OpenClaw portable first-run fills missing gateway auth token in runtime config', () => {
