@@ -1366,12 +1366,20 @@ mod platform {
                         ));
                         kill_process_tree(pid);
                     } else if Some(pid) != our_pid {
-                        // /health 有响应但不是当前实例启动的 → 采纳为已知进程，不杀
-                        super::guardian_log(&format!(
-                            "检测到健康的 Gateway 进程 (PID {pid})：/health 正常响应，已采纳"
-                        ));
-                        let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
-                        *known = Some(pid);
+                        // A healthy Gateway on the shared port can still belong
+                        // to another dev/package instance. Only adopt processes
+                        // launched from this package's bundled runtime.
+                        if gateway_pid_belongs_to_current_project(pid) {
+                            super::guardian_log(&format!(
+                                "检测到当前包内健康 Gateway 进程 (PID {pid})：/health 正常响应，已采纳"
+                            ));
+                            let mut known = LAST_KNOWN_GATEWAY_PID.lock().unwrap();
+                            *known = Some(pid);
+                        } else {
+                            super::guardian_log(&format!(
+                                "检测到外部 Gateway 进程 (PID {pid})：/health 正常响应，保持 foreign 状态"
+                            ));
+                        }
                     }
                     // is_gateway + responsive + 本就是我们的 PID → 无需任何操作
                 }

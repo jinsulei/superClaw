@@ -163,6 +163,7 @@ function looksLikeCandidateUserState(relativePath) {
   const normalized = toPosixPath(relativePath).toLowerCase()
   if (isDependencySourceUserStateName(normalized)) return ''
   if (isGitForWindowsDependencySourceUserStateName(normalized)) return ''
+  if (isPythonDependencyDataUserStateName(normalized)) return ''
   if (/(^|\/)(cookies|login data|history|session\.db)$/.test(normalized)) return 'browser profile'
   if (/(^|\/)(logs?|sessions?|browser-profile|user-data|cache)(\/|$)/.test(normalized)) return 'user state'
   if (/\.(log|db|sqlite|sqlite3)$/.test(normalized)) return 'logs/db/sessions'
@@ -181,9 +182,14 @@ function isDependencySourceUserStateName(normalizedPath) {
 }
 
 function isGitForWindowsDependencySourceUserStateName(normalizedPath) {
-  if (!normalizedPath.startsWith('resources/runtime/git/')) return false
+  if (!/^resources\/(runtime|portable)\/git\//.test(normalizedPath)) return false
   if (!normalizedPath.includes('/usr/share/perl5/')) return false
   return /\/http\/cookies$/.test(normalizedPath)
+}
+
+function isPythonDependencyDataUserStateName(normalizedPath) {
+  if (!normalizedPath.includes('/lib/site-packages/')) return false
+  return /\/botocore\/data\/logs(\/|$)/.test(normalizedPath)
 }
 
 function looksLikeCandidateSecretPath(relativePath) {

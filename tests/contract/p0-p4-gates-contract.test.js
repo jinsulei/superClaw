@@ -202,6 +202,9 @@ test('release candidate scanner ignores dependency source sessions and cache mod
       'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/undici/lib/web/cookies/index.d.ts',
       'resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/node_modules/undici/lib/web/cookies/index.js.map',
       'resources/runtime/git/usr/share/perl5/vendor_perl/HTTP/Cookies',
+      'resources/portable/git/usr/share/perl5/vendor_perl/HTTP/Cookies',
+      'resources/runtime/hermes-agent/Lib/site-packages/botocore/data/logs/2014-03-28/service-2.json.gz',
+      'resources/runtime/uv-tools/hermes-agent/Lib/site-packages/botocore/data/logs/2014-03-28/examples-1.json',
     ]
 
     for (const relativePath of dependencySourceFiles) {

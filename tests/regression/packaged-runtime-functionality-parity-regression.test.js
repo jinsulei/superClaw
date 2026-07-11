@@ -13,6 +13,7 @@ const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const sidebarSource = readFileSync('src/components/sidebar.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawConfigCommandsSource = readFileSync('src-tauri/src/commands/config.rs', 'utf8')
+const openclawServiceSource = readFileSync('src-tauri/src/commands/service.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
@@ -29,6 +30,17 @@ test('OpenClaw dev runtime state is isolated from watched packaged resources', (
 test('OpenClaw engine switching allows a full cold gateway startup', () => {
   assert.match(sidebarSource, /OPENCLAW_SWITCH_START_TIMEOUT_MS\s*=\s*45_000/)
   assert.match(sidebarSource, /_waitForOpenClawGatewayHealth\(progress, 78, 90, OPENCLAW_SWITCH_START_TIMEOUT_MS\)/)
+})
+
+test('packaged OpenClaw never adopts a healthy Gateway from another package', () => {
+  const cleanupBlock = openclawServiceSource.match(/pub\(crate\) fn cleanup_zombie_gateway_processes\(\) \{[\s\S]*?fn read_process_command_line/)?.[0] || ''
+
+  assert.match(cleanupBlock, /if gateway_pid_belongs_to_current_project\(pid\) \{[\s\S]*?已采纳/)
+  assert.match(cleanupBlock, /外部 Gateway 进程 \(PID \{pid\}\)[\s\S]*?foreign 状态/)
+  assert.ok(
+    cleanupBlock.indexOf('if gateway_pid_belongs_to_current_project(pid)') < cleanupBlock.indexOf('已采纳'),
+    'a healthy port occupant must pass the bundled-runtime ownership check before adoption',
+  )
 })
 
 function renderAgentMessageContentForRegression(content) {
