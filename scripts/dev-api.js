@@ -3141,6 +3141,7 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
   return {
     path: target,
     generated: true,
+    noOpenAiFallback: true,
     provider: primaryResolution.provider,
     model: primaryResolution.model,
     primaryRef,
@@ -4642,6 +4643,7 @@ const OPENCLAW_STATUS_ENABLED_PLUGINS = [
 const OPENCLAW_WEB_SEARCH_PLUGIN_IDS = ['duckduckgo', 'exa', 'firecrawl', 'perplexity', 'searxng', 'tavily']
 const OPENCLAW_MEMORY_PLUGIN_IDS = ['memory-core', 'active-memory', 'memory-wiki']
 const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager']
+const OPENCLAW_REQUIRED_BUNDLED_PLUGINS = ['browser']
 
 function sha256File(filePath) {
   try {
@@ -4673,6 +4675,14 @@ function ensurePortableOpenClawTools() {
   const sourceExtensions = path.join(runtimeDir, 'dist', 'extensions')
   const runtimeExtensions = path.join(runtimeDir, 'node_modules', '@qingchencloud', 'openclaw-zh', 'dist', 'extensions')
   const installed = []
+  for (const pluginId of OPENCLAW_REQUIRED_BUNDLED_PLUGINS) {
+    const manifest = path.join(runtimeExtensions, pluginId, 'openclaw.plugin.json')
+    const entry = path.join(runtimeExtensions, pluginId, 'index.js')
+    if (!fs.existsSync(manifest) || !fs.existsSync(entry)) {
+      throw new Error(`OpenClaw bundled plugin is missing: ${pluginId}`)
+    }
+    installed.push(pluginId)
+  }
   for (const pluginId of OPENCLAW_PORTABLE_TOOL_PLUGINS) {
     const source = path.join(sourceExtensions, pluginId)
     const destination = path.join(runtimeExtensions, pluginId)
@@ -13688,11 +13698,15 @@ function _buildHermesConversationHistoryFromSession(sessionId, currentInput = ''
     if (!['system', 'user', 'assistant'].includes(role)) continue
     const content = _compactHermesHistoryContent(msg?.content)
     if (!content) continue
+    const prev = history[history.length - 1]
+    if (prev?.role === role && _sameHermesHistoryText(prev.content, content)) continue
     history.push({ role, content })
   }
 
-  while (history.length && history[history.length - 1].role === 'user' && _sameHermesHistoryText(history[history.length - 1].content, currentInput)) {
-    history.pop()
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].role !== 'user') continue
+    if (!_sameHermesHistoryText(history[i].content, currentInput)) break
+    history.splice(i, 1)
   }
 
   const selected = []

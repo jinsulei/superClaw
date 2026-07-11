@@ -90,6 +90,7 @@ const HERMES_REPLY_STYLE_INSTRUCTION = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
   '\u4fdd\u6301\u81ea\u7136\u3001\u514b\u5236\u3001\u53ef\u8bfb\uff1a\u4e0d\u8981\u6bcf\u53e5\u90fd\u52a0\u8868\u60c5\uff0c\u4e0d\u8981\u5806\u780c\u56fe\u6807\uff0c\u4e0d\u8981\u5f71\u54cd\u4e13\u4e1a\u6027\u548c\u4fe1\u606f\u51c6\u786e\u6027\u3002',
+  'The Hermes chat UI supports standard Markdown rendering. When structure helps, you may use Markdown headings, lists, tables, blockquotes, links, inline code, and fenced code blocks. Do not claim the interface only supports plain text.',
 ].join('\n')
 
 const SOURCE_LABELS = {
@@ -116,7 +117,17 @@ export function compactHermesHistoryContentForPrompt(role, content) {
   const text = String(content || '').trim()
   if (!text) return ''
   if (role !== 'assistant') return text
-  return ''
+  const visible = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
+    .replace(/```(?:tool|trace|debug|analysis|reasoning)\n[\s\S]*?```/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  if (!visible) return HISTORY_ASSISTANT_OMITTED_MARKER
+  if (visible.length <= HISTORY_ASSISTANT_MAX_CHARS) return visible
+  return `${visible.slice(0, HISTORY_ASSISTANT_MAX_CHARS).trim()}\n${HISTORY_ASSISTANT_OMITTED_MARKER}`
 }
 
 function isHermesLongTaskRequest(text) {
@@ -581,6 +592,21 @@ function withHermesReplyStyleInstruction(instructions) {
   if (base) parts.push(base)
   if (!base.includes(HERMES_REPLY_STYLE_INSTRUCTION)) parts.push(HERMES_REPLY_STYLE_INSTRUCTION)
   return parts.join('\n\n')
+}
+
+function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = []) {
+  const current = String(currentInput || '').trim()
+  const historyCount = Array.isArray(history) ? history.length : 0
+  const lines = [
+    'Current-turn boundary:',
+    '- Treat conversationHistory only as background memory and continuity context.',
+    '- Answer the latest user input only; do not re-answer old user messages from conversationHistory unless the latest input explicitly asks you to review prior messages.',
+    '- If prior user messages appear in history, assume they were already handled when paired with assistant history.',
+    '- Do not say you received many questions just because history contains multiple older user messages.',
+  ]
+  if (historyCount) lines.push(`- conversationHistory items supplied: ${historyCount}. They are not new tasks.`)
+  if (current) lines.push(`- Latest user input: ${current.slice(0, 500)}`)
+  return lines.join('\n')
 }
 
 function loadJson(key) {
@@ -2423,6 +2449,31 @@ function createStore() {
     return compactHermesHistoryContentForPrompt(role, text)
   }
 
+  function normalizeHermesHistoryComparableText(value = '') {
+    return String(value || '').replace(/\s+/g, ' ').trim()
+  }
+
+  function isSameHermesHistoryText(left = '', right = '') {
+    const a = normalizeHermesHistoryComparableText(left)
+    const b = normalizeHermesHistoryComparableText(right)
+    return !!a && !!b && (a === b || a.includes(b) || b.includes(a))
+  }
+
+  function sanitizeHermesConversationHistoryForRun(history = [], currentInput = '') {
+    if (!Array.isArray(history)) return null
+    const cleaned = []
+    for (const item of history) {
+      const role = item?.role === 'assistant' ? 'assistant' : item?.role === 'user' ? 'user' : ''
+      const content = String(item?.content || '').trim()
+      if (!role || !content) continue
+      if (role === 'user' && isSameHermesHistoryText(content, currentInput)) continue
+      const prev = cleaned[cleaned.length - 1]
+      if (prev?.role === role && isSameHermesHistoryText(prev.content, content)) continue
+      cleaned.push({ role, content })
+    }
+    return cleaned.length ? cleaned : null
+  }
+
   function buildDefaultConversationHistory(session, currentMessageId) {
     const messages = Array.isArray(session?.messages) ? session.messages : []
     const selected = []
@@ -2443,7 +2494,7 @@ function createStore() {
     }
 
     selected.reverse()
-    return selected.length ? selected : null
+    return sanitizeHermesConversationHistoryForRun(selected, session?.messages?.find(m => m.id === currentMessageId)?.content || '')
   }
 
   function normalizeAttachments(items = []) {
@@ -2762,14 +2813,16 @@ function createStore() {
     const runPromise = Promise.resolve().then(async () => {
     try {
       const conversationHistory = Array.isArray(opts.conversationHistory)
-        ? opts.conversationHistory
+        ? sanitizeHermesConversationHistoryForRun(opts.conversationHistory, runText || displayText)
         : (forceEmptyHistory ? [] : buildDefaultConversationHistory(s, userMessage.id))
+      const currentTurnBoundaryInstruction = buildHermesCurrentTurnBoundaryInstruction(runText || displayText, conversationHistory)
       const imageContextTaskInstruction = imageIntent === 'image_context_task'
         ? '用户上传了图片，但后续文字是主要任务指令。除非文字明确要求看图、识别图、图生图，否则不要默认分析图片；应按文字要求调用工具并执行。图片仅作为上下文参考。'
         : ''
       const memoryContextInstruction = buildHermesMemoryContext(runText)
       const runInstructions = withHermesReplyStyleInstruction([
         opts.instructions,
+        currentTurnBoundaryInstruction,
         memoryContextInstruction,
         imageContextTaskInstruction,
       ].filter(Boolean).join('\n\n'))

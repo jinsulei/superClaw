@@ -16,6 +16,76 @@
   word-break: break-word;
 }
 
+.agent-message-body--markdown {
+  display: block;
+}
+
+.agent-message-body--markdown > * {
+  margin: 0 0 10px;
+}
+
+.agent-message-body--markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.agent-message-body--markdown h1,
+.agent-message-body--markdown h2,
+.agent-message-body--markdown h3,
+.agent-message-body--markdown h4,
+.agent-message-body--markdown h5,
+.agent-message-body--markdown h6 {
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.agent-message-body--markdown h1 { font-size: 1.35em; }
+.agent-message-body--markdown h2 { font-size: 1.24em; }
+.agent-message-body--markdown h3 { font-size: 1.14em; }
+
+.agent-message-body--markdown ul,
+.agent-message-body--markdown ol {
+  padding-left: 1.35em;
+}
+
+.agent-message-body--markdown li + li {
+  margin-top: 4px;
+}
+
+.agent-message-body--markdown blockquote {
+  padding: 6px 10px;
+  border-left: 3px solid rgba(80, 125, 190, 0.35);
+  border-radius: 8px;
+  background: rgba(80, 125, 190, 0.08);
+}
+
+.agent-message-body--markdown hr {
+  height: 1px;
+  border: 0;
+  background: rgba(126, 148, 178, 0.28);
+}
+
+.agent-message-body--markdown .agent-message-table-wrap {
+  margin: 8px 0;
+}
+
+.agent-message-body--markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.agent-message-body--markdown th,
+.agent-message-body--markdown td {
+  padding: 7px 9px;
+  border: 1px solid rgba(126, 148, 178, 0.24);
+  vertical-align: top;
+}
+
+.agent-message-body--markdown th {
+  background: rgba(80, 125, 190, 0.1);
+  font-weight: 800;
+}
+
 .agent-message-row {
   display: flex;
   align-items: flex-start;
@@ -82,6 +152,31 @@
   font-weight: 800;
 }
 
+.agent-message-link {
+  color: var(--accent, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agent-message-task {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.agent-message-task input {
+  flex: 0 0 auto;
+  margin-top: 0.3em;
+}
+
+.agent-message-image-ref {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(80, 125, 190, 0.1);
+  color: inherit;
+}
+
 .agent-message-code-block {
   margin: 4px 0;
   padding: 10px 12px;
@@ -102,6 +197,16 @@
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-message-code-lang {
+  display: block;
+  margin-bottom: 6px;
+  color: rgba(70, 88, 120, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .agent-message-table-wrap {

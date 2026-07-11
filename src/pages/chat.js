@@ -7003,9 +7003,10 @@ function renderCompactAssistantContent(rawText, container, options = {}) {
       agent: 'openclaw',
       content: normalizeOpenClawReadableRows(text),
       details: compact.toolLines.join('\n'),
+      markdown: true,
     })
   }
-  renderContent(isStreaming ? compact.content : (manualCollapsed ? compact.preview : compact.content))
+  renderContent(isStreaming ? visibleText : (manualCollapsed ? compact.preview : visibleText))
   if (compact.preview || compact.content) wrapper.appendChild(content)
 
   if (canToggle) {
@@ -7019,7 +7020,7 @@ function renderCompactAssistantContent(rawText, container, options = {}) {
       wrapper.classList.toggle('is-collapsed', !expanded)
       setOpenClawManualCompactCollapsed(compactKey, !expanded)
       toggle.textContent = expanded ? '\u6536\u8d77\u8be6\u60c5' : '\u5c55\u5f00\u8be6\u60c5'
-      renderContent(expanded ? compact.content : compact.preview)
+      renderContent(expanded ? visibleText : compact.preview)
     })
     wrapper.appendChild(toggle)
   }

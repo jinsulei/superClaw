@@ -2051,16 +2051,17 @@ export function render() {
     const showDetails = isHermesDebugToolsVisible()
     const detailText = showDetails ? compact.toolLines.join('\n') : ''
     if (!showDetails) {
-      const visible = compact.content || compact.preview || rawText
-      const fullHtml = visible ? renderAgentMessageContent({ agent: 'hermes', content: visible, details: '' }) : ''
+      const visible = String(rawText || '').trim() || compact.content || compact.preview
+      const fullHtml = visible ? renderAgentMessageContent({ agent: 'hermes', content: visible, details: '', markdown: true }) : ''
       return `
         <div class="assistant-compact-message" data-compact-key="${escAttr(String(messageId || ''))}">
           <div class="assistant-compact-message__content assistant-compact-message__full">${fullHtml}</div>
         </div>
       `
     }
-    const previewHtml = compact.preview ? renderAgentMessageContent({ agent: 'hermes', content: compact.preview, details: detailText }) : ''
-    const fullHtml = compact.content ? renderAgentMessageContent({ agent: 'hermes', content: compact.content, details: detailText }) : ''
+    const fullContent = String(rawText || '').trim() || compact.content
+    const previewHtml = compact.preview ? renderAgentMessageContent({ agent: 'hermes', content: compact.preview, details: detailText, markdown: true }) : ''
+    const fullHtml = fullContent ? renderAgentMessageContent({ agent: 'hermes', content: fullContent, details: detailText, markdown: true }) : ''
     const canToggle = !!compact.collapsed
     const compactKey = String(messageId || '')
     const manualCollapsed = canToggle && isHermesManualCompactCollapsed(compactKey)

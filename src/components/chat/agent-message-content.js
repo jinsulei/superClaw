@@ -31,6 +31,50 @@ function normalizeText(value) {
   return String(value ?? '').replace(/\r\n/g, '\n').trim()
 }
 
+function hasMarkdownStructure(text) {
+  return /(?:^|\s)(?:#{1,6}\s+|[-*_]{3,}|[-*]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s+|\|[^|\n]+\|)|```|~~~|\*\*|~~|\[[^\]]+\]\([^)]+\)|\$\$/.test(String(text || ''))
+}
+
+function restoreCollapsedMarkdownLineBreaks(value) {
+  let text = normalizeText(value)
+  if (!text || !hasMarkdownStructure(text)) return text
+
+  const codeBlocks = []
+  text = text.replace(/```[\s\S]*?```/g, (block) => {
+    const key = `__AGENT_CODE_BLOCK_${codeBlocks.length}__`
+    codeBlocks.push(block)
+    return key
+  })
+
+  const sectionLabels = [
+    'Python', 'JavaScript', 'TypeScript', 'SQL', 'Mermaid', 'Bash', 'Shell',
+    'PowerShell', 'JSON', 'YAML', 'HTML', 'CSS', 'Rust', 'Go', 'Java',
+  ].join('|')
+  const languageNames = [
+    'python', 'javascript', 'typescript', 'sql', 'mermaid', 'bash', 'shell',
+    'powershell', 'json', 'yaml', 'html', 'css', 'rust', 'go', 'java',
+  ].join('|')
+
+  text = text
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s+(?=---(?:\s|$))/g, '\n\n')
+    .replace(/(^|[^\n])\s+(?=#{1,6}\s+)/g, '$1\n\n')
+    .replace(/(#{1,6}\s+[^\n|]+?)\s+(?=\|)/g, '$1\n')
+    .replace(/(^|[^\n])\s+(?=[-*]\s+(?:\[[ xX]\]\s+)?)/g, '$1\n')
+    .replace(/(^|[^\n#])\s+(?=\d+[.)]\s+)/g, '$1\n')
+    .replace(new RegExp(`\\s+(?=(?:${sectionLabels})[：:])`, 'g'), '\n\n')
+    .replace(new RegExp(`([：:])\\s+(?=(${languageNames})\\b)`, 'gi'), '$1\n\n')
+    .replace(new RegExp(`(^|\\n)(${languageNames})\\s+`, 'gi'), '$1$2\n')
+    .replace(/(^|[^\n])\s+(?=>\s+)/g, '$1\n')
+    .replace(/(\|[^\n]*?\|)\s+(?=\|)/g, '$1\n')
+    .replace(/\s+(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)\s+/g, '\n$1\n')
+    .replace(/([。！？；;])\s+(?=(?:---|#{1,6}\s+|\d+[.)]\s+|[-*]\s+|\|))/g, '$1\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return text.replace(/__AGENT_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || '')
+}
+
 function maskSensitiveText(text) {
   return String(text || '')
     .replace(/sk-[A-Za-z0-9_-]{12,}/g, 'sk-****')
@@ -143,8 +187,13 @@ function isListLine(line) {
 function renderInline(rawText) {
   const escaped = escapeHtml(rawText)
   return escaped
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, '<span class="agent-message-image-ref">$1</span>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, '<a class="agent-message-link" href="$2" target="_blank" rel="noreferrer">$1</a>')
     .replace(/`([^`]+)`/g, '<code class="agent-message-inline-code">$1</code>')
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong class="agent-message-strong"><em>$1</em></strong>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong class="agent-message-strong">$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
 }
 
 function isGfmTableSeparatorLine(line) {
@@ -292,7 +341,111 @@ function renderFinalText(text) {
   }).join('')
 }
 
-export function renderAgentMessageContent({ agent = 'hermes', message = '', content = null, details = '' } = {}) {
+function renderMarkdownTextSegment(text) {
+  const lines = restoreCollapsedMarkdownLineBreaks(text).split('\n')
+  const rows = []
+  let paragraph = []
+  let listType = ''
+  let listItems = []
+
+  const flushParagraph = () => {
+    const content = paragraph.join(' ').trim()
+    paragraph = []
+    if (content) rows.push(`<p>${renderInline(content)}</p>`)
+  }
+
+  const flushList = () => {
+    if (!listItems.length || !listType) return
+    rows.push(`<${listType}>${listItems.map(item => `<li>${item}</li>`).join('')}</${listType}>`)
+    listType = ''
+    listItems = []
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i]
+    const line = rawLine.trim()
+    if (!line) {
+      flushParagraph()
+      flushList()
+      continue
+    }
+
+    if (isGfmTableRowLine(line) && i + 1 < lines.length && isGfmTableSeparatorLine(lines[i + 1])) {
+      flushParagraph()
+      flushList()
+      const tableRows = [rawLine, lines[i + 1]]
+      i += 2
+      while (i < lines.length && isGfmTableRowLine(lines[i])) {
+        tableRows.push(lines[i])
+        i += 1
+      }
+      i -= 1
+      rows.push(renderGfmTable(tableRows))
+      continue
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      flushParagraph()
+      flushList()
+      const level = Math.min(6, heading[1].length)
+      rows.push(`<h${level}>${renderInline(heading[2].trim())}</h${level}>`)
+      continue
+    }
+
+    if (/^[-*_]{3,}$/.test(line)) {
+      flushParagraph()
+      flushList()
+      rows.push('<hr>')
+      continue
+    }
+
+    const task = line.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/)
+    const unordered = line.match(/^[-*]\s+(.+)$/)
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/)
+    if (task || unordered || ordered) {
+      flushParagraph()
+      const nextType = (task || unordered) ? 'ul' : 'ol'
+      if (listType && listType !== nextType) flushList()
+      listType = nextType
+      if (task) {
+        const checked = task[1].trim().toLowerCase() === 'x'
+        listItems.push(`<label class="agent-message-task"><input type="checkbox" disabled ${checked ? 'checked' : ''}> <span>${renderInline(task[2].trim())}</span></label>`)
+      } else {
+        listItems.push(renderInline((unordered || ordered)[1].trim()))
+      }
+      continue
+    }
+
+    if (/^>\s+/.test(line)) {
+      flushParagraph()
+      flushList()
+      rows.push(`<blockquote>${renderInline(line.replace(/^>\s+/, '').trim())}</blockquote>`)
+      continue
+    }
+
+    flushList()
+    paragraph.push(line)
+  }
+
+  flushParagraph()
+  flushList()
+  return rows.join('')
+}
+
+function renderMarkdownFinalText(text) {
+  const normalizedText = restoreCollapsedMarkdownLineBreaks(text)
+  const segments = splitCodeFences(normalizedText)
+  return segments.map((segment) => {
+    if (segment.type === 'code') {
+      const lang = segment.language ? `<span class="agent-message-code-lang">${escapeHtml(segment.language)}</span>` : ''
+      return `<pre class="agent-message-code-block">${lang}<code>${escapeHtml(segment.content.trim())}</code></pre>`
+    }
+    return renderMarkdownTextSegment(segment.content)
+  }).join('')
+}
+
+export function renderAgentMessageContent({ agent = 'hermes', message = '', content = null, details = '', markdown = false } = {}) {
   const rawFinal = finalContentFromMessage(message, content)
   const extracted = splitHiddenBlocks(rawFinal)
   const detailText = [extracted.hiddenText, detailContentFromMessage(message, details)]
@@ -303,8 +456,9 @@ export function renderAgentMessageContent({ agent = 'hermes', message = '', cont
   const finalText = extracted.finalText
   if (!finalText && !detailText) return ''
 
+  const bodyClass = markdown ? 'agent-message-body agent-message-body--markdown markdown-body' : 'agent-message-body'
   const body = finalText
-    ? `<div class="agent-message-body">${renderFinalText(finalText)}</div>`
+    ? `<div class="${bodyClass}">${markdown ? renderMarkdownFinalText(finalText) : renderFinalText(finalText)}</div>`
     : ''
   const detail = detailText
     ? `<details class="agent-message-detail"><summary><span aria-hidden="true">${ICONS.detail}</span><span>查看分析详情</span></summary><pre class="agent-message-detail-panel">${escapeHtml(detailText)}</pre></details>`

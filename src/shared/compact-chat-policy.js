@@ -40,16 +40,7 @@ export function splitToolStatusLines(text) {
 }
 
 export function shouldCollapseMessage(text, options = {}) {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
-  const normalized = normalizeChatText(text)
-  if (!normalized) return false
-
-  const lineCount = normalized.split('\n').length
-  const codeBlockCount = (normalized.match(CODE_BLOCK_RE) || []).length
-
-  return normalized.length > opts.collapseWhenChars
-    || lineCount > opts.collapseWhenLines
-    || codeBlockCount >= opts.collapseWhenCodeBlocks
+  return false
 }
 
 export function createCompactPreview(text, options = {}) {
@@ -95,12 +86,11 @@ export function compactChatMessage(rawText, options = {}) {
   const { toolLines, content } = splitToolStatusLines(rawText)
   // Normalize only the display text; raw message persistence remains unchanged.
   const layoutContent = compactMarkdownSpacing(content)
-  const collapsed = shouldCollapseMessage(layoutContent, options)
 
   return {
     content: layoutContent,
-    preview: collapsed ? createCompactPreview(layoutContent, options) : layoutContent,
-    collapsed,
+    preview: layoutContent,
+    collapsed: false,
     toolLines,
     toolSummary: toolLines.length > 0 ? `工具日志 ${toolLines.length} 条` : '',
   }

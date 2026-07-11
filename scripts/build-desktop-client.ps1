@@ -148,6 +148,23 @@ function Ensure-PackagedHermesSkills([string]$HermesDataDir) {
   Fail "Hermes offline skills seed is missing or incomplete"
 }
 
+function Ensure-PackagedHermesDefaults([string]$HermesDataDir) {
+  New-Item -ItemType Directory -Path $HermesDataDir -Force | Out-Null
+  $sourceHermes = Join-Path $Root "src-tauri\resources\data\hermes"
+
+  $sourceSoul = Join-Path $sourceHermes "SOUL.md"
+  if (Test-Path -LiteralPath $sourceSoul -PathType Leaf) {
+    Copy-Item -LiteralPath $sourceSoul -Destination (Join-Path $HermesDataDir "SOUL.md") -Force
+  }
+
+  $sourcePlugins = Join-Path $sourceHermes "plugins"
+  if (Test-Path -LiteralPath $sourcePlugins -PathType Container) {
+    Copy-Directory $sourcePlugins (Join-Path $HermesDataDir "plugins")
+  }
+
+  Ensure-PackagedHermesSkills $HermesDataDir
+}
+
 function Remove-IfExists([string]$Path) {
   if (Test-Path $Path) {
     Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
@@ -502,12 +519,15 @@ function Ensure-ResourceDir([string]$RelativePath) {
 
 function Assert-SuperClawOpenClawPluginSources {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
+  $BundledExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
   foreach ($plugin in @("skill-manager", "desktop-control")) {
     $source = Join-Path $SourceExtensions $plugin
     Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
     Assert-File (Join-Path $source "index.js") "OpenClaw plugin source entry: $plugin"
   }
+  Assert-File (Join-Path $BundledExtensions "browser\openclaw.plugin.json") "Bundled OpenClaw browser plugin manifest"
+  Assert-File (Join-Path $BundledExtensions "browser\index.js") "Bundled OpenClaw browser plugin entry"
   Assert-File (Join-Path $ResourcesDir "bin\desktop-control-agent.exe") "Desktop control sidecar source"
   Ok "SuperClaw OpenClaw plugin sources are available"
 }
@@ -765,7 +785,7 @@ function Prepare-HermesRuntimeConfigDirectory([string]$HermesDataDir, [bool]$San
   foreach ($name in @("config.yaml", ".env", ".env.local")) {
     Remove-IfExists (Join-Path $HermesDataDir $name)
   }
-  Ensure-PackagedHermesSkills $HermesDataDir
+  Ensure-PackagedHermesDefaults $HermesDataDir
 }
 
 function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode = $false) {
@@ -1486,10 +1506,13 @@ foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
 }
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json") "Packaged OpenClaw skill-manager plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\browser\openclaw.plugin.json") "Packaged OpenClaw browser plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
+Assert-File (Join-Path $PackagedResources "data\hermes\SOUL.md") "Packaged Hermes identity SOUL.md"
+Assert-File (Join-Path $PackagedResources "data\hermes\plugins\desktop_control_bridge\__init__.py") "Packaged Hermes desktop control bridge plugin"
 Assert-File (Join-Path $PackagedResources "runtime\git\bin\bash.exe") "Packaged Git Bash for Hermes terminal"
 Assert-File (Join-Path $PackagedResources "runtime\uv-tools\uv.exe") "Packaged UV tools executable"
 $PackagedPythonProbe = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Filter "python.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -1507,6 +1530,11 @@ Assert-File (Join-Path $PackagedResources "runtime\ocr\ocr-runner.cjs") "Package
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\eng.traineddata.gz") "Packaged OCR English language data"
 Assert-File (Join-Path $PackagedResources "runtime\ocr\tessdata\chi_sim.traineddata.gz") "Packaged OCR Chinese language data"
 Assert-File (Join-Path $PackagedResources "data\ocr\ocr-config.json") "Packaged shared OCR config"
+Assert-File (Join-Path $PackagedResources "runtime\video-tools\ffmpeg\bin\ffmpeg.exe") "Packaged FFmpeg executable"
+Assert-File (Join-Path $PackagedResources "runtime\video-tools\ffmpeg\bin\ffprobe.exe") "Packaged FFprobe executable"
+Assert-File (Join-Path $PackagedResources "runtime\video-tools\yt-dlp\yt-dlp.exe") "Packaged yt-dlp executable"
+Assert-File (Join-Path $PackagedResources "runtime\video-tools\whisper.cpp\whisper-cli.exe") "Packaged whisper.cpp CLI"
+Assert-File (Join-Path $PackagedResources "runtime\video-tools\whisper.cpp\models\ggml-tiny.bin") "Packaged whisper.cpp tiny model"
 Assert-Dir (Join-Path $PackagedResources "data") "Packaged data directory"
 $PackagedHermesSkillCount = Count-HermesSkillFiles (Join-Path $PackagedResources "data\hermes\skills")
 if ($PackagedHermesSkillCount -lt 20) {

@@ -1692,12 +1692,7 @@ function splitCompactToolStatusLines(text) {
 }
 
 function shouldCollapseCompactMessage(text, options = {}) {
-  const opts = { ...COMPACT_CHAT_OPTIONS, ...options };
-  const normalized = normalizeCompactChatText(text);
-  if (!normalized) return false;
-  const lineCount = normalized.split("\n").length;
-  return normalized.length > opts.collapseWhenChars
-    || lineCount > opts.collapseWhenLines;
+  return false;
 }
 
 function createCompactPanelPreview(text, options = {}) {
@@ -1874,11 +1869,10 @@ function compactPanelMarkdownSpacing(rawText) {
 function compactClaudePanelMessage(rawText, options = {}) {
   const { toolLines, content } = splitCompactToolStatusLines(rawText);
   const layoutContent = compactPanelMarkdownSpacing(content);
-  const collapsed = shouldCollapseCompactMessage(layoutContent, options);
   return {
     content: layoutContent,
-    preview: collapsed ? createCompactPanelPreview(layoutContent, options) : layoutContent,
-    collapsed,
+    preview: layoutContent,
+    collapsed: false,
     toolLines,
     toolSummary: toolLines.length > 0 ? `工具日志 ${toolLines.length} 条` : "",
   };
