@@ -351,7 +351,7 @@ function Write-OpenClawConfig([string]$Dir) {
           "app://",
           "null"
         )
-        allowInsecureAuth = $true
+        allowInsecureAuth = $false
       }
     }
   }

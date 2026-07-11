@@ -1029,8 +1029,8 @@ fn build_calibration_baseline() -> Value {
         "session": { "dmScope": "per-channel-peer" },
         "skills": { "entries": {} },
         "tools": {
-            "profile": "full",
-            "sessions": { "visibility": "all" },
+            "profile": "coding",
+            "sessions": { "visibility": "agent" },
         },
         "gateway": {
             "mode": "local",
@@ -1042,7 +1042,7 @@ fn build_calibration_baseline() -> Value {
             "controlUi": {
                 "enabled": true,
                 "allowedOrigins": calibration_required_origins(),
-                "allowInsecureAuth": true,
+                "allowInsecureAuth": false,
             },
         },
     })
@@ -1166,7 +1166,7 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false)
         {
-            tools_obj.insert("profile".into(), Value::String("full".into()));
+            tools_obj.insert("profile".into(), Value::String("coding".into()));
         }
         let sessions = tools_obj.entry("sessions").or_insert_with(|| json!({}));
         if !sessions.is_object() {
@@ -1179,7 +1179,7 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
                 .map(|v| !v.trim().is_empty())
                 .unwrap_or(false)
             {
-                sessions_obj.insert("visibility".into(), Value::String("all".into()));
+                sessions_obj.insert("visibility".into(), Value::String("agent".into()));
             }
         }
     }
@@ -1251,7 +1251,7 @@ fn normalize_calibrated_config(mut config: Value) -> Value {
             }
             control_ui_obj.insert("allowedOrigins".into(), json!(merged));
             control_ui_obj.insert("enabled".into(), Value::Bool(true));
-            control_ui_obj.insert("allowInsecureAuth".into(), Value::Bool(true));
+            control_ui_obj.insert("allowInsecureAuth".into(), Value::Bool(false));
         }
     }
 

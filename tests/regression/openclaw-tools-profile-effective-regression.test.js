@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const devApi = readFileSync('scripts/dev-api.js', 'utf8')
 const tauriCommands = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
+const tauriConfigCommands = readFileSync('src-tauri/src/commands/config.rs', 'utf8')
 const releaseGate = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 
 test('dev-api calibration keeps OpenClaw effective tools.profile on coding', () => {
@@ -23,6 +24,13 @@ test('Tauri OpenClaw config initialization does not restore minimal profile', ()
   assert.match(tauriCommands, /const\s+OPENCLAW_EFFECTIVE_TOOLS_PROFILE:\s*&str\s*=\s*"coding"/)
   assert.match(tauriCommands, /"profile":\s*OPENCLAW_EFFECTIVE_TOOLS_PROFILE/)
   assert.match(tauriCommands, /Some\(OPENCLAW_EFFECTIVE_TOOLS_PROFILE\)/)
+})
+
+test('Tauri calibration keeps the effective coding profile and agent session visibility', () => {
+  assert.match(tauriConfigCommands, /"profile":\s*"coding"/)
+  assert.match(tauriConfigCommands, /"visibility":\s*"agent"/)
+  assert.doesNotMatch(tauriConfigCommands, /Value::String\("full"\.into\(\)\)/)
+  assert.doesNotMatch(tauriConfigCommands, /Value::String\("all"\.into\(\)\)/)
 })
 
 test('minimal can remain a valid profile name but not the default recovery target', () => {

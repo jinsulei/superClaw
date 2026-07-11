@@ -4863,7 +4863,7 @@ function buildCalibrationBaseline() {
       controlUi: {
         enabled: true,
         allowedOrigins: requiredControlUiOrigins(),
-        allowInsecureAuth: true,
+        allowInsecureAuth: false,
       },
     },
   }
@@ -4990,7 +4990,7 @@ function normalizeCalibratedConfig(input) {
   const existingOrigins = Array.isArray(config.gateway.controlUi.allowedOrigins) ? config.gateway.controlUi.allowedOrigins.filter(Boolean) : []
   config.gateway.controlUi.allowedOrigins = [...new Set([...existingOrigins, ...origins])]
   config.gateway.controlUi.enabled = true
-  config.gateway.controlUi.allowInsecureAuth = true
+  config.gateway.controlUi.allowInsecureAuth = false
 
   return ensurePortableDesktopToolDefaults(config)
 }

@@ -459,6 +459,15 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             );
             changed = true;
         }
+        if let Some(control_ui) = gateway
+            .get_mut("controlUi")
+            .and_then(|value| value.as_object_mut())
+        {
+            if control_ui.get("allowInsecureAuth") != Some(&serde_json::Value::Bool(false)) {
+                control_ui.insert("allowInsecureAuth".into(), serde_json::Value::Bool(false));
+                changed = true;
+            }
+        }
     }
 
     if !obj.get("agents").is_some_and(|v| v.is_object()) {

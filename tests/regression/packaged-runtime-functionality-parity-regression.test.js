@@ -12,6 +12,7 @@ const agentMessageContentSource = readFileSync('src/components/chat/agent-messag
 const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const sidebarSource = readFileSync('src/components/sidebar.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
+const openclawConfigCommandsSource = readFileSync('src-tauri/src/commands/config.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
@@ -479,6 +480,8 @@ test('OpenClaw packaged release config does not enable insecure control UI auth'
   assert.doesNotMatch(packagedTemplateBlock, /allowInsecureAuth\s*=\s*\$true/)
   assert.doesNotMatch(portableRepairBlock, /"allowInsecureAuth":\s*true/)
   assert.match(packagedTemplateBlock, /allowInsecureAuth\s*=\s*\$false/)
+  assert.match(openclawCommandsSource, /control_ui\.insert\("allowInsecureAuth"\.into\(\), serde_json::Value::Bool\(false\)\)/)
+  assert.doesNotMatch(openclawConfigCommandsSource, /"allowInsecureAuth":\s*true|allowInsecureAuth"\.into\(\), Value::Bool\(true\)/)
 })
 
 test('OpenClaw packaged connect frame uses gateway-compatible device metadata', () => {
