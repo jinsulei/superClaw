@@ -342,7 +342,9 @@ async function _readOpenClawGatewaySwitchStatus() {
   return await _readOwnedOpenClawGatewayServiceStatus() || devStatus
 }
 
-async function _waitForOpenClawGatewayHealth(progress, start = 78, end = 92, timeoutMs = 18000) {
+const OPENCLAW_SWITCH_START_TIMEOUT_MS = 45_000
+
+async function _waitForOpenClawGatewayHealth(progress, start = 78, end = 92, timeoutMs = OPENCLAW_SWITCH_START_TIMEOUT_MS) {
   const port = await _readOpenClawGatewayPort()
   const startedAt = Date.now()
   let attempt = 0
@@ -428,7 +430,7 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
       }
       console.warn('[sidebar] OpenClaw Gateway running but unhealthy, restarting once:', e)
       await _runSwitchProgressStep(progress, 58, 78, () => api.restartService('ai.openclaw.gateway'))
-      await _waitForOpenClawGatewayHealth(progress, 78, 90, 18000)
+      await _waitForOpenClawGatewayHealth(progress, 78, 90, OPENCLAW_SWITCH_START_TIMEOUT_MS)
       const latest = await _runSwitchProgressStep(progress, 90, 94, () => api.getServicesStatus().catch(() => []))
       const next = _findOpenClawGateway(latest)
       if (!next?.running) {
@@ -439,7 +441,7 @@ async function _ensureOpenClawGatewayForSwitch(progress) {
   }
 
   await _runSwitchProgressStep(progress, 44, 78, () => api.startService('ai.openclaw.gateway'))
-  await _waitForOpenClawGatewayHealth(progress, 78, 90, 18000)
+  await _waitForOpenClawGatewayHealth(progress, 78, 90, OPENCLAW_SWITCH_START_TIMEOUT_MS)
   const latest = await _runSwitchProgressStep(progress, 90, 94, () => api.getServicesStatus().catch(() => []))
   const next = _findOpenClawGateway(latest)
   if (!next?.running) {

@@ -180,6 +180,18 @@ pub fn bundled_openclaw_bin_dir() -> Option<PathBuf> {
 fn portable_openclaw_data_dir() -> Option<PathBuf> {
     let res = app_resources_dir()?;
     let dir = res.join("data").join(".openclaw");
+
+    // Tauri watches src-tauri/resources during development. Keep OpenClaw's
+    // writable state elsewhere so logs/config updates cannot restart the app.
+    #[cfg(debug_assertions)]
+    {
+        let project_root = res.parent()?.parent()?;
+        let dev_dir = project_root.join(".dev-data").join(".openclaw");
+        ensure_dev_openclaw_data_dir(&dir, &dev_dir);
+        return Some(dev_dir);
+    }
+
+    #[cfg(not(debug_assertions))]
     // 目录已存在 或 内置 OpenClaw 存在（便携模式）=> 返回此路径
     if dir.exists() || bundled_openclaw_bin_dir().is_some() {
         Some(dir)
@@ -206,6 +218,42 @@ fn copy_dir_missing_only(source: &Path, target: &Path) {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::copy(&src, &dst);
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn ensure_dev_openclaw_data_dir(source: &Path, target: &Path) {
+    let _ = std::fs::create_dir_all(target);
+
+    for name in [
+        "openclaw.json",
+        "clawpanel.json",
+        "clawpanel-device-key.json",
+        "exec-approvals.json",
+    ] {
+        let src = source.join(name);
+        let dst = target.join(name);
+        if src.is_file() && !dst.exists() {
+            let _ = std::fs::copy(src, dst);
+        }
+    }
+
+    // Seed durable configuration and capabilities only. Volatile logs,
+    // process state and owner files are created under .dev-data at runtime.
+    for name in [
+        "agents",
+        "devices",
+        "identity",
+        "skills",
+        "workspace",
+        "extensions",
+        "plugins",
+        "npm",
+    ] {
+        let src = source.join(name);
+        if src.is_dir() {
+            copy_dir_missing_only(&src, &target.join(name));
         }
     }
 }

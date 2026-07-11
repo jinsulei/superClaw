@@ -10,6 +10,7 @@ const hermesMemoryStoreSource = readFileSync('src/engines/hermes/lib/hermes-memo
 const hermesChatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
 const agentMessageContentSource = readFileSync('src/components/chat/agent-message-content.js', 'utf8')
 const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
+const sidebarSource = readFileSync('src/components/sidebar.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
@@ -17,6 +18,17 @@ const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel
 const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude-panel/server.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
+
+test('OpenClaw dev runtime state is isolated from watched packaged resources', () => {
+  assert.match(openclawCommandsSource, /cfg\(debug_assertions\)[\s\S]*?\.join\("\.dev-data"\)\.join\("\.openclaw"\)/)
+  assert.match(openclawCommandsSource, /ensure_dev_openclaw_data_dir\(&dir, &dev_dir\)/)
+  assert.match(openclawCommandsSource, /cfg\(not\(debug_assertions\)\)[\s\S]*?bundled_openclaw_bin_dir\(\)/)
+})
+
+test('OpenClaw engine switching allows a full cold gateway startup', () => {
+  assert.match(sidebarSource, /OPENCLAW_SWITCH_START_TIMEOUT_MS\s*=\s*45_000/)
+  assert.match(sidebarSource, /_waitForOpenClawGatewayHealth\(progress, 78, 90, OPENCLAW_SWITCH_START_TIMEOUT_MS\)/)
+})
 
 function renderAgentMessageContentForRegression(content) {
   let source = agentMessageContentSource
