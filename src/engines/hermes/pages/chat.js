@@ -2658,6 +2658,15 @@ export function render() {
         const code = btn.closest('pre')?.querySelector('code')?.textContent || ''
         if (!code) return
         const ok = await copyText(code)
+        const label = btn.querySelector('.hm-chat-code-copy-label')
+        const originalLabel = label?.textContent || ''
+        btn.dataset.copyState = ok ? 'success' : 'error'
+        if (label) label.textContent = ok ? t('common.copied') : t('engine.chatCopyFailed')
+        window.setTimeout(() => {
+          if (!btn.isConnected) return
+          delete btn.dataset.copyState
+          if (label && originalLabel) label.textContent = originalLabel
+        }, 1400)
         toast(ok ? t('common.copied') : t('engine.chatCopyFailed'), ok ? 'success' : 'error')
       })
     })

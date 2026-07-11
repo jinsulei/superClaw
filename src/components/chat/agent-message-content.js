@@ -35,8 +35,59 @@ function hasMarkdownStructure(text) {
   return /(?:^|\s)(?:#{1,6}\s+|[-*_]{3,}|[-*]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s+|\|[^|\n]+\|)|```|~~~|\*\*|~~|\[[^\]]+\]\([^)]+\)|\$\$/.test(String(text || ''))
 }
 
+function sanitizeAgentMarkdownUrl(url) {
+  const raw = String(url || '').trim()
+  if (!raw) return '#'
+  if (raw.startsWith('#')) return raw
+  if (raw.startsWith('/') && !raw.startsWith('//')) return raw
+  try {
+    const parsed = new URL(raw, 'https://superclaw.local')
+    return ['http:', 'https:', 'mailto:'].includes(parsed.protocol) ? raw : '#'
+  } catch {
+    return '#'
+  }
+}
+
+function unwrapOuterMarkdownFence(value) {
+  const text = normalizeText(value)
+  if (!text) return ''
+  const lines = text.split('\n')
+  if (lines.length < 3) return text
+  const first = lines[0].trim()
+  const last = lines[lines.length - 1].trim()
+  if (!/^```(?:markdown|md|gfm)\s*$/i.test(first) || last !== '```') return text
+  const inner = lines.slice(1, -1).join('\n').trim()
+  return hasMarkdownStructure(inner) ? inner : text
+}
+
+function protectExistingGfmTableBlocks(text) {
+  const lines = String(text || '').split('\n')
+  const blocks = []
+  const output = []
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const current = lines[i]
+    if (isGfmTableRowLine(current) && i + 1 < lines.length && isGfmTableSeparatorLine(lines[i + 1])) {
+      const tableRows = [current, lines[i + 1]]
+      i += 2
+      while (i < lines.length && isGfmTableRowLine(lines[i])) {
+        tableRows.push(lines[i])
+        i += 1
+      }
+      i -= 1
+      const key = `__AGENT_TABLE_BLOCK_${blocks.length}__`
+      blocks.push(tableRows.join('\n'))
+      output.push(key)
+      continue
+    }
+    output.push(current)
+  }
+
+  return { text: output.join('\n'), blocks }
+}
+
 function restoreCollapsedMarkdownLineBreaks(value) {
-  let text = normalizeText(value)
+  let text = unwrapOuterMarkdownFence(value)
   if (!text || !hasMarkdownStructure(text)) return text
 
   const codeBlocks = []
@@ -45,6 +96,10 @@ function restoreCollapsedMarkdownLineBreaks(value) {
     codeBlocks.push(block)
     return key
   })
+
+  const protectedTables = protectExistingGfmTableBlocks(text)
+  text = protectedTables.text
+  const tableBlocks = protectedTables.blocks
 
   const sectionLabels = [
     'Python', 'JavaScript', 'TypeScript', 'SQL', 'Mermaid', 'Bash', 'Shell',
@@ -67,12 +122,14 @@ function restoreCollapsedMarkdownLineBreaks(value) {
     .replace(new RegExp(`(^|\\n)(${languageNames})\\s+`, 'gi'), '$1$2\n')
     .replace(/(^|[^\n])\s+(?=>\s+)/g, '$1\n')
     .replace(/(\|[^\n]*?\|)\s+(?=\|)/g, '$1\n')
-    .replace(/\s+(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)\s+/g, '\n$1\n')
+    .replace(/[ \t]+(\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?)(?=[ \t]+)/g, '\n$1')
     .replace(/([。！？；;])\s+(?=(?:---|#{1,6}\s+|\d+[.)]\s+|[-*]\s+|\|))/g, '$1\n\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
-  return text.replace(/__AGENT_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || '')
+  return text
+    .replace(/__AGENT_TABLE_BLOCK_(\d+)__/g, (_, index) => tableBlocks[Number(index)] || '')
+    .replace(/__AGENT_CODE_BLOCK_(\d+)__/g, (_, index) => codeBlocks[Number(index)] || '')
 }
 
 function maskSensitiveText(text) {
@@ -188,7 +245,7 @@ function renderInline(rawText) {
   const escaped = escapeHtml(rawText)
   return escaped
     .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, '<span class="agent-message-image-ref">$1</span>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, '<a class="agent-message-link" href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_, label, url) => `<a class="agent-message-link" href="${escapeHtml(sanitizeAgentMarkdownUrl(url))}" target="_blank" rel="noreferrer">${label}</a>`)
     .replace(/`([^`]+)`/g, '<code class="agent-message-inline-code">$1</code>')
     .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong class="agent-message-strong"><em>$1</em></strong>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong class="agent-message-strong">$1</strong>')
@@ -250,6 +307,18 @@ function renderGfmTable(rows = []) {
     ? `<tbody>${bodyRows.map(row => `<tr>${headers.map((_, index) => renderCell('td', row[index] || '', index)).join('')}</tr>`).join('')}</tbody>`
     : ''
   return `<div class="agent-message-table-wrap"><table class="agent-message-markdown-table">${head}${body}</table></div>`
+}
+
+function renderCodeCopyButton() {
+  return [
+    '<button type="button" class="hm-chat-code-copy agent-message-code-copy" title="Copy code" aria-label="Copy code">',
+    '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">',
+    '<path d="M8 8.5A2.5 2.5 0 0 1 10.5 6h6A2.5 2.5 0 0 1 19 8.5v8A2.5 2.5 0 0 1 16.5 19h-6A2.5 2.5 0 0 1 8 16.5v-8Z"></path>',
+    '<path d="M6 15.5A2.5 2.5 0 0 1 4 13V5.5A2.5 2.5 0 0 1 6.5 3H14a2.5 2.5 0 0 1 2.45 2"></path>',
+    '</svg>',
+    '<span class="hm-chat-code-copy-label">Copy</span>',
+    '</button>',
+  ].join('')
 }
 
 function splitCodeFences(text) {
@@ -333,7 +402,7 @@ function renderFinalText(text) {
   let textIndex = 0
   return segments.map((segment) => {
     if (segment.type === 'code') {
-      return `<pre class="agent-message-code-block"><code>${escapeHtml(segment.content.trim())}</code></pre>`
+      return `<pre class="agent-message-code-block">${renderCodeCopyButton()}<code>${escapeHtml(segment.content.trim())}</code></pre>`
     }
     const html = renderTextSegment(segment.content, textIndex)
     textIndex += segment.content.split(/\n+/).filter(line => line.trim()).length
@@ -347,6 +416,7 @@ function renderMarkdownTextSegment(text) {
   let paragraph = []
   let listType = ''
   let listItems = []
+  let itemIndex = 0
 
   const flushParagraph = () => {
     const content = paragraph.join(' ').trim()
@@ -356,7 +426,7 @@ function renderMarkdownTextSegment(text) {
 
   const flushList = () => {
     if (!listItems.length || !listType) return
-    rows.push(`<${listType}>${listItems.map(item => `<li>${item}</li>`).join('')}</${listType}>`)
+    rows.push(`<${listType} class="agent-message-markdown-list">${listItems.map(item => `<li><span class="agent-message-icon" aria-hidden="true">${item.icon}</span><span class="agent-message-text">${item.html}</span></li>`).join('')}</${listType}>`)
     listType = ''
     listItems = []
   }
@@ -389,7 +459,9 @@ function renderMarkdownTextSegment(text) {
       flushParagraph()
       flushList()
       const level = Math.min(6, heading[1].length)
-      rows.push(`<h${level}>${renderInline(heading[2].trim())}</h${level}>`)
+      const headingText = heading[2].trim()
+      rows.push(`<h${level} class="agent-message-markdown-heading"><span class="agent-message-icon" aria-hidden="true">${chooseIcon(headingText, itemIndex, 'heading')}</span><span class="agent-message-text">${renderInline(headingText)}</span></h${level}>`)
+      itemIndex += 1
       continue
     }
 
@@ -410,10 +482,13 @@ function renderMarkdownTextSegment(text) {
       listType = nextType
       if (task) {
         const checked = task[1].trim().toLowerCase() === 'x'
-        listItems.push(`<label class="agent-message-task"><input type="checkbox" disabled ${checked ? 'checked' : ''}> <span>${renderInline(task[2].trim())}</span></label>`)
+        const taskText = task[2].trim()
+        listItems.push({ icon: chooseIcon(taskText, itemIndex, 'list'), html: `<label class="agent-message-task"><input type="checkbox" disabled ${checked ? 'checked' : ''}> <span>${renderInline(taskText)}</span></label>` })
       } else {
-        listItems.push(renderInline((unordered || ordered)[1].trim()))
+        const itemText = (unordered || ordered)[1].trim()
+        listItems.push({ icon: chooseIcon(itemText, itemIndex, 'list'), html: renderInline(itemText) })
       }
+      itemIndex += 1
       continue
     }
 
@@ -434,12 +509,12 @@ function renderMarkdownTextSegment(text) {
 }
 
 function renderMarkdownFinalText(text) {
-  const normalizedText = restoreCollapsedMarkdownLineBreaks(text)
+  const normalizedText = restoreCollapsedMarkdownLineBreaks(unwrapOuterMarkdownFence(text))
   const segments = splitCodeFences(normalizedText)
   return segments.map((segment) => {
     if (segment.type === 'code') {
       const lang = segment.language ? `<span class="agent-message-code-lang">${escapeHtml(segment.language)}</span>` : ''
-      return `<pre class="agent-message-code-block">${lang}<code>${escapeHtml(segment.content.trim())}</code></pre>`
+      return `<pre class="agent-message-code-block">${renderCodeCopyButton()}${lang}<code>${escapeHtml(segment.content.trim())}</code></pre>`
     }
     return renderMarkdownTextSegment(segment.content)
   }).join('')

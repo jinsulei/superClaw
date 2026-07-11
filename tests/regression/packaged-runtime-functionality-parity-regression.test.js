@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
+import vm from 'node:vm'
 
 import { compactHermesHistoryContentForPrompt } from '../../src/engines/hermes/lib/chat-store.js'
 
 const hermesStoreSource = readFileSync('src/engines/hermes/lib/chat-store.js', 'utf8')
+const hermesMemoryStoreSource = readFileSync('src/engines/hermes/lib/hermes-memory-store.js', 'utf8')
+const hermesChatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
+const agentMessageContentSource = readFileSync('src/components/chat/agent-message-content.js', 'utf8')
 const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
@@ -14,30 +18,332 @@ const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 
-test('Hermes packaged chat history does not replay previous long assistant replies', () => {
+function renderAgentMessageContentForRegression(content) {
+  let source = agentMessageContentSource
+    .replace(/^import\s+['"].*?agent-message-content\.css['"];?\s*/m, '')
+    .replace(/export function renderAgentMessageContent/, 'function renderAgentMessageContent')
+    .replace(/export function renderAgentMessageContentInto[\s\S]*$/, '')
+  source += '\nmodule.exports = { renderAgentMessageContent };'
+  const sandbox = { module: { exports: {} }, URL }
+  vm.createContext(sandbox)
+  vm.runInContext(source, sandbox)
+  return sandbox.module.exports.renderAgentMessageContent({ agent: 'hermes', content, markdown: true })
+}
+
+test('Hermes packaged chat history keeps a bounded prior assistant answer', () => {
   const previousAssistant = [
     'OLD_ASSISTANT_REPLY_SHOULD_NOT_BE_REPLAYED',
-    'x'.repeat(1200),
+    'x'.repeat(2400),
   ].join('\n')
   const compacted = compactHermesHistoryContentForPrompt('assistant', previousAssistant)
 
-  assert.equal(compacted, '')
-  assert.equal(compacted.includes('OLD_ASSISTANT_REPLY_SHOULD_NOT_BE_REPLAYED'), false)
-  assert.equal(compacted.includes('previous assistant response omitted to avoid replay'), false)
+  assert.equal(compacted.includes('OLD_ASSISTANT_REPLY_SHOULD_NOT_BE_REPLAYED'), true)
+  assert.equal(compacted.includes('x'.repeat(80)), true)
+  assert.equal(compacted.length < previousAssistant.length, true)
+  assert.equal(compacted.includes('previous assistant response omitted to avoid replay'), true)
 })
 
-test('Hermes omits old assistant history even when the previous reply is short', () => {
-  const contaminated = compactHermesHistoryContentForPrompt('assistant', '聂总，上一轮完整回复不应该进入下一轮 prompt')
+test('Hermes keeps short assistant history paired with the prior user turn', () => {
+  const previousAssistant = 'previous turn has already been answered'
+  const compacted = compactHermesHistoryContentForPrompt('assistant', previousAssistant)
 
-  assert.equal(contaminated, '')
-  assert.equal(contaminated.includes('previous assistant response omitted to avoid replay'), false)
-  assert.equal(contaminated.includes('聂总'), false)
-  assert.equal(contaminated.includes('上一轮完整回复'), false)
+  assert.equal(compacted, previousAssistant)
 })
-
-test('Hermes keeps user context intact while omitting assistant history', () => {
+test('Hermes keeps user context intact while compacting assistant history', () => {
   const userContext = '请继续围绕这个商品标题优化，不要改变品牌名。' + ' 用户补充'.repeat(100)
   assert.equal(compactHermesHistoryContentForPrompt('user', userContext), userContext)
+})
+test('Hermes assistant main chat uses the shared markdown renderer in packaged and web builds', () => {
+  const renderBlock = hermesChatSource.match(/function renderCompactAssistantHtml[\s\S]*?function renderMessage/)?.[0] || ''
+
+  assert.match(hermesChatSource, /import \{ renderAgentMessageContent \} from '\.\.\/\.\.\/\.\.\/components\/chat\/agent-message-content\.js'/)
+  assert.match(renderBlock, /renderAgentMessageContent\(\{ agent: 'hermes'[\s\S]*markdown:\s*true/)
+  assert.doesNotMatch(renderBlock, /mdToHtml\(visibleContent\)/)
+})
+
+test('Hermes assistant markdown renders headings, lists, inline code, fenced code, blockquote and escaped html', () => {
+  const html = renderAgentMessageContentForRegression([
+    '# 一级标题',
+    '',
+    '- 列表项',
+    '1. 有序项',
+    '',
+    '> 引用内容',
+    '',
+    '这是 `inline code` 和 **加粗** 以及 ~~删除线~~。',
+    '',
+    '```python',
+    'print("<script>alert(1)</script>")',
+    '```',
+  ].join('\n'))
+
+  assert.match(html, /<h1 class="agent-message-markdown-heading">/)
+  assert.match(html, /<ul class="agent-message-markdown-list">/)
+  assert.match(html, /<ol class="agent-message-markdown-list">/)
+  assert.match(html, /class="agent-message-icon"/)
+  assert.match(html, /class="agent-message-text"/)
+  assert.match(html, /<blockquote>引用内容<\/blockquote>/)
+  assert.match(html, /agent-message-inline-code/)
+  assert.match(html, /<strong class="agent-message-strong">加粗<\/strong>/)
+  assert.match(html, /<del>删除线<\/del>/)
+  assert.match(html, /agent-message-code-block/)
+  assert.match(html, /agent-message-code-lang/)
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+  assert.doesNotMatch(html, /<script>alert/)
+})
+
+test('Hermes assistant markdown code blocks render copy buttons for packaged and web builds', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```python',
+    'print("hello")',
+    '```',
+  ].join('\n'))
+
+  assert.match(html, /<button type="button" class="hm-chat-code-copy agent-message-code-copy"/)
+  assert.match(html, /aria-label="Copy code"/)
+  assert.match(html, /<span class="hm-chat-code-copy-label">Copy<\/span>/)
+  assert.match(html, /<span class="agent-message-code-lang">python<\/span>/)
+  assert.match(html, /<code>print\(&quot;hello&quot;\)<\/code>/)
+})
+
+test('Hermes shared markdown copy icon stays visible under Hermes theme styles', () => {
+  const css = readFileSync('src/engines/hermes/style/hermes.css', 'utf8')
+
+  assert.match(css, /\.hm-chat-code-copy\.agent-message-code-copy\s*\{\s*opacity:\s*1;/)
+  assert.match(css, /\.agent-message-code-block:hover \.hm-chat-code-copy/)
+})
+
+test('Hermes assistant code copy target is pure code without language labels or fences', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```js',
+    'const value = "| kept |";',
+    'console.log(value)',
+    '```',
+  ].join('\n'))
+  const code = html.match(/<code>([\s\S]*?)<\/code>/)?.[1] || ''
+
+  assert.match(html, /agent-message-code-copy/)
+  assert.equal(code.includes('const value'), true)
+  assert.equal(code.includes('console.log'), true)
+  assert.equal(code.includes('```'), false)
+  assert.equal(code.includes('js'), false)
+})
+
+test('Hermes assistant multiple code blocks keep independent copy buttons and code nodes', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```python',
+    'print("one")',
+    '```',
+    '',
+    '```bash',
+    'echo two',
+    '```',
+  ].join('\n'))
+
+  assert.equal((html.match(/agent-message-code-copy/g) || []).length, 2)
+  assert.equal((html.match(/<code>/g) || []).length, 2)
+  assert.match(html, /<code>print\(&quot;one&quot;\)<\/code>/)
+  assert.match(html, /<code>echo two<\/code>/)
+})
+
+test('Hermes assistant code copy blocks escape html and script content', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```html',
+    '<script>alert("x")</script>',
+    '```',
+  ].join('\n'))
+
+  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/)
+  assert.doesNotMatch(html, /<script>alert/)
+})
+
+test('Hermes assistant unwraps an outer markdown fence but preserves inner code fences', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```markdown',
+    '# 包裹标题',
+    '',
+    '正文段落',
+    '',
+    '```python',
+    'print("kept")',
+    '```',
+    '```',
+  ].join('\n'))
+
+  assert.match(html, /<h1 class="agent-message-markdown-heading">/)
+  assert.match(html, /<p>正文段落<\/p>/)
+  assert.match(html, /<span class="agent-message-code-lang">python<\/span>/)
+  assert.match(html, /print\(&quot;kept&quot;\)/)
+  assert.doesNotMatch(html, /<span class="agent-message-code-lang">markdown<\/span>/)
+})
+
+test('Hermes assistant markdown blocks unsafe javascript links', () => {
+  const html = renderAgentMessageContentForRegression('[bad](javascript:alert(1)) [ok](https://example.com)')
+
+  assert.match(html, /href="#"/)
+  assert.match(html, /href="https:\/\/example\.com"/)
+  assert.doesNotMatch(html, /href="javascript:/)
+})
+
+test('Hermes assistant markdown renders standard tables as real table elements', () => {
+  const html = renderAgentMessageContentForRegression([
+    '| Column A | Column B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '| 3 | 4 |',
+  ].join('\n'))
+
+  assert.match(html, /<table class="agent-message-markdown-table">/)
+  assert.match(html, /<thead><tr><th style="text-align:left">Column A<\/th><th style="text-align:left">Column B<\/th><\/tr><\/thead>/)
+  assert.match(html, /<tbody><tr><td style="text-align:left">1<\/td><td style="text-align:left">2<\/td><\/tr>/)
+  assert.doesNotMatch(html, /\| --- \| --- \|/)
+})
+
+test('Hermes assistant markdown table cells escape html content', () => {
+  const html = renderAgentMessageContentForRegression([
+    '| Name | Value |',
+    '| --- | --- |',
+    '| safe | <script>alert(1)</script> |',
+  ].join('\n'))
+
+  assert.match(html, /<table class="agent-message-markdown-table">/)
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+  assert.doesNotMatch(html, /<script>alert/)
+})
+
+test('Hermes assistant markdown does not parse table syntax inside fenced code blocks', () => {
+  const html = renderAgentMessageContentForRegression([
+    '```text',
+    '| Column A | Column B |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '```',
+  ].join('\n'))
+
+  assert.match(html, /<pre class="agent-message-code-block">/)
+  assert.match(html, /<span class="agent-message-code-lang">text<\/span>/)
+  assert.match(html, /\| Column A \| Column B \|/)
+  assert.doesNotMatch(html, /<table class="agent-message-markdown-table">/)
+})
+
+test('Hermes stream assistant lookup prefers exact clientRequestId over stale pending assistant', () => {
+  const lookupBlock = hermesStoreSource.match(/function findAssistantMessage\(session, clientRequestId\) \{[\s\S]*?function ensureAssistantMessage/)?.[0] || ''
+
+  assert.match(lookupBlock, /const mappedId = clientRequestId/)
+  assert.match(lookupBlock, /m\.clientRequestId === clientRequestId/)
+  assert.match(lookupBlock, /getHermesAssistantMessageId\(clientRequestId\)/)
+  assert.match(lookupBlock, /if \(state\.pendingAssistantId\)/)
+  assert.ok(lookupBlock.indexOf('m.clientRequestId === clientRequestId') < lookupBlock.indexOf('if (state.pendingAssistantId)'))
+})
+
+test('Hermes streaming deltas do not run final reply completion on every chunk', () => {
+  const sanitizeBlock = hermesStoreSource.match(/function sanitizeHermesVisibleReply\(text, prompt = currentVisibleUserPrompt\(\), options = \{\}\) \{[\s\S]*?function findAssistantMessage/)?.[0] || ''
+
+  const streamingBlock = sanitizeBlock.match(/if \(options\.streaming === true\) \{[\s\S]*?\n\s*\}/)?.[0] || ''
+  assert.match(streamingBlock, /normalizeHermesStreamText\(text\)/)
+  assert.doesNotMatch(streamingBlock, /completeHermesReplyIfNeeded/)
+  assert.match(sanitizeBlock, /completeHermesReplyIfNeeded\(redacted/)
+
+  const streamDeltaCalls = hermesStoreSource.match(/sanitizeHermesVisibleReply\(msg\.content \+ (?:delta|accepted\.text), currentVisibleUserPrompt\(\), \{ streaming: true \}\)/g) || []
+  assert.ok(streamDeltaCalls.length >= 2)
+})
+
+test('Hermes default conversation history uses bounded completed turns', () => {
+  const historyBlock = hermesStoreSource.match(/function buildDefaultConversationHistory\(session, currentMessageId\) \{[\s\S]*?function normalizeAttachments/)?.[0] || ''
+
+  assert.match(hermesStoreSource, /const HISTORY_MAX_TURNS = 6/)
+  assert.match(hermesStoreSource, /const HISTORY_MAX_CHARS = 10000/)
+  assert.match(hermesStoreSource, /const HISTORY_ASSISTANT_MAX_CHARS = 1600/)
+  assert.match(historyBlock, /const completedTurns = \[\]/)
+  assert.match(historyBlock, /if \(!pendingUser\) continue/)
+  assert.match(historyBlock, /selectedTurns\.reverse\(\)\.flat\(\)/)
+})
+
+test('Hermes exact short replies run without conversation history contamination', () => {
+  const sendBlock = hermesStoreSource.match(/async function sendMessage\(content, opts = \{\}\) \{[\s\S]*?const runPromise = Promise\.resolve\(\)\.then/)?.[0] || ''
+
+  assert.match(sendBlock, /getHermesExactShortReplyTarget\(displayText \|\| runText\)/)
+  assert.match(sendBlock, /forceEmptyHistory = true/)
+  assert.match(hermesStoreSource, /normalizeHermesExactShortReply\(currentVisibleUserPrompt\(\), msg\.content\)/)
+  assert.ok(hermesStoreSource.includes("if (asksExactReply && /\\u6536\\u5230/.test(value)) return '\\u6536\\u5230'"))
+})
+
+test('Hermes conversation history strips stale reply-only directives from prior user turns', () => {
+  const historyBlock = hermesStoreSource.match(/function messageTextForHistory\(message, role = ''\) \{[\s\S]*?function normalizeHermesHistoryComparableText/)?.[0] || ''
+
+  assert.match(hermesStoreSource, /function stripHermesReplyOnlyDirectiveForHistory\(text\)/)
+  assert.match(historyBlock, /if \(role === 'user'\) text = stripHermesReplyOnlyDirectiveForHistory\(text\)/)
+  assert.match(hermesStoreSource, /\?:\u53ea\|\u4ec5/)
+  assert.match(hermesStoreSource, /\u6536\u5230/)
+})
+
+test('Hermes exact short replies protect the local tail from stale backend refresh snapshots', () => {
+  assert.match(hermesStoreSource, /const HERMES_EXACT_SHORT_LOCAL_TAIL_HOLD_MS = 12 \* 1000/)
+  assert.match(hermesStoreSource, /function markHermesExactShortLocalTail\(session, userText = ''\)/)
+  assert.match(hermesStoreSource, /function hasHermesProtectedLocalTail\(session\)/)
+  assert.match(hermesStoreSource, /if \(hasHermesProtectedLocalTail\(target\)\) \{\s*forceRemoteRefreshIds\.delete\(sid\)\s*return\s*\}/)
+  assert.match(hermesStoreSource, /markHermesExactShortLocalTail\(s, currentVisibleUserPrompt\(\)\)/)
+})
+
+test('Hermes explicit memory commands can save safe simple facts', () => {
+  const addBlock = hermesMemoryStoreSource.match(/export function addHermesMemory\(input = \{\}\) \{[\s\S]*?export function updateHermesMemory/)?.[0] || ''
+
+  assert.match(addBlock, /const source = normalizeSource\(input\.source\)/)
+  assert.match(addBlock, /source !== 'migrated_safe' && source !== 'explicit' && !shouldSaveHermesMemory\(text\)/)
+  assert.match(hermesMemoryStoreSource, /containsSensitiveMemoryText\(text\)/)
+})
+
+test('Hermes memory strips reply-only directives from saved facts', () => {
+  assert.match(hermesMemoryStoreSource, /function stripReplyOnlyDirective\(text\)/)
+  assert.match(hermesMemoryStoreSource, /const text = sanitizeMemoryText\(stripReplyOnlyDirective\(rawText\)\)/)
+  assert.match(hermesMemoryStoreSource, /const text = stripReplyOnlyDirective\(input\.text \|\| input\.content \|\| ''\)/)
+  assert.match(hermesMemoryStoreSource, /\?:\u53ea\|\u4ec5/)
+  assert.match(hermesMemoryStoreSource, /\u6536\u5230/)
+})
+
+test('Hermes local memory commands honor exact short reply requests', () => {
+  const memoryBlock = hermesStoreSource.match(/const memoryCommandReply = handleHermesMemoryCommand\(rawText\)[\s\S]*?return Promise\.resolve\(\{ status: 'success', reason: 'memory-command' \}\)/)?.[0] || ''
+
+  assert.match(memoryBlock, /const visibleMemoryReply = normalizeHermesExactShortReply\(displayText \|\| runText \|\| rawText, memoryCommandReply\)/)
+  assert.match(memoryBlock, /content: visibleMemoryReply/)
+  assert.match(memoryBlock, /markHermesExactShortLocalTail\(memorySession, displayText \|\| runText \|\| rawText\)/)
+})
+
+test('Hermes packaged stream deltas and finals are bound to the active request id', () => {
+  assert.match(hermesStoreSource, /function appendStreamDelta\(runSessionId, delta, clientRequestId = state\.runningClientRequestId\)/)
+  assert.match(hermesStoreSource, /ensureAssistantMessage\(s, clientRequestId\)/)
+  assert.match(hermesStoreSource, /const eventRequestId = state\.runningClientRequestId/)
+  assert.match(hermesStoreSource, /appendStreamDelta\(effectiveSessionId, accepted\.text, eventRequestId\)/)
+  assert.match(hermesStoreSource, /completeStreamRun\(effectiveSessionId, accepted\.output \|\| evt\.output \|\| '', eventRequestId\)/)
+  assert.match(hermesStoreSource, /failStreamRun\(effectiveSessionId, evt\.error \|\| 'unknown error', eventRequestId\)/)
+})
+
+test('Hermes packaged stream events reject stale request ids before mutating messages', () => {
+  const handleBlock = hermesStoreSource.match(/function handleStreamEvent\(runSessionId, evt\) \{[\s\S]*?function cleanupAfterRun/)?.[0] || ''
+
+  assert.match(handleBlock, /activeResponseAssembler && !activeResponseAssembler\.matches\(evt\)/)
+  assert.ok(handleBlock.indexOf('activeResponseAssembler && !activeResponseAssembler.matches(evt)') < handleBlock.indexOf('appendStreamDelta'))
+})
+
+test('Hermes Tauri stream listeners write to the captured request id instead of a later request', () => {
+  const listenerBlock = hermesStoreSource.match(/async function attachStreamListeners\(runSessionId, clientRequestId\) \{[\s\S]*?function detachStreamListeners/)?.[0] || ''
+
+  assert.match(listenerBlock, /if \(clientRequestId && state\.runningClientRequestId !== clientRequestId\) return false/)
+  assert.match(listenerBlock, /ensureAssistantMessage\(s, clientRequestId\)/)
+  assert.match(listenerBlock, /clientRequestId: t\.clientRequestId \|\| clientRequestId/)
+  assert.doesNotMatch(listenerBlock, /ensureAssistantMessage\(s, state\.runningClientRequestId\)/)
+})
+
+test('Hermes packaged chat input defaults to a single visual row', () => {
+  const css = readFileSync('src/engines/hermes/style/hermes.css', 'utf8')
+  const inputMarkupBlock = hermesChatSource.match(/<textarea id="hm-chat-input"[\s\S]*?<\/textarea>/)?.[0] || ''
+  const inputCssBlock = css.match(/\[data-engine="hermes"\] \.hm-chat-input \{[\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(inputMarkupBlock, /rows="1"/)
+  assert.match(inputCssBlock, /line-height:\s*22px/)
+  assert.match(inputCssBlock, /box-sizing:\s*border-box/)
+  assert.match(inputCssBlock, /min-height:\s*32px/)
+  assert.match(inputCssBlock, /padding:\s*5px 2px/)
 })
 
 test('Hermes packaged long-task requests cannot complete with promise-only text', () => {
@@ -57,6 +363,18 @@ test('Hermes long-task guard keeps short-answer prompts untouched', () => {
   assert.match(hermesStoreSource, /\\u53ea\\u56de\\u590d/)
   assert.match(hermesStoreSource, /\\u4e24\\u4e2a\\u5b57/)
   assert.match(hermesStoreSource, /return false[\s\S]*?isHermesLongTaskRequest/)
+})
+
+test('Hermes long-task guard does not treat markdown rendering tests as tool execution tasks', () => {
+  const longTaskBlock = hermesStoreSource.match(/function isHermesLongTaskRequest\(text\) \{[\s\S]*?function getHermesExactShortReplyTarget/)?.[0] || ''
+
+  assert.match(longTaskBlock, /markdown\|md\\s\*格式/)
+  assert.match(longTaskBlock, /\\u6807\\u9898\|\\u5217\\u8868\|\\u5f15\\u7528\|\\u4ee3\\u7801\\u5757\|\\u8868\\u683c/)
+  assert.match(longTaskBlock, /\\u56de\\u590d\|\\u6e32\\u67d3\|\\u683c\\u5f0f\|\\u6837\\u5f0f\|\\u663e\\u793a\|\\u6d4b\\u8bd5/)
+  assert.ok(
+    longTaskBlock.indexOf('markdown|md\\s*格式') < longTaskBlock.indexOf('const hasAction'),
+    'formatting-only markdown prompts must exit before script/test long-task detection',
+  )
 })
 
 test('Hermes packaged exact short-answer prompts override contaminated final text', () => {
@@ -80,6 +398,23 @@ test('Hermes packaged visible replies redact real provider secrets and config pa
   const visibleSanitizerBlock = hermesStoreSource.match(/function sanitizeHermesVisibleReply[\s\S]*?function notifySync/)?.[0] || ''
   assert.match(visibleSanitizerBlock, /redactHermesSensitiveVisibleText\(guarded\)/)
   assert.doesNotMatch(visibleSanitizerBlock, /return completeHermesReplyIfNeeded\(guarded/)
+})
+
+test('Hermes ordinary incomplete-looking replies are not replaced by the generic retry fallback', () => {
+  const guardSource = readFileSync('src/shared/chat-output-guard.js', 'utf8')
+  const repairBlock = guardSource.match(/function repairIncompleteVisibleReply\(text = '', \{ agent = '', userText = '' \} = \{\}\) \{[\s\S]*?export function ensureCompleteVisibleReply/)?.[0] || ''
+  const storeSanitizerBlock = hermesStoreSource.match(/function sanitizeHermesVisibleReply\(text, prompt = currentVisibleUserPrompt\(\), options = \{\}\) \{[\s\S]*?function findAssistantMessage/)?.[0] || ''
+  const restoreBlock = hermesStoreSource.match(/function normalizeHermesRestoredMessages\(messages = \[\]\) \{[\s\S]*?function loadSessionsCache/)?.[0] || ''
+
+  assert.match(repairBlock, /if \(\/hermes\/i\.test\(String\(agent \|\| ''\)\)\) \{\s*return safe \|\| s\s*\}/)
+  assert.ok(
+    repairBlock.indexOf("if (/hermes/i.test(String(agent || '')))") < repairBlock.indexOf('这次回复没有完整生成'),
+    'Hermes must return the original partial reply before the generic retry fallback',
+  )
+  assert.match(hermesStoreSource, /const HERMES_GENERIC_RETRY_FALLBACK_TEXT = /)
+  assert.match(hermesStoreSource, /function stripHermesGenericRetryFallback\(text\) \{/)
+  assert.match(storeSanitizerBlock, /stripHermesGenericRetryFallback\(redactHermesSensitiveVisibleText\(guarded\)\)/)
+  assert.match(restoreBlock, /stripHermesGenericRetryFallback\(message\.content\)/)
 })
 
 test('Hermes packaged candidate includes offline skills and keeps terminal page safe', () => {

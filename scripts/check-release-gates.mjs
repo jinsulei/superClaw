@@ -19,6 +19,7 @@ const gates = [
       ['node', '--test', 'tests/regression/collaboration-watchdog-runner-integration.test.js'],
       ['node', '--test', 'tests/regression/collaboration-resume-dispatch-integration.test.js'],
       ['node', '--test', 'tests/regression/runtime-observability-bridge-integration.test.js'],
+      ['node', '--test', 'tests/regression/hermes-history-contamination-regression.test.js'],
       ['node', '--test', 'tests/regression/hermes-run-timeout-final-state-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-run-timeout-final-state-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-tools-profile-effective-regression.test.js'],

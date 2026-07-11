@@ -51,6 +51,7 @@ import {
   isHermesDebugToolsVisible,
   isHermesTaskStatusQuestion,
   mapHermesErrorToUserMessage,
+  normalizeHermesStreamText,
   normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
 } from './hermes-response-assembler.js'
 import {
@@ -79,13 +80,15 @@ const STORAGE_COLLAPSED_PREFIX = 'hermes_chat_collapsed_groups_'
 const STORAGE_MSGS_PREFIX = 'hermes_chat_msgs_v2_'
 const STORAGE_DELETED_PREFIX = 'hermes_chat_deleted_sessions_v1_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
-const HISTORY_MAX_MESSAGES = 18
-const HISTORY_MAX_CHARS = 14000
-const HISTORY_ASSISTANT_MAX_CHARS = 700
+const HISTORY_MAX_TURNS = 6
+const HISTORY_MAX_CHARS = 10000
+const HISTORY_ASSISTANT_MAX_CHARS = 1600
 const HISTORY_ASSISTANT_OMITTED_MARKER = '[previous assistant response omitted to avoid replay]'
 const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
+const HERMES_EXACT_SHORT_LOCAL_TAIL_HOLD_MS = 12 * 1000
 const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
 const HERMES_RUN_TIMEOUT_MS = 180 * 1000
+const HERMES_GENERIC_RETRY_FALLBACK_TEXT = '\u8fd9\u6b21\u56de\u590d\u6ca1\u6709\u5b8c\u6574\u751f\u6210\u3002\u8bf7\u4f60\u518d\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u91cd\u65b0\u6574\u7406\u6210\u5b8c\u6574\u7ed3\u8bba\u3002'
 const HERMES_REPLY_STYLE_INSTRUCTION = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
@@ -134,6 +137,8 @@ function isHermesLongTaskRequest(text) {
   const value = String(text || '').trim()
   if (!value) return false
   if (/(?:\u53ea\u56de\u590d|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only).{0,20}(?:\u4e24\u4e2a\u5b57|\u4e00\u53e5|OK|ok|\u6536\u5230)/i.test(value)) return false
+  if (/(?:markdown|md\s*格式|\u6807\u9898|\u5217\u8868|\u5f15\u7528|\u4ee3\u7801\u5757|\u8868\u683c)/i.test(value)
+    && /(?:\u56de\u590d|\u6e32\u67d3|\u683c\u5f0f|\u6837\u5f0f|\u663e\u793a|\u6d4b\u8bd5|reply|render|format)/i.test(value)) return false
   const hasAction = /(?:\u8dd1|\u6267\u884c|\u751f\u6210|\u5199\u5165|\u521b\u5efa|\u5904\u7406|\u68c0\u6d4b|\u68c0\u67e5|\u5206\u6790|\u6574\u7406|\u5bfc\u51fa|\u8c03\u7528|\u53d1\u8d77|run|execute|generate|create|write|check|test|smoke|audit|export|dispatch)/i.test(value)
   const hasLongTaskTarget = /(?:P0|P1|P2|P3|P4|P0\s*[-~\u5230\u81f3]\s*P4|check-p0-p4|release\s+gate|preflight|runtime\s+smoke|\u957f\u4efb\u52a1|\u6267\u884c\u4efb\u52a1|\u95e8\u7981|\u5b8c\u6574\u6027|\u811a\u672c|\u547d\u4ee4|\u7ec8\u7aef|\u5de5\u5177|\u534f\u4f5c|\u4ea7\u7269|\u6587\u4ef6|task_event|tool_run|agent_run|checkpoint|tool|command|terminal|script|artifact)/i.test(value)
   return hasAction && hasLongTaskTarget
@@ -145,6 +150,7 @@ function getHermesExactShortReplyTarget(text) {
   const asksExactReply = /(?:\u53ea\u56de\u590d|\u53ea\u56de\u7b54|\u4ec5\u56de\u590d|\u4ec5\u56de\u7b54|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only)/i.test(value)
   const asksShortLength = /(?:\u4e24\u4e2a\u5b57|2\s*\u4e2a\u5b57)/i.test(value)
   if (asksExactReply && asksShortLength && /\u6536\u5230/.test(value)) return '\u6536\u5230'
+  if (asksExactReply && /\u6536\u5230/.test(value)) return '\u6536\u5230'
   if (!asksExactReply) return ''
   const quoted = value.match(/(?:\u53ea\u56de\u590d|\u53ea\u56de\u7b54|\u4ec5\u56de\u590d|\u4ec5\u56de\u7b54|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only).{0,12}["'`\u201c\u201d\u300c\u300d]([^"'`\u201c\u201d\u300c\u300d\s]{1,8})["'`\u201c\u201d\u300c\u300d]/i)
   return quoted?.[1] || ''
@@ -155,6 +161,39 @@ function normalizeHermesExactShortReply(userText, assistantText) {
   if (!target) return assistantText
   const current = String(assistantText || '').trim()
   return current === target ? assistantText : target
+}
+
+function stripHermesReplyOnlyDirectiveForHistory(text) {
+  return String(text || '')
+    .replace(/[\s,，.。;；:：!！?？-]*(?:请)?(?:只|仅)(?:回复|回答|输出|答)(?:\s*(?:两个字|2\s*个字|一句话|一行|one\s+line|two\s+words))?[\s:："'“”‘’「」]*收到[\s"'“”‘’「」.。!！?？]*$/i, '')
+    .replace(/[\s,，.。;；:：!！?？-]*(?:reply\s+only|only\s+reply|answer\s+only)[\s:："'“”‘’「」]*(?:received|ok|收到)[\s"'“”‘’「」.。!！?？]*$/i, '')
+    .trim()
+}
+
+function markHermesExactShortLocalTail(session, userText = '') {
+  const target = getHermesExactShortReplyTarget(userText)
+  if (!session || !target) return false
+  session.protectLocalTailUntil = Date.now() + HERMES_EXACT_SHORT_LOCAL_TAIL_HOLD_MS
+  session.protectedLocalTailReply = target
+  return true
+}
+
+function hasHermesProtectedLocalTail(session) {
+  return !!(
+    session
+    && Number(session.protectLocalTailUntil || 0) > Date.now()
+    && String(session.protectedLocalTailReply || '').trim()
+  )
+}
+
+function stripHermesGenericRetryFallback(text) {
+  const value = String(text || '')
+  if (!value.includes(HERMES_GENERIC_RETRY_FALLBACK_TEXT)) return value
+  return value
+    .replaceAll(HERMES_GENERIC_RETRY_FALLBACK_TEXT, '')
+    .replace(/^\s*[。.!！？?,，:：;；-]+\s*/, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function isHermesExecutionEvidenceText(text) {
@@ -606,6 +645,13 @@ function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = 
   ]
   if (historyCount) lines.push(`- conversationHistory items supplied: ${historyCount}. They are not new tasks.`)
   if (current) lines.push(`- Latest user input: ${current.slice(0, 500)}`)
+  if (/(?:天气|气温|降雨|下雨|weather|forecast|temperature)/i.test(current)) {
+    lines.push(
+      '- Weather lookup rule: use at most one read-only public weather fetch and answer from that result.',
+      '- Do not run Python, python3, Node.js, PowerShell, shell scripts, or a second terminal parsing command for weather data.',
+      '- If the first fetch already returned JSON or text, parse it directly in the model response. Do not request interactive command approval.',
+    )
+  }
   return lines.join('\n')
 }
 
@@ -784,6 +830,7 @@ function mapHermesMessages(msgs) {
       role: m.role || 'assistant',
       content,
       timestamp: ts,
+      clientRequestId: m.clientRequestId || m.client_request_id || '',
       attachments: normalized.attachments,
       screenshotCards: normalized.screenshotCards,
       confirmations: normalized.confirmations,
@@ -808,6 +855,14 @@ function collapseConsecutiveAssistantMessages(messages) {
   for (const msg of Array.isArray(messages) ? messages : []) {
     const prev = out[out.length - 1]
     if (msg?.role === 'assistant' && prev?.role === 'assistant') {
+      const prevRequestId = String(prev.clientRequestId || prev.client_request_id || '')
+      const nextRequestId = String(msg.clientRequestId || msg.client_request_id || '')
+      if (prevRequestId || nextRequestId) {
+        if (prevRequestId !== nextRequestId) {
+          out.push(msg)
+          continue
+        }
+      }
       prev.content = joinAssistantChunks(prev.content, msg.content)
       if (msg.attachments?.length) {
         prev.attachments = [...(prev.attachments || []), ...msg.attachments]
@@ -840,14 +895,125 @@ function lastTurnAssistantText(messages) {
   return text
 }
 
+function lastAssistantMessage(messages) {
+  const list = Array.isArray(messages) ? messages : []
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.role === 'assistant') return list[i]
+  }
+  return null
+}
+
+function hasHermesLocalRunTail(session) {
+  const message = lastAssistantMessage(session?.messages)
+  return !!(
+    message
+    && message.role === 'assistant'
+    && hermesMessageRequestId(message)
+    && !message.isStreaming
+    && String(message.content || '').trim()
+  )
+}
+
+function hasHermesLocalTranscript(session) {
+  return Array.isArray(session?.messages) && session.messages.some(message => (
+    message
+    && (message.role === 'user' || message.role === 'assistant')
+    && String(message.content || '').trim()
+  ))
+}
+
 function shouldPreferFinalOutput(current, finalOutput) {
   const cur = String(current || '').trim()
   const fin = String(finalOutput || '').trim()
   if (!fin) return false
   if (!cur) return true
   if (fin.startsWith(cur)) return true
-  if (fin.length >= cur.length + 12) return true
   return false
+}
+
+function normalizeHermesLeakComparableText(value = '') {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function hermesMessageRequestId(message = {}) {
+  return String(message?.clientRequestId || message?.client_request_id || '').trim()
+}
+
+function isHermesBackendOrphanAssistant(message = {}) {
+  const content = String(message.content || '')
+  const isKnownReplayContamination = /print\(["']hello["']\)/i.test(content)
+    && /模型或接口权限不可用|model.*permission|api.*permission|Invalid token|401|403/i.test(content)
+  return !!(
+    message
+    && message.role === 'assistant'
+    && !hermesMessageRequestId(message)
+    && !Number(message.timestamp || 0)
+    && isKnownReplayContamination
+  )
+}
+
+function hermesPriorAssistantLeakFragments(session, clientRequestId = '') {
+  const requestId = String(clientRequestId || '').trim()
+  const fragments = []
+  for (const message of Array.isArray(session?.messages) ? session.messages : []) {
+    if (!message || message.role !== 'assistant') continue
+    if (requestId && hermesMessageRequestId(message) === requestId) continue
+    const text = normalizeHermesLeakComparableText(message.content || '')
+    if (text.length < 80) continue
+    fragments.push(text.slice(0, 220))
+    if (text.length > 440) fragments.push(text.slice(Math.max(0, text.length - 220)))
+  }
+  return fragments
+}
+
+function containsHermesPriorAssistantLeak(session, text = '', clientRequestId = '') {
+  const haystack = normalizeHermesLeakComparableText(text)
+  if (haystack.length < 80) return false
+  return hermesPriorAssistantLeakFragments(session, clientRequestId)
+    .some(fragment => fragment.length >= 80 && haystack.includes(fragment))
+}
+
+function trimHermesFinalAtPriorAssistantLeak(session, text = '', clientRequestId = '') {
+  let result = String(text || '')
+  const requestId = String(clientRequestId || '').trim()
+  for (const message of Array.isArray(session?.messages) ? session.messages : []) {
+    if (!message || message.role !== 'assistant') continue
+    if (requestId && hermesMessageRequestId(message) === requestId) continue
+    const raw = String(message.content || '')
+    const candidates = raw
+      .split(/\n{2,}|(?<=。)|(?<=！)|(?<=？)/)
+      .map(part => part.trim())
+      .filter(part => part.length >= 60)
+    for (const candidate of candidates) {
+      const index = result.indexOf(candidate)
+      if (index > 0) {
+        result = result.slice(0, index).trim()
+        break
+      }
+    }
+  }
+  return result
+}
+
+function chooseHermesFinalOutput({ session, current = '', finalOutput = '', clientRequestId = '', prompt = '' } = {}) {
+  const cur = String(current || '')
+  const fin = String(finalOutput || '')
+  if (!fin.trim()) return cur
+  if (getHermesExactShortReplyTarget(prompt)) return normalizeHermesExactShortReply(prompt, fin)
+
+  const trimmedFinal = trimHermesFinalAtPriorAssistantLeak(session, fin, clientRequestId)
+  if (trimmedFinal.trim() && trimmedFinal.trim() !== fin.trim()) {
+    if (!cur.trim() || trimmedFinal.startsWith(cur) || cur.startsWith(trimmedFinal)) return trimmedFinal
+    return cur
+  }
+
+  if (containsHermesPriorAssistantLeak(session, fin, clientRequestId)) return cur || ''
+  if (!cur.trim()) return fin
+  if (fin.startsWith(cur)) return fin
+  if (cur.startsWith(fin)) return cur
+  return cur
 }
 
 function normalizeJoinedSourceSessionFields(raw = {}) {
@@ -977,6 +1143,7 @@ function messageMergeKey(message) {
 
 function mergeHermesMessages(localMessages = [], serverMessages = []) {
   const merged = Array.isArray(localMessages) ? localMessages.slice() : []
+  const localIsManaged = merged.some(m => hermesMessageRequestId(m))
   const seen = new Set(merged.map(messageMergeKey).filter(Boolean))
   const seenText = new Set(
     merged
@@ -985,6 +1152,7 @@ function mergeHermesMessages(localMessages = [], serverMessages = []) {
   )
 
   for (const msg of Array.isArray(serverMessages) ? serverMessages : []) {
+    if (localIsManaged && isHermesBackendOrphanAssistant(msg)) continue
     const key = messageMergeKey(msg)
     const textKey = `${msg?.role || ''}:${String(msg?.content || '').replace(/\s+/g, ' ').trim().slice(0, 240)}`
     if ((key && seen.has(key)) || (textKey !== ':' && seenText.has(textKey))) continue
@@ -1286,7 +1454,17 @@ function createStore() {
     return true
   }
 
-  function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt()) {
+  function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt(), options = {}) {
+    if (options.streaming === true) {
+      const streamText = normalizeHermesStreamText(text)
+      const visibleStream = sanitizeVisibleReplyForChinese(streamText, prompt, { agent: 'hermes' })
+      const guardedStream = guardAgentIdentityReply({
+        agentName: 'hermes',
+        userText: prompt,
+        assistantText: visibleStream,
+      })
+      return stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guardedStream))
+    }
     const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
     const normalized = normalizeHermesVisibleReplyText(visible, {
       prompt,
@@ -1298,7 +1476,8 @@ function createStore() {
       userText: prompt,
       assistantText: normalized,
     })
-    return completeHermesReplyIfNeeded(redactHermesSensitiveVisibleText(guarded), {
+    const redacted = stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guarded))
+    return completeHermesReplyIfNeeded(redacted, {
       userText: prompt,
       toolEvents: state.liveTools,
     })
@@ -1351,12 +1530,14 @@ function createStore() {
       const mapped = session.messages.find(m => m.id === mappedId)
       if (mapped) return mapped
     }
+    if (clientRequestId) {
+      const exact = session.messages.find(m => m.role === 'assistant' && m.clientRequestId === clientRequestId)
+        || session.messages.find(m => m.role === 'assistant' && m.id === getHermesAssistantMessageId(clientRequestId))
+      return exact || null
+    }
     if (state.pendingAssistantId) {
       const pending = session.messages.find(m => m.id === state.pendingAssistantId)
       if (pending) return pending
-    }
-    if (clientRequestId) {
-      return session.messages.find(m => m.role === 'assistant' && m.clientRequestId === clientRequestId) || null
     }
     return null
   }
@@ -1423,10 +1604,33 @@ function createStore() {
     const s = state.sessions.find(x => x.id === sid)
     if (s) saveJson(messagesKey(sid), s.messages)
   }
+  function normalizeHermesRestoredMessages(messages = []) {
+    if (!Array.isArray(messages)) return []
+    const hasManagedTurns = messages.some(message => hermesMessageRequestId(message))
+    return messages
+      .map(message => {
+        if (!message || typeof message !== 'object') return null
+        if (message.isStreaming === true) return null
+        if (hasManagedTurns && isHermesBackendOrphanAssistant(message)) return null
+        return {
+          ...message,
+          content: message.role === 'assistant' ? stripHermesGenericRetryFallback(message.content) : message.content,
+          isStreaming: undefined,
+        }
+      })
+      .filter(Boolean)
+      .filter(message => !(message.role === 'assistant' && !String(message.content || '').trim()))
+      .map(message => {
+        const next = { ...message }
+        delete next.isStreaming
+        return next
+      })
+  }
   function loadSessionsCache() {
     const cached = loadJson(sessionsKey())
     if (Array.isArray(cached) && cached.length) {
       state.sessions = cached
+      state.pendingAssistantId = null
       const savedActive = safeGet(activeKey())
       const target = selectStableActiveSession({
         sessions: cached,
@@ -1435,7 +1639,11 @@ function createStore() {
       })
       if (target) {
         const msgs = loadJson(messagesKey(target.id))
-        if (Array.isArray(msgs)) target.messages = msgs
+        if (Array.isArray(msgs)) {
+          const normalized = normalizeHermesRestoredMessages(msgs)
+          target.messages = normalized
+          if (normalized.length !== msgs.length) saveJson(messagesKey(target.id), normalized)
+        }
         state.activeSessionId = target.id
         safeSet(activeKey(), target.id)
       }
@@ -1646,6 +1854,10 @@ function createStore() {
     const force = Boolean(options.force || forceRemoteRefreshIds.has(sid))
     // Skip remote fetch for local-only sessions — the backend doesn't know them.
     if (target.source === '__local__' && !force) return
+    if (hasHermesProtectedLocalTail(target)) {
+      forceRemoteRefreshIds.delete(sid)
+      return
+    }
 
     try {
       const detail = await api.hermesSessionDetail(sid)
@@ -1658,9 +1870,15 @@ function createStore() {
       const serverUsers = mapped.filter(m => m.role === 'user').length
       const localTail = lastTurnAssistantText(local)
       const serverTail = lastTurnAssistantText(mapped)
+      if (hasHermesProtectedLocalTail(target) && localTail.trim() === String(target.protectedLocalTailReply || '').trim()) {
+        forceRemoteRefreshIds.delete(sid)
+        return
+      }
+      const hasLocalTranscript = hasHermesLocalTranscript(target)
       const serverIsAhead = serverUsers > localUsers
         || (serverUsers === localUsers && (!localTail.trim() || serverTail.length >= localTail.length))
-      if (force || serverIsAhead) {
+      const skipMessageMerge = hasLocalTranscript && !options.forceServerMessages
+      if ((force || serverIsAhead) && !skipMessageMerge) {
         // Hermes session export can lag behind the live SSE stream for a few
         // seconds. Never replace the local transcript with a shorter server
         // snapshot; merge server-only records into what the user has already
@@ -1673,6 +1891,13 @@ function createStore() {
           updateSessionTitleFromFirstUser(target)
         }
         persistActiveMessages()
+      } else if (skipMessageMerge) {
+        if (target.source === '__local__') target.source = detail.source || 'api_server'
+        if (detail.title && !target.workFileName && !isPlaceholderSessionTitle(detail.title)) {
+          target.title = detail.title
+        } else {
+          updateSessionTitleFromFirstUser(target)
+        }
       }
       forceRemoteRefreshIds.delete(sid)
     } catch {
@@ -1699,6 +1924,8 @@ function createStore() {
       optimistic: Boolean(meta.optimistic || meta.clientRequestId),
       clientRequestId: meta.clientRequestId || '',
       pendingBackendIndexUntil: meta.clientRequestId ? now + FIRST_SEND_SESSION_HOLD_MS : 0,
+      protectLocalTailUntil: 0,
+      protectedLocalTailReply: '',
       forceEmptyHistoryOnce: Boolean(meta.createEmpty || meta.forceLocal),
       preventBackendSessionAdoption: Boolean(meta.createEmpty || meta.forceLocal),
       workFileName: meta.workFileName || '',
@@ -1764,6 +1991,11 @@ function createStore() {
         Number(current.pendingBackendIndexUntil || 0),
         Date.now() + FIRST_SEND_SESSION_HOLD_MS,
       )
+      existing.protectLocalTailUntil = Math.max(
+        Number(existing.protectLocalTailUntil || 0),
+        Number(current.protectLocalTailUntil || 0),
+      )
+      existing.protectedLocalTailReply = existing.protectedLocalTailReply || current.protectedLocalTailReply || ''
       state.sessions = state.sessions.filter(s => s !== current)
       target = existing
     } else {
@@ -1982,8 +2214,8 @@ function createStore() {
       if (!delta) return
       const s = runSession()
       if (!s) return
-      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-      msg.content = sanitizeHermesVisibleReply(msg.content + delta)
+      const msg = ensureAssistantMessage(s, clientRequestId)
+      msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
       notify()
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
@@ -2008,7 +2240,7 @@ function createStore() {
           args: input,
           result: null,
           error: null,
-          clientRequestId: state.runningClientRequestId,
+          clientRequestId,
           runId: evt.run_id || evt.runId || activeResponseAssembler?.runId || '',
         })
       } else if (evtType === 'tool.completed') {
@@ -2047,10 +2279,6 @@ function createStore() {
         ? activeResponseAssembler.accept({ ...payload, event: 'run.completed' })
         : { output: payload.output || '' }
       if (!accepted) return
-      if (accepted.text) {
-        const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-        msg.content = sanitizeHermesVisibleReply(msg.content + accepted.text)
-      }
       const runTools = dedupeToolEvents([...state.liveTools])
 
       // Commit finished tool calls as messages in the transcript.
@@ -2066,19 +2294,28 @@ function createStore() {
             toolArgs: stringifyMaybe(t.args),
             toolResult: stringifyMaybe(t.result ?? t.error),
             toolStatus: t.error ? 'error' : 'done',
-            clientRequestId: t.clientRequestId || state.runningClientRequestId,
+            clientRequestId: t.clientRequestId || clientRequestId,
             runId: t.runId || payload.run_id || payload.runId || '',
           })
         }
       }
 
       // Finalize the streaming assistant message.
-      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+      const msg = ensureAssistantMessage(s, clientRequestId)
       if (msg) {
         delete msg.isStreaming
-        if (shouldPreferFinalOutput(msg.content, accepted.output || payload.output || '')) msg.content = accepted.output || payload.output || ''
+        const finalOutput = accepted.output || payload.output || ''
+        msg.content = chooseHermesFinalOutput({
+          session: s,
+          current: msg.content,
+          finalOutput,
+          clientRequestId,
+          prompt: currentVisibleUserPrompt(),
+        })
         msg.content = sanitizeHermesVisibleReply(msg.content)
         if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
+        msg.content = normalizeHermesExactShortReply(currentVisibleUserPrompt(), msg.content)
+        markHermesExactShortLocalTail(s, currentVisibleUserPrompt())
         msg.content = completeHermesReplyIfNeeded(msg.content, {
           userText: currentVisibleUserPrompt(),
           toolEvents: runTools,
@@ -2094,8 +2331,8 @@ function createStore() {
           msg.task_events = [
             ...(Array.isArray(msg.task_events) ? msg.task_events : []),
             {
-              event_id: `evt-hermes-long-task-no-evidence-${state.runningClientRequestId || Date.now()}`,
-              task_id: state.runningClientRequestId || '',
+              event_id: `evt-hermes-long-task-no-evidence-${clientRequestId || Date.now()}`,
+              task_id: clientRequestId || '',
               event_type: 'task_failed',
               actor: 'hermes',
               source: 'hermes.chat_store.long_task_guard',
@@ -2131,7 +2368,7 @@ function createStore() {
       adoptEventSession(payload)
       const s = runSession()
       if (s) {
-        const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+        const msg = ensureAssistantMessage(s, clientRequestId)
         delete msg.isStreaming
         msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err), currentVisibleUserPrompt())
         rememberHermesTaskStatus(s, {
@@ -2153,12 +2390,12 @@ function createStore() {
     unlisteners.length = 0
   }
 
-  function appendStreamDelta(runSessionId, delta) {
+  function appendStreamDelta(runSessionId, delta, clientRequestId = state.runningClientRequestId) {
     if (!delta) return
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
-    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-    msg.content = sanitizeHermesVisibleReply(msg.content + delta)
+    const msg = ensureAssistantMessage(s, clientRequestId)
+    msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
     notify()
   }
 
@@ -2219,7 +2456,7 @@ function createStore() {
     notify()
   }
 
-  function completeStreamRun(runSessionId, output = '') {
+  function completeStreamRun(runSessionId, output = '', clientRequestId = state.runningClientRequestId) {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) { cleanupAfterRun(); return }
       const runTools = dedupeToolEvents([...state.liveTools])
@@ -2235,19 +2472,26 @@ function createStore() {
           toolArgs: stringifyMaybe(t.args),
           toolResult: stringifyMaybe(t.result ?? t.error),
           toolStatus: t.error ? 'error' : 'done',
-          clientRequestId: t.clientRequestId || state.runningClientRequestId,
+          clientRequestId: t.clientRequestId || clientRequestId,
           runId: t.runId || activeResponseAssembler?.runId || '',
         })
       }
     }
     const finalOutput = typeof output === 'string' ? output : ''
-    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+    const msg = ensureAssistantMessage(s, clientRequestId)
     if (msg) {
       delete msg.isStreaming
-      if (shouldPreferFinalOutput(msg.content, finalOutput)) msg.content = finalOutput
+      msg.content = chooseHermesFinalOutput({
+        session: s,
+        current: msg.content,
+        finalOutput,
+        clientRequestId,
+        prompt: currentVisibleUserPrompt(),
+      })
       msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
       msg.content = normalizeHermesExactShortReply(currentVisibleUserPrompt(), msg.content)
+      markHermesExactShortLocalTail(s, currentVisibleUserPrompt())
       msg.content = completeHermesReplyIfNeeded(msg.content, {
         userText: currentVisibleUserPrompt(),
         toolEvents: runTools,
@@ -2268,20 +2512,26 @@ function createStore() {
     cleanupAfterRun({ status: 'success', reason: 'run-completed' })
   }
 
-  function replaceStreamOutput(runSessionId, output = '') {
+  function replaceStreamOutput(runSessionId, output = '', clientRequestId = state.runningClientRequestId) {
     const finalOutput = typeof output === 'string' ? output : ''
     if (!finalOutput.trim()) return
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
-    const msg = ensureAssistantMessage(s, state.runningClientRequestId)
-    msg.content = sanitizeHermesVisibleReply(finalOutput)
+    const msg = ensureAssistantMessage(s, clientRequestId)
+    msg.content = sanitizeHermesVisibleReply(chooseHermesFinalOutput({
+      session: s,
+      current: msg.content,
+      finalOutput,
+      clientRequestId,
+      prompt: currentVisibleUserPrompt(),
+    }))
     notify()
   }
 
-  function failStreamRun(runSessionId, err) {
+  function failStreamRun(runSessionId, err, clientRequestId = state.runningClientRequestId) {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (s) {
-      const msg = ensureAssistantMessage(s, state.runningClientRequestId)
+      const msg = ensureAssistantMessage(s, clientRequestId)
       delete msg.isStreaming
       msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err || 'unknown error'), currentVisibleUserPrompt())
       rememberHermesTaskStatus(s, {
@@ -2310,23 +2560,25 @@ function createStore() {
     if (!shouldAcceptStreamEvent(effectiveSessionId)) {
       return
     }
+    if (activeResponseAssembler && !activeResponseAssembler.matches(evt)) {
+      return
+    }
+    const eventRequestId = state.runningClientRequestId
     if (eventType === 'message.delta') {
       const accepted = acceptActiveStreamEvent(evt)
-      if (accepted?.text) appendStreamDelta(effectiveSessionId, accepted.text)
+      if (accepted?.text) appendStreamDelta(effectiveSessionId, accepted.text, eventRequestId)
     } else if (eventType === 'tool.started' || eventType === 'tool.completed' || eventType === 'tool.progress' || eventType === 'tool.error') {
       applyStreamToolEvent(evt)
     } else if (eventType === 'message.final') {
       const accepted = acceptActiveStreamEvent(evt)
       if (!accepted) return
-      if (accepted.text) appendStreamDelta(effectiveSessionId, accepted.text)
-      else if (accepted.output) replaceStreamOutput(effectiveSessionId, accepted.output)
+      replaceStreamOutput(effectiveSessionId, accepted.output || evt.output || evt.content || evt.message || '', eventRequestId)
     } else if (eventType === 'run.completed') {
       const accepted = acceptActiveStreamEvent(evt)
       if (!accepted) return
-      if (accepted.text) appendStreamDelta(effectiveSessionId, accepted.text)
-      completeStreamRun(effectiveSessionId, accepted.output || evt.output || '')
+      completeStreamRun(effectiveSessionId, accepted.output || evt.output || '', eventRequestId)
     } else if (eventType === 'run.failed') {
-      failStreamRun(effectiveSessionId, evt.error || 'unknown error')
+      failStreamRun(effectiveSessionId, evt.error || 'unknown error', eventRequestId)
     }
   }
 
@@ -2439,6 +2691,7 @@ function createStore() {
     const raw = message.modelContent || message.content || ''
     let text = typeof raw === 'string' ? raw : stringifyMaybe(raw)
     text = String(text || '').trim()
+    if (role === 'user') text = stripHermesReplyOnlyDirectiveForHistory(text)
     if (!text && Array.isArray(message.attachments) && message.attachments.length) {
       text = message.attachments
         .map(item => item?.fileName || item?.name || item?.type || item?.category || 'attachment')
@@ -2476,24 +2729,35 @@ function createStore() {
 
   function buildDefaultConversationHistory(session, currentMessageId) {
     const messages = Array.isArray(session?.messages) ? session.messages : []
-    const selected = []
-    let totalChars = 0
+    const completedTurns = []
+    let pendingUser = null
 
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const message = messages[i]
-      if (!message || message.id === currentMessageId) continue
+    for (const message of messages) {
+      if (!message || message.id === currentMessageId || message.isStreaming) continue
       const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : ''
       if (!role) continue
       const content = messageTextForHistory(message, role)
       if (!content) continue
-      const size = content.length
-      if (selected.length >= HISTORY_MAX_MESSAGES) break
-      if (selected.length && totalChars + size > HISTORY_MAX_CHARS) break
-      totalChars += size
-      selected.push({ role, content })
+      if (role === 'user') {
+        pendingUser = { role, content }
+        continue
+      }
+      if (!pendingUser) continue
+      completedTurns.push([pendingUser, { role, content }])
+      pendingUser = null
     }
 
-    selected.reverse()
+    const selectedTurns = []
+    let totalChars = 0
+    for (let i = completedTurns.length - 1; i >= 0 && selectedTurns.length < HISTORY_MAX_TURNS; i -= 1) {
+      const turn = completedTurns[i]
+      const size = turn[0].content.length + turn[1].content.length
+      if (selectedTurns.length && totalChars + size > HISTORY_MAX_CHARS) break
+      totalChars += size
+      selectedTurns.push(turn)
+    }
+
+    const selected = selectedTurns.reverse().flat()
     return sanitizeHermesConversationHistoryForRun(selected, session?.messages?.find(m => m.id === currentMessageId)?.content || '')
   }
 
@@ -2657,6 +2921,7 @@ function createStore() {
     }
     const memoryCommandReply = handleHermesMemoryCommand(rawText)
     if (memoryCommandReply) {
+      const visibleMemoryReply = normalizeHermesExactShortReply(displayText || runText || rawText, memoryCommandReply)
       let memorySession = activeSession()
       if (!memorySession) {
         memorySession = createLocalSession({
@@ -2678,10 +2943,11 @@ function createStore() {
       memorySession.messages.push({
         id: getHermesAssistantMessageId(clientRequestId),
         role: 'assistant',
-        content: memoryCommandReply,
+        content: visibleMemoryReply,
         timestamp: Date.now(),
         clientRequestId,
       })
+      markHermesExactShortLocalTail(memorySession, displayText || runText || rawText)
       updateSessionTitleFromFirstUser(memorySession)
       memorySession.updatedAt = Date.now()
       memorySession.lastActiveAt = Date.now()
@@ -2755,6 +3021,9 @@ function createStore() {
         s.title = deriveSessionTitleFromText(displayText || runText)
       }
       if (forceEmptyHistory) s.forceEmptyHistoryOnce = false
+    }
+    if (getHermesExactShortReplyTarget(displayText || runText)) {
+      forceEmptyHistory = true
     }
 
     const userMessage = {

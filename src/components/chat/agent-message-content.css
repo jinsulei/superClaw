@@ -38,6 +38,12 @@
   line-height: 1.35;
 }
 
+.agent-message-markdown-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
 .agent-message-body--markdown h1 { font-size: 1.35em; }
 .agent-message-body--markdown h2 { font-size: 1.24em; }
 .agent-message-body--markdown h3 { font-size: 1.14em; }
@@ -49,6 +55,17 @@
 
 .agent-message-body--markdown li + li {
   margin-top: 4px;
+}
+
+.agent-message-body--markdown .agent-message-markdown-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.agent-message-markdown-list > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
 }
 
 .agent-message-body--markdown blockquote {
@@ -178,8 +195,9 @@
 }
 
 .agent-message-code-block {
+  position: relative;
   margin: 4px 0;
-  padding: 10px 12px;
+  padding: 36px 12px 10px;
   max-width: 100%;
   overflow-x: auto;
   border-radius: 10px;
@@ -197,6 +215,55 @@
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.agent-message-code-copy {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(126, 148, 178, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(43, 58, 82, 0.82);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.agent-message-code-copy:hover {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(80, 125, 190, 0.42);
+  color: rgba(30, 48, 74, 0.95);
+}
+
+.agent-message-code-copy svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-message-code-copy[data-copy-state="success"] {
+  border-color: rgba(34, 159, 94, 0.36);
+  background: rgba(220, 252, 231, 0.88);
+  color: rgba(22, 101, 52, 0.94);
+}
+
+.agent-message-code-copy[data-copy-state="error"] {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: rgba(254, 226, 226, 0.9);
+  color: rgba(153, 27, 27, 0.94);
 }
 
 .agent-message-code-lang {

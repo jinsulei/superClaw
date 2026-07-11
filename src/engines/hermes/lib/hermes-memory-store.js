@@ -112,7 +112,7 @@ function normalizeMemoryItem(item) {
   if (!item || typeof item !== 'object') return null
   const rawText = item.text || item.content || item.value || ''
   if (containsSensitiveMemoryText(rawText)) return null
-  const text = sanitizeMemoryText(rawText)
+  const text = sanitizeMemoryText(stripReplyOnlyDirective(rawText))
   if (!text) return null
   const type = normalizeMemoryType(item.type || inferMemoryType(text))
   if (!type || isBlockedMemoryType(type)) return null
@@ -211,11 +211,12 @@ export function addHermesMemory(input = {}) {
   const state = loadHermesMemoryState()
   if (state.enabled === false) return { ok: false, reason: 'memory_disabled' }
 
-  const text = input.text || input.content || ''
+  const text = stripReplyOnlyDirective(input.text || input.content || '')
   const type = input.type || inferMemoryType(text)
   if (isBlockedMemoryType(type)) return { ok: false, reason: 'blocked_type' }
   if (containsSensitiveMemoryText(text)) return { ok: false, reason: 'sensitive' }
-  if (normalizeSource(input.source) !== 'migrated_safe' && !shouldSaveHermesMemory(text)) {
+  const source = normalizeSource(input.source)
+  if (source !== 'migrated_safe' && source !== 'explicit' && !shouldSaveHermesMemory(text)) {
     return { ok: false, reason: 'not_long_term_memory' }
   }
 
@@ -325,6 +326,16 @@ export function sanitizeMemoryText(text = '') {
   value = value.replace(/\s+/g, ' ').trim()
   if (isUnsafeMemoryText(value)) return ''
   return value.slice(0, 500)
+}
+
+function stripReplyOnlyDirective(text) {
+  let value = String(text || '').trim()
+  if (!value) return ''
+  value = value
+    .replace(/[\s,，.。;；:：!！?？-]*(?:请)?(?:只|仅)(?:回复|回答|输出|答)(?:\s*(?:两个字|2\s*个字|一句话|一行|one\s+line|two\s+words))?[\s:："'“”‘’「」]*收到[\s"'“”‘’「」.。!！?？]*$/i, '')
+    .replace(/[\s,，.。;；:：!！?？-]*(?:reply\s+only|only\s+reply|answer\s+only)[\s:："'“”‘’「」]*(?:received|ok|收到)[\s"'“”‘’「」.。!！?？]*$/i, '')
+    .trim()
+  return value
 }
 
 function isUnsafeMemoryText(text) {

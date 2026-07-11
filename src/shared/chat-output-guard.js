@@ -308,6 +308,9 @@ function repairIncompleteVisibleReply(text = '', { agent = '', userText = '' } =
   }
 
   const safe = trimAtSafeSentenceBoundary(s, 520)
+  if (/hermes/i.test(String(agent || ''))) {
+    return safe || s
+  }
   if (!safe || looksIncompleteVisibleReply(safe)) {
     return '这次回复没有完整生成。请你再发一次问题，我会重新整理成完整结论。'
   }
@@ -317,6 +320,10 @@ function repairIncompleteVisibleReply(text = '', { agent = '', userText = '' } =
 export function ensureCompleteVisibleReply(text = '', options = {}) {
   const raw = String(text || '').trim()
   if (!raw) return ''
+
+  if (/hermes/i.test(String(options.agent || ''))) {
+    return raw.replace(/\n{3,}/g, '\n\n').trim()
+  }
 
   let next = trimAtSafeSentenceBoundary(raw, Number(options.maxChars || 680))
   if (looksIncompleteVisibleReply(next)) {

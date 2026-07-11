@@ -138,7 +138,7 @@ export function preferHermesStreamText(current, candidate) {
   if (!b.trim()) return a
   if (!a.trim()) return b
   if (b === a || a.endsWith(b)) return a
-  if (b.startsWith(a) || b.length > a.length) return b
+  if (b.startsWith(a)) return b
   return a
 }
 
@@ -480,12 +480,7 @@ function applyHermesCleanReplyStyle(text, options = {}) {
     return formatHermesStructuredReply(next, prompt)
   }
 
-  if (!detailed) {
-    next = removeHermesVerboseTemplateLines(next)
-    next = compactHermesOrdinaryReply(next, { maxLength: options.maxLength || 420, maxLines: 5 })
-  } else {
-    next = compactHermesOrdinaryReply(next, { maxLength: options.maxLength || 900, maxLines: 8 })
-  }
+  if (!detailed) next = removeHermesVerboseTemplateLines(next)
 
   return compactHermesWhitespace(next)
 }
@@ -520,15 +515,9 @@ export function looksHermesReplyIncomplete(text) {
 }
 
 export function completeHermesReplyIfNeeded(text, options = {}) {
-  const cleaned = tidyHermesMarkdown(text)
-  if (!looksHermesReplyIncomplete(cleaned)) return cleaned
-  const toolLike = Boolean(
-    options.toolResult
-    || (Array.isArray(options.toolEvents) && options.toolEvents.length)
-    || /工具|执行|结果|进度|排查/.test(String(options.userText || options.prompt || '')),
-  )
-  const tail = toolLike ? '以上是当前结果。' : '如果你要继续，我可以接着往下做。'
-  return tidyHermesMarkdown([cleaned, tail].filter(Boolean).join('\n'))
+  // Finalization may run through several layers. Keep it idempotent and never
+  // invent a generic tail from a partial stream snapshot.
+  return tidyHermesMarkdown(text)
 }
 
 export function mapHermesErrorToUserMessage(error) {
