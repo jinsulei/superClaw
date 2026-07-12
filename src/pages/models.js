@@ -9,7 +9,7 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
-import { isMiniMaxOnlyMode, isTestBuildMode } from '../lib/test-build-mode.js'
+import { isDevelopmentMode, isMiniMaxOnlyMode, isTestBuildMode } from '../lib/test-build-mode.js'
 import {
   getMiniMaxTestDefaults,
   readMiniMaxTestConfig,
@@ -227,7 +227,7 @@ function maskApiKey(key = '') {
 }
 
 function shouldShowMiniMaxTestPanel(status = null) {
-  if (isMiniMaxOnlyMode() || isTestBuildMode()) return true
+  if (isDevelopmentMode() || isMiniMaxOnlyMode() || isTestBuildMode()) return true
   return status?.providerId === 'minimax' && status?.model === 'MiniMax-M3' && status?.hasApiKey === false
 }
 

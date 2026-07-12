@@ -31,6 +31,10 @@ fn apply_openclaw_dir_env(cmd: &mut std::process::Command) {
     let _ = std::fs::create_dir_all(&appdata);
     let _ = std::fs::create_dir_all(&localappdata);
     let _ = std::fs::create_dir_all(&logs_dir);
+    // OpenClaw resolves a relative `workspace` from the child process cwd.
+    // Keep that cwd inside portable data so a bundled root-level template
+    // workspace can never shadow the initialized runtime workspace.
+    cmd.current_dir(&openclaw_dir);
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
@@ -51,6 +55,8 @@ fn apply_openclaw_dir_env_tokio(cmd: &mut tokio::process::Command) {
     let _ = std::fs::create_dir_all(&appdata);
     let _ = std::fs::create_dir_all(&localappdata);
     let _ = std::fs::create_dir_all(&logs_dir);
+    // Keep async CLI calls on the same portable workspace resolution path.
+    cmd.current_dir(&openclaw_dir);
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);

@@ -36,6 +36,14 @@ export function isTestBuildMode() {
   return flag('VITE_SUPERCLAW_TEST_BUILD', 'superclaw_test_build')
 }
 
+export function isDevelopmentMode() {
+  try {
+    return import.meta.env?.DEV === true
+  } catch {
+    return false
+  }
+}
+
 export function getForcedProvider() {
   return value(
     'VITE_SUPERCLAW_FORCE_PROVIDER',
