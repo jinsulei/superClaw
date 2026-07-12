@@ -23,6 +23,7 @@ const gates = [
       ['node', '--test', 'tests/regression/hermes-run-timeout-final-state-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-run-timeout-final-state-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-tools-profile-effective-regression.test.js'],
+      ['node', '--test', 'tests/regression/openclaw-native-execution-policy-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-portable-device-identity-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-portable-device-handshake-regression.test.js'],
       ['node', '--test', 'tests/regression/packaged-runtime-functionality-parity-regression.test.js'],

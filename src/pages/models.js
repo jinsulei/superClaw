@@ -34,12 +34,15 @@ function modelIdFromRef(ref = '') {
 function ensurePortableOpenClawSkills(config) {
   if (!config.agents) config.agents = {}
   if (!config.agents.defaults) config.agents.defaults = {}
-  delete config.agents.defaults.skills
+  if (Array.isArray(config.agents.defaults.skills) && config.agents.defaults.skills.length === 0) {
+    delete config.agents.defaults.skills
+  }
+  config.agents.defaults.contextInjection = 'always'
 
   if (Array.isArray(config.agents.list)) {
     for (const agent of config.agents.list) {
       if (!agent || typeof agent !== 'object') continue
-      delete agent.skills
+      if (Array.isArray(agent.skills) && agent.skills.length === 0) delete agent.skills
       if (!agent.skillsLimits || typeof agent.skillsLimits !== 'object' || Array.isArray(agent.skillsLimits)) {
         agent.skillsLimits = {}
       }
@@ -47,7 +50,7 @@ function ensurePortableOpenClawSkills(config) {
         agent.skillsLimits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
       }
       if (!agent.tools || typeof agent.tools !== 'object' || Array.isArray(agent.tools)) agent.tools = {}
-      agent.tools.profile = agent.tools.profile || 'minimal'
+      agent.tools.profile = 'coding'
       const allow = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow.filter(Boolean).map(String) : []
       for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
         if (!allow.includes(tool)) allow.push(tool)
@@ -70,7 +73,7 @@ function ensurePortableOpenClawSkills(config) {
   }
 
   if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
-  config.tools.profile = config.tools.profile || 'minimal'
+  config.tools.profile = 'coding'
   const allow = Array.isArray(config.tools.alsoAllow) ? config.tools.alsoAllow.filter(Boolean).map(String) : []
   for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
     if (!allow.includes(tool)) allow.push(tool)

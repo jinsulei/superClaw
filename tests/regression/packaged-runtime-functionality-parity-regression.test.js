@@ -527,6 +527,15 @@ test('OpenClaw packaged release config does not enable insecure control UI auth'
   assert.doesNotMatch(openclawConfigCommandsSource, /"allowInsecureAuth":\s*true|allowInsecureAuth"\.into\(\), Value::Bool\(true\)/)
 })
 
+test('packaged OpenClaw includes the native SuperClaw task policy skill', () => {
+  assert.match(
+    buildDesktopSource,
+    /templates\\openclaw-workspace\\skills\\superclaw-task-policy\\SKILL\.md/,
+  )
+  assert.match(buildDesktopSource, /Packaged SuperClaw native task policy skill/)
+  assert.match(buildDesktopSource, /contextInjection\s*=\s*"always"/)
+})
+
 test('OpenClaw packaged connect frame uses gateway-compatible device metadata', () => {
   const createFrameBlock = openclawDeviceSource.match(/pub fn create_connect_frame[\s\S]*?Ok\(frame\)\s*\}/)?.[0] || ''
 

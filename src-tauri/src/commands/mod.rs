@@ -290,6 +290,16 @@ fn ensure_portable_openclaw_skills(openclaw_dir: &Path) {
     }
 }
 
+fn ensure_portable_openclaw_workspace_templates(openclaw_dir: &Path) {
+    let Some(resources_dir) = app_resources_dir() else {
+        return;
+    };
+    let source = resources_dir.join("templates").join("openclaw-workspace");
+    if source.is_dir() {
+        copy_dir_missing_only(&source, &openclaw_dir.join("workspace"));
+    }
+}
+
 fn ensure_superclaw_openclaw_plugins() {
     let Some(runtime_dir) = bundled_openclaw_bin_dir() else {
         return;
@@ -323,6 +333,7 @@ fn ensure_superclaw_openclaw_plugins() {
 fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     let _ = std::fs::create_dir_all(openclaw_dir);
     ensure_portable_openclaw_skills(openclaw_dir);
+    ensure_portable_openclaw_workspace_templates(openclaw_dir);
     ensure_superclaw_openclaw_plugins();
     let workspace = openclaw_dir.join("workspace");
     let logs = openclaw_dir.join("logs");
@@ -495,12 +506,16 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 );
                 changed = true;
             }
-            if !defaults.get("skills").is_some_and(|v| v.is_array()) {
-                defaults.insert("skills".into(), serde_json::json!([]));
+            if defaults
+                .get("skills")
+                .and_then(|value| value.as_array())
+                .is_some_and(|skills| skills.is_empty())
+            {
+                defaults.remove("skills");
                 changed = true;
             }
-            if defaults.get("contextInjection").and_then(|v| v.as_str()) != Some("never") {
-                defaults.insert("contextInjection".into(), serde_json::json!("never"));
+            if defaults.get("contextInjection").and_then(|v| v.as_str()) != Some("always") {
+                defaults.insert("contextInjection".into(), serde_json::json!("always"));
                 changed = true;
             }
         }
@@ -515,7 +530,6 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                         "primary": "",
                         "fallbacks": []
                     },
-                    "skills": [],
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
                         "profile": OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
@@ -526,6 +540,47 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 }]),
             );
             changed = true;
+        }
+        if let Some(list) = agents.get_mut("list").and_then(|value| value.as_array_mut()) {
+            for agent_value in list {
+                let Some(agent) = agent_value.as_object_mut() else {
+                    continue;
+                };
+                if agent
+                    .get("skills")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|skills| skills.is_empty())
+                {
+                    agent.remove("skills");
+                    changed = true;
+                }
+                let tools = agent
+                    .entry("tools")
+                    .or_insert_with(|| serde_json::json!({}));
+                let Some(tools) = tools.as_object_mut() else {
+                    continue;
+                };
+                if tools.get("profile").and_then(|value| value.as_str())
+                    != Some(OPENCLAW_EFFECTIVE_TOOLS_PROFILE)
+                {
+                    tools.insert(
+                        "profile".into(),
+                        serde_json::json!(OPENCLAW_EFFECTIVE_TOOLS_PROFILE),
+                    );
+                    changed = true;
+                }
+                let allow = tools
+                    .entry("alsoAllow")
+                    .or_insert_with(|| serde_json::json!([]));
+                if let Some(allow) = allow.as_array_mut() {
+                    for tool in ["browser", "desktop_control", "skill_manager", "exec", "process"] {
+                        if !allow.iter().any(|value| value.as_str() == Some(tool)) {
+                            allow.push(serde_json::json!(tool));
+                            changed = true;
+                        }
+                    }
+                }
+            }
         }
     }
     if !obj.get("models").is_some_and(|v| v.is_object()) {

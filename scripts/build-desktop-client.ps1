@@ -295,6 +295,7 @@ function Copy-OpenClawWorkspaceIdentity([string]$ResourcesRoot, [string]$DataRoo
   foreach ($name in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
     Copy-FileIfMissingOrEmpty (Join-Path $templateDir $name) (Join-Path $workspaceDir $name)
   }
+  Copy-FileIfMissingOrEmpty (Join-Path $templateDir "skills\superclaw-task-policy\SKILL.md") (Join-Path $workspaceDir "skills\superclaw-task-policy\SKILL.md")
 }
 
 function Scrub-SanitizedTextExamples([string]$Root) {
@@ -638,7 +639,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
           fallbacks = @()
         }
         models = $defaultModels
-        contextInjection = "never"
+        contextInjection = "always"
         bootstrapMaxChars = 300
         bootstrapTotalMaxChars = 800
         thinkingDefault = "off"
@@ -1509,6 +1510,7 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\browser\openclaw.plugin.json") "Packaged OpenClaw browser plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
+Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\superclaw-task-policy\SKILL.md") "Packaged SuperClaw native task policy skill"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
 Assert-File (Join-Path $PackagedResources "data\hermes\SOUL.md") "Packaged Hermes identity SOUL.md"

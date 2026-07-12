@@ -4607,25 +4607,6 @@ async function sendMessage(event) {
   if (!text && !_attachments.length) return
   const attachments = [..._attachments]
   const clientRequestId = createOpenClawClientRequestId()
-  const slashLikeInput = String(text || '').trimStart().startsWith('/')
-  const localAnswer = !attachments.length && !slashLikeInput ? maybeHandleOpenClawLocalAnswer(text) : { handled: false }
-  if (localAnswer.handled) {
-    const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
-    const now = Date.now()
-    if (sendFingerprint && _lastSendFingerprint === sendFingerprint && now - _lastSendAt < OPENCLAW_SEND_DEDUPE_WINDOW_MS) {
-      return
-    }
-    _lastSendFingerprint = sendFingerprint
-    _lastSendAt = now
-    hideCmdPanel()
-    _textarea.value = ''
-    _textarea.style.height = 'auto'
-    updateSendState()
-    _attachments = []
-    renderAttachments()
-    appendOpenClawLocalAnswer(text, attachments, clientRequestId, localAnswer)
-    return
-  }
   if (!(await ensureOpenClawGatewayReadyForSend())) return
   hideCmdPanel()
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
@@ -4694,13 +4675,6 @@ async function sendMessage(event) {
     }
     appendHermesDelegationCapabilityAnswer(text, attachments)
     appendSystemMessage('请在 `/hermes` 或 `/delegate-hermes` 后写清楚要交给 Hermes 的任务内容。')
-    return
-  }
-  if (!attachments.length && appendOpenClawLocalEcommerceAnswer(text, attachments, clientRequestId)) {
-    return
-  }
-  if (!attachments.length && isOpenClawIdentityQuestion(text)) {
-    appendOpenClawLocalIdentityAnswer(text, attachments, clientRequestId)
     return
   }
   if (_openClawPendingResponse || _isSending || _isStreaming) {

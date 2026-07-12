@@ -4,20 +4,17 @@ import test from 'node:test'
 
 const read = (path) => readFileSync(path, 'utf8')
 
-test('OpenClaw broad capability questions route before ecommerce-only answers', () => {
+test('OpenClaw ordinary chat messages are routed to the native Gateway', () => {
   const chat = read('src/pages/chat.js')
-  assert.match(chat, /function isOpenClawBroadCapabilityQuestion/)
-  assert.match(chat, /buildOpenClawCapabilitySummaryReply/)
+  const sendStart = chat.indexOf('async function sendMessage(')
+  const sendEnd = chat.indexOf('async function doSend(', sendStart)
+  const send = chat.slice(sendStart, sendEnd)
 
-  const handlerStart = chat.indexOf('function maybeHandleOpenClawLocalAnswer')
-  assert.ok(handlerStart >= 0, 'missing maybeHandleOpenClawLocalAnswer')
-  const handler = chat.slice(handlerStart, chat.indexOf('function clearOpenClawRuntimeForLocalAnswer'))
-  assert.ok(handler.includes('isOpenClawBroadCapabilityQuestion(value)'), 'missing broad capability route')
-  assert.ok(handler.includes('shouldAnswerOpenClawEcommerceCapability(value)'), 'missing ecommerce route')
-  assert.ok(
-    handler.indexOf('isOpenClawBroadCapabilityQuestion(value)') < handler.indexOf('shouldAnswerOpenClawEcommerceCapability(value)'),
-    'broad capability route must run before ecommerce capability route',
-  )
+  assert.ok(sendStart >= 0 && sendEnd > sendStart, 'missing OpenClaw send path')
+  assert.doesNotMatch(send, /maybeHandleOpenClawLocalAnswer\(/)
+  assert.doesNotMatch(send, /appendOpenClawLocalEcommerceAnswer\(/)
+  assert.doesNotMatch(send, /appendOpenClawLocalIdentityAnswer\(/)
+  assert.match(send, /doSend\(text, attachments, clientRequestId, requestFingerprint\)/)
 })
 
 test('OpenClaw capability intro covers skills opr exec collaboration ecommerce safety and coding profile', () => {
