@@ -14,12 +14,15 @@ const sidebarSource = readFileSync('src/components/sidebar.js', 'utf8')
 const openclawCommandsSource = readFileSync('src-tauri/src/commands/mod.rs', 'utf8')
 const openclawConfigCommandsSource = readFileSync('src-tauri/src/commands/config.rs', 'utf8')
 const openclawServiceSource = readFileSync('src-tauri/src/commands/service.rs', 'utf8')
+const openclawUtilsSource = readFileSync('src-tauri/src/utils.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
 const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude-panel/server.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
+const modelPageSource = readFileSync('src/pages/models.js', 'utf8')
+const testBuildModeSource = readFileSync('src/lib/test-build-mode.js', 'utf8')
 
 test('OpenClaw dev runtime state is isolated from watched packaged resources', () => {
   assert.match(openclawCommandsSource, /cfg\(debug_assertions\)[\s\S]*?\.join\("\.dev-data"\)\.join\("\.openclaw"\)/)
@@ -32,6 +35,24 @@ test('OpenClaw engine switching allows a full cold gateway startup', () => {
   assert.match(sidebarSource, /_waitForOpenClawGatewayHealth\(progress, 78, 90, OPENCLAW_SWITCH_START_TIMEOUT_MS\)/)
 })
 
+test('OpenClaw MiniMax test configuration is available in Tauri development mode', () => {
+  assert.match(testBuildModeSource, /export function isDevelopmentMode\(\)[\s\S]*?import\.meta\.env\?\.DEV === true/)
+  const panelVisibility = modelPageSource.match(/function shouldShowMiniMaxTestPanel[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(panelVisibility, /isDevelopmentMode\(\) \|\| isMiniMaxOnlyMode\(\) \|\| isTestBuildMode\(\)/)
+  assert.match(modelPageSource, /免登录测试模式/)
+  assert.match(modelPageSource, /id="minimax-test-api-key"/)
+})
+
+test('OpenClaw chat snapshots visible messages before the engine switch shell replaces content', () => {
+  assert.match(openclawChatSource, /window\.addEventListener\('superclaw:before-engine-switch',[\s\S]*?handleOpenClawChatSnapshotLifecycle\('engine-switch'\)/)
+  const switchBlock = sidebarSource.match(/if \(eid !== fromEngineId\) \{[\s\S]*?const switchProgress =/)?.[0] || ''
+  assert.match(switchBlock, /window\.dispatchEvent\(new CustomEvent\('superclaw:before-engine-switch'/)
+  assert.ok(
+    switchBlock.indexOf('superclaw:before-engine-switch') < switchBlock.indexOf('contentEl.innerHTML'),
+    'OpenClaw must persist the active chat before the switch shell clears #content',
+  )
+})
+
 test('packaged OpenClaw never adopts a healthy Gateway from another package', () => {
   const cleanupBlock = openclawServiceSource.match(/pub\(crate\) fn cleanup_zombie_gateway_processes\(\) \{[\s\S]*?fn read_process_command_line/)?.[0] || ''
 
@@ -41,6 +62,16 @@ test('packaged OpenClaw never adopts a healthy Gateway from another package', ()
     cleanupBlock.indexOf('if gateway_pid_belongs_to_current_project(pid)') < cleanupBlock.indexOf('已采纳'),
     'a healthy port occupant must pass the bundled-runtime ownership check before adoption',
   )
+})
+
+test('packaged OpenClaw resolves a relative workspace inside portable data', () => {
+  const syncEnvBlock = openclawUtilsSource.match(/fn apply_openclaw_dir_env\([\s\S]*?\n\}/)?.[0] || ''
+  const asyncEnvBlock = openclawUtilsSource.match(/fn apply_openclaw_dir_env_tokio\([\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(syncEnvBlock, /cmd\.current_dir\(&openclaw_dir\);/)
+  assert.match(asyncEnvBlock, /cmd\.current_dir\(&openclaw_dir\);/)
+  assert.match(syncEnvBlock, /cmd\.env\("OPENCLAW_CONFIG_PATH", &config_path\);/)
+  assert.match(asyncEnvBlock, /cmd\.env\("OPENCLAW_CONFIG_PATH", &config_path\);/)
 })
 
 function renderAgentMessageContentForRegression(content) {
@@ -529,6 +560,40 @@ test('OpenClaw packaged execution requests cannot complete with promise-only tex
   assert.match(openclawChatSource, /BOOTSTRAP\\\.md/)
   assert.match(openclawChatSource, /\\u8ba9\\u6211/)
   assert.match(openclawChatSource, /工作区里/)
+})
+
+test('OpenClaw keeps a tool-use prelude and final reply in the same active run', () => {
+  const streamMatchBlock = openclawChatSource.match(/function isOpenClawStreamIdMismatch\([\s\S]*?\n\}/)?.[0] || ''
+  const deltaBlock = openclawChatSource.match(/if \(state === 'delta'\) \{[\s\S]*?\n  \}/)?.[0] || ''
+  const finalBlock = openclawChatSource.match(/if \(state === 'final'\) \{[\s\S]*?clearOpenClawGenerationState\(finalTools\.length \|\| _currentAiTools\.length \? 'tool-result-completed' : 'final-completed'/)?.[0] || ''
+
+  assert.match(streamMatchBlock, /function isOpenClawStreamIdMismatch\(event = \{\}, stableStreamId = ''\)/)
+  assert.match(streamMatchBlock, /activeRunId/)
+  assert.match(streamMatchBlock, /eventRunId/)
+  assert.match(streamMatchBlock, /activeRunId === eventRunId/)
+  assert.match(streamMatchBlock, /activeRunId !== eventRunId/)
+  assert.match(streamMatchBlock, /activeSessionKey/)
+  assert.match(streamMatchBlock, /eventSessionKey/)
+  assert.match(streamMatchBlock, /eventRequestIds\.includes\(activeRequestId\)/)
+  assert.match(streamMatchBlock, /return !isOpenClawGenerationActive\(\)/)
+  assert.match(deltaBlock, /isOpenClawStreamIdMismatch\(payload, stableStreamId\)/)
+  assert.match(finalBlock, /isOpenClawStreamIdMismatch\(payload, stableStreamId\)/)
+  assert.match(finalBlock, /chooseOpenClawCompletionText\(/)
+  assert.match(finalBlock, /renderCompactAssistantContent\(_currentAiText, _currentAiBubble, \{ phase: 'completed' \}\)/)
+})
+
+test('OpenClaw recovers the completed history reply after a tool-use prelude', () => {
+  const recoveryBlock = openclawChatSource.match(/function scheduleOpenClawToolFinalRecovery\([\s\S]*?\n\}/)?.[0] || ''
+  const candidateBlock = openclawChatSource.match(/function canRecoverOpenClawDraftFromLatestHistory\([\s\S]*?\n\}/)?.[0] || ''
+  const deltaBlock = openclawChatSource.match(/if \(state === 'delta'\) \{[\s\S]*?\n  \}/)?.[0] || ''
+
+  assert.match(recoveryBlock, /recoverOpenClawAssistantFromHistoryBeforeFallback\('tool-final-history-recovery'/)
+  assert.match(recoveryBlock, /attempts:\s*40/)
+  assert.match(recoveryBlock, /isOpenClawGenerationActive\(\)/)
+  assert.match(candidateBlock, /recoveringToolTurn/)
+  assert.match(candidateBlock, /_activeOpenClawRun\?\.sawToolCall/)
+  assert.match(deltaBlock, /updateOpenClawActiveRun\(\{ sawToolCall: true \}\)/)
+  assert.match(deltaBlock, /scheduleOpenClawToolFinalRecovery\(terminalRequestId\)/)
 })
 
 test('OpenClaw packaged exact short-answer prompts are not overridden by workspace bootstrap text', () => {
