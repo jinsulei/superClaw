@@ -4804,8 +4804,8 @@ function buildCalibrationBaseline() {
       defaults: {
         workspace: calibrationDefaultWorkspace(),
         contextInjection: 'always',
-        bootstrapMaxChars: 300,
-        bootstrapTotalMaxChars: 800,
+        bootstrapMaxChars: 2000,
+        bootstrapTotalMaxChars: 12000,
         thinkingDefault: 'off',
         verboseDefault: 'off',
       },
@@ -4895,8 +4895,8 @@ function ensurePortableDesktopToolDefaults(config) {
   config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
   delete config.agents.defaults.skills
   config.agents.defaults.contextInjection = 'always'
-  config.agents.defaults.bootstrapMaxChars = 300
-  config.agents.defaults.bootstrapTotalMaxChars = 800
+  config.agents.defaults.bootstrapMaxChars = 2000
+  config.agents.defaults.bootstrapTotalMaxChars = 12000
   config.agents.defaults.thinkingDefault = 'off'
   config.agents.defaults.verboseDefault = 'off'
   config.agents.list = Array.isArray(config.agents.list) ? config.agents.list : []

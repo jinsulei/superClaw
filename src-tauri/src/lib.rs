@@ -6,7 +6,7 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
-    hermes_providers, logs, memory, messaging, ocr, pairing, service, shared_memory, skills, update,
+    hermes_providers, logs, memory, messaging, ocr, openclaw_history, pairing, service, shared_memory, skills, update,
 };
 use tauri::Manager;
 
@@ -204,6 +204,8 @@ pub fn run() {
             service::claim_gateway,
             service::probe_gateway_port,
             service::guardian_status,
+            openclaw_history::read_openclaw_raw_history,
+            openclaw_history::list_openclaw_raw_sessions,
             // 诊断
             diagnose::diagnose_gateway_connection,
             diagnose::check_ciao_windowshide_bug,

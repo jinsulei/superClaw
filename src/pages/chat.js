@@ -50,6 +50,7 @@ import {
 
 const RENDER_THROTTLE = 16
 const STORAGE_SESSION_KEY = 'superclaw-last-session'
+const STORAGE_LAST_ACTIVE_SESSION_KEY = 'superclaw-last-active-session'
 const STORAGE_MODEL_KEY = 'superclaw-chat-selected-model'
 const STORAGE_SIDEBAR_KEY = 'superclaw-chat-sidebar-open'
 const STORAGE_SESSION_NAMES_KEY = 'superclaw-chat-session-names'
@@ -140,7 +141,7 @@ let _voiceBtn = null, _voiceInputController = null, _voicePlaybackController = n
 let _modelVoiceConfig = null
 let _voicePlaybackKey = null
 let _voiceRate = Number(localStorage.getItem('superclaw-hermes-voice-rate') || '1') || 1
-let _currentAiBubble = null, _currentAiBubbleRequestId = '', _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentRunId = null
+let _currentAiBubble = null, _currentAiBubbleRequestId = '', _currentAiText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentAiTimeline = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
 let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _lastHistoryHash = ''
 let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false
@@ -153,6 +154,9 @@ let _sendInputLocked = false
 let _activeClientRequestId = null
 let _activeOpenClawUserText = ''
 let _activeOpenClawRun = null
+let _openClawProgressHistoryTimer = null
+let _openClawProgressHistoryInFlight = false
+let _initialOpenClawHistoryTimers = []
 let _lastSendFingerprint = ''
 let _lastSendAt = 0
 let _lastVisibleUserText = ''
@@ -168,7 +172,10 @@ const OPENCLAW_FINAL_DEDUPE_WINDOW_MS = 5000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_TTL_MS = 5 * 60 * 1000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_STORAGE_LIMIT = 350000
 const OPENCLAW_CHAT_VIEW_SNAPSHOT_SCHEMA_VERSION = 4
-const OPENCLAW_ACTIVE_RUN_WATCHDOG_MS = 75 * 1000
+// Native tool turns can take longer than a minute before the model produces
+// its final summary. Keep a real hard stop, but do not finalize a healthy
+// Gateway run before its configured execution window has had time to finish.
+const OPENCLAW_ACTIVE_RUN_WATCHDOG_MS = 5 * 60 * 1000
 const OPENCLAW_RUN_TIMEOUT_MS = OPENCLAW_ACTIVE_RUN_WATCHDOG_MS
 const _toolEventTimes = new Map()
 const _toolEventData = new Map()
@@ -485,8 +492,17 @@ export async function render() {
   _workspaceSaveBtn = page.querySelector('#chat-workspace-save')
   _workspaceReloadBtn = page.querySelector('#chat-workspace-reload')
   _workspacePreviewBtn = page.querySelector('#chat-workspace-preview-toggle')
-  const snapshotSessionKey = resolveGatewaySessionKey(localStorage.getItem(STORAGE_SESSION_KEY) || wsClient.sessionKey || '')
+  const snapshotSessionKey = resolveGatewaySessionKey(
+    getMostRecentLocalSessionKey() ||
+    localStorage.getItem(STORAGE_LAST_ACTIVE_SESSION_KEY) ||
+    localStorage.getItem(STORAGE_SESSION_KEY) ||
+    wsClient.sessionKey || ''
+  )
   if (snapshotSessionKey) {
+    // The DOM snapshot is optional, but the selected session is not. Keep the
+    // saved key even when sessionStorage was cleared by an app restart, so the
+    // Gateway ready callback loads that conversation rather than main.
+    _sessionKey = snapshotSessionKey
     restoreOpenClawChatSnapshot(snapshotSessionKey, 'render')
   }
   bindOpenClawChatSnapshotLifecycle()
@@ -504,6 +520,10 @@ export async function render() {
 
   loadHostedDefaults().then(() => { loadHostedSessionConfig(); renderHostedPanel(); updateHostedBadge() })
   loadModelOptions()
+  // The native registry is available before Gateway finishes its handshake.
+  // Populate the sidebar immediately so a restart never looks like all
+  // conversations disappeared while the service is still coming online.
+  refreshSessionList()
   // 非阻塞：先返回 DOM，后台连接 Gateway
   startCollaborationDispatchWatcher()
   scheduleOpenClawGatewayUiConvergence('render')
@@ -1022,6 +1042,13 @@ function getLocalSessions() {
   } catch {
     return []
   }
+}
+
+function getMostRecentLocalSessionKey() {
+  const rows = getLocalSessions()
+    .filter(row => normalizeOpenClawSessionKey(row?.sessionKey || row?.key))
+    .sort((a, b) => Number(b?.updatedAt || b?.lastActivity || 0) - Number(a?.updatedAt || a?.lastActivity || 0))
+  return normalizeOpenClawSessionKey(rows[0]?.sessionKey || rows[0]?.key || '')
 }
 
 function saveLocalSessions(rows) {
@@ -1606,6 +1633,12 @@ function markOpenClawGatewayReady(reason = 'ready', details = {}) {
   _openClawGatewayLastReadyReason = reason
   setOpenClawGatewayUiState('ready', { ...details, error: '', progress: 100 })
   clearOpenClawTransientConnectionUi()
+  // A model save/restart can make Gateway ready while the chat route remains
+  // mounted. Re-enter durable history recovery here; relying on a later
+  // session switch leaves the page blank until the user performs that switch.
+  if (_pageActive && _messagesEl && _sessionKey && countDisplayedChatMessages() === 0) {
+    scheduleInitialOpenClawHistoryLoad()
+  }
 }
 
 function reconcileOpenClawGatewayAfterTransientStatus(reason = 'transient') {
@@ -2371,10 +2404,10 @@ async function connectGateway(options = {}) {
       if (!_sessionKey) {
         _sessionKey = resolveGatewaySessionKey(sessionKey)
         updateSessionTitle()
-        loadHistory()
+        scheduleInitialOpenClawHistoryLoad()
       } else {
         syncWorkspaceContext(false)
-        loadHistory()
+        scheduleInitialOpenClawHistoryLoad()
       }
       // 始终刷新会话列表（无论是否有 sessionKey）
       refreshSessionList()
@@ -2392,7 +2425,7 @@ async function connectGateway(options = {}) {
       markOpenClawGatewayReady('reuse-existing-ws')
       showTyping(false)  // 确保关闭加载动画
       updateSessionTitle()
-      loadHistory()
+      scheduleInitialOpenClawHistoryLoad()
       refreshSessionList()
       maybeConsumeCollaborationDispatch()
       return
@@ -2513,14 +2546,29 @@ async function ensureOpenClawGatewayReadyForSend() {
 }
 
 async function refreshSessionList() {
-  if (!_sessionListEl || !wsClient.gatewayReady) return
+  if (!_sessionListEl) return
+  const fallbackCurrentSession = _sessionKey
+    ? [{ sessionKey: _sessionKey, key: _sessionKey, updatedAt: Date.now(), localOnly: true }]
+    : []
   try {
-    const result = await wsClient.sessionsList(50)
-    const sessions = result?.sessions || result || []
-    renderSessionList(mergeLocalSessions(sessions))
+    const [gatewayResult, localResult] = await Promise.allSettled([
+      wsClient.gatewayReady ? wsClient.sessionsList(50) : Promise.resolve({ sessions: [] }),
+      isTauriRuntime() ? api.listOpenclawRawSessions(80) : Promise.resolve({ sessions: [] }),
+    ])
+    const gatewaySessions = gatewayResult.status === 'fulfilled'
+      ? (gatewayResult.value?.sessions || gatewayResult.value || [])
+      : []
+    const localSessions = localResult.status === 'fulfilled'
+      ? (localResult.value?.sessions || localResult.value || [])
+      : []
+    const sessions = [
+      ...(Array.isArray(gatewaySessions) ? gatewaySessions : []),
+      ...(Array.isArray(localSessions) ? localSessions : []),
+    ]
+    renderSessionList(mergeLocalSessions(sessions.length ? sessions : fallbackCurrentSession))
   } catch (e) {
     console.error('[chat] refreshSessionList error:', e)
-    renderSessionList(getLocalSessions())
+    renderSessionList(mergeLocalSessions([...getLocalSessions(), ...fallbackCurrentSession]))
   }
 }
 
@@ -2614,7 +2662,10 @@ async function maybeConsumeCollaborationDispatch() {
 
 function resolveGatewaySessionKey(gatewaySessionKey) {
   const fallback = normalizeOpenClawSessionKey(gatewaySessionKey || wsClient.sessionKey || 'agent:main:main')
-  const saved = normalizeOpenClawSessionKey(localStorage.getItem(STORAGE_SESSION_KEY))
+  const saved = normalizeOpenClawSessionKey(
+    localStorage.getItem(STORAGE_LAST_ACTIVE_SESSION_KEY) ||
+    localStorage.getItem(STORAGE_SESSION_KEY)
+  )
   if (!saved || saved === fallback) return fallback
   const defaults = wsClient.snapshot?.sessionDefaults || {}
   const known = new Set([
@@ -2626,7 +2677,10 @@ function resolveGatewaySessionKey(gatewaySessionKey) {
   if (known.has(saved)) return saved
   const savedAgent = parseSessionAgent(saved)
   const fallbackAgent = parseSessionAgent(fallback)
-  if (/^agent:[^:]+:[^:]+$/.test(saved) && savedAgent && savedAgent === fallbackAgent) {
+  // Work-file and collaboration sessions include a path after the agent id.
+  // They are still valid portable session keys and must win over the Gateway
+  // default when restoring the user's last active conversation.
+  if (savedAgent && savedAgent === fallbackAgent) {
     return saved
   }
   localStorage.setItem(STORAGE_SESSION_KEY, fallback)
@@ -2639,8 +2693,8 @@ function renderSessionList(sessions) {
     _sessionListEl.innerHTML = `<div class="chat-session-empty">${t('chat.noSessions')}</div>`
     return
   }
-  sessions.sort((a, b) => (b.updatedAt || b.lastActivity || 0) - (a.updatedAt || a.lastActivity || 0))
-  _sessionListEl.innerHTML = sessions.map(s => {
+  const sortedSessions = [...sessions].sort((a, b) => (b.updatedAt || b.lastActivity || 0) - (a.updatedAt || a.lastActivity || 0))
+  _sessionListEl.innerHTML = sortedSessions.map(s => {
   const key = normalizeOpenClawSessionKey(s.sessionKey || s.key || '')
   const active = isOpenClawCurrentSessionKey(key) ? ' active' : ''
     const label = parseSessionLabel(key)
@@ -2755,6 +2809,9 @@ async function switchSession(newKey, options = {}) {
   }
   _sessionKey = targetSessionKey
   localStorage.setItem(STORAGE_SESSION_KEY, targetSessionKey)
+  localStorage.setItem(STORAGE_LAST_ACTIVE_SESSION_KEY, targetSessionKey)
+  const currentLocalSession = getLocalSessions().find(row => normalizeOpenClawSessionKey(row?.sessionKey || row?.key) === targetSessionKey)
+  upsertLocalSession(targetSessionKey, nextAgentId, currentLocalSession?.title || parseSessionLabel(targetSessionKey))
   _lastHistoryHash = ''
   syncOpenClawSessionListActiveState(targetSessionKey)
   resetStreamState()
@@ -3209,11 +3266,11 @@ function isOpenClawBrowserAutomationTraceText(text) {
 }
 
 function buildOpenClawToolUnavailableReply(userText = '') {
-  if (!isOpenClawBrowserScreenshotIntent(userText)) return ''
-  return [
-    '\u6211\u73b0\u5728\u6ca1\u6709\u62ff\u5230\u53ef\u7528\u7684\u6d4f\u89c8\u5668\u6216\u622a\u56fe\u5de5\u5177\u7ed3\u679c\uff0c\u6240\u4ee5\u4e0d\u4f1a\u5047\u88c5\u5df2\u7ecf\u8bfb\u53d6\u6216\u622a\u56fe\u3002',
-    '\u5982\u679c\u4f60\u8981\u6211\u5904\u7406\u6296\u5e97\u3001\u5c0f\u7ea2\u4e66\u3001\u516c\u4f17\u53f7\u7b49\u9875\u9762\uff0c\u8bf7\u5148\u786e\u8ba4\u6d4f\u89c8\u5668\u81ea\u52a8\u5316\u6216\u622a\u56fe\u80fd\u529b\u5df2\u542f\u7528\uff1b\u5426\u5219\u53ef\u4ee5\u76f4\u63a5\u4e0a\u4f20\u622a\u56fe\u7ed9\u6211\u5206\u6790\u3002',
-  ].join('\n\n')
+  // A screenshot task can finish by writing a file, so the absence of an
+  // inline image is never proof that native execution failed. Gateway owns
+  // tool availability and final-state reporting.
+  void userText
+  return ''
 }
 
 function isOpenClawExecutionRequest(text) {
@@ -3289,6 +3346,12 @@ function isOpenClawSkillsQuestion(text) {
     /(?:\u5f53\u524d|\u53ef\u7528|\u6709\u54ea\u4e9b|\u6709\u4ec0\u4e48|\u4ecb\u7ecd|\u8bf4\u660e|\u5217\u51fa|\u67e5\u770b|\u67e5\u8be2).{0,10}\u6280\u80fd(?!\u529b)/i.test(value) ||
     /\u6280\u80fd(?!\u529b).{0,10}(?:\u5f53\u524d|\u53ef\u7528|\u6709\u54ea\u4e9b|\u6709\u4ec0\u4e48|\u4ecb\u7ecd|\u8bf4\u660e|\u5217\u51fa|\u67e5\u770b|\u67e5\u8be2)/i.test(value)
   )
+}
+
+function isOpenClawNativeInspectionRequest(text) {
+  const value = String(text || '').trim()
+  if (!value || value.length > 220) return false
+  return /(?:check|inspect|audit|verify).{0,80}(?:channel|wechat|plugin|installed|config|openclaw\.json)|(?:\u68c0\u67e5|\u67e5\u770b|\u6838\u5bf9|\u786e\u8ba4).{0,36}(?:\u6d88\u606f\u6e20\u9053|\u5fae\u4fe1|\u63d2\u4ef6|\u5df2\u5b89\u88c5|\u914d\u7f6e|openclaw\.json)/i.test(value)
 }
 
 function isOpenClawCapabilitySummaryQuestion(text) {
@@ -3403,6 +3466,7 @@ function clearOpenClawRuntimeForLocalAnswer(clientRequestId = '') {
   clearTimeout(_streamSafetyTimer)
   _openClawPendingResponse = false
   _openClawActiveRequestClosed = true
+  stopOpenClawProgressHistoryPolling()
   _isSending = false
   _isStreaming = false
   _manualStopRequested = false
@@ -3534,6 +3598,8 @@ function stripOpenClawRuntimePromptBlocks(text) {
     'BROWSER_TOOL_TRIGGER',
     'DESKTOP_CONTROL_TRIGGER',
     'OPENCLAW_TOOL_TRIGGER',
+    'NATIVE_INSPECTION_REQUIRED',
+    'CAPABILITY_AUDIT_TRIGGER',
     'OPENCLAW_IDENTITY_CONTEXT',
   ]
   for (const name of blockNames) {
@@ -3541,7 +3607,7 @@ function stripOpenClawRuntimePromptBlocks(text) {
     next = next.replace(new RegExp(`\\s*\\[${escaped}\\][\\s\\S]*?\\[/${escaped}\\]\\s*`, 'gi'), ' ')
   }
   return next
-    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|OPENCLAW_IDENTITY_CONTEXT)\][\s\S]*$/i, '')
+    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|NATIVE_INSPECTION_REQUIRED|CAPABILITY_AUDIT_TRIGGER|OPENCLAW_IDENTITY_CONTEXT)\][\s\S]*$/i, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -3571,6 +3637,10 @@ const OPENCLAW_INTERNAL_REASONING_PATTERNS = [
   /\bI think\b/i,
   /\bLet me\b/i,
   /\bActually,?\s+I\b/i,
+  /\bHUGE red flag\b/i,
+  /\bred flag\b/i,
+  /\bsocial engineering\b/i,
+  /\bscam attempt\b/i,
   /\bReply in Simplified Chinese\b/i,
   /\bInspect currently available tools\b/i,
   /\bUse skill_manager\b/i,
@@ -3708,7 +3778,7 @@ function isOpenClawToolLikeMessage(message = {}) {
 }
 
 function shouldRenderOpenClawToolMessage(message = {}) {
-  return isOpenClawToolDebugEnabled() && isOpenClawToolLikeMessage(message)
+  return isOpenClawToolLikeMessage(message)
 }
 
 function isOpenClawPlainCapabilitySummaryText(text) {
@@ -3779,11 +3849,15 @@ function sanitizeOpenClawVisibleReply(text, userText = _activeOpenClawUserText |
   const visibleInput = stripOpenClawRepeatedLeadingStatusGlyphs(text)
   const withoutBlocks = stripOpenClawInternalBlocks(visibleInput)
   const withoutReasoning = stripOpenClawInternalReasoningOutput(withoutBlocks)
-  const safeInput = withoutReasoning || (containsOpenClawInternalReasoningOutput(visibleInput) ? OPENCLAW_INTERNAL_REASONING_VISIBLE_FALLBACK : visibleInput)
+  // A tool-use prelude can be entirely internal prose. Keep it empty so the
+  // real tool cards and final answer render instead of replacing the turn with
+  // a misleading generic retry message.
+  const safeInput = withoutReasoning || (containsOpenClawInternalReasoningOutput(visibleInput) ? '' : visibleInput)
   return stripOpenClawInternalReasoningOutput(stripOpenClawInternalProcessText(
     sanitizeVisibleReplyForChinese(safeInput, userText, {
       agent: 'openclaw',
       allowEnglish: isOpenClawExactLiteralReplyRequest(userText) || isOpenClawSafeShortLiteralReply(text),
+      preserveNonReasoningEnglish: !containsOpenClawInternalReasoningOutput(safeInput),
     })
   ))
 }
@@ -4701,6 +4775,7 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   _currentAiAudios = []
   _currentAiFiles = []
   _currentAiTools = []
+  _currentAiTimeline = []
   _currentRunId = null
   const openclawTurnId = createOpenClawTurnId()
   const userMessageId = `openclaw-user-${clientRequestId}`
@@ -4743,11 +4818,13 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
     clientRequestId,
     attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined
   })
+  recordOpenClawRunStep('start', '\u5df2\u63d0\u4ea4\u4efb\u52a1\uff0c\u6b63\u5728\u8fde\u63a5\u6267\u884c\u73af\u5883', 'running')
+  renderOpenClawLiveTimeline()
   showTyping(true)
   _isSending = true
   _startResponseWatchdog()
+  startOpenClawProgressHistoryPolling()
   startGenerationTimeoutManager()
-  scheduleOpenClawBrowserToolFallback(clientRequestId, text)
   try {
     await wsClient.chatSend(_sessionKey, sendText, attachments.length ? attachments : undefined, {
       idempotencyKey: clientRequestId,
@@ -4835,6 +4912,7 @@ function buildIntentTriggeredToolPrompt(text) {
   if (!base) return base
   const lower = base.toLowerCase()
   const skillsIntent = isOpenClawSkillsQuestion(base)
+  const nativeInspectionIntent = isOpenClawNativeInspectionRequest(base)
   const capabilityAuditIntent =
     skillsIntent ||
     /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
@@ -4848,6 +4926,16 @@ function buildIntentTriggeredToolPrompt(text) {
     /(浏览器|网页|网站|网址|链接|页面|打开网页|打开网站|搜索网页|网上搜索|联网搜索|网页搜索|抓取|读取链接|浏览)/i.test(base) ||
     /\b(browser|website|web page|url|search web|open url|navigate|scrape)\b/i.test(lower)
   const blocks = [base]
+  if (nativeInspectionIntent) {
+    blocks.push(
+      '',
+      '[NATIVE_INSPECTION_REQUIRED]',
+      'This is a read-only execution request. Execute it now with native tools; do not reply with a plan or say that you will inspect.',
+      'Call skill_manager action=audit for installed skills. When the request concerns a channel, plugin, or OpenClaw configuration, use exec only for read-only inspection of the current portable workspace/config/plugin state.',
+      'Do not install, enable, modify, restart, or delete anything. The final answer must include the observed tool evidence and a concrete conclusion.',
+      '[/NATIVE_INSPECTION_REQUIRED]',
+    )
+  }
   if (capabilityAuditIntent) {
     blocks.push(
       '',
@@ -5190,6 +5278,135 @@ function getOpenClawToolResultInfo(tools = [], fallbackText = '') {
   }
 }
 
+function recordOpenClawRunStep(kind, label, status = 'running', stepId = '') {
+  const text = String(label || '').trim()
+  if (!text) return
+  const key = `${kind}:${stepId || text}`
+  const current = _currentAiTimeline.find(step => step.key === key)
+  if (current) {
+    current.status = status || current.status
+    return
+  }
+  _currentAiTimeline.push({ key, kind, label: text, status, time: Date.now() })
+  // A native task can legitimately make dozens of tool calls. Keep enough
+  // history for the live card to be useful instead of making a long task
+  // look idle after its first few operations.
+  if (_currentAiTimeline.length > 80) _currentAiTimeline = _currentAiTimeline.slice(-80)
+}
+
+function recordOpenClawProgressNarrative(text = '', stepId = '') {
+  const value = getOpenClawProgressNarrativeLabel(text)
+  if (!value || isOpenClawVisibleTextInternalAuditOnly(value)) return
+  // Tool-use prose is visible execution context, not a final answer. Keep it
+  // in the collapsible run timeline so users can see what is happening while
+  // the native agent continues to work.
+  recordOpenClawRunStep('progress', value.slice(0, 600), 'completed', `narrative-${stepId || value.slice(0, 120)}`)
+}
+
+function getOpenClawProgressNarrativeLabel(text = '') {
+  return sanitizeOpenClawVisibleReply(text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Gateway stores native work as a sequence of assistant toolUse frames then a
+// terminal assistant frame. Keep those frames attached to the terminal reply
+// so restoring history cannot lose the process card after a page switch.
+function attachOpenClawExecutionTimeline(messages = []) {
+  const visible = []
+  let steps = []
+  let tools = []
+  const flush = (message) => {
+    if (!steps.length && !tools.length) return message
+    const next = {
+      ...message,
+      executionTimeline: steps.map(step => ({ ...step })),
+      tools: [...tools, ...(Array.isArray(message.tools) ? message.tools : [])],
+    }
+    steps = []
+    tools = []
+    return next
+  }
+  for (const message of messages || []) {
+    if (!message || typeof message !== 'object') continue
+    if (message.role === 'user') {
+      steps = []
+      tools = []
+      visible.push(message)
+      continue
+    }
+    if (message.role === 'assistant' && isOpenClawToolUseMessage(message)) {
+      const narrative = getOpenClawProgressNarrativeLabel(message.text || '')
+      if (narrative && !isOpenClawVisibleTextInternalAuditOnly(narrative)) {
+        steps.push({ key: `progress:${message.id || message.messageId || steps.length}`, kind: 'progress', label: narrative.slice(0, 600), status: 'completed' })
+      }
+      for (const [index, tool] of (message.tools || []).entries()) {
+        const id = String(tool?.id || tool?.toolCallId || tool?.tool_call_id || index)
+        const label = getOpenClawToolDisplayName(tool) || '工具调用'
+        tools.push(tool)
+        steps.push({ key: `tool:${id}`, kind: 'tool', label, status: tool?.status === 'error' || tool?.isError ? 'error' : 'completed' })
+      }
+      continue
+    }
+    visible.push(message.role === 'assistant' ? flush(message) : message)
+  }
+  return visible
+}
+
+function hydrateOpenClawRunTimelineFromTools(tools = []) {
+  for (const [index, tool] of (tools || []).entries()) {
+    const id = tool?.id || tool?.tool_call_id || `history-${index}`
+    const status = tool?.status === 'error' || tool?.isError ? 'error' : 'completed'
+    const name = getOpenClawToolDisplayName(tool) || '工具调用'
+    upsertTool(_currentAiTools, {
+      ...tool,
+      id,
+      name,
+      status,
+    })
+    if (_activeOpenClawRun) _activeOpenClawRun.sawToolCall = true
+    recordOpenClawRunStep('tool', name, status, id)
+  }
+}
+
+function collapseOpenClawRunTimeline(container) {
+  const timeline = container?.querySelector?.('.openclaw-run-timeline')
+  if (!timeline) return
+  timeline.removeAttribute('open')
+  const title = timeline.querySelector?.('summary > span:nth-child(2)')
+  if (title?.textContent?.trim() === '正在执行') title.textContent = '执行过程已完成'
+}
+
+function ensureOpenClawRunTimelineBubble() {
+  if (_currentAiBubble) return _currentAiBubble
+  const requestId = String(
+    _currentAiBubbleRequestId ||
+    _activeClientRequestId ||
+    _activeOpenClawRun?.clientRequestId ||
+    _activeOpenClawRun?.runId ||
+    '',
+  )
+  if (!requestId) return null
+  _currentAiBubble = createStreamBubble({
+    clientRequestId: requestId,
+    requestId,
+    sessionKey: _activeOpenClawRun?.sessionKey || _sessionKey,
+    openclawTurnId: _activeOpenClawRun?.openclawTurnId || '',
+    assistantMessageId: _activeOpenClawRun?.assistantMessageId || requestId,
+    dedupeKey: requestId,
+  })
+  if (_currentAiBubble) _currentAiBubbleRequestId = requestId
+  return _currentAiBubble
+}
+
+function renderOpenClawLiveTimeline() {
+  const bubble = ensureOpenClawRunTimelineBubble()
+  if (!bubble) return false
+  const existing = bubble.querySelector?.('.openclaw-tool-result-card')
+  if (existing) existing.remove()
+  return renderOpenClawToolResultCard(bubble, _currentAiTools)
+}
+
 function shouldRenderOpenClawToolResultCard(tools = [], fallbackText = '') {
   if (!isOpenClawToolDebugEnabled()) return false
   if ((!tools || tools.length === 0) && isOpenClawPlainCapabilitySummaryText(fallbackText)) return false
@@ -5221,6 +5438,29 @@ function ensureOpenClawToolResultCardStyles() {
       background: color-mix(in srgb, var(--chat-assistant-bg, #fff8fb) 86%, var(--chat-page-bg, #eef4fa));
       color: var(--text-primary);
     }
+    .openclaw-run-timeline > summary {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      min-height: 20px;
+      gap: 6px;
+      cursor: pointer;
+      list-style: none;
+      font-size: 12px;
+      line-height: 1.15;
+      font-weight: 650;
+    }
+    .openclaw-run-timeline > summary::-webkit-details-marker { display: none; }
+    .openclaw-run-timeline:not([open]) { display: block; gap: 0; margin: 0 0 8px; padding: 6px 10px; }
+    .openclaw-run-timeline__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
+    .openclaw-run-timeline__toggle { margin-left: auto; display: inline-flex; align-items: center; color: var(--text-tertiary); transition: transform .16s ease; }
+    .openclaw-run-timeline[open] .openclaw-run-timeline__toggle { transform: rotate(90deg); }
+    .openclaw-run-timeline__steps { display: grid; gap: 7px; margin: 4px 0 0; padding: 0; list-style: none; }
+    .openclaw-run-timeline__step { display: flex; align-items: baseline; gap: 8px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+    .openclaw-run-timeline__dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--accent, #168c76); }
+    .openclaw-run-timeline__step.is-running .openclaw-run-timeline__dot { animation: openclaw-run-pulse 1.2s ease-in-out infinite; }
+    .openclaw-run-timeline__step.is-error .openclaw-run-timeline__dot { background: var(--error, #d14d5a); }
+    @keyframes openclaw-run-pulse { 50% { opacity: .35; transform: scale(.72); } }
     .openclaw-tool-result-card__header {
       display: flex;
       align-items: center;
@@ -5280,19 +5520,33 @@ function ensureOpenClawToolResultCardStyles() {
   document.head.appendChild(style)
 }
 
-function renderOpenClawToolResultCard(container, tools = [], fallbackText = '') {
+function renderOpenClawToolResultCard(container, tools = [], fallbackText = '', timelineOverride = null) {
   if (!container) return false
-  if (!isOpenClawToolDebugEnabled()) return false
   const info = getOpenClawToolResultInfo(tools, fallbackText)
-  if (!info.toolCount && !info.rawText) return false
+  const hasTimelineOverride = Array.isArray(timelineOverride) && timelineOverride.length > 0
+  if (!info.toolCount && !info.rawText && !_currentAiTimeline.length && !hasTimelineOverride) return false
   ensureOpenClawToolResultCardStyles()
   const title = info.failed
     ? '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898'
-    : (isOpenClawSkillsToolResult(info) ? 'Skills \u67e5\u8be2\u6210\u529f' : '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210')
+    : (!info.toolCount && _currentAiTimeline.length ? '\u6267\u884c\u8fc7\u7a0b\u5df2\u5b8c\u6210' : (isOpenClawSkillsToolResult(info) ? 'Skills \u67e5\u8be2\u6210\u529f' : '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210'))
   const count = info.skillNames.length
   const summary = formatOpenClawToolResultForUser(info)
-  const card = document.createElement('div')
-  card.className = 'openclaw-tool-result-card'
+  const active = _openClawPendingResponse || _isSending || _isStreaming
+  const timeline = hasTimelineOverride
+    ? timelineOverride
+    : (_currentAiTimeline.length
+      ? _currentAiTimeline
+      : tools.map((tool, index) => ({
+      key: `tool:${tool?.id || index}`,
+      kind: 'tool',
+      label: getOpenClawToolDisplayName(tool) || '工具调用',
+      status: tool?.status === 'error' || tool?.isError ? 'error' : 'completed',
+      })))
+  const timelineToolCount = timeline.filter(step => step.kind === 'tool').length
+  const displayedToolCount = Math.max(info.toolCount, timelineToolCount)
+  const card = document.createElement('details')
+  card.className = 'openclaw-tool-result-card openclaw-run-timeline'
+  if (active) card.open = true
   const chips = count
     ? `<div class="openclaw-tool-result-card__chips">${info.skillNames.slice(0, 24).map(name => `<span class="openclaw-tool-result-card__chip">${escapeHtml(name)}</span>`).join('')}${count > 24 ? `<span class="openclaw-tool-result-card__chip">+${count - 24}</span>` : ''}</div>`
     : ''
@@ -5303,16 +5557,26 @@ function renderOpenClawToolResultCard(container, tools = [], fallbackText = '') 
       <pre>${escapeHtml(raw)}</pre>
     </details>
   ` : ''
+  const steps = timeline.map(step => `
+    <li class="openclaw-run-timeline__step ${step.status === 'error' ? 'is-error' : (step.status === 'running' ? 'is-running' : '')}">
+      <span class="openclaw-run-timeline__dot"></span><span>${escapeHtml(step.label)}</span>
+    </li>
+  `).join('')
   card.innerHTML = `
-    <div class="openclaw-tool-result-card__header">
+    <summary>
       <span class="openclaw-tool-result-card__icon">${svgIcon(info.failed ? 'alert-triangle' : 'wrench', 14)}</span>
-      <span>${title}</span>
-    </div>
-    <p class="openclaw-tool-result-card__summary">${summary}</p>
+      <span>${active ? '正在执行' : title}</span>
+      <span class="openclaw-run-timeline__meta">${timeline.length} 个步骤 · ${displayedToolCount} 次工具调用</span>
+      <span class="openclaw-run-timeline__toggle" aria-hidden="true">${svgIcon('chevron-right', 14)}</span>
+    </summary>
+    <ul class="openclaw-run-timeline__steps">${steps}</ul>
+    ${summary ? `<p class="openclaw-tool-result-card__summary">${summary}</p>` : ''}
     ${chips}
     ${details}
   `
-  container.appendChild(card)
+  // Keep the process summary above the final assistant text for both live
+  // streaming bubbles and restored history bubbles.
+  container.insertBefore(card, container.firstChild)
   return true
 }
 
@@ -5412,7 +5676,16 @@ function hideOpenClawGenerationActions() {
 
 function hasOpenClawVisibleAssistantNode(node) {
   if (!node || node.hidden) return false
-  if (node.querySelector?.('.openclaw-tool-result-card, .msg-tool, img, video, audio, .msg-file-card')) return true
+  if (node.querySelector?.('img, video, audio, .msg-file-card')) return true
+  const timeline = node.querySelector?.('.openclaw-run-timeline')
+  if (timeline) {
+    const bubble = node.classList?.contains('msg-bubble') ? node : node.querySelector?.('.msg-bubble')
+    // A live timeline is progress, not a completed assistant reply. Treating
+    // it as final would stop history recovery before Gateway writes the result.
+    if (timeline.open || bubble?.dataset?.openclawPending === 'true') return false
+    return bubble?.dataset?.openclawCompleted === 'true'
+  }
+  if (node.querySelector?.('.msg-tool')) return true
   const text = normalizeOpenClawMessageText(getOpenClawAssistantContentText(node))
     .replace(/\bOpenClaw\b/g, '')
     .replace(/\bTool\b/g, '')
@@ -5552,6 +5825,13 @@ function isSameOpenClawTurn(a, b) {
   return Boolean(ka && kb && ka === kb)
 }
 
+function isSameOpenClawRequestId(actual = '', expected = '') {
+  const left = String(actual || '').trim()
+  const right = String(expected || '').trim()
+  if (!left || !right) return false
+  return left === right || left === `${right}:user` || left === `${right}:assistant`
+}
+
 function getOpenClawTurnIdentity(input = {}) {
   const sessionKey = input.sessionKey || input.sessionId || input.conversationId || _sessionKey || ''
   const openclawTurnId = input.openclawTurnId || input.turnId || ''
@@ -5670,6 +5950,11 @@ function isOpenClawSameSession(a = {}, b = {}) {
   return !as || !bs || as === bs
 }
 
+function isOpenClawToolUseMessage(message = {}) {
+  const reason = String(message?.stopReason || message?.stop_reason || message?.message?.stopReason || '').trim()
+  return /^(?:toolUse|tool_use|tool-call|tool_call)$/i.test(reason)
+}
+
 function getOpenClawStrongHistoryMatchReason(msg = {}, activeRun = _activeOpenClawRun) {
   if (!msg || msg.role !== 'assistant' || !activeRun) return ''
   if (!isOpenClawSameSession(msg, activeRun)) return ''
@@ -5681,6 +5966,9 @@ function getOpenClawStrongHistoryMatchReason(msg = {}, activeRun = _activeOpenCl
   }
   if (activeRun.clientRequestId && [msg.clientRequestId, msg.requestId, msg.idempotencyKey].includes(activeRun.clientRequestId)) {
     return 'clientRequestId'
+  }
+  if (activeRun.clientRequestId && isSameOpenClawRequestId(msg._openClawPreviousUserRequestId, activeRun.clientRequestId)) {
+    return 'previousUserRequestId'
   }
   if (activeRun.runId && msg.runId && msg.runId === activeRun.runId) {
     return 'runId'
@@ -5694,9 +5982,6 @@ function getOpenClawStrongHistoryMatchReason(msg = {}, activeRun = _activeOpenCl
     msg._openClawPreviousUserFingerprint === activeRun.userTextFingerprint
   ) {
     return 'previousUserFingerprint'
-  }
-  if (msg._openClawAfterLatestHistoryUser) {
-    return 'latestHistoryUserTurn'
   }
   if (
     Number.isFinite(activeRun.userMessageIndex) &&
@@ -5738,6 +6023,7 @@ function canRecoverOpenClawDraftFromLatestHistory(msg = {}) {
   const text = sanitizeOpenClawVisibleReply(msg.text || '')
   if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
   if (_activeOpenClawRun && isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return true
+  if (recoveringToolTurn) return false
   if (!msg._openClawAfterLatestHistoryUser) return false
   const userText = _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText || getOpenClawLastVisibleUserText()
   return isOpenClawCandidateCompatibleWithPrompt(text, userText)
@@ -5745,13 +6031,12 @@ function canRecoverOpenClawDraftFromLatestHistory(msg = {}) {
 
 function ensureOpenClawHistoryRecoveryBubble(msg = {}) {
   if (_currentAiBubble) return true
-  if (!msg || msg.role !== 'assistant' || !msg._openClawAfterLatestHistoryUser) return false
+  if (!msg || msg.role !== 'assistant') return false
   if (!(_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming)) return false
   if (!isOpenClawSameSession(msg, _activeOpenClawRun || { sessionKey: _sessionKey })) return false
   const text = sanitizeOpenClawVisibleReply(msg.text || '')
   if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
-  const userText = _activeOpenClawRun?.userText || _activeOpenClawUserText || _lastVisibleUserText || getOpenClawLastVisibleUserText()
-  if (!isOpenClawCandidateCompatibleWithPrompt(text, userText)) return false
+  if (_activeOpenClawRun && !isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return false
   const stableStreamId = _activeOpenClawRun?.clientRequestId ||
     _activeClientRequestId ||
     msg.clientRequestId ||
@@ -6004,6 +6289,8 @@ function maybeShowOpenClawLongResponseWarning(message, requestId = null, options
   if (requestId && _activeClientRequestId && requestId !== _activeClientRequestId) return false
   if (_openClawActiveRequestClosed) return false
   if (!_openClawPendingResponse && !_isSending && !_isStreaming) return false
+  const liveTimeline = _currentAiBubble?.querySelector?.('.openclaw-run-timeline[open]')
+  if (liveTimeline) return false
   if (hasOpenClawAssistantVisibleContentForRequest(requestId)) {
     if (!_isStreaming || _currentAiTools.length) {
       clearOpenClawGenerationState('assistant-visible', requestId)
@@ -6094,6 +6381,16 @@ function handleEvent(msg) {
       if (typeof data.isError === 'boolean' && current.status == null) current.status = data.isError ? 'error' : 'ok'
       if (current.time == null) current.time = ts || null
       _toolEventData.set(toolCallId, current)
+      upsertTool(_currentAiTools, {
+        id: toolCallId,
+        name: data.name || data.toolName || 'tool',
+        input: current.input || null,
+        output: current.output || null,
+        status: current.status || 'running',
+        time: current.time || null,
+      })
+      recordOpenClawRunStep('tool', data.name || data.toolName || '工具调用', current.status || 'running')
+      renderOpenClawLiveTimeline()
       if (payload.runId) {
         const list = _toolRunIndex.get(payload.runId) || []
         if (!list.includes(toolCallId)) list.push(toolCallId)
@@ -6124,12 +6421,16 @@ function handleEvent(msg) {
           : title ? t('chat.aiExecuting', { title })
           : t('chat.aiProcessing')
         showTyping(true, hint)
+        recordOpenClawRunStep(kind || 'task', title || hint, data.phase === 'start' ? 'running' : 'completed')
+        renderOpenClawLiveTimeline()
       }
     }
 
     // plan 事件（4.5+ 计划更新）
     if (stream === 'plan' && !_isStreaming) {
       showTyping(true, t('chat.aiPlanning'))
+      recordOpenClawRunStep('plan', '正在规划执行步骤', 'running')
+      renderOpenClawLiveTimeline()
     }
 
     // approval 事件（操作审批）
@@ -6140,6 +6441,8 @@ function handleEvent(msg) {
     // thinking 事件（推理/思考）
     if (stream === 'thinking' && !_isStreaming) {
       showTyping(true, t('chat.aiThinking'))
+      recordOpenClawRunStep('analysis', '正在分析任务', 'running')
+      renderOpenClawLiveTimeline()
     }
 
     // command_output 事件（命令输出增量）
@@ -6312,6 +6615,18 @@ function handleChatEvent(payload, eventId = '') {
     _cancelResponseWatchdog()
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
+    if (isOpenClawToolUseMessage(payload.message || payload)) {
+      recordOpenClawProgressNarrative(extractOpenClawAssistantText(payload.message) || c?.text || '', payload.message?.id || eventId || payload.runId)
+      if (c?.tools?.length) {
+        _currentAiTools = c.tools
+        updateOpenClawActiveRun({ sawToolCall: true, status: 'running' })
+        hydrateOpenClawRunTimelineFromTools(c.tools)
+        renderOpenClawLiveTimeline()
+      }
+      showTyping(true, t('chat.aiExecuting'))
+      startOpenClawProgressHistoryPolling()
+      return
+    }
     const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
     if (isOpenClawStreamIdMismatch(payload, stableStreamId)) return
     updateOpenClawActiveRun({
@@ -6348,14 +6663,6 @@ function handleChatEvent(payload, eventId = '') {
     if (finalTools.length) _currentAiTools = finalTools
     if (!finalText && !_currentAiText && finalTools.length) {
       _currentAiText = buildToolOnlyAssistantReply(finalTools)
-    }
-    if (
-      isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) &&
-      !_currentAiImages.length &&
-      !_currentAiVideos.length &&
-      !finalScreenshotCards.length
-    ) {
-      _currentAiText = buildOpenClawToolUnavailableReply(_lastVisibleUserText) || _currentAiText
     }
     const exactShortPreFinalText = normalizeOpenClawExactShortReply(activeFinalUserText, _currentAiText)
     if (exactShortPreFinalText !== _currentAiText) {
@@ -6492,7 +6799,8 @@ function handleChatEvent(payload, eventId = '') {
       appendVideosToEl(_currentAiBubble, _currentAiVideos)
       appendAudiosToEl(_currentAiBubble, _currentAiAudios)
       appendFilesToEl(_currentAiBubble, _currentAiFiles)
-      if (!visibleFinalText) appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
+      appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
+      collapseOpenClawRunTimeline(_currentAiBubble)
       appendLifeAssistantCardsToEl(_currentAiBubble, finalScreenshotCards, finalConfirmations)
     }
     // 添加时间戳 + 耗时 + token 消耗
@@ -6718,7 +7026,7 @@ function extractChatContent(message) {
     const output = typeof message.content === 'string' ? message.content : null
     if (!tools.length) {
       tools.push({
-        name: message.name || message.tool || message.tool_name || 'tool',
+        name: message.name || message.tool || message.tool_name || message.toolName || 'tool',
         input: message.input || message.args || message.parameters || null,
         output: output || message.output || message.result || null,
         status: message.status || 'ok',
@@ -6992,13 +7300,18 @@ function setOpenClawAssistantRenderState(container, state = 'completed', flags =
 
 function renderCompactAssistantContent(rawText, container, options = {}) {
   if (!container) return
+  // Reconciliation can repaint final text after a native tool run. Detach the
+  // process card before clearing the text container, then keep it at the top.
+  const retainedExecutionTimeline = container.querySelector?.('.openclaw-run-timeline') || null
+  retainedExecutionTimeline?.remove()
   const visibleText = sanitizeOpenClawVisibleReply(rawText || '')
   const existingToolCard = container.closest?.('.msg-bubble')?.querySelector('.openclaw-tool-result-card')
   const shouldRenderToolCard = shouldRenderOpenClawToolResultCard([], rawText)
   if (!shouldRenderToolCard && !hasOpenClawRenderableContent({ visibleText })) return
   if (shouldRenderToolCard) {
     container.innerHTML = ''
-    if (!existingToolCard) renderOpenClawToolResultCard(container, [], rawText)
+    if (retainedExecutionTimeline) container.appendChild(retainedExecutionTimeline)
+    else if (!existingToolCard) renderOpenClawToolResultCard(container, [], rawText)
     return
   }
   const phase = options.phase || 'completed'
@@ -7056,6 +7369,7 @@ function renderCompactAssistantContent(rawText, container, options = {}) {
   }
 
   container.appendChild(wrapper)
+  if (retainedExecutionTimeline) container.insertBefore(retainedExecutionTimeline, wrapper)
   const bubble = container.classList?.contains('msg-bubble') ? container : container.closest?.('.msg-bubble')
   container.classList?.toggle('has-markdown-table', hasMarkdownTable)
   bubble?.classList?.toggle('has-markdown-table', hasMarkdownTable)
@@ -7307,6 +7621,46 @@ function _resetWatchdogOnActivity() {
   }
 }
 
+// Gateway progress frames are not guaranteed to reach every WebView build.
+// While a run is active, consult the authoritative local history separately
+// from the response watchdog so heartbeat events cannot postpone UI progress.
+function stopOpenClawProgressHistoryPolling() {
+  if (_openClawProgressHistoryTimer) clearInterval(_openClawProgressHistoryTimer)
+  _openClawProgressHistoryTimer = null
+  _openClawProgressHistoryInFlight = false
+}
+
+function startOpenClawProgressHistoryPolling() {
+  if (_openClawProgressHistoryTimer) return
+  const refresh = async () => {
+    if (!_activeOpenClawRun || _openClawActiveRequestClosed || !_sessionKey || !_messagesEl || !_pageActive) {
+      stopOpenClawProgressHistoryPolling()
+      return
+    }
+    if (_openClawProgressHistoryInFlight || _isLoadingHistory) return
+    if (!wsClient.gatewayReady) return
+    _openClawProgressHistoryInFlight = true
+    try {
+      const history = await wsClient.chatHistory(_sessionKey, 200)
+      const messages = history?.messages || []
+      // This deliberately bypasses the normal cache/merge fast-path. During
+      // an active task we need the latest native tool records immediately.
+      if (completeOpenClawCurrentDraftFromLatestHistory(messages)) {
+        stopOpenClawProgressHistoryPolling()
+        processMessageQueue()
+        return
+      }
+      mergeHistoryIntoCurrentMessages(messages)
+    } catch (error) {
+      console.debug('[chat] OpenClaw progress history refresh skipped:', error?.message || error)
+    } finally {
+      _openClawProgressHistoryInFlight = false
+    }
+  }
+  _openClawProgressHistoryTimer = setInterval(refresh, 2500)
+  refresh()
+}
+
 function _cancelResponseWatchdog() {
   clearTimeout(_responseWatchdog)
   _responseWatchdog = null
@@ -7333,6 +7687,7 @@ function _schedulePostFinalCheck() {
 
 function resetStreamState() {
   _cancelResponseWatchdog()
+  stopOpenClawProgressHistoryPolling()
   clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
   clearOpenClawTransientRecoveryTimer()
@@ -7348,6 +7703,7 @@ function resetStreamState() {
     appendAudiosToEl(_currentAiBubble, _currentAiAudios)
   appendFilesToEl(_currentAiBubble, _currentAiFiles)
   appendToolsToEl(_currentAiBubble, _currentAiTools)
+    collapseOpenClawRunTimeline(_currentAiBubble)
   }
   releaseOpenClawRequestFingerprint()
   _renderPending = false
@@ -7362,6 +7718,7 @@ function resetStreamState() {
     _currentAiAudios = []
     _currentAiFiles = []
     _currentAiTools = []
+    _currentAiTimeline = []
   }
   if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
   _activeClientRequestId = null
@@ -7884,7 +8241,7 @@ function appendOpenClawHistoryMessage(msg) {
   if (isOpenClawHistoryTransientFallbackMessage(msg)) return false
   const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
   const dedupeKey = msg.displayDedupeKey || msg.dedupeKey
-  if (msg.role === 'user') {
+    if (msg.role === 'user') {
     const userAtts = msg.images?.length
       ? msg.images.map(i => normalizeOpenClawAttachment({
         category: 'image',
@@ -7914,6 +8271,7 @@ function appendOpenClawHistoryMessage(msg) {
       dedupeKey,
       sessionKey: msg.sessionKey || _sessionKey,
       fromHistory: true,
+      executionTimeline: msg.executionTimeline || [],
     })
     return true
   }
@@ -7936,7 +8294,7 @@ function completeStreamingDraftFromHistory(msg) {
   appendVideosToEl(_currentAiBubble, msg.videos || [])
   appendAudiosToEl(_currentAiBubble, msg.audios || [])
   appendFilesToEl(_currentAiBubble, msg.files || [])
-  if (!sanitizeOpenClawVisibleReply(msg.text || _currentAiText || '')) appendToolsToEl(_currentAiBubble, msg.tools || [])
+  appendToolsToEl(_currentAiBubble, msg.tools || [], msg.executionTimeline || [])
   appendLifeAssistantCardsToEl(_currentAiBubble, msg.screenshotCards || [], msg.confirmations || [])
   const wrap = _currentAiBubble.closest('.msg')
   if (wrap?.dataset) delete wrap.dataset.openclawStreamingDraft
@@ -7948,6 +8306,7 @@ function completeStreamingDraftFromHistory(msg) {
     meta.innerHTML = `<span class="msg-time">${formatTime(msg.timestamp ? new Date(msg.timestamp) : new Date())}</span><button class="msg-copy-btn" title="${t('common.copy')}">${svgIcon('copy', 12)}</button>`
     group.appendChild(meta)
   }
+  collapseOpenClawRunTimeline(_currentAiBubble)
   _currentAiBubble = null
   _currentAiText = ''
   _currentAiImages = []
@@ -7961,6 +8320,10 @@ function completeStreamingDraftFromHistory(msg) {
   _openClawPendingResponse = false
   _openClawActiveRequestClosed = true
   _activeClientRequestId = null
+  stopOpenClawProgressHistoryPolling()
+  _cancelResponseWatchdog()
+  clearGenerationTimeoutManager()
+  showTyping(false)
   finishOpenClawActiveRun('completed', 'history-completed-current-draft')
   _messageQueue = []
   updateSendState()
@@ -7968,7 +8331,7 @@ function completeStreamingDraftFromHistory(msg) {
 }
 
 function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
-  const deduped = dedupeHistoryStable(historyMessages)
+  const deduped = dedupeHistoryStable(attachOpenClawExecutionTimeline(historyMessages))
   const latestUserIndex = deduped.reduce((latest, msg, index) => (
     msg?.role === 'user' && openClawVisibleUserText(msg.text || '') ? index : latest
   ), -1)
@@ -7983,13 +8346,30 @@ function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
       previousUserIndex = index
       previousUserText = userText
       previousUserId = msg.id || msg.messageId || msg.dedupeKey || ''
+      msg._openClawRequestId = msg.clientRequestId || msg.requestId || msg.idempotencyKey || ''
       continue
     }
     if (msg?.role !== 'assistant') continue
     msg._openClawPreviousUserFingerprint = normalizeOpenClawPromptFingerprint(previousUserText)
     msg._openClawPreviousUserId = previousUserId
+    msg._openClawPreviousUserRequestId = deduped[previousUserIndex]?._openClawRequestId || ''
     msg._openClawPreviousUserIndex = previousUserIndex
     msg._openClawAfterLatestHistoryUser = previousUserIndex >= 0 && previousUserIndex === latestUserIndex
+    if (isOpenClawToolUseMessage(msg)) {
+      recordOpenClawProgressNarrative(msg.text || '', msg.id || msg.messageId)
+      if (msg.tools?.length) {
+        hydrateOpenClawRunTimelineFromTools(msg.tools)
+        renderOpenClawLiveTimeline()
+      }
+      continue
+    }
+    if (msg._openClawAfterLatestHistoryUser && msg.tools?.length) {
+      hydrateOpenClawRunTimelineFromTools(msg.tools)
+      // chat.history is the authoritative fallback when Gateway event frames
+      // do not reach the WebView. Hydration alone only changes memory; render
+      // immediately so a running native task visibly advances in the UI.
+      renderOpenClawLiveTimeline()
+    }
     if (!_currentAiBubble && !ensureOpenClawHistoryRecoveryBubble(msg)) continue
     if (completeStreamingDraftFromHistory(msg)) return true
   }
@@ -7998,6 +8378,7 @@ function completeOpenClawCurrentDraftFromLatestHistory(historyMessages = []) {
 
 function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   if (!_messagesEl) return 0
+  historyMessages = attachOpenClawExecutionTimeline(historyMessages)
   if (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) {
     return completeOpenClawCurrentDraftFromLatestHistory(historyMessages) ? 1 : 0
   }
@@ -8006,6 +8387,7 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   }
   let merged = 0
   let lastHistoryUserText = ''
+  let lastHistoryUserRequestId = ''
   const lastVisibleUserFingerprint = getOpenClawLastVisibleUserText()
   const stableHistoryMessages = collapseNearDuplicateOpenClawUsers(
     collapseConsecutiveOpenClawAssistantDuplicates(historyMessages || [])
@@ -8013,12 +8395,26 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   for (const msg of stableHistoryMessages) {
     if (msg?.role === 'user') {
       lastHistoryUserText = openClawVisibleUserText(msg.text || '')
-      if (lastHistoryUserText) _lastVisibleUserText = lastHistoryUserText
+      if (lastHistoryUserText) {
+        _lastVisibleUserText = lastHistoryUserText
+        msg._openClawRequestId = msg.clientRequestId || msg.requestId || msg.idempotencyKey || ''
+        lastHistoryUserRequestId = msg._openClawRequestId
+      }
     } else if (lastHistoryUserText) {
       _lastVisibleUserText = lastHistoryUserText
       msg._openClawPreviousUserFingerprint = normalizeOpenClawPromptFingerprint(lastHistoryUserText)
+      msg._openClawPreviousUserRequestId = lastHistoryUserRequestId
       msg._openClawAfterLatestHistoryUser = !!lastVisibleUserFingerprint &&
         msg._openClawPreviousUserFingerprint === lastVisibleUserFingerprint
+    }
+    if (
+      msg?.role === 'assistant' &&
+      msg._openClawAfterLatestHistoryUser &&
+      (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) &&
+      msg.tools?.length
+    ) {
+      hydrateOpenClawRunTimelineFromTools(msg.tools)
+      renderOpenClawLiveTimeline()
     }
     if (
       msg?.role === 'assistant' &&
@@ -8046,6 +8442,93 @@ function mergeHistoryIntoCurrentMessages(historyMessages = []) {
   return merged
 }
 
+function clearInitialOpenClawHistoryLoadTimers() {
+  _initialOpenClawHistoryTimers.forEach(timer => clearTimeout(timer))
+  _initialOpenClawHistoryTimers = []
+}
+
+async function restoreOpenClawStartupSessionFromRawRegistry() {
+  if (!isTauriRuntime()) return _sessionKey
+  try {
+    const result = await api.listOpenclawRawSessions(80)
+    const sessions = Array.isArray(result?.sessions) ? result.sessions : []
+    const currentKey = normalizeOpenClawSessionKey(_sessionKey)
+    const currentStillExists = sessions.some(session => (
+      normalizeOpenClawSessionKey(session?.sessionKey || session?.key) === currentKey
+    ))
+    if (currentStillExists || !sessions.length) return currentKey
+
+    const latest = [...sessions].sort((a, b) => (
+      Number(b?.updatedAt || b?.lastActivity || b?.createdAt || 0) -
+      Number(a?.updatedAt || a?.lastActivity || a?.createdAt || 0)
+    ))[0]
+    const recoveredKey = normalizeOpenClawSessionKey(latest?.sessionKey || latest?.key)
+    if (!recoveredKey) return currentKey
+
+    _sessionKey = recoveredKey
+    localStorage.setItem(STORAGE_SESSION_KEY, recoveredKey)
+    localStorage.setItem(STORAGE_LAST_ACTIVE_SESSION_KEY, recoveredKey)
+    upsertLocalSession(recoveredKey, parseSessionAgent(recoveredKey) || 'main', parseSessionLabel(recoveredKey))
+    updateSessionTitle()
+    syncOpenClawSessionListActiveState(recoveredKey)
+    return recoveredKey
+  } catch (error) {
+    console.debug('[chat] raw OpenClaw session registry unavailable:', error?.message || error)
+    return _sessionKey
+  }
+}
+
+function scheduleInitialOpenClawHistoryLoad() {
+  clearInitialOpenClawHistoryLoadTimers()
+  if (!_sessionKey || !_messagesEl) return
+  for (const delayMs of [0, 900, 2500, 5000]) {
+    const timer = setTimeout(async () => {
+      const startupSessionKey = await restoreOpenClawStartupSessionFromRawRegistry()
+      if (!_pageActive || !isOpenClawCurrentSessionKey(startupSessionKey)) return
+      // Gateway can emit ready before its session projection is populated.
+      // Refresh the projection first, then retry only an empty initial view.
+      if (countDisplayedChatMessages() > 0) return
+      await refreshSessionList()
+      if (!_pageActive || !isOpenClawCurrentSessionKey(startupSessionKey) || countDisplayedChatMessages() > 0) return
+      _lastHistoryHash = ''
+      loadHistory(startupSessionKey)
+    }, delayMs)
+    _initialOpenClawHistoryTimers.push(timer)
+  }
+}
+
+function renderOpenClawRecoveredHistory(rawMessages, requestedSessionKey, localMessages = []) {
+  const authoritativeMessages = attachOpenClawExecutionTimeline(rawMessages)
+  const deduped = localMessages.length
+    ? dedupeHistoryStable([...localMessages, ...authoritativeMessages])
+    : dedupeHistoryStable(authoritativeMessages)
+  if (!deduped.length || !isOpenClawCurrentSessionKey(requestedSessionKey)) return false
+
+  clearMessages()
+  deduped.forEach(msg => {
+    if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return
+    const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
+    if (msg.role === 'user') {
+      appendUserMessage(openClawVisibleUserText(msg.text || ''), null, msgTime, {
+        dedupeKey: msg.dedupeKey,
+        sessionKey: msg.sessionKey || requestedSessionKey,
+        fromHistory: true,
+      })
+    } else if (msg.role === 'assistant' && !isOpenClawHistoryTransientFallbackMessage(msg)) {
+      appendAiMessage(msg.text, msgTime, msg.images, msg.videos, msg.audios, msg.files, msg.tools, msg.screenshotCards, msg.confirmations, {
+        dedupeKey: msg.dedupeKey,
+        sessionKey: msg.sessionKey || requestedSessionKey,
+        fromHistory: true,
+        executionTimeline: msg.executionTimeline || [],
+      })
+    }
+  })
+  _lastHistoryHash = deduped.map(msg => `${msg.dedupeKey || msg.id || msg.timestamp || ''}:${msg.role}:${(msg.text || '').length}`).join('|')
+  saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+  scrollToBottom()
+  return true
+}
+
 async function loadHistory(sessionKey = _sessionKey) {
   const requestedSessionKey = normalizeOpenClawSessionKey(sessionKey)
   if (!requestedSessionKey || !_messagesEl) return
@@ -8053,7 +8536,7 @@ async function loadHistory(sessionKey = _sessionKey) {
   _isLoadingHistory = true
   let hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
   let localDedupedForSession = []
-  if (!hasExisting && isStorageAvailable()) {
+  if (isStorageAvailable()) {
     const local = await getLocalMessages(requestedSessionKey, 200)
     if (!_messagesEl || !isLoadHistoryForCurrentSession()) {
       _isLoadingHistory = false
@@ -8065,7 +8548,7 @@ async function loadHistory(sessionKey = _sessionKey) {
       if (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) {
         mergeHistoryIntoCurrentMessages(localDeduped)
         hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
-      } else {
+      } else if (!hasExisting) {
         clearMessages()
         localDeduped.forEach(msg => {
           if (!isLoadHistoryForCurrentSession()) return
@@ -8090,6 +8573,7 @@ async function loadHistory(sessionKey = _sessionKey) {
               dedupeKey: msg.displayDedupeKey || msg.dedupeKey,
               sessionKey: msg.sessionKey || requestedSessionKey,
               fromHistory: true,
+              executionTimeline: msg.executionTimeline || [],
             })
           }
         })
@@ -8098,22 +8582,43 @@ async function loadHistory(sessionKey = _sessionKey) {
       }
     }
   }
-  if (!wsClient.gatewayReady) { _isLoadingHistory = false; return }
+  // The Gateway can report ready before its session projection is rebuilt.
+  // In Tauri, the local JSONL is the durable source and must be attempted
+  // before returning for a temporarily unavailable WebSocket projection.
+  let rawHistory = null
+  if (isTauriRuntime()) {
+    try {
+      const raw = await api.readOpenclawRawHistory(requestedSessionKey, 500)
+      if (Array.isArray(raw?.messages) && raw.messages.length) rawHistory = raw.messages
+    } catch (error) {
+      console.debug('[chat] raw OpenClaw history unavailable:', error?.message || error)
+    }
+  }
+
+  if (!wsClient.gatewayReady) {
+    if (rawHistory?.length && isLoadHistoryForCurrentSession()) {
+      renderOpenClawRecoveredHistory(rawHistory, requestedSessionKey, localDedupedForSession)
+    }
+    _isLoadingHistory = false
+    return
+  }
   try {
     const result = await wsClient.chatHistory(requestedSessionKey, 200)
     if (!isLoadHistoryForCurrentSession()) return
-    if (!result?.messages?.length) {
+    if (!result?.messages?.length && !rawHistory?.length) {
       if (_messagesEl && !_messagesEl.querySelector('.msg')) appendSystemMessage(t('chat.noMessages'))
       return
     }
-    const remoteDeduped = dedupeHistoryStable(result.messages)
+    let authoritativeMessages = rawHistory?.length ? rawHistory : result.messages
+    authoritativeMessages = attachOpenClawExecutionTimeline(authoritativeMessages)
+    const remoteDeduped = dedupeHistoryStable(authoritativeMessages)
     const deduped = localDedupedForSession.length
-      ? dedupeHistoryStable([...localDedupedForSession, ...result.messages])
+      ? dedupeHistoryStable([...localDedupedForSession, ...authoritativeMessages])
       : remoteDeduped
     const displayedCount = countDisplayedChatMessages()
+    const hasActiveOpenClawGeneration = Boolean(_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming || _currentAiBubble)
     const refreshIsSparse = hasExisting
-      && !_isSending
-      && !_isStreaming
+      && hasActiveOpenClawGeneration
       && _messageQueue.length === 0
       && deduped.length > 0
       && displayedCount > deduped.length
@@ -8124,19 +8629,29 @@ async function loadHistory(sessionKey = _sessionKey) {
         historyCount: deduped.length,
       })
       mergeHistoryIntoCurrentMessages(deduped)
-      saveMessages(result.messages.map(cachedHistoryMessage))
+      saveMessages(authoritativeMessages.map(cachedHistoryMessage))
       return
     }
     const hash = deduped
       .map(m => `${m.dedupeKey || m.displayDedupeKey || m.id || m.messageId || m.runId || m.timestamp || ''}:${m.role}:${(m.text || '').length}:${m.images?.length || 0}:${m.videos?.length || 0}:${m.audios?.length || 0}:${m.files?.length || 0}:${m.tools?.length || 0}`)
       .join('|')
     const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete(_currentAiText)
-    const hasActiveOpenClawGeneration = Boolean(_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming || _currentAiBubble)
-    if (hash === _lastHistoryHash && hasExisting && !hasIncompleteDraft && !hasActiveOpenClawGeneration) return
     _lastHistoryHash = hash
 
-    // Same-session reloads merge history into the visible chat instead of repainting over drafts.
-    if (hasExisting || shouldProtectCurrentMessagesFromHistory(deduped)) {
+    // A native run can finish in Gateway before its final chat event reaches
+    // the WebView. Complete the active turn from the authoritative history
+    // before normal history merging, otherwise a live progress card can keep
+    // the UI in the executing state after the real result already exists.
+    if ((_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) &&
+      completeOpenClawCurrentDraftFromLatestHistory(remoteDeduped)) {
+      saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+      return
+    }
+
+    // A restored WebView snapshot is only a temporary offline/draft fallback.
+    // Once Gateway returns authoritative history for an idle session, rebuild
+    // from it so stale snapshots cannot hide or reorder real conversations.
+    if (hasActiveOpenClawGeneration || shouldProtectCurrentMessagesFromHistory(deduped)) {
       mergeHistoryIntoCurrentMessages(deduped)
       saveMessages(result.messages.map(cachedHistoryMessage))
       _isLoadingHistory = false
@@ -8175,13 +8690,14 @@ async function loadHistory(sessionKey = _sessionKey) {
           dedupeKey: msg.dedupeKey,
           sessionKey: msg.sessionKey || requestedSessionKey,
           fromHistory: true,
+          executionTimeline: msg.executionTimeline || [],
         })
       }
     })
     if (hasOmittedImages) {
       appendSystemMessage(t('chat.imageHistoryHint'))
     }
-    saveMessages(result.messages.map(cachedHistoryMessage))
+    saveMessages(authoritativeMessages.map(cachedHistoryMessage))
     scrollToBottom()
   } catch (e) {
     console.error('[chat] loadHistory error:', e)
@@ -8206,6 +8722,7 @@ function normalizeOpenClawHistoryRecord(msg = {}) {
     messageId: inner.messageId || msg.messageId || msg.id,
     eventId: inner.eventId || msg.eventId,
     runId: inner.runId || msg.runId,
+    stopReason: inner.stopReason || inner.stop_reason || msg.stopReason || msg.stop_reason,
     idempotencyKey: inner.idempotencyKey || msg.idempotencyKey,
     clientRequestId: inner.clientRequestId || msg.clientRequestId,
     requestId: inner.requestId || msg.requestId,
@@ -8217,6 +8734,7 @@ function normalizeOpenClawHistoryRecord(msg = {}) {
     type: inner.type || msg.type,
     timestamp: inner.timestamp || msg.timestamp,
     attachments: inner.attachments || msg.attachments,
+    executionTimeline: inner.executionTimeline || msg.executionTimeline,
   }
 }
 
@@ -8319,6 +8837,7 @@ function dedupeHistoryStable(messages) {
       messageId: msg.messageId,
       eventId: msg.eventId,
       runId: msg.runId,
+      stopReason: msg.stopReason,
       idempotencyKey: msg.idempotencyKey,
       clientRequestId: msg.clientRequestId,
       requestId: msg.requestId,
@@ -8342,6 +8861,7 @@ function dedupeHistoryStable(messages) {
       audios: c.audios,
       files: c.files,
       tools,
+      executionTimeline: Array.isArray(msg.executionTimeline) ? msg.executionTimeline : [],
       screenshotCards: c.screenshotCards,
       confirmations: c.confirmations,
       timestamp: msg.timestamp,
@@ -8418,6 +8938,14 @@ function mergeOpenClawHistoryMessage(prev, next) {
   }
   const tools = [...(prev.tools || [])]
   ;(next.tools || []).forEach(t => upsertTool(tools, t))
+  const executionTimeline = [...(prev.executionTimeline || [])]
+  const timelineKeys = new Set(executionTimeline.map(step => step?.key || `${step?.kind}:${step?.label}`))
+  for (const step of next.executionTimeline || []) {
+    const key = step?.key || `${step?.kind}:${step?.label}`
+    if (timelineKeys.has(key)) continue
+    timelineKeys.add(key)
+    executionTimeline.push(step)
+  }
   return {
     ...prev,
     ...next,
@@ -8430,6 +8958,8 @@ function mergeOpenClawHistoryMessage(prev, next) {
     screenshotCards: mergeOpenClawUniqueMedia(prev.screenshotCards, next.screenshotCards),
     confirmations: mergeOpenClawUniqueMedia(prev.confirmations, next.confirmations),
     tools,
+    executionTimeline,
+    stopReason: next.stopReason || prev.stopReason,
     timestamp: prev.timestamp || next.timestamp,
     dedupeKey: prev.dedupeKey || next.dedupeKey,
     displayDedupeKey: prev.displayDedupeKey || next.displayDedupeKey,
@@ -8508,7 +9038,7 @@ function extractContent(msg) {
     if (!tools.length) {
       upsertTool(tools, {
         id: msg.id || msg.tool_call_id || msg.toolCallId,
-        name: msg.name || msg.tool || msg.tool_name || 'tool',
+        name: msg.name || msg.tool || msg.tool_name || msg.toolName || 'tool',
         input: msg.input || msg.args || msg.parameters || null,
         output: output || msg.output || msg.result || null,
         status: msg.status || 'ok',
@@ -8720,22 +9250,19 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   )
   const hasNonTextContent = Boolean(
     hasVisibleNonToolContent ||
-    (isOpenClawToolDebugEnabled() && tools?.length)
+    tools?.length
   )
   const normalizedText = normalizeOpenClawVisibleAssistantText(text || '', {
     fallback: hasNonTextContent ? '' : OPENCLAW_EMPTY_REPLY_FALLBACK,
   })
   text = normalizedText.text ? completeOpenClawVisibleReply(normalizedText.text) : ''
-  if (!text && tools?.length && !hasVisibleNonToolContent && !isOpenClawToolDebugEnabled()) {
-    text = OPENCLAW_TOOL_ONLY_FALLBACK
-  }
   if (!hasOpenClawRenderableContent({
     text,
     images,
     videos,
     audios,
     files,
-    tools: isOpenClawToolDebugEnabled() ? tools : [],
+    tools,
     screenshotCards,
     confirmations,
   })) return
@@ -8793,7 +9320,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   if (renderMeta.openclawTurnId) bubble.dataset.openclawTurnId = renderMeta.openclawTurnId
   if (renderMeta.clientRequestId) bubble.dataset.clientRequestId = renderMeta.clientRequestId
   if (renderMeta.assistantMessageId) bubble.dataset.assistantMessageId = renderMeta.assistantMessageId
-  if (!sanitizeOpenClawVisibleReply(text || '')) appendToolsToEl(bubble, tools)
+  if (tools?.length || renderMeta.executionTimeline?.length) appendToolsToEl(bubble, tools, renderMeta.executionTimeline)
   appendLifeAssistantCardsToEl(bubble, screenshotCards, confirmations)
   const textEl = document.createElement('div')
   textEl.className = 'msg-text'
@@ -8969,19 +9496,21 @@ function collectToolsFromMessage(message, tools) {
 }
 
 /** 渲染工具调用到消息气泡 */
-function appendToolsToEl(el, tools) {
+function appendToolsToEl(el, tools, timelineOverride = null) {
   if (!el) return
   const existing = el.querySelector?.('.msg-tool, .openclaw-tool-result-card')
-  if (!isOpenClawToolDebugEnabled()) {
-    if (existing) existing.remove()
-    return
-  }
+  const hasTimelineOverride = Array.isArray(timelineOverride) && timelineOverride.length > 0
   if (!tools?.length) {
+    if (_currentAiTimeline.length || hasTimelineOverride) {
+      if (existing) existing.remove()
+      renderOpenClawToolResultCard(el, [], '', timelineOverride)
+      return
+    }
     if (existing) existing.remove()
     return
   }
   if (existing) existing.remove()
-  renderOpenClawToolResultCard(el, tools)
+  renderOpenClawToolResultCard(el, tools, '', timelineOverride)
   return
   const container = document.createElement('div')
   container.className = 'msg-tool'
@@ -9618,6 +10147,7 @@ export function cleanup() {
   clearInterval(_typingElapsedInterval)
   _typingElapsedInterval = null
   _cancelResponseWatchdog()
+  clearInitialOpenClawHistoryLoadTimers()
   _sendTimestamp = 0
   clearTimeout(_postFinalCheck)
   _postFinalCheck = null

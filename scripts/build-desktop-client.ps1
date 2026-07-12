@@ -640,8 +640,8 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         }
         models = $defaultModels
         contextInjection = "always"
-        bootstrapMaxChars = 300
-        bootstrapTotalMaxChars = 800
+        bootstrapMaxChars = 2000
+        bootstrapTotalMaxChars = 12000
         thinkingDefault = "off"
         verboseDefault = "off"
       }

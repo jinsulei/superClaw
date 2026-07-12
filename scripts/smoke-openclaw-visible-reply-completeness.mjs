@@ -52,8 +52,8 @@ assert(
 )
 assert(
   appendAiFn.includes('if (!hasOpenClawRenderableContent({') &&
-    appendAiFn.includes('tools: isOpenClawToolDebugEnabled() ? tools : []'),
-  'appendAiMessage must refuse empty assistant messages without renderable attachments and hide tools by default',
+    appendAiFn.includes('tools?.length'),
+  'appendAiMessage must refuse empty assistant messages without renderable content while preserving native tool execution cards',
 )
 
 const deltaStart = source.indexOf("if (state === 'delta')")

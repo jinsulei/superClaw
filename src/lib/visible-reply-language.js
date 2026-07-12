@@ -118,6 +118,10 @@ export function sanitizeVisibleReplyForChinese(reply, input = '', options = {}) 
   }
 
   if (isMostlyEnglishVisibleText(text)) {
+    // Native execution results can legitimately contain English command output,
+    // package names, diagnostics, or a provider's final answer. Callers that
+    // already removed reasoning leaks can preserve the real result.
+    if (options.preserveNonReasoningEnglish === true) return text
     return '我会用中文继续说明：上游返回了较长英文内容，已避免原样展示。请重新发送一次，或明确让我把该英文结果整理成中文结论。'
   }
 

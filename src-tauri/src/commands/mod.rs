@@ -31,6 +31,7 @@ pub mod logs;
 pub mod memory;
 pub mod messaging;
 pub mod ocr;
+pub mod openclaw_history;
 pub mod pairing;
 pub mod service;
 pub mod shared_memory;
@@ -516,6 +517,24 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             }
             if defaults.get("contextInjection").and_then(|v| v.as_str()) != Some("always") {
                 defaults.insert("contextInjection".into(), serde_json::json!("always"));
+                changed = true;
+            }
+            if defaults
+                .get("bootstrapMaxChars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                < 2000
+            {
+                defaults.insert("bootstrapMaxChars".into(), serde_json::json!(2000));
+                changed = true;
+            }
+            if defaults
+                .get("bootstrapTotalMaxChars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                < 12000
+            {
+                defaults.insert("bootstrapTotalMaxChars".into(), serde_json::json!(12000));
                 changed = true;
             }
         }

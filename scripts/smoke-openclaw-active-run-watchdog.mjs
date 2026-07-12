@@ -27,8 +27,8 @@ assert.match(
 )
 assert.match(
   chat,
-  /function\s+getOpenClawStrongHistoryMatchReason\s*\([\s\S]*assistantMessageId[\s\S]*openclawTurnId[\s\S]*clientRequestId[\s\S]*runId[\s\S]*previousUserId[\s\S]*previousUserFingerprint[\s\S]*latestHistoryUserTurn/,
-  'OpenClaw history recovery must check strong turn identifiers and latest history user fallback',
+  /function\s+getOpenClawStrongHistoryMatchReason\s*\([\s\S]*assistantMessageId[\s\S]*openclawTurnId[\s\S]*clientRequestId[\s\S]*previousUserRequestId[\s\S]*previousUserId/,
+  'OpenClaw history recovery must bind raw history to the active request identity',
 )
 assert.match(
   chat,
@@ -43,8 +43,8 @@ assert.match(
 console.log('OPENCLAW_SINGLE_RUN_ONE_ASSISTANT_BUBBLE: PASS')
 console.log('OPENCLAW_DELTA_FINAL_HISTORY_UPDATE_SAME_BUBBLE: PASS')
 console.log('OPENCLAW_HISTORY_CANDIDATE_REQUIRES_STRONG_TURN_MATCH: PASS')
-console.log('OPENCLAW_HISTORY_CANDIDATE_ALLOWS_PREVIOUS_USER_TEXT_FALLBACK: PASS')
-console.log('OPENCLAW_HISTORY_CANDIDATE_ALLOWS_LATEST_HISTORY_USER_FALLBACK: PASS')
+console.log('OPENCLAW_HISTORY_CANDIDATE_BINDS_PREVIOUS_USER_REQUEST: PASS')
+console.log('OPENCLAW_HISTORY_CANDIDATE_REJECTS_LATEST_USER_GUESS: PASS')
 
 assert.match(
   chat,
@@ -55,8 +55,8 @@ console.log('OPENCLAW_EMPTY_DRAFT_HISTORY_RECOVERY: PASS')
 
 assert.match(
   chat,
-  /const\s+OPENCLAW_ACTIVE_RUN_WATCHDOG_MS\s*=\s*75\s*\*\s*1000/,
-  'OpenClaw active run watchdog timeout must be explicit',
+  /const\s+OPENCLAW_ACTIVE_RUN_WATCHDOG_MS\s*=\s*5\s*\*\s*60\s*\*\s*1000/,
+  'OpenClaw active run watchdog timeout must leave enough room for native tool turns',
 )
 assert.match(
   chat,

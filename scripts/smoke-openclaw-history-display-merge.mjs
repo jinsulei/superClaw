@@ -107,13 +107,68 @@ assert.match(
 )
 assert.match(
   chat,
+  /if \(savedAgent && savedAgent === fallbackAgent\) \{\s*return saved/,
+  'OpenClaw startup must restore a same-agent work-file session instead of resetting to main',
+)
+assert.match(
+  chat,
+  /if \(snapshotSessionKey\) \{[\s\S]*?_sessionKey = snapshotSessionKey[\s\S]*?restoreOpenClawChatSnapshot\(snapshotSessionKey, 'render'\)/,
+  'OpenClaw startup must keep the saved session key even when no DOM snapshot exists',
+)
+assert.match(
+  chat,
+  /STORAGE_LAST_ACTIVE_SESSION_KEY = 'superclaw-last-active-session'/,
+  'OpenClaw must keep a user-selected session key separate from Gateway defaults',
+)
+assert.match(
+  chat,
+  /localStorage\.setItem\(STORAGE_LAST_ACTIVE_SESSION_KEY, targetSessionKey\)/,
+  'OpenClaw must persist the actual user session switch for the next app startup',
+)
+assert.match(
+  chat,
+  /getMostRecentLocalSessionKey\(\) \|\|[\s\S]*?STORAGE_LAST_ACTIVE_SESSION_KEY/,
+  'OpenClaw startup must prefer the persisted local session index over Gateway defaults',
+)
+assert.match(
+  chat,
+  /upsertLocalSession\(targetSessionKey, nextAgentId, currentLocalSession\?\.title \|\| parseSessionLabel\(targetSessionKey\)\)/,
+  'OpenClaw session switches must update the local session recency index',
+)
+assert.match(
+  chat,
+  /function scheduleInitialOpenClawHistoryLoad\(\)[\s\S]*?for \(const delayMs of \[0, 900, 2500, 5000\]\)[\s\S]*?await refreshSessionList\(\)[\s\S]*?loadHistory\(startupSessionKey\)/,
+  'OpenClaw startup must retry an empty history view without requiring a manual session switch',
+)
+assert.match(
+  chat,
+  /let rawHistory = null[\s\S]*?api\.readOpenclawRawHistory\(requestedSessionKey, 500\)[\s\S]*?if \(!wsClient\.gatewayReady\) \{[\s\S]*?renderOpenClawRecoveredHistory\(rawHistory, requestedSessionKey, localDedupedForSession\)/,
+  'OpenClaw startup must restore durable JSONL history before a delayed Gateway projection is ready',
+)
+assert.match(
+  chat,
+  /function renderOpenClawRecoveredHistory\([\s\S]*?attachOpenClawExecutionTimeline\(rawMessages\)[\s\S]*?clearMessages\(\)[\s\S]*?appendAiMessage\(/,
+  'OpenClaw raw-history recovery must preserve execution timelines while rendering an offline startup view',
+)
+assert.match(
+  chat,
+  /function restoreOpenClawStartupSessionFromRawRegistry\([\s\S]*?api\.listOpenclawRawSessions\(80\)[\s\S]*?currentStillExists[\s\S]*?_sessionKey = recoveredKey[\s\S]*?localStorage\.setItem\(STORAGE_LAST_ACTIVE_SESSION_KEY, recoveredKey\)/,
+  'OpenClaw startup must replace an obsolete local session key with the latest durable session instead of rendering an empty conversation',
+)
+assert.match(
+  chat,
+  /function markOpenClawGatewayReady\([\s\S]*?countDisplayedChatMessages\(\) === 0[\s\S]*?scheduleInitialOpenClawHistoryLoad\(\)/,
+  'OpenClaw must reload durable history when a Gateway restart becomes ready while the chat route stays mounted',
+)
+assert.match(
+  chat,
   /normalizeOpenClawPromptFingerprint\(lastHistoryUserText\) !== lastVisibleUserFingerprint[\s\S]*continue/,
   'OpenClaw history merge must not append old-user assistant replies after the latest visible user',
 )
 assert.match(
   chat,
-  /const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete\(_currentAiText\)[\s\S]*hash === _lastHistoryHash && hasExisting && !hasIncompleteDraft/,
-  'OpenClaw history hash dedupe must not skip merge while an incomplete live draft exists',
+  /const hasActiveOpenClawGeneration = Boolean\([\s\S]*const hasIncompleteDraft = _currentAiBubble && _currentAiText && isOpenClawTextClearlyIncomplete\(_currentAiText\)[\s\S]*if \(hasActiveOpenClawGeneration \|\| shouldProtectCurrentMessagesFromHistory\(deduped\)\)/,
+  'OpenClaw must preserve active drafts but rebuild an idle view from authoritative Gateway history',
 )
 assert.match(
   chat,
@@ -122,8 +177,8 @@ assert.match(
 )
 assert.match(
   chat,
-  /function\s+completeOpenClawCurrentDraftFromLatestHistory\s*\([\s\S]*dedupeHistoryStable\(historyMessages\)[\s\S]*_openClawPreviousUserId[\s\S]*completeStreamingDraftFromHistory\(msg\)/,
-  'OpenClaw recovery must annotate same-turn evidence before completing the current draft',
+  /function\s+completeOpenClawCurrentDraftFromLatestHistory\s*\([\s\S]*dedupeHistoryStable\(attachOpenClawExecutionTimeline\(historyMessages\)\)[\s\S]*_openClawPreviousUserRequestId[\s\S]*completeStreamingDraftFromHistory\(msg\)/,
+  'OpenClaw recovery must retain tool-use frames and annotate same-turn evidence before completing the current draft',
 )
 assert.match(
   chat,
