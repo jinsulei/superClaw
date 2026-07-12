@@ -4627,14 +4627,6 @@ async function sendMessage(event) {
   updateSendState()
   _attachments = []
   renderAttachments()
-  if (attachments.length && isOcrIntentText(text)) {
-    const result = await runOcrForAttachmentData(attachments[0])
-    if (result?.ok && result.text) {
-      text = `${text}\n\n[OCR]\n${result.text}\n[/OCR]`
-    } else if (result) {
-      appendSystemMessage(formatOcrResult(result))
-    }
-  }
   const slashCommand = parseOpenClawSlashCommand(text)
   if (slashCommand?.type === 'delegate-hermes') {
     const content = slashCommand.payload
@@ -4815,9 +4807,21 @@ function buildAttachmentTriggeredPrompt(text, attachments = []) {
     return category === 'image' || mime.startsWith('image/')
   })
   if (!hasImage) return toolPrompt
+  const ocrPath = attachments
+    .map(item => openClawAttachmentMediaPath(item))
+    .find(Boolean)
+  const ocrRequested = isOcrIntentText(base)
+  const ocrInstruction = ocrRequested && ocrPath
+    ? `The user explicitly requested OCR. Call superclaw_ocr with imagePath=${JSON.stringify(ocrPath)} and sourceType="image". Use its returned text as evidence; do not ask the UI to OCR the attachment.`
+    : ocrRequested
+      ? 'The user explicitly requested OCR, but no durable local image path is available. Explain that the attachment was delivered and ask the user to use the explicit OCR action or reattach the image; do not invent OCR text.'
+      : 'Do not run OCR automatically. Use the supplied image attachment only when the user explicitly asks to read text from it.'
   return [
     toolPrompt,
     '',
+    '[IMAGE_ATTACHMENT_CONTEXT]',
+    ocrInstruction,
+    '[/IMAGE_ATTACHMENT_CONTEXT]',
     '[图片识别触发]',
     '本轮用户粘贴或上传了图片附件。请直接调用可用的视觉/图片识别工具读取图片，并基于图片内容回答；不要等待用户再次确认。',
     '这个能力只在本轮图片输入时触发，普通文字聊天不要加载视觉工具。若当前工具链无法读取图片，请用中文明确说明。',

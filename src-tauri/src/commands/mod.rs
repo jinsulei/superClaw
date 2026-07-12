@@ -311,7 +311,7 @@ fn ensure_superclaw_openclaw_plugins() {
         .join("openclaw-zh")
         .join("dist")
         .join("extensions");
-    for plugin in ["desktop-control", "skill-manager"] {
+    for plugin in ["desktop-control", "skill-manager", "superclaw-ocr"] {
         let source = source_extensions.join(plugin);
         let target = runtime_extensions.join(plugin);
         if source.join("openclaw.plugin.json").is_file() {
@@ -533,7 +533,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     "skillsLimits": { "maxSkillsPromptChars": 0 },
                     "tools": {
                         "profile": OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
-                        "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"]
+                        "alsoAllow": ["browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process"]
                     },
                     "thinkingDefault": "off",
                     "verboseDefault": "off"
@@ -573,7 +573,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     .entry("alsoAllow")
                     .or_insert_with(|| serde_json::json!([]));
                 if let Some(allow) = allow.as_array_mut() {
-                    for tool in ["browser", "desktop_control", "skill_manager", "exec", "process"] {
+                    for tool in ["browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process"] {
                         if !allow.iter().any(|value| value.as_str() == Some(tool)) {
                             allow.push(serde_json::json!(tool));
                             changed = true;
@@ -602,7 +602,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("allow")
             .or_insert_with(|| serde_json::json!([]));
         if let Some(allow_arr) = allow.as_array_mut() {
-            for key in ["browser", "desktop-control", "skill-manager"] {
+            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr"] {
                 if !allow_arr.iter().any(|v| v.as_str() == Some(key)) {
                     allow_arr.push(serde_json::json!(key));
                     changed = true;
@@ -613,7 +613,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            for key in ["browser", "desktop-control", "skill-manager"] {
+            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr"] {
                 let enabled = entries_obj
                     .get(key)
                     .and_then(|v| v.get("enabled"))
@@ -640,7 +640,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "tools".into(),
             serde_json::json!({
                 "profile": OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
-                "alsoAllow": ["browser", "desktop_control", "skill_manager", "exec", "process"],
+                "alsoAllow": ["browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process"],
                 "exec": { "host": "gateway", "security": "full", "ask": "off" },
                 "sessions": { "visibility": "agent" }
             }),
@@ -658,6 +658,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             "browser",
             "desktop_control",
             "skill_manager",
+            "superclaw_ocr",
             "exec",
             "process"
         ]);

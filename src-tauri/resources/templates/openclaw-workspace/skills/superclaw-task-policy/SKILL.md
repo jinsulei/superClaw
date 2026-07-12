@@ -28,8 +28,10 @@ OpenClaw tools and never replaces them with pretend text output.
 
 ## OCR and Documents
 
-- Use the shared OCR tool when it is available for image, screenshot, or page
-  text. Preserve the returned text as an artifact for the task.
+- Use `superclaw_ocr` for a user-provided image, desktop screenshot, or the
+  current browser-page screenshot. It uses the one bundled offline OCR engine;
+  do not duplicate its result by asking the UI to OCR the same attachment.
+- Preserve the returned text and source path as an artifact for the task.
 - If OCR is unavailable, explain that limitation instead of inventing text.
 
 ## Finance

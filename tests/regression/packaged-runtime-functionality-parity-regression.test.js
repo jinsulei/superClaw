@@ -43,6 +43,16 @@ test('OpenClaw MiniMax test configuration is available in Tauri development mode
   assert.match(modelPageSource, /id="minimax-test-api-key"/)
 })
 
+test('OpenClaw shared OCR plugin is sourced and packaged with the same relative runtime layout', () => {
+  assert.match(buildDesktopSource, /"superclaw-ocr"/)
+  assert.match(
+    buildDesktopSource,
+    /runtime\\openclaw\\node_modules\\@qingchencloud\\openclaw-zh\\dist\\extensions\\superclaw-ocr\\openclaw\.plugin\.json/,
+  )
+  assert.match(openclawCommandsSource, /"superclaw-ocr"/)
+  assert.match(modelPageSource, /superclaw_ocr/)
+})
+
 test('OpenClaw chat snapshots visible messages before the engine switch shell replaces content', () => {
   assert.match(openclawChatSource, /window\.addEventListener\('superclaw:before-engine-switch',[\s\S]*?handleOpenClawChatSnapshotLifecycle\('engine-switch'\)/)
   const switchBlock = sidebarSource.match(/if \(eid !== fromEngineId\) \{[\s\S]*?const switchProgress =/)?.[0] || ''
@@ -528,10 +538,10 @@ test('OpenClaw packaged release config does not enable insecure control UI auth'
 })
 
 test('packaged OpenClaw includes the native SuperClaw task policy skill', () => {
-  assert.match(
-    buildDesktopSource,
-    /templates\\openclaw-workspace\\skills\\superclaw-task-policy\\SKILL\.md/,
-  )
+  assert.match(buildDesktopSource, /templates\\openclaw-workspace/)
+  assert.match(buildDesktopSource, /superclaw-task-policy\\SKILL\.md/)
+  assert.match(buildDesktopSource, /superclaw-ecommerce\\SKILL\.md/)
+  assert.match(buildDesktopSource, /superclaw-finance\\SKILL\.md/)
   assert.match(buildDesktopSource, /Packaged SuperClaw native task policy skill/)
   assert.match(buildDesktopSource, /contextInjection\s*=\s*"always"/)
 })
@@ -640,7 +650,7 @@ test('OpenClaw packaged exact short-answer prompts are not overridden by workspa
 
 test('OpenClaw packaged identity and execution scopes are seeded for tool dispatch', () => {
   assert.match(openclawCommandsSource, /OPENCLAW_EFFECTIVE_TOOLS_PROFILE:\s*&str\s*=\s*"coding"/)
-  assert.match(openclawCommandsSource, /"alsoAllow":\s*\["browser",\s*"desktop_control",\s*"skill_manager",\s*"exec",\s*"process"\]/)
+  assert.match(openclawCommandsSource, /"alsoAllow":\s*\["browser",\s*"desktop_control",\s*"skill_manager",\s*"superclaw_ocr",\s*"exec",\s*"process"\]/)
   assert.match(openclawCommandsSource, /"exec":\s*\{\s*"host":\s*"gateway",\s*"security":\s*"full",\s*"ask":\s*"off"\s*\}/)
   assert.match(openclawDeviceSource, /"approvedScopes":\s*SCOPES/)
   for (const scope of ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.read', 'operator.write']) {

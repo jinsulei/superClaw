@@ -4621,7 +4621,7 @@ function generateCalibrationToken() {
   return `cp-${crypto.randomBytes(16).toString('hex')}`
 }
 
-const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec', 'process']
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'superclaw_ocr', 'exec', 'process']
 const OPENCLAW_EFFECTIVE_TOOLS_PROFILE = 'coding'
 const OPENCLAW_SUPPORTED_TOOLS_PROFILES = ['minimal', 'coding']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
@@ -4629,6 +4629,7 @@ const OPENCLAW_STATUS_ENABLED_PLUGINS = [
   'browser',
   'desktop-control',
   'skill-manager',
+  'superclaw-ocr',
   'duckduckgo',
   'exa',
   'firecrawl',
@@ -4642,7 +4643,7 @@ const OPENCLAW_STATUS_ENABLED_PLUGINS = [
 ]
 const OPENCLAW_WEB_SEARCH_PLUGIN_IDS = ['duckduckgo', 'exa', 'firecrawl', 'perplexity', 'searxng', 'tavily']
 const OPENCLAW_MEMORY_PLUGIN_IDS = ['memory-core', 'active-memory', 'memory-wiki']
-const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager']
+const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager', 'superclaw-ocr']
 const OPENCLAW_REQUIRED_BUNDLED_PLUGINS = ['browser']
 
 function sha256File(filePath) {
@@ -4802,7 +4803,7 @@ function buildCalibrationBaseline() {
     agents: {
       defaults: {
         workspace: calibrationDefaultWorkspace(),
-        contextInjection: 'never',
+        contextInjection: 'always',
         bootstrapMaxChars: 300,
         bootstrapTotalMaxChars: 800,
         thinkingDefault: 'off',
@@ -4836,6 +4837,7 @@ function buildCalibrationBaseline() {
         browser: { enabled: true },
         'desktop-control': { enabled: true },
         'skill-manager': { enabled: true },
+        'superclaw-ocr': { enabled: true },
       },
     },
     session: { dmScope: 'per-channel-peer' },
@@ -4892,7 +4894,7 @@ function ensurePortableDesktopToolDefaults(config) {
   config.agents = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
   config.agents.defaults = config.agents.defaults && typeof config.agents.defaults === 'object' && !Array.isArray(config.agents.defaults) ? config.agents.defaults : {}
   delete config.agents.defaults.skills
-  config.agents.defaults.contextInjection = 'never'
+  config.agents.defaults.contextInjection = 'always'
   config.agents.defaults.bootstrapMaxChars = 300
   config.agents.defaults.bootstrapTotalMaxChars = 800
   config.agents.defaults.thinkingDefault = 'off'

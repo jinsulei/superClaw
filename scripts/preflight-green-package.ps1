@@ -548,7 +548,7 @@ function Test-OpenClawDesktopControlRegistration {
   $runtime = "src-tauri/resources/runtime/openclaw"
   $sourceRoot = Join-Path $runtime "dist/extensions"
   $registeredRoot = Join-Path $runtime "node_modules/@qingchencloud/openclaw-zh/dist/extensions"
-  foreach ($pluginId in @("desktop-control", "skill-manager")) {
+  foreach ($pluginId in @("desktop-control", "skill-manager", "superclaw-ocr")) {
     $sourceManifest = Join-Path $sourceRoot "$pluginId/openclaw.plugin.json"
     $sourceEntry = Join-Path $sourceRoot "$pluginId/index.js"
     $registeredManifest = Join-Path $registeredRoot "$pluginId/openclaw.plugin.json"
@@ -582,7 +582,7 @@ function Test-OpenClawDesktopControlRegistration {
   $openclawConfigPath = "src-tauri/resources/data/.openclaw/openclaw.json"
   Assert-Leaf $openclawConfigPath "OpenClaw local config"
   $openclawConfig = Get-Content -LiteralPath $openclawConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  foreach ($pluginId in @("browser", "desktop-control", "skill-manager")) {
+  foreach ($pluginId in @("browser", "desktop-control", "skill-manager", "superclaw-ocr")) {
     $entry = $openclawConfig.plugins.entries.PSObject.Properties[$pluginId]
     if (-not $entry -or $entry.Value.enabled -ne $true) {
       throw "OpenClaw config plugin entry must be enabled: $pluginId"

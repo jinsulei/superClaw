@@ -136,7 +136,7 @@ function Ensure-OpenClawConfigEntry {
     $changed = $true
   }
 
-  foreach ($pluginId in @("browser", "desktop-control", "skill-manager")) {
+  foreach ($pluginId in @("browser", "desktop-control", "skill-manager", "superclaw-ocr")) {
     $entry = $config.plugins.entries.PSObject.Properties[$pluginId]
     if (-not $entry) {
       if ($VerifyOnly) { throw "OpenClaw config missing plugin entry: $pluginId" }
@@ -163,7 +163,7 @@ function Ensure-OpenClawConfigEntry {
   if ($config.plugins.allow -is [array]) {
     $allow = @($config.plugins.allow)
   }
-  foreach ($pluginId in @("browser", "desktop-control", "skill-manager")) {
+  foreach ($pluginId in @("browser", "desktop-control", "skill-manager", "superclaw-ocr")) {
     if ($allow -notcontains $pluginId) {
       if ($VerifyOnly) { throw "OpenClaw plugins.allow missing: $pluginId" }
       $allow += $pluginId
@@ -189,7 +189,7 @@ $configPath = Join-Path $dataRootResolved ".openclaw\openclaw.json"
 Assert-File (Join-Path $openclawRuntime "openclaw.cmd") "OpenClaw launcher"
 Assert-File (Join-Path $openclawRuntime "node.exe") "OpenClaw node.exe"
 
-foreach ($pluginId in @("desktop-control", "skill-manager")) {
+foreach ($pluginId in @("desktop-control", "skill-manager", "superclaw-ocr")) {
   $source = Join-Path $sourceExtensions $pluginId
   $dest = Join-Path $runtimeExtensions $pluginId
   Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin manifest: $pluginId"

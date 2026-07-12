@@ -117,6 +117,8 @@ src-tauri/resources/runtime/openclaw/dist/extensions/*
 !src-tauri/resources/runtime/openclaw/dist/extensions/desktop-control/**
 !src-tauri/resources/runtime/openclaw/dist/extensions/skill-manager/
 !src-tauri/resources/runtime/openclaw/dist/extensions/skill-manager/**
+!src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/
+!src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/**
 !src-tauri/resources/runtime/ocr/
 !src-tauri/resources/runtime/ocr/**
 src-tauri/resources/runtime/ocr/node_modules/

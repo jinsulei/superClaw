@@ -187,7 +187,7 @@ async function renderLocalAccessPage(app) {
 
 // OpenClaw portable defaults
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
-const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'superclaw_ocr', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 
 function ensurePortableOpenClawSkills(config) {
@@ -224,7 +224,8 @@ function ensurePortableOpenClawSkills(config) {
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
   config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
-  for (const pluginId of ['browser', 'desktop-control', 'skill-manager']) {
+  config.plugins.entries['superclaw-ocr'] = { ...(config.plugins.entries['superclaw-ocr'] || {}), enabled: true }
+  for (const pluginId of ['browser', 'desktop-control', 'skill-manager', 'superclaw-ocr']) {
     if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
   }
 

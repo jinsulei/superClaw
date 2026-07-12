@@ -1,0 +1,19 @@
+{
+  "id": "superclaw-ocr",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "superclaw_ocr"
+    ]
+  },
+  "name": "SuperClaw OCR",
+  "description": "Run the bundled offline OCR engine for image, screenshot, and current-page captures.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

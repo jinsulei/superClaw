@@ -22,14 +22,17 @@ workspace to do the work.
 
 ## Product Workflows
 
-- Ecommerce: inspect products, prices, variants, stock, and checkout details
-  with native tools. Recommendations and cart preparation are allowed; order
-  submission and payment require confirmation.
-- OCR: use the shared OCR capability when it is exposed. Keep recognized text
-  as task evidence and do not claim OCR succeeded without its result.
-- Finance: read, classify, reconcile, and summarize local financial material;
-  creating drafts is allowed. Transfers, payment, deletion, and external
-  submission require confirmation.
+- Ecommerce: follow the `superclaw-ecommerce` skill when it is available;
+  inspect products, prices, variants, stock, and checkout details with native
+  tools. Recommendations and cart preparation are allowed; order submission
+  and payment require confirmation.
+- OCR: call `superclaw_ocr` only for an explicit image-reading task or after a
+  user asks to read an image. Keep recognized text as task evidence and do not
+  claim OCR succeeded without its result.
+- Finance: follow the `superclaw-finance` skill when it is available; read,
+  classify, reconcile, and summarize local financial material. Creating drafts
+  is allowed. Transfers, payment, deletion, and external submission require
+  confirmation.
 - Collaboration: return concise evidence, artifacts, progress, and failures to
   Hermes when the task originated there.
 

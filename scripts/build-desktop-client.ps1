@@ -522,7 +522,7 @@ function Assert-SuperClawOpenClawPluginSources {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
   $BundledExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
-  foreach ($plugin in @("skill-manager", "desktop-control")) {
+  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr")) {
     $source = Join-Path $SourceExtensions $plugin
     Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
     Assert-File (Join-Path $source "index.js") "OpenClaw plugin source entry: $plugin"
@@ -539,7 +539,7 @@ function Sync-SuperClawOpenClawPlugins([string]$TargetResourcesDir) {
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
   New-Item -ItemType Directory -Path $RuntimeExtensions -Force | Out-Null
 
-  foreach ($plugin in @("skill-manager", "desktop-control")) {
+  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr")) {
     $source = Join-Path $SourceExtensions $plugin
     $destination = Join-Path $RuntimeExtensions $plugin
     Copy-Directory $source $destination
@@ -656,7 +656,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         skillsLimits = [ordered]@{ maxSkillsPromptChars = 12000 }
         tools = [ordered]@{
           profile = "coding"
-          alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
+          alsoAllow = @("browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process")
           exec = [ordered]@{
             host = "gateway"
             security = "full"
@@ -676,11 +676,12 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       restart = $true
     }
     plugins = [ordered]@{
-      allow = @("browser", "desktop-control", "skill-manager")
+      allow = @("browser", "desktop-control", "skill-manager", "superclaw-ocr")
       entries = [ordered]@{
         browser = [ordered]@{ enabled = $true }
         "desktop-control" = [ordered]@{ enabled = $true }
         "skill-manager" = [ordered]@{ enabled = $true }
+        "superclaw-ocr" = [ordered]@{ enabled = $true }
       }
     }
     session = [ordered]@{ dmScope = "per-channel-peer" }
@@ -690,7 +691,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
     }
     tools = [ordered]@{
       profile = "coding"
-      alsoAllow = @("browser", "desktop_control", "skill_manager", "exec", "process")
+      alsoAllow = @("browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process")
       exec = [ordered]@{
         host = "gateway"
         security = "full"
@@ -1507,10 +1508,13 @@ foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
 }
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json") "Packaged OpenClaw skill-manager plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\superclaw-ocr\openclaw.plugin.json") "Packaged OpenClaw shared OCR plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\browser\openclaw.plugin.json") "Packaged OpenClaw browser plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\superclaw-task-policy\SKILL.md") "Packaged SuperClaw native task policy skill"
+Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\superclaw-ecommerce\SKILL.md") "Packaged SuperClaw ecommerce workflow skill"
+Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\superclaw-finance\SKILL.md") "Packaged SuperClaw finance workflow skill"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
 Assert-File (Join-Path $PackagedResources "data\hermes\SOUL.md") "Packaged Hermes identity SOUL.md"
