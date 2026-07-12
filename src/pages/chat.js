@@ -210,6 +210,7 @@ let _generationTimeoutManager = null, _manualStopRequested = false
 let _openClawPendingResponse = false, _openClawActiveRequestClosed = true
 let _lastOpenClawTransientRecoveryAt = 0
 let _openClawTransientRecoveryTimer = null
+let _openClawToolFinalRecoveryTimer = null
 let _attachments = []
 const _openClawMediaDataUrlCache = new Map()
 const OPENCLAW_IMAGE_MAX_BYTES = 20 * 1024 * 1024
@@ -4193,6 +4194,29 @@ function clearOpenClawTransientRecoveryTimer() {
   _openClawTransientRecoveryTimer = null
 }
 
+function clearOpenClawToolFinalRecoveryTimer() {
+  if (!_openClawToolFinalRecoveryTimer) return
+  clearTimeout(_openClawToolFinalRecoveryTimer)
+  _openClawToolFinalRecoveryTimer = null
+}
+
+function scheduleOpenClawToolFinalRecovery(requestId = null) {
+  if (!_activeOpenClawRun || !_sessionKey || _openClawToolFinalRecoveryTimer) return false
+  const activeRequestId = requestId || _activeOpenClawRun.clientRequestId || _activeClientRequestId || null
+  _openClawToolFinalRecoveryTimer = setTimeout(() => {
+    _openClawToolFinalRecoveryTimer = null
+    if (!isOpenClawGenerationActive()) return
+    if (activeRequestId && _activeClientRequestId && activeRequestId !== _activeClientRequestId) return
+    recoverOpenClawAssistantFromHistoryBeforeFallback('tool-final-history-recovery', activeRequestId, {
+      attempts: 40,
+      delayMs: 1000,
+    }).catch(error => {
+      console.warn('[chat] OpenClaw tool final history recovery failed:', error)
+    })
+  }, 700)
+  return true
+}
+
 function scheduleOpenClawTransientRecovery(reason = 'transient-disconnect', options = {}) {
   if (!isOpenClawGenerationActive()) return false
   clearOpenClawTransientRecoveryTimer()
@@ -5730,7 +5754,8 @@ function isRecoverableOpenClawCurrentDraft() {
 
 function canRecoverOpenClawDraftFromLatestHistory(msg = {}) {
   if (!msg || msg.role !== 'assistant' || !_currentAiBubble) return false
-  if (!isRecoverableOpenClawCurrentDraft()) return false
+  const recoveringToolTurn = Boolean(_activeOpenClawRun?.sawToolCall)
+  if (!isRecoverableOpenClawCurrentDraft() && !recoveringToolTurn) return false
   if (!isOpenClawSameSession(msg, _activeOpenClawRun || { sessionKey: _sessionKey })) return false
   const text = sanitizeOpenClawVisibleReply(msg.text || '')
   if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
@@ -5888,8 +5913,30 @@ function shouldUseOpenClawEmptyReplyFallback(requestId = null) {
   )
 }
 
-function isOpenClawStreamIdMismatch(stableStreamId = '') {
-  return !!(_currentAiBubbleRequestId && stableStreamId && _currentAiBubbleRequestId !== stableStreamId)
+function isOpenClawStreamIdMismatch(event = {}, stableStreamId = '') {
+  if (!_currentAiBubbleRequestId || !stableStreamId || _currentAiBubbleRequestId === stableStreamId) return false
+
+  const activeSessionKey = normalizeOpenClawSessionKey(_activeOpenClawRun?.sessionKey || _sessionKey)
+  const eventSessionKey = normalizeOpenClawSessionKey(event?.sessionKey || '')
+  if (activeSessionKey && eventSessionKey && activeSessionKey !== eventSessionKey) return true
+
+  // OpenClaw can emit a tool-use prelude and its final assistant reply with
+  // different message/request ids. A shared run id still means the same turn;
+  // some final events do not repeat the client request id at all.
+  const activeRunId = String(_currentRunId || _activeOpenClawRun?.runId || '')
+  const eventRunId = String(event?.runId || '')
+  if (activeRunId && eventRunId && activeRunId === eventRunId) return false
+  if (activeRunId && eventRunId && activeRunId !== eventRunId) return true
+
+  const activeRequestId = String(_activeClientRequestId || _activeOpenClawRun?.clientRequestId || '')
+  const eventRequestIds = [event?.clientRequestId, event?.requestId, event?.idempotencyKey]
+    .filter(Boolean)
+    .map(value => String(value))
+  if (activeRequestId && eventRequestIds.includes(activeRequestId)) return false
+
+  // Do not drop a current final merely because it uses an assistant-message id.
+  // A foreign event is only safe to reject once this turn is no longer active.
+  return !isOpenClawGenerationActive()
 }
 
 function hasOpenClawAssistantVisibleContentForRequest(requestId = null) {
@@ -5954,6 +6001,7 @@ function clearOpenClawGenerationState(reason = 'completed', requestId = null) {
   clearGenerationTimeoutManager()
   clearTimeout(_streamSafetyTimer)
   clearOpenClawTransientRecoveryTimer()
+  clearOpenClawToolFinalRecoveryTimer()
   if (requestId) releaseOpenClawRequestFingerprint(requestId)
   else releaseOpenClawRequestFingerprint()
   if (_activeClientRequestId) _inFlightRequestIds.delete(_activeClientRequestId)
@@ -6216,12 +6264,16 @@ function handleChatEvent(payload, eventId = '') {
     _cancelResponseWatchdog()
     const c = extractChatContent(payload.message)
     const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
-    if (isOpenClawStreamIdMismatch(stableStreamId)) return
+    if (isOpenClawStreamIdMismatch(payload, stableStreamId)) return
     if (c?.images?.length) _currentAiImages = c.images
     if (c?.videos?.length) _currentAiVideos = c.videos
     if (c?.audios?.length) _currentAiAudios = c.audios
     if (c?.files?.length) _currentAiFiles = c.files
-    if (c?.tools?.length) _currentAiTools = c.tools
+    if (c?.tools?.length) {
+      _currentAiTools = c.tools
+      updateOpenClawActiveRun({ sawToolCall: true })
+      scheduleOpenClawToolFinalRecovery(terminalRequestId)
+    }
     const visibleDeltaFallbackText = isOpenClawAssistantFailurePlaceholderText(c?.text) ? '' : (c?.text || '')
     const visibleDeltaText = sanitizeOpenClawVisibleReply(extractOpenClawAssistantText(payload) || visibleDeltaFallbackText)
     if (isOpenClawBrowserScreenshotIntent(_lastVisibleUserText) && isOpenClawBrowserAutomationTraceText(visibleDeltaText)) {
@@ -6283,7 +6335,7 @@ function handleChatEvent(payload, eventId = '') {
     clearGenerationTimeoutManager()
     const c = extractChatContent(payload.message)
     const stableStreamId = getOpenClawStableStreamId(payload, terminalRequestId)
-    if (isOpenClawStreamIdMismatch(stableStreamId)) return
+    if (isOpenClawStreamIdMismatch(payload, stableStreamId)) return
     updateOpenClawActiveRun({
       clientRequestId: terminalRequestId,
       runId: payload.runId || _activeOpenClawRun?.runId || null,
@@ -7688,6 +7740,9 @@ function bindOpenClawChatSnapshotLifecycle() {
   if (_chatSnapshotLifecycleBound) return
   _chatSnapshotLifecycleBound = true
   window.addEventListener('pagehide', () => handleOpenClawChatSnapshotLifecycle('pagehide'))
+  window.addEventListener('superclaw:before-engine-switch', () => {
+    handleOpenClawChatSnapshotLifecycle('engine-switch')
+  })
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') handleOpenClawChatSnapshotLifecycle('visibility-hidden')
   })

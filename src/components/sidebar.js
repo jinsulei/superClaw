@@ -865,6 +865,12 @@ export function renderSidebar(el) {
           const showSwitchProgress = _shouldShowEngineSwitchProgress(fromEngineId, eid)
           const switchCopy = _getEngineSwitchCopy(fromEngineId, eid)
           engineOpt.style.opacity = '0.5'
+          // Persist the OpenClaw view before the switch shell replaces #content.
+          try {
+            window.dispatchEvent(new CustomEvent('superclaw:before-engine-switch', {
+              detail: { from: fromEngineId, to: eid },
+            }))
+          } catch {}
           // 立即在内容区显示加载骨架，避免切换期间空白
           const contentEl = document.getElementById('content')
           if (contentEl) {
