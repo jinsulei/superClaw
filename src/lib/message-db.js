@@ -12,7 +12,9 @@ let _db = null
 
 function mediaFields(message = {}) {
   const fields = {}
-  for (const key of ['attachments', 'images', 'videos', 'audios', 'files', 'tools', 'screenshotCards', 'confirmations']) {
+  // Execution steps belong to the assistant turn. Keep them with the cached
+  // message so a WebView reload can rebuild the same collapsed process card.
+  for (const key of ['attachments', 'images', 'videos', 'audios', 'files', 'tools', 'executionTimeline', 'screenshotCards', 'confirmations']) {
     if (Array.isArray(message[key]) && message[key].length) fields[key] = message[key]
   }
   for (const key of ['runId', 'clientRequestId', 'idempotencyKey', 'messageId', 'eventId', 'type', 'state']) {

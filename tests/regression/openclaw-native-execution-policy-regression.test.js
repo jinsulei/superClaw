@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
 
 const read = (path) => readFileSync(path, 'utf8')
 const workspacePolicy = read('src-tauri/resources/templates/openclaw-workspace/AGENTS.md')
 const taskSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-task-policy/SKILL.md')
 const ecommerceSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-ecommerce/SKILL.md')
 const financeSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-finance/SKILL.md')
+const ocrSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-ocr/SKILL.md')
+const videoSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-video-analysis/SKILL.md')
 const chat = read('src/pages/chat.js')
+const messageDb = read('src/lib/message-db.js')
+const openclawHistorySource = read('src-tauri/src/commands/openclaw_history.rs')
 const ocrPlugin = read('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/index.js')
 const ocrManifest = read('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/openclaw.plugin.json')
 
@@ -57,6 +62,7 @@ test('screenshot and desktop-file tasks never replace a native result with a mis
 
 test('OpenClaw tool-use frames remain progress until the native terminal reply arrives', () => {
   const historyRecovery = chat.match(/function completeOpenClawCurrentDraftFromLatestHistory[\s\S]*?function mergeHistoryIntoCurrentMessages/)?.[0] || ''
+  const liveHistory = chat.match(/function hydrateOpenClawLiveHistoryProgress[\s\S]*?function attachOpenClawExecutionTimeline/)?.[0] || ''
   const finalHandler = chat.match(/if \(state === 'final'\) \{[\s\S]*?const stableStreamId = getOpenClawStableStreamId/)?.[0] || ''
 
   assert.match(chat, /function isOpenClawToolUseMessage\(message = \{\}\)/)
@@ -66,7 +72,211 @@ test('OpenClaw tool-use frames remain progress until the native terminal reply a
   assert.match(finalHandler, /recordOpenClawProgressNarrative\(extractOpenClawAssistantText\(payload\.message\)/)
   assert.match(finalHandler, /startOpenClawProgressHistoryPolling\(\)/)
   assert.match(historyRecovery, /if \(isOpenClawToolUseMessage\(msg\)\) \{[\s\S]*?recordOpenClawProgressNarrative\(msg\.text \|\| ''[\s\S]*?continue/)
+  assert.doesNotMatch(liveHistory, /dedupeHistoryStable\(historyMessages\)/)
+  assert.match(liveHistory, /sortOpenClawMessagesChronologically/)
+  assert.match(liveHistory, /normalizeOpenClawHistoryRecord/)
   assert.match(chat, /authoritativeMessages = attachOpenClawExecutionTimeline\(authoritativeMessages\)/)
+})
+
+test('OpenClaw long native runs only settle on an explicit terminal assistant record', () => {
+  const terminalGuard = chat.match(/function isOpenClawNativeTerminalAssistant[\s\S]*?\n\}/)?.[0] || ''
+  const historyRecovery = chat.match(/function completeOpenClawCurrentDraftFromLatestHistory[\s\S]*?function mergeHistoryIntoCurrentMessages/)?.[0] || ''
+  const finalHandler = chat.match(/if \(state === 'final'\) \{[\s\S]*?const stableStreamId = getOpenClawStableStreamId/)?.[0] || ''
+  const timelineAttach = chat.match(/function attachOpenClawExecutionTimeline[\s\S]*?function hydrateOpenClawRunTimelineFromTools/)?.[0] || ''
+
+  assert.match(terminalGuard, /stop\|end\|ended\|complete\|completed/)
+  assert.match(historyRecovery, /requiresNativeTerminal/)
+  assert.match(historyRecovery, /_openClawAuthoritativeTerminal = isOpenClawNativeTerminalAssistant\(msg\)/)
+  assert.match(historyRecovery, /requiresNativeTerminal && !msg\._openClawAuthoritativeTerminal/)
+  assert.match(finalHandler, /_activeOpenClawRun\?\.sawToolCall && !isOpenClawNativeTerminalAssistant/)
+  assert.match(finalHandler, /startOpenClawProgressHistoryPolling\(\)/)
+  assert.match(timelineAttach, /normalizeOpenClawHistoryRecord\(rawMessage\)/)
+  assert.match(timelineAttach, /message\.role === 'tool' \|\| message\.role === 'toolResult'/)
+  assert.match(timelineAttach, /Tool output belongs to the execution card/)
+})
+
+test('OpenClaw raw history preserves native terminal metadata instead of finalizing a tool-use frame', () => {
+  assert.match(openclawHistorySource, /"stopReason": message\.get\("stopReason"\)/)
+  assert.match(openclawHistorySource, /"runId": message\.get\("runId"\)/)
+  assert.match(openclawHistorySource, /"clientRequestId": message\.get\("clientRequestId"\)/)
+  assert.match(openclawHistorySource, /"content": message\.get\("content"\)\.cloned\(\)/)
+})
+
+test('OpenClaw agent-stream assistant output reuses the guarded chat renderer', () => {
+  const adapter = chat.match(/function normalizeOpenClawAgentChatEvent\([\s\S]*?\n\}/)?.[0] || ''
+  const eventHandler = chat.match(/function handleEvent\([\s\S]*?\n\}\n\nfunction handleChatEvent/)?.[0] || ''
+
+  assert.match(adapter, /outputStreams = new Set\(\['assistant', 'message', 'text', 'delta', 'output', 'final'\]\)/)
+  assert.match(adapter, /extractOpenClawAssistantText\(data\)/)
+  assert.match(adapter, /state: isFinal \? 'final' : 'delta'/)
+  assert.match(adapter, /sessionKey: payload\.sessionKey \|\| data\.sessionKey/)
+  assert.match(adapter, /clientRequestId: payload\.clientRequestId \|\| data\.clientRequestId/)
+  assert.match(eventHandler, /const agentChatPayload = normalizeOpenClawAgentChatEvent\(payload\)/)
+  assert.match(eventHandler, /if \(agentChatPayload\) handleChatEvent\(agentChatPayload, msg\.id\)/)
+})
+
+test('OpenClaw binds native chat.send run ids before accepting agent stream frames', () => {
+  const nativeRunId = chat.match(/function getOpenClawNativeRunId[\s\S]*?function bindOpenClawNativeRun/)?.[0] || ''
+  const bindRun = chat.match(/function bindOpenClawNativeRun[\s\S]*?\n\}/)?.[0] || ''
+  const sendBlock = chat.match(/async function doSend[\s\S]*?function processMessageQueue/)?.[0] || ''
+
+  assert.match(nativeRunId, /value\?\.data\?\.runId/)
+  assert.match(nativeRunId, /value\?\.run\?\.id/)
+  assert.match(bindRun, /clientRequestId !== _activeClientRequestId/)
+  assert.match(bindRun, /updateOpenClawActiveRun\(\{ clientRequestId, runId \}\)/)
+  assert.match(sendBlock, /const sendResult = await wsClient\.chatSend/)
+  assert.match(sendBlock, /bindOpenClawNativeRun\(sendResult, clientRequestId\)/)
+})
+
+test('OpenClaw agent deltas stream incrementally without waiting for the final history record', () => {
+  const mergeSource = chat.match(/function mergeOpenClawStreamingText[\s\S]*?\n\}/)?.[0] || ''
+  const adapter = chat.match(/function normalizeOpenClawAgentChatEvent[\s\S]*?function mergeOpenClawStreamingText/)?.[0] || ''
+  const deltaHandler = chat.match(/if \(state === 'delta'\) \{[\s\S]*?\n    return\n  \}/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${mergeSource}; result = [
+    mergeOpenClawStreamingText('', '第一段', true),
+    mergeOpenClawStreamingText('第一段', '，第二段', true),
+    mergeOpenClawStreamingText('第一段', '第一段，第二段', true),
+    mergeOpenClawStreamingText('第一段，第二段', '，第二段', true),
+    mergeOpenClawStreamingText('hello', ' world\\n', true),
+  ]`, sandbox)
+
+  assert.deepEqual(Array.from(sandbox.result), ['第一段', '第一段，第二段', '第一段，第二段', '第一段，第二段', 'hello world\n'])
+  assert.match(adapter, /isIncrementalDelta/)
+  assert.match(adapter, /extractOpenClawTextPart\(data\.delta\)/)
+  assert.match(adapter, /_openClawIncrementalDelta: isIncrementalDelta/)
+  assert.match(adapter, /_openClawRawDeltaText: streamingText/)
+  assert.match(deltaHandler, /_currentAiStreamRawText = mergeOpenClawStreamingText/)
+  assert.match(deltaHandler, /sanitizeOpenClawVisibleReply\(_currentAiStreamRawText\)/)
+  assert.match(deltaHandler, /visibleDeltaText && visibleDeltaText !== _currentAiText/)
+})
+
+test('OpenClaw native deltaText follows gateway append, replace, and cumulative correction semantics', () => {
+  const mergeSource = chat.match(/function mergeOpenClawStreamingText[\s\S]*?\n\}/)?.[0] || ''
+  const adapter = chat.match(/function normalizeOpenClawAgentChatEvent[\s\S]*?function mergeOpenClawStreamingText/)?.[0] || ''
+  const deltaHandler = chat.match(/if \(state === 'delta'\) \{[\s\S]*?\n    return\n  \}/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${mergeSource}; result = [
+    mergeOpenClawStreamingText('Hello', ' world', true),
+    mergeOpenClawStreamingText('stale', 'replacement', false, { replace: true }),
+    mergeOpenClawStreamingText('Hello', ' world', true, { cumulativeMessageText: 'Hello world' }),
+    mergeOpenClawStreamingText('wrong', ' world', true, { cumulativeMessageText: 'Hello world' }),
+  ]`, sandbox)
+
+  assert.deepEqual(Array.from(sandbox.result), ['Hello world', 'replacement', 'Hello world', 'Hello world'])
+  assert.match(adapter, /typeof data\.deltaText === 'string'/)
+  assert.match(adapter, /typeof payload\.deltaText === 'string'/)
+  assert.match(adapter, /_openClawReplaceDelta: replaceDelta/)
+  assert.match(adapter, /_openClawCumulativeMessageText: cumulativeMessageText/)
+  assert.match(deltaHandler, /replace: nativeDeltaText != null \? nativeReplaceDelta : payload\._openClawReplaceDelta === true/)
+  assert.match(deltaHandler, /: \(payload\._openClawCumulativeMessageText \|\| ''\)/)
+  assert.match(deltaHandler, /typeof payload\.deltaText === 'string'/)
+  assert.match(deltaHandler, /typeof payload\.data\?\.deltaText === 'string'/)
+  assert.match(deltaHandler, /nativeDeltaText != null \? !nativeReplaceDelta/)
+})
+
+test('OpenClaw watchdog timers are isolated to the request that created them', () => {
+  const doSend = chat.match(/async function doSend[\s\S]*?function buildAttachmentTriggeredPrompt/)?.[0] || ''
+  const settle = chat.match(/async function settleOpenClawActiveRunFromWatchdog[\s\S]*?function _startResponseWatchdog/)?.[0] || ''
+  const watchdog = chat.match(/function _startResponseWatchdog[\s\S]*?function _resetWatchdogOnActivity/)?.[0] || ''
+
+  assert.match(doSend, /_cancelResponseWatchdog\(\)[\s\S]*?_sendTimestamp = Date\.now\(\)/)
+  assert.match(settle, /expectedRequestId !== _activeClientRequestId/)
+  assert.match(watchdog, /requestId !== _activeClientRequestId/)
+  assert.match(watchdog, /settleOpenClawActiveRunFromWatchdog\('active-run-watchdog-timeout', requestId\)/)
+  assert.doesNotMatch(watchdog, /clearOpenClawGenerationState\('(?:watchdog|history)-visible-assistant'/)
+  assert.match(watchdog, /hasOpenClawAssistantVisibleContentForRequest\(requestId\)[\s\S]*?markGenerationProgress\(\)[\s\S]*?_startResponseWatchdog\(\)/)
+  assert.match(watchdog, /_lastResponseActivityAt = _lastResponseActivityAt \|\| _sendTimestamp/)
+  assert.match(watchdog, /idleDuration = Date\.now\(\) - \(_lastResponseActivityAt \|\| _sendTimestamp\)/)
+  assert.match(chat, /isOpenClawResponseIdleTimedOut\(_lastResponseActivityAt, _sendTimestamp\)/)
+  assert.doesNotMatch(watchdog, /Date\.now\(\) - _sendTimestamp >= OPENCLAW_ACTIVE_RUN_WATCHDOG_MS/)
+  assert.match(chat, /function _resetWatchdogOnActivity\(\)[\s\S]*?_lastResponseActivityAt = Date\.now\(\)/)
+})
+
+test('OpenClaw portable history only renews the idle watchdog for real execution progress', () => {
+  const hydration = chat.match(/function hydrateOpenClawLiveHistoryProgress[\s\S]*?function attachOpenClawExecutionTimeline/)?.[0] || ''
+  const poller = chat.match(/function startOpenClawProgressHistoryPolling[\s\S]*?function isOpenClawNativeSessionTerminal/)?.[0] || ''
+
+  assert.match(hydration, /const timelineBefore = JSON\.stringify/)
+  assert.match(hydration, /const timelineChanged = changed && timelineBefore !== JSON\.stringify/)
+  assert.match(hydration, /return timelineChanged/)
+  assert.match(poller, /if \(hydrateOpenClawLiveHistoryProgress\(rawMessages\)\) _resetWatchdogOnActivity\(\)/)
+  assert.match(poller, /if \(hydrateOpenClawLiveHistoryProgress\(messages\)\) _resetWatchdogOnActivity\(\)/)
+})
+
+test('OpenClaw watchdog expires on inactivity rather than total run duration', () => {
+  const helperSource = chat.match(/function isOpenClawResponseIdleTimedOut[\s\S]*?\n\}/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${helperSource}; result = [
+    isOpenClawResponseIdleTimedOut(590000, 0, 600000, 300000),
+    isOpenClawResponseIdleTimedOut(299999, 0, 600000, 300000),
+    isOpenClawResponseIdleTimedOut(300001, 0, 600000, 300000),
+  ]`, sandbox)
+
+  assert.deepEqual(Array.from(sandbox.result), [false, true, false])
+})
+
+test('OpenClaw lifecycle end forces durable native reply recovery', () => {
+  const eventHandler = chat.match(/function handleEvent\([\s\S]*?\n\}\n\nfunction handleChatEvent/)?.[0] || ''
+
+  assert.match(eventHandler, /phase === 'end'/)
+  assert.match(eventHandler, /startOpenClawProgressHistoryPolling\(\)/)
+  assert.match(eventHandler, /recoverOpenClawAssistantFromHistoryBeforeFallback\('agent-lifecycle-end'/)
+  assert.match(eventHandler, /attempts: 10/)
+  assert.match(eventHandler, /delayMs: 250/)
+})
+
+test('OpenClaw history recovery cannot bind the previous reply by array position', () => {
+  const matchReason = chat.match(/function getOpenClawStrongHistoryMatchReason\([\s\S]*?\n\}/)?.[0] || ''
+  const strongCandidate = chat.match(/function isStrongOpenClawHistoryCandidate\([\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(matchReason, /msg\._openClawPreviousUserFingerprint !== activeRun\.userTextFingerprint/)
+  assert.doesNotMatch(matchReason, /return 'previousUserIndex'/)
+  assert.match(strongCandidate, /getOpenClawMessageCreatedTime\(msg\)/)
+  assert.doesNotMatch(strongCandidate, /Number\(msg\.timestamp\)/)
+})
+
+test('OpenClaw reconnect replay cannot bind the previous run before the current first frame', () => {
+  const binding = chat.match(/function isOpenClawEventBoundToActiveRequest[\s\S]*?function shouldIgnoreOpenClawUnboundChatEvent/)?.[0] || ''
+  const unbound = chat.match(/function shouldIgnoreOpenClawUnboundChatEvent[\s\S]*?function shouldUseOpenClawEmptyReplyFallback/)?.[0] || ''
+  const mismatch = chat.match(/function isOpenClawStreamIdMismatch[\s\S]*?function hasOpenClawAssistantVisibleContentForRequest/)?.[0] || ''
+
+  assert.match(binding, /eventRunId === activeRequestId/)
+  assert.match(binding, /eventRunId === activeRunId/)
+  assert.match(unbound, /!isOpenClawEventBoundToActiveRequest\(event\)/)
+  assert.match(mismatch, /!isOpenClawEventBoundToActiveRequest\(event\)/)
+  assert.ok(mismatch.indexOf('isOpenClawEventBoundToActiveRequest') < mismatch.indexOf('!_currentAiBubbleRequestId'))
+})
+
+test('OpenClaw history never appends an older assistant below the latest visible user', () => {
+  const mergeHistory = chat.match(/function mergeHistoryIntoCurrentMessages[\s\S]*?function clearInitialOpenClawHistoryLoadTimers/)?.[0] || ''
+  const appendHistory = chat.match(/function appendOpenClawHistoryMessage[\s\S]*?function completeStreamingDraftFromHistory/)?.[0] || ''
+  const replaceDraft = chat.match(/function replaceOpenClawPartialAssistantAfterLastUser[\s\S]*?function appendOpenClawHistoryMessage/)?.[0] || ''
+  const completeDraft = chat.match(/function completeStreamingDraftFromHistory[\s\S]*?function completeOpenClawCurrentDraftFromLatestHistory/)?.[0] || ''
+  const recoverLatest = chat.match(/function completeOpenClawCurrentDraftFromLatestHistory[\s\S]*?function mergeHistoryIntoCurrentMessages/)?.[0] || ''
+
+  assert.match(chat, /function getOpenClawLastVisibleUserCreatedTime\(\)/)
+  assert.match(mergeHistory, /lastVisibleUserCreatedTime/)
+  assert.match(mergeHistory, /getOpenClawMessageCreatedTime\(msg\) < lastVisibleUserCreatedTime/)
+  assert.ok(mergeHistory.indexOf('getOpenClawMessageCreatedTime(msg) < lastVisibleUserCreatedTime') < mergeHistory.indexOf('appendOpenClawHistoryMessage(msg)'))
+  assert.match(appendHistory, /getOpenClawMessageCreatedTime\(msg\) < lastVisibleUserCreatedTime/)
+  assert.match(replaceDraft, /getOpenClawMessageCreatedTime\(msg\) < lastVisibleUserCreatedTime/)
+  assert.match(recoverLatest, /latestHistoryUserFingerprint !== expectedUserFingerprint/)
+  assert.match(recoverLatest, /for \(let index = latestUserIndex; index < deduped\.length/)
+  assert.match(completeDraft, /const historyText = sanitizeOpenClawVisibleReply\(msg\.text/)
+  assert.doesNotMatch(completeDraft, /chooseBestOpenClawAssistantText\(\[_currentAiText, msg\.text\]/)
+})
+
+test('OpenClaw progress cards reject tool events from a prior run or another session', () => {
+  const eventHandler = chat.match(/function handleEvent\(msg\)[\s\S]*?if \(isOpenClawChatEvent\(event\)\) handleChatEvent/)?.[0] || ''
+
+  assert.match(eventHandler, /agentSessionKey/)
+  assert.match(eventHandler, /agentSessionKey !== currentSessionKey/)
+  assert.match(eventHandler, /generationActive && !isOpenClawEventBoundToActiveRequest\(payload\)/)
+  assert.ok(eventHandler.indexOf('isOpenClawEventBoundToActiveRequest(payload)') < eventHandler.indexOf("if (stream === 'tool'"))
 })
 
 test('OpenClaw attachment OCR is delegated to the Gateway rather than precomputed in chat send', () => {
@@ -135,7 +345,11 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   assert.match(recoveryBlock, /if \(recoveringToolTurn\) return false/)
   const completionBlock = chat.match(/function completeStreamingDraftFromHistory[\s\S]*?function completeOpenClawCurrentDraftFromLatestHistory/)?.[0] || ''
   assert.match(completionBlock, /stopOpenClawProgressHistoryPolling\(\)[\s\S]*?_cancelResponseWatchdog\(\)[\s\S]*?clearGenerationTimeoutManager\(\)[\s\S]*?showTyping\(false\)/)
-  assert.match(chat, /if \(_currentAiTimeline\.length > 80\) _currentAiTimeline = _currentAiTimeline\.slice\(-80\)/)
+  assert.doesNotMatch(chat, /_currentAiTimeline = _currentAiTimeline\.slice\(-80\)/)
+  assert.match(chat, /function mergeOpenClawExecutionTimelines\(\.\.\.sources\)/)
+  assert.match(chat, /_currentAiTimeline = mergeOpenClawExecutionTimelines\(_currentAiTimeline, msg\.executionTimeline\)/)
+  assert.match(chat, /const wasOpen = existing\?\.open === true/)
+  assert.match(chat, /if \(replacement && wasOpen\) replacement\.open = true/)
   assert.match(chat, /function startOpenClawProgressHistoryPolling\(\)/)
   assert.match(chat, /_openClawProgressHistoryTimer = setInterval\(refresh, 2500\)/)
   assert.match(chat, /const history = await wsClient\.chatHistory\(_sessionKey, 200\)/)
@@ -145,6 +359,63 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   const collapseBlock = chat.match(/function collapseOpenClawRunTimeline[\s\S]*?function ensureOpenClawRunTimelineBubble/)?.[0] || ''
   assert.match(collapseBlock, /title\.textContent = '执行过程已完成'/)
   assert.doesNotMatch(chat, /innerHTML\s*=\s*.*(?:reasoning|chain.of.thought)/i)
+})
+
+test('OpenClaw live history collects tool-use frames before final-history compaction', () => {
+  const liveProgress = chat.match(/function hydrateOpenClawLiveHistoryProgress\([\s\S]*?\n\}/)?.[0] || ''
+  const poller = chat.match(/function startOpenClawProgressHistoryPolling\([\s\S]*?function isOpenClawNativeSessionTerminal/)?.[0] || ''
+
+  assert.doesNotMatch(liveProgress, /dedupeHistoryStable\(historyMessages\)/)
+  assert.match(liveProgress, /sortOpenClawMessagesChronologically/)
+  assert.match(liveProgress, /normalizeOpenClawHistoryRecord/)
+  assert.match(liveProgress, /isOpenClawToolUseMessage\(message\)/)
+  assert.match(liveProgress, /recordOpenClawProgressNarrative\(message\.text/)
+  assert.match(liveProgress, /hydrateOpenClawRunTimelineFromTools\(message\.tools\)/)
+  assert.match(liveProgress, /renderOpenClawLiveTimeline\(\)/)
+  assert.match(poller, /hydrateOpenClawLiveHistoryProgress\(rawMessages\)/)
+  assert.match(poller, /hydrateOpenClawLiveHistoryProgress\(messages\)/)
+})
+
+test('OpenClaw history recovery does not mistake the execution card for assistant prose', () => {
+  const recoverableDraft = chat.match(/function isRecoverableOpenClawCurrentDraft\(\)[\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(recoverableDraft, /querySelector\?\.\('\[data-openclaw-assistant-content="true"\]'\)/)
+  assert.match(recoverableDraft, /assistantContent\?\.innerText/)
+  assert.match(recoverableDraft, /!assistantContent \|\|/)
+  assert.doesNotMatch(recoverableDraft, /getOpenClawAssistantContentText\(_currentAiBubble\)/)
+})
+
+test('OpenClaw portable history preserves a trajectory final without duplicating a durable reply', () => {
+  assert.match(openclawHistorySource, /\.trajectory\.jsonl/)
+  assert.match(openclawHistorySource, /trajectory_messages\(&trajectory_source\)/)
+  assert.match(openclawHistorySource, /let same_run =/)
+  assert.match(openclawHistorySource, /let same_text =/)
+  assert.match(openclawHistorySource, /if !already_present \{ messages\.push\(candidate\); \}/)
+})
+
+test('OpenClaw execution timeline persists through snapshots and local history restore', () => {
+  const snapshotBlock = chat.match(/function collectOpenClawVisibleMessagesForSnapshot\([\s\S]*?function normalizeOpenClawSnapshotMessage/)?.[0] || ''
+  const cacheBlock = chat.match(/function cachedHistoryMessage\([\s\S]*?\n\}/)?.[0] || ''
+
+  assert.match(snapshotBlock, /collectOpenClawExecutionTimelineFromBubble\(bubble\)/)
+  assert.match(snapshotBlock, /executionTimeline,/)
+  assert.match(chat, /function collectOpenClawExecutionTimelineFromBubble\(bubble\)/)
+  assert.match(cacheBlock, /executionTimeline: Array\.isArray\(m\.executionTimeline\)/)
+  assert.match(messageDb, /'executionTimeline'/)
+  assert.match(chat, /executionTimeline: msg\.executionTimeline \|\| \[\]/)
+})
+
+test('OpenClaw finishes a packaged native tool-only run once the portable session is terminal', () => {
+  const poller = chat.match(/function startOpenClawProgressHistoryPolling\([\s\S]*?function isOpenClawNativeSessionTerminal/)?.[0] || ''
+  const terminalFallback = chat.match(/function completeOpenClawTerminalToolOnlyRun\([\s\S]*?function _cancelResponseWatchdog/)?.[0] || ''
+
+  assert.match(poller, /api\.readOpenclawRawHistory\(_sessionKey, 300\)/)
+  assert.match(poller, /completeOpenClawTerminalToolOnlyRun\(raw\)/)
+  assert.match(chat, /function isOpenClawNativeSessionTerminal\(status\)/)
+  assert.match(terminalFallback, /rawHistory\?\.sessionStatus/)
+  assert.match(terminalFallback, /normalizeOpenClawPromptFingerprint\(latestUserText\)/)
+  assert.match(terminalFallback, /clearOpenClawGenerationState\('native-terminal-tool-only'/)
+  assert.match(terminalFallback, /resetStreamState\(\)/)
 })
 
 test('OpenClaw internal tool preludes do not become a visible generic retry reply', () => {
@@ -166,7 +437,7 @@ test('OpenClaw OCR uses the shared portable runtime through a native plugin', ()
   assert.doesNotMatch(ocrPlugin, /C:\\\\Users|C:\\/)
 })
 
-test('product workflows stay in native skills with explicit confirmation boundaries', () => {
+test('product workflows stay in portable native skills with explicit confirmation boundaries', () => {
   assert.match(ecommerceSkill, /^name: superclaw-ecommerce/m)
   assert.match(ecommerceSkill, /desktop_control/)
   assert.match(ecommerceSkill, /current browser context/i)
@@ -174,4 +445,10 @@ test('product workflows stay in native skills with explicit confirmation boundar
   assert.match(financeSkill, /^name: superclaw-finance/m)
   assert.match(financeSkill, /superclaw_ocr/)
   assert.match(financeSkill, /Never transfer funds/i)
+  assert.match(ocrSkill, /^name: superclaw-ocr/m)
+  assert.match(ocrSkill, /shared offline OCR engine/i)
+  assert.match(ocrSkill, /Do not call OCR automatically/i)
+  assert.match(videoSkill, /^name: superclaw-video-analysis/m)
+  assert.match(videoSkill, /ffmpeg/i)
+  assert.match(videoSkill, /explicit confirmation/i)
 })
