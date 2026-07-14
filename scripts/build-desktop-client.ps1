@@ -816,10 +816,10 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
 
   $HermesData = Join-Path $DataRoot "hermes"
   New-Item -ItemType Directory -Path $HermesData -Force | Out-Null
-  foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks")) {
+  foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks", "workspace")) {
     Remove-IfExists (Join-Path $HermesData $name)
   }
-  foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "auth.lock", "auth.json", ".skills_prompt_snapshot.json", ".tirith-install-failed", "channel_directory.json")) {
+  foreach ($name in @("gateway.lock", "gateway.pid", "gateway_state.json", "gateway-run.log", "hermes-native-terminal.cmd", "kanban.db.init.lock", "auth.lock", "auth.json", ".skills_prompt_snapshot.json", ".tirith-install-failed", "channel_directory.json")) {
     Remove-IfExists (Join-Path $HermesData $name)
   }
   foreach ($name in @("cache", "models_dev_cache.json")) {
