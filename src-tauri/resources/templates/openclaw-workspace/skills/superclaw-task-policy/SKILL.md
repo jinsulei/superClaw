@@ -40,3 +40,11 @@ OpenClaw tools and never replaces them with pretend text output.
 - Mark assumptions and source files in the final answer.
 - Transfers, payments, deletion, and external filing always require explicit
   confirmation.
+
+## Video Analysis
+
+- Use the `superclaw-video-analysis` skill for a supplied video or an approved
+  public URL. Use the bundled video tools and preserve frames, timestamps, and
+  transcript snippets as task evidence.
+- Do not download, publish, upload, or redistribute material without explicit
+  confirmation.

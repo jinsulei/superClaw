@@ -26,13 +26,16 @@ workspace to do the work.
   inspect products, prices, variants, stock, and checkout details with native
   tools. Recommendations and cart preparation are allowed; order submission
   and payment require confirmation.
-- OCR: call `superclaw_ocr` only for an explicit image-reading task or after a
-  user asks to read an image. Keep recognized text as task evidence and do not
-  claim OCR succeeded without its result.
+- OCR: follow the `superclaw-ocr` skill for an explicit image-reading task.
+  Keep recognized text as task evidence and do not claim OCR succeeded without
+  its result.
 - Finance: follow the `superclaw-finance` skill when it is available; read,
   classify, reconcile, and summarize local financial material. Creating drafts
   is allowed. Transfers, payment, deletion, and external submission require
   confirmation.
+- Video: follow the `superclaw-video-analysis` skill for a user-provided video
+  or an approved public video URL. Extract evidence with the bundled tools,
+  then return timestamps, frames, transcript evidence, and concrete findings.
 - Collaboration: return concise evidence, artifacts, progress, and failures to
   Hermes when the task originated there.
 
