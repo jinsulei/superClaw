@@ -538,6 +538,7 @@ export const api = {
     agentName: options?.agentName || 'hermes',
     agent_name: options?.agentName || 'hermes',
   }, onEvent, options),
+  hermesNativeTerminalStart: () => invoke('hermes_native_terminal_start'),
   hermesReadConfig: () => invoke('hermes_read_config'),
   hermesFetchModels: (baseUrl, apiKey, apiType, provider) => invoke('hermes_fetch_models', { baseUrl, apiKey, apiType: apiType || null, provider: provider || null }),
   hermesUpdateModel: (model, provider) => invoke('hermes_update_model', { model, provider: provider || null }),

@@ -1947,6 +1947,66 @@ fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Comman
     }
 }
 
+fn hermes_native_workspace_dir() -> PathBuf {
+    hermes_home().join("workspace")
+}
+
+#[tauri::command]
+pub fn hermes_native_terminal_start() -> Result<Value, String> {
+    let runtime_error = hermes_portable_runtime_error();
+    if let Some(error) = runtime_error {
+        return Err(error);
+    }
+
+    let python = hermes_agent_python().ok_or_else(hermes_runtime_diagnostics)?;
+    let site = hermes_agent_site_packages().ok_or_else(hermes_runtime_diagnostics)?;
+    let runtime = hermes_agent_runtime_dir().unwrap_or_else(expected_hermes_agent_runtime_dir);
+    let home = hermes_home();
+    let workspace = hermes_native_workspace_dir();
+    std::fs::create_dir_all(&home)
+        .map_err(|e| format!("创建 Hermes 数据目录失败: {e}"))?;
+    std::fs::create_dir_all(&workspace)
+        .map_err(|e| format!("创建 Hermes 工作目录失败: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let launcher = home.join("hermes-native-terminal.cmd");
+        let launcher_content = format!(
+            "@echo off\r\nchcp 65001 >nul\r\ntitle SuperClaw Hermes\r\ncd /d \"{}\"\r\n\"{}\" -m hermes_cli.main --cli\r\n",
+            workspace.display(),
+            python.display(),
+        );
+        std::fs::write(&launcher, launcher_content)
+            .map_err(|e| format!("创建 Hermes 终端启动器失败: {e}"))?;
+
+        let enhanced = hermes_enhanced_path();
+        let mut cmd = std::process::Command::new("cmd.exe");
+        cmd.args(["/d", "/c", "start", "", "cmd.exe", "/d", "/k"])
+            .arg(&launcher)
+            .current_dir(&workspace)
+            .env("PATH", enhanced)
+            .env("HERMES_DISABLE_UPDATE_CHECK", "1")
+            .env("HERMES_HOME", &home)
+            .env("PYTHONPATH", &site)
+            .env("VIRTUAL_ENV", &runtime);
+        cmd.spawn()
+            .map_err(|e| format!("启动 Hermes 原生终端失败: {e}"))?;
+
+        return Ok(serde_json::json!({
+            "ok": true,
+            "started": true,
+            "mode": "native_cli",
+            "workspace": workspace,
+            "launcher": launcher,
+        }));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Hermes 可见原生终端目前仅在 Windows 便携客户端中启用。".to_string())
+    }
+}
+
 fn hermes_launcher_cwd(home: &Path, launcher: Option<&str>) -> PathBuf {
     if let Some(raw) = launcher {
         let exe = PathBuf::from(raw);
@@ -5139,12 +5199,10 @@ pub async fn hermes_agent_run(
     if let Some(sid) = &session_id {
         payload["session_id"] = Value::String(sid.clone());
     }
+    // Native Hermes owns persisted session context. Replaying the App
+    // transcript duplicates prior turns and can answer an older prompt.
     if let Some(hist) = &conversation_history {
         payload["conversation_history"] = hist.clone();
-    } else if let Some(hist) =
-        build_hermes_conversation_history_from_session(session_id.as_ref(), &input)
-    {
-        payload["conversation_history"] = hist;
     }
     payload["instructions"] = Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
 
@@ -5329,7 +5387,15 @@ pub async fn hermes_agent_run(
                         let _ = app.emit("hermes-run-tool", tool_evt);
                     }
                     "reasoning.available" => {
-                        let _ = app.emit("hermes-run-reasoning", evt.clone());
+                        let mut reasoning_evt = evt.clone();
+                        if let Some(obj) = reasoning_evt.as_object_mut() {
+                            obj.insert("run_id".into(), Value::String(run_id.clone()));
+                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
+                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                                obj.insert("clientRequestId".into(), Value::String(id.to_string()));
+                            }
+                        }
+                        let _ = app.emit("hermes-run-reasoning", reasoning_evt);
                     }
                     "run.completed" => {
                         if let Some(output) =
@@ -5376,8 +5442,16 @@ pub async fn hermes_agent_run(
                         return Err(format!("Agent run failed: {err}"));
                     }
                     _ => {
-                        // 其他事件类型也转发
-                        let _ = app.emit("hermes-run-event", evt.clone());
+                        // 其他原生事件也绑定到本轮请求，供前端归档执行过程。
+                        let mut forwarded = evt.clone();
+                        if let Some(obj) = forwarded.as_object_mut() {
+                            obj.insert("run_id".into(), Value::String(run_id.clone()));
+                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
+                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                                obj.insert("clientRequestId".into(), Value::String(id.to_string()));
+                            }
+                        }
+                        let _ = app.emit("hermes-run-event", forwarded);
                     }
                 }
             }

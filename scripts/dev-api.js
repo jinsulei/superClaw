@@ -54,13 +54,17 @@ function hermesHome() {
   // 1. 环境变量优先
   if (process.env.HERMES_HOME) return process.env.HERMES_HOME
   // 2. Dev/Tauri source tree: <app_root>/src-tauri/resources/data/hermes/
-  const devPath = path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'hermes')
-  if (fs.existsSync(devPath)) return devPath
+  const devPath = path.join(appRootDir(), '.dev-data', 'hermes')
+  fs.mkdirSync(devPath, { recursive: true })
+  const seedPath = path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'hermes')
+  for (const name of ['config.yaml', '.env', 'SOUL.md', 'channel_directory.json']) {
+    const source = path.join(seedPath, name)
+    const target = path.join(devPath, name)
+    if (fs.existsSync(source) && !fs.existsSync(target)) fs.copyFileSync(source, target)
+  }
+  return devPath
   // 3. 新便携结构：<app_root>/resources/data/hermes/
-  const newPath = path.join(appRootDir(), 'resources', 'data', 'hermes')
-  if (fs.existsSync(newPath)) return newPath
   // 4. 旧便携/Dev：<app_root>/data/hermes/
-  return path.join(appRootDir(), 'data', 'hermes')
 }
 
 /** Resolve memory kind (memory|user|soul) to the file Hermes reads on startup. */
@@ -11463,6 +11467,30 @@ const handlers = {
     return '配置已保存'
   },
 
+  async hermes_native_terminal_start() {
+    if (!isWindows) throw new Error('Hermes 可见原生终端目前仅在 Windows 客户端中启用。')
+    const workspace = path.join(hermesHome(), 'workspace')
+    fs.mkdirSync(workspace, { recursive: true })
+    const spec = hermesCommandSpec(['--cli'])
+    const launcher = path.join(hermesHome(), 'hermes-native-terminal.cmd')
+    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`
+    const commandLine = [quote(spec.command), ...spec.args.map(quote)].join(' ')
+    fs.writeFileSync(
+      launcher,
+      `@echo off\r\nchcp 65001 >nul\r\ntitle SuperClaw Hermes\r\ncd /d ${quote(workspace)}\r\n${commandLine}\r\n`,
+      'utf8',
+    )
+    const child = spawn('cmd.exe', ['/d', '/c', 'start', '', 'cmd.exe', '/d', '/k', launcher], {
+      cwd: workspace,
+      env: spec.env,
+      detached: true,
+      windowsHide: false,
+      stdio: 'ignore',
+    })
+    child.unref()
+    return { ok: true, started: true, mode: 'native_cli', workspace, launcher }
+  },
+
   async hermes_gateway_action({ action } = {}) {
     const port = hermesGatewayPort()
     if (action === 'start') {
@@ -11607,10 +11635,7 @@ const handlers = {
     const effectiveAgentName = resolveAgentIdentityName(agentName || agent_name, 'hermes')
     const payload = { input: _buildHermesRunInput(input, attachments), agentName: effectiveAgentName, agent_name: effectiveAgentName }
     if (sessionId) payload.session_id = sessionId
-    const bridgedHistory = Array.isArray(conversationHistory)
-      ? conversationHistory
-      : _buildHermesConversationHistoryFromSession(sessionId, input || '')
-    if (Array.isArray(bridgedHistory)) payload.conversation_history = bridgedHistory
+    if (Array.isArray(conversationHistory)) payload.conversation_history = conversationHistory
     const effectiveInstructions = withAgentIdentityInstructions(instructions, effectiveAgentName)
     if (effectiveInstructions) payload.instructions = effectiveInstructions
     const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
@@ -14064,10 +14089,9 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       agent_name: effectiveAgentName,
     }
     if (args.sessionId) payload.session_id = args.sessionId
-    const bridgedHistory = Array.isArray(args.conversationHistory)
-      ? args.conversationHistory
-      : _buildHermesConversationHistoryFromSession(args.sessionId, args.input || '')
-    if (Array.isArray(bridgedHistory)) payload.conversation_history = bridgedHistory
+    // Native Hermes owns persisted session context. Only explicit
+    // import/migration history is forwarded by the App.
+    if (Array.isArray(args.conversationHistory)) payload.conversation_history = args.conversationHistory
     const effectiveInstructions = withAgentIdentityInstructions(args.instructions, effectiveAgentName)
     if (effectiveInstructions) payload.instructions = effectiveInstructions
 

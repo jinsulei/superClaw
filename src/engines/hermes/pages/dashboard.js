@@ -637,18 +637,26 @@ export function render() {
     el.querySelector('.hm-dash-terminal-chat')?.addEventListener('click', async (e) => {
       const btn = e.currentTarget
       const origText = btn.textContent
-      const guard = openHermesTerminalLauncher({
-        info,
-        health,
-        route: '/h/native-dashboard',
+      btn.disabled = true
+      btn.textContent = '正在打开终端...'
+      const nativeTerminal = await openHermesTerminalLauncher({
+        launch: () => api.hermesNativeTerminalStart(),
         notify: (message, type) => {
           showGwMsg(message, type === 'warning' || type === 'error')
           toast(message, type || 'info', { duration: 5000 })
         },
-        navigate: () => {},
       })
-      if (!guard.ok) return
+      if (nativeTerminal.ok) {
+        toast('Hermes 原生终端已打开', 'success')
+        btn.disabled = false
+        btn.textContent = origText
+        return
+      }
+      btn.disabled = false
+      btn.textContent = origText
 
+      // Keep the native dashboard/status page as a fallback when the bundled
+      // CLI runtime is incomplete, but never use it as the primary terminal.
       const openNativeDashboard = async (port) => {
         await openExternalUrl(HERMES_DASHBOARD_URL.replace(/:9119(\/?$)/, ':' + (port || 9119) + '$1'))
       }

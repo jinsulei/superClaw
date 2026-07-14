@@ -54,6 +54,10 @@ import {
   normalizeHermesStreamText,
   normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
 } from './hermes-response-assembler.js'
+
+// Normal user turns are executed by the bundled Hermes Agent. Frontend-only
+// capability/status answers are retained below solely for compatibility tests.
+const HERMES_NATIVE_EXECUTION_ONLY = true
 import {
   buildHermesMemoryContext,
   handleHermesMemoryCommand,
@@ -2184,6 +2188,75 @@ function createStore() {
   let activeResponseAssembler = null
   let hermesRunTimeoutTimer = null
   const forceRemoteRefreshIds = new Set()
+
+  function executionEventText(evt = {}) {
+    const value = evt.reasoning
+      ?? evt.thinking
+      ?? evt.preview
+      ?? evt.detail
+      ?? evt.message
+      ?? evt.delta
+      ?? evt.output
+      ?? evt.result
+      ?? ''
+    if (typeof value === 'boolean' || value == null) return ''
+    return typeof value === 'string' ? value.trim() : stringifyMaybe(value).trim()
+  }
+
+  function recordAssistantExecutionEvent(session, clientRequestId, eventType, evt = {}) {
+    if (!session || !clientRequestId) return
+    const message = ensureAssistantMessage(session, clientRequestId)
+    const trace = Array.isArray(message.executionTrace) ? message.executionTrace : []
+    const toolName = String(evt.tool || evt.tool_name || evt.name || '').trim()
+    const kind = eventType.startsWith('tool.')
+      ? 'tool'
+      : eventType === 'reasoning.available'
+        ? 'reasoning'
+        : 'progress'
+    const eventId = String(
+      evt.toolCallId
+      || evt.tool_call_id
+      || evt.event_id
+      || evt.id
+      || (kind === 'tool' && toolName ? `${clientRequestId}:${toolName}` : ''),
+    ).trim()
+    const status = eventType === 'tool.started'
+      ? 'running'
+      : eventType === 'tool.error' || eventType === 'run.failed'
+        ? 'failed'
+        : eventType === 'tool.completed'
+          ? 'completed'
+          : 'progress'
+    const text = executionEventText(evt)
+    const existing = eventId ? trace.find(item => item.id === eventId) : null
+    const step = existing || {
+      id: eventId || uid(),
+      kind,
+      title: toolName || (kind === 'reasoning' ? '思考' : '执行进度'),
+      status,
+      summary: '',
+      input: '',
+      output: '',
+      timestamp: Date.now(),
+    }
+    step.status = status
+    step.updatedAt = Date.now()
+    if (text) step.summary = text
+    const input = evt.input ?? evt.args ?? evt.arguments ?? evt.parameters ?? evt.params
+    const output = evt.output ?? evt.result ?? evt.content ?? evt.response
+    if (input != null && input !== '') step.input = stringifyMaybe(input)
+    if (output != null && output !== '' && typeof output !== 'boolean') step.output = stringifyMaybe(output)
+    if (!existing) trace.push(step)
+    message.executionTrace = trace.slice(-80)
+  }
+
+  function finalizeAssistantExecutionTrace(message, status = 'completed') {
+    if (!message || !Array.isArray(message.executionTrace)) return
+    for (const step of message.executionTrace) {
+      if (step?.status === 'running' || step?.status === 'progress') step.status = status
+    }
+  }
+
   async function attachStreamListeners(runSessionId, clientRequestId) {
     detachStreamListeners()
     let trackedSessionId = runSessionId
@@ -2267,6 +2340,7 @@ function createStore() {
         if (t && preview) t.preview = preview
       }
       recordHermesToolProgress(evtType, toolName, preview, evt)
+      recordAssistantExecutionEvent(runSession(), clientRequestId, evtType, evt)
       notify()
     })
     const u3 = await tauriListen('hermes-run-done', (e) => {
@@ -2304,6 +2378,7 @@ function createStore() {
       const msg = ensureAssistantMessage(s, clientRequestId)
       if (msg) {
         delete msg.isStreaming
+        finalizeAssistantExecutionTrace(msg, 'completed')
         const finalOutput = accepted.output || payload.output || ''
         msg.content = chooseHermesFinalOutput({
           session: s,
@@ -2370,6 +2445,8 @@ function createStore() {
       if (s) {
         const msg = ensureAssistantMessage(s, clientRequestId)
         delete msg.isStreaming
+        recordAssistantExecutionEvent(s, clientRequestId, 'run.failed', payload)
+        finalizeAssistantExecutionTrace(msg, 'failed')
         msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err), currentVisibleUserPrompt())
         rememberHermesTaskStatus(s, {
           status: 'failed',
@@ -2380,7 +2457,21 @@ function createStore() {
       }
       cleanupAfterRun({ status: 'failed', reason: 'run-error', error: err })
     })
-    unlisteners.push(u0, u1, u2, u3, u4)
+    const u5 = await tauriListen('hermes-run-reasoning', (e) => {
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      recordAssistantExecutionEvent(runSession(), clientRequestId, 'reasoning.available', payload)
+      notify()
+    })
+    const u6 = await tauriListen('hermes-run-event', (e) => {
+      const payload = e?.payload || {}
+      if (!acceptRequestEvent(payload)) return
+      const eventType = String(payload.event || '')
+      if (!eventType || eventType === 'message.delta' || eventType === 'message.final') return
+      recordAssistantExecutionEvent(runSession(), clientRequestId, eventType, payload)
+      notify()
+    })
+    unlisteners.push(u0, u1, u2, u3, u4, u5, u6)
   }
 
   function detachStreamListeners() {
@@ -2453,6 +2544,8 @@ function createStore() {
       if (t && preview) t.preview = preview
     }
     recordHermesToolProgress(evtType, toolName, preview, evt)
+    const session = state.sessions.find(x => x.id === state.runningSessionId)
+    recordAssistantExecutionEvent(session, state.runningClientRequestId, evtType, evt)
     notify()
   }
 
@@ -2481,6 +2574,7 @@ function createStore() {
     const msg = ensureAssistantMessage(s, clientRequestId)
     if (msg) {
       delete msg.isStreaming
+      finalizeAssistantExecutionTrace(msg, 'completed')
       msg.content = chooseHermesFinalOutput({
         session: s,
         current: msg.content,
@@ -2533,6 +2627,8 @@ function createStore() {
     if (s) {
       const msg = ensureAssistantMessage(s, clientRequestId)
       delete msg.isStreaming
+      recordAssistantExecutionEvent(s, clientRequestId, 'run.failed', { error: err })
+      finalizeAssistantExecutionTrace(msg, 'failed')
       msg.content = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(err || 'unknown error'), currentVisibleUserPrompt())
       rememberHermesTaskStatus(s, {
         status: 'failed',
@@ -2569,6 +2665,10 @@ function createStore() {
       if (accepted?.text) appendStreamDelta(effectiveSessionId, accepted.text, eventRequestId)
     } else if (eventType === 'tool.started' || eventType === 'tool.completed' || eventType === 'tool.progress' || eventType === 'tool.error') {
       applyStreamToolEvent(evt)
+    } else if (eventType === 'reasoning.available' || eventType === 'run.progress') {
+      const session = state.sessions.find(x => x.id === effectiveSessionId)
+      recordAssistantExecutionEvent(session, eventRequestId, eventType, evt)
+      notify()
     } else if (eventType === 'message.final') {
       const accepted = acceptActiveStreamEvent(evt)
       if (!accepted) return
@@ -2843,7 +2943,7 @@ function createStore() {
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
     }
-    if (isHermesCollaborationCapabilityQuestion(rawText)) {
+    if (!HERMES_NATIVE_EXECUTION_ONLY && isHermesCollaborationCapabilityQuestion(rawText)) {
       let collabSession = activeSession()
       if (!collabSession) {
         collabSession = createLocalSession({
@@ -2878,7 +2978,7 @@ function createStore() {
       visibleUserPromptByRequestId.delete(clientRequestId)
       return Promise.resolve({ status: 'success', reason: 'collaboration-capability-answer' })
     }
-    if (isHermesImageCapabilityQuestion(rawText)) {
+    if (!HERMES_NATIVE_EXECUTION_ONLY && isHermesImageCapabilityQuestion(rawText)) {
       let imageCapabilitySession = activeSession()
       if (!imageCapabilitySession) {
         imageCapabilitySession = createLocalSession({
@@ -2920,7 +3020,7 @@ function createStore() {
       return Promise.resolve({ status: 'success', reason: 'image-capability-check' })
     }
     const memoryCommandReply = handleHermesMemoryCommand(rawText)
-    if (memoryCommandReply) {
+    if (!HERMES_NATIVE_EXECUTION_ONLY && memoryCommandReply) {
       const visibleMemoryReply = normalizeHermesExactShortReply(displayText || runText || rawText, memoryCommandReply)
       let memorySession = activeSession()
       if (!memorySession) {
@@ -2957,7 +3057,7 @@ function createStore() {
       visibleUserPromptByRequestId.delete(clientRequestId)
       return Promise.resolve({ status: 'success', reason: 'memory-command' })
     }
-    if (isHermesTaskStatusQuestion(rawText)) {
+    if (!HERMES_NATIVE_EXECUTION_ONLY && isHermesTaskStatusQuestion(rawText)) {
       let statusSession = activeSession()
       if (!statusSession) {
         statusSession = createLocalSession({
@@ -3041,9 +3141,9 @@ function createStore() {
       s.messages.push(userMessage)
       userMessageByRequestId.set(clientRequestId, userMessage.id)
     }
-    const imageIntentReply = imageIntent === 'ask_clarify'
+    const imageIntentReply = !HERMES_NATIVE_EXECUTION_ONLY && imageIntent === 'ask_clarify'
       ? HERMES_IMAGE_CLARIFY_REPLY
-      : imageIntent === 'image_to_image'
+      : !HERMES_NATIVE_EXECUTION_ONLY && imageIntent === 'image_to_image'
         ? HERMES_IMAGE_TO_IMAGE_UNSUPPORTED_REPLY
         : ''
     if (imageIntentReply) {
@@ -3083,18 +3183,10 @@ function createStore() {
     try {
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? sanitizeHermesConversationHistoryForRun(opts.conversationHistory, runText || displayText)
-        : (forceEmptyHistory ? [] : buildDefaultConversationHistory(s, userMessage.id))
-      const currentTurnBoundaryInstruction = buildHermesCurrentTurnBoundaryInstruction(runText || displayText, conversationHistory)
-      const imageContextTaskInstruction = imageIntent === 'image_context_task'
-        ? '用户上传了图片，但后续文字是主要任务指令。除非文字明确要求看图、识别图、图生图，否则不要默认分析图片；应按文字要求调用工具并执行。图片仅作为上下文参考。'
-        : ''
-      const memoryContextInstruction = buildHermesMemoryContext(runText)
-      const runInstructions = withHermesReplyStyleInstruction([
-        opts.instructions,
-        currentTurnBoundaryInstruction,
-        memoryContextInstruction,
-        imageContextTaskInstruction,
-      ].filter(Boolean).join('\n\n'))
+        : null
+      // Native Hermes owns context, planning, tools, skills and memory. The
+      // App sends the current turn and only renders native execution events.
+      const runInstructions = opts.instructions || ''
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id, clientRequestId)

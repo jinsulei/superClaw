@@ -320,6 +320,7 @@ pub fn run() {
             hermes::hermes_health_check,
             hermes::hermes_api_proxy,
             hermes::hermes_agent_run,
+            hermes::hermes_native_terminal_start,
             hermes::hermes_read_config,
             hermes::hermes_fetch_models,
             hermes::hermes_update_model,

@@ -2080,6 +2080,51 @@ export function render() {
     `
   }
 
+  function renderExecutionProcessCard(message = {}) {
+    const trace = Array.isArray(message.executionTrace) ? message.executionTrace : []
+    if (!trace.length) return ''
+    const running = message.isStreaming || trace.some(step => step?.status === 'running')
+    const completedCount = trace.filter(step => step?.status === 'completed').length
+    const failedCount = trace.filter(step => step?.status === 'failed').length
+    const statusText = running
+      ? `执行中 · ${trace.length} 个步骤`
+      : failedCount
+        ? `执行完成 · ${failedCount} 个步骤失败`
+        : `执行完成 · ${completedCount || trace.length} 个步骤`
+    const rows = trace.map((step, index) => {
+      const status = String(step?.status || 'progress')
+      const summary = String(step?.summary || '').trim()
+      const input = String(step?.input || '').trim()
+      const output = String(step?.output || '').trim()
+      const detail = [
+        input ? `输入\n${input}` : '',
+        output ? `结果\n${output}` : '',
+      ].filter(Boolean).join('\n\n')
+      return `
+        <div class="hm-chat-execution-step" data-status="${escAttr(status)}">
+          <span class="hm-chat-execution-index">${index + 1}</span>
+          <div class="hm-chat-execution-body">
+            <div class="hm-chat-execution-title">${escHtml(step?.title || '执行步骤')}</div>
+            ${summary ? `<div class="hm-chat-execution-summary">${escHtml(summary)}</div>` : ''}
+            ${detail ? `<pre class="hm-chat-execution-detail">${escHtml(detail)}</pre>` : ''}
+          </div>
+          <span class="hm-chat-execution-state">${status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'completed' ? '完成' : '处理中'}</span>
+        </div>
+      `
+    }).join('')
+    return `
+      <details class="hm-chat-execution-card" ${running ? 'open' : ''}>
+        <summary>
+          <span class="hm-chat-execution-dot" aria-hidden="true"></span>
+          <span class="hm-chat-execution-label">执行过程</span>
+          <span class="hm-chat-execution-meta">${escHtml(statusText)}</span>
+          <span class="hm-chat-execution-chevron">${ICONS.chevron}</span>
+        </summary>
+        <div class="hm-chat-execution-list">${rows}</div>
+      </details>
+    `
+  }
+
   function renderMessage(m) {
     if (m.role === 'tool') return (!isHermesDebugToolsVisible() || shouldHideToolRow(m)) ? '' : renderToolMessage(m)
     if (m.role === 'system') {
@@ -2110,6 +2155,7 @@ export function render() {
     ].filter(Boolean).join('')
     const ecommerceCardHtml = renderEcommerceStageCardHtml(m)
     const messageContentHtml = [
+      !isUser ? renderExecutionProcessCard(m) : '',
       renderMessageAttachments(attachments),
       visibleContent.trim() ? (isUser ? mdToHtml(visibleContent) : renderCompactAssistantHtml(visibleContent, m.id)) : '',
       lifeAssistantHtml,
@@ -2246,9 +2292,9 @@ export function render() {
 
   function renderLiveTools() {
     if (!store.state.streaming) return ''
-    const tools = isHermesDebugToolsVisible()
-      ? store.state.liveTools.filter(tc => !shouldHideToolRow(tc))
-      : []
+    // Tool details live inside the current assistant bubble's execution card.
+    // Keep this footer as a lightweight global activity indicator only.
+    const tools = []
     const debugRows = tools.length
       ? renderFrontendDebugRows(buildFrontendDebugRowViewModel({
           tool_runs: tools.map(buildFrontendToolRunFromLiveTool),

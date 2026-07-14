@@ -6080,6 +6080,139 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   border-left: 2px solid var(--hm-border);
   padding-left: 12px;
 }
+
+[data-engine="hermes"] .hm-chat-execution-card {
+  width: 100%;
+  margin: 0 0 12px;
+  border: 1px solid color-mix(in srgb, var(--hm-accent) 22%, var(--hm-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--hm-accent) 5%, var(--hm-surface-0));
+  overflow: clip;
+}
+
+[data-engine="hermes"] .hm-chat-execution-card > summary {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 9px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+[data-engine="hermes"] .hm-chat-execution-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+[data-engine="hermes"] .hm-chat-execution-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hm-accent);
+  flex: 0 0 auto;
+}
+
+[data-engine="hermes"] .hm-chat-execution-card[open] .hm-chat-execution-dot {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hm-accent) 15%, transparent);
+}
+
+[data-engine="hermes"] .hm-chat-execution-label {
+  color: var(--hm-text-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+[data-engine="hermes"] .hm-chat-execution-meta {
+  min-width: 0;
+  color: var(--hm-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-engine="hermes"] .hm-chat-execution-chevron {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--hm-text-secondary);
+  transition: transform 160ms ease;
+}
+
+[data-engine="hermes"] .hm-chat-execution-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-engine="hermes"] .hm-chat-execution-card[open] .hm-chat-execution-chevron {
+  transform: rotate(90deg);
+}
+
+[data-engine="hermes"] .hm-chat-execution-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 9px 10px;
+  border-top: 1px solid var(--hm-border);
+}
+
+[data-engine="hermes"] .hm-chat-execution-step {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+[data-engine="hermes"] .hm-chat-execution-index {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--hm-surface-1);
+  color: var(--hm-text-secondary);
+  font-size: 10px;
+}
+
+[data-engine="hermes"] .hm-chat-execution-body {
+  min-width: 0;
+}
+
+[data-engine="hermes"] .hm-chat-execution-title {
+  color: var(--hm-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+[data-engine="hermes"] .hm-chat-execution-summary,
+[data-engine="hermes"] .hm-chat-execution-detail {
+  margin: 3px 0 0;
+  color: var(--hm-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-engine="hermes"] .hm-chat-execution-detail {
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--hm-surface-1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+[data-engine="hermes"] .hm-chat-execution-state {
+  padding-top: 2px;
+  color: var(--hm-text-secondary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+[data-engine="hermes"] .hm-chat-execution-step[data-status="failed"] .hm-chat-execution-state {
+  color: var(--error, #dc2626);
+}
 [data-engine="hermes"] .hm-chat-tool-section {
   margin-bottom: 6px;
 }
