@@ -1432,6 +1432,11 @@ Ok "Copied superclaw.exe and allowlisted resources/"
 
 Step "Cleaning packaged runtime state"
 $PackagedResources = Join-Path $OutDir "resources"
+Invoke-Checked -File "node" -Arguments @(
+  "scripts/patch-openclaw-upload-runtime.mjs",
+  "--runtime-root",
+  (Join-Path $PackagedResources "runtime\openclaw")
+) -Title "Applying portable OpenClaw upload patch"
 Sync-SuperClawOpenClawPlugins $PackagedResources
 Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")

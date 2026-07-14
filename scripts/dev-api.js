@@ -3151,9 +3151,15 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
 
 function openclawRuntimeEnv(extra = {}) {
   const portableEnv = openclawPortableProcessEnv()
+  const videoTools = resolveOpenClawVideoTools()
   return {
     ...process.env,
     ...portableEnv,
+    PATH: [videoTools?.binDir, process.env.PATH || ''].filter(Boolean).join(path.delimiter),
+    ...(videoTools ? {
+      SUPERCLAW_FFMPEG_PATH: videoTools.ffmpeg,
+      SUPERCLAW_FFPROBE_PATH: videoTools.ffprobe,
+    } : {}),
     OPENCLAW_HOME: OPENCLAW_DIR,
     OPENCLAW_STATE_DIR: OPENCLAW_DIR,
     OPENCLAW_CONFIG_PATH: CONFIG_PATH,
@@ -3162,6 +3168,21 @@ function openclawRuntimeEnv(extra = {}) {
     ...openclawMiniMaxGatewayEnv(),
     ...(extra || {}),
   }
+}
+
+function resolveOpenClawVideoTools() {
+  const candidates = [
+    path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'video-tools', 'ffmpeg', 'bin'),
+    path.join(appRootDir(), 'resources', 'runtime', 'video-tools', 'ffmpeg', 'bin'),
+  ]
+  for (const binDir of candidates) {
+    const ffmpeg = path.join(binDir, 'ffmpeg.exe')
+    const ffprobe = path.join(binDir, 'ffprobe.exe')
+    if (fs.existsSync(ffmpeg) && fs.existsSync(ffprobe)) {
+      return { binDir, ffmpeg, ffprobe }
+    }
+  }
+  return null
 }
 
 function openclawPortableHomeDir() {

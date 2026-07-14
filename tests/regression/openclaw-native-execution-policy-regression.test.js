@@ -465,6 +465,14 @@ test('OpenClaw OCR uses the shared portable runtime through a native plugin', ()
   assert.match(ocrPlugin, /name: "superclaw_ocr"/)
   assert.match(ocrPlugin, /ocr-runner\.cjs/)
   assert.match(ocrPlugin, /runtimeRoot\(\)/)
+  assert.match(ocrPlugin, /for \(let depth = 0; depth < 12; depth \+= 1\)/)
+  assert.match(ocrPlugin, /path\.join\(cursor, "ocr"\)/)
+  assert.match(ocrPlugin, /fs\.existsSync\(path\.join\(candidate, "ocr-runner\.cjs"\)\)/)
+  assert.match(ocrPlugin, /systemInstallRequired: false/)
+  assert.ok(
+    ocrPlugin.indexOf('path.join(cursor, "ocr")') < ocrPlugin.indexOf('return path.resolve(__dirname, "../../../..")'),
+    'portable OCR discovery must run before the legacy source-layout fallback',
+  )
   assert.match(ocrPlugin, /TESSDATA_PREFIX/)
   assert.match(ocrPlugin, /Do not call it automatically for every attachment/)
   assert.doesNotMatch(ocrPlugin, /C:\\\\Users|C:\\/)
@@ -483,5 +491,7 @@ test('product workflows stay in portable native skills with explicit confirmatio
   assert.match(ocrSkill, /Do not call OCR automatically/i)
   assert.match(videoSkill, /^name: superclaw-video-analysis/m)
   assert.match(videoSkill, /ffmpeg/i)
+  assert.match(videoSkill, /SUPERCLAW_FFMPEG_PATH/)
+  assert.match(videoSkill, /SUPERCLAW_FFPROBE_PATH/)
   assert.match(videoSkill, /explicit confirmation/i)
 })

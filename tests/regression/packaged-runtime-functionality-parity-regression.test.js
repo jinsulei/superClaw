@@ -23,6 +23,9 @@ const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
 const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude-panel/server.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
+const devApiSource = readFileSync('scripts/dev-api.js', 'utf8')
+const openclawUploadPatchSource = readFileSync('scripts/patch-openclaw-upload-runtime.mjs', 'utf8')
+const tauriConfigSource = readFileSync('src-tauri/tauri.conf.json', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 const modelPageSource = readFileSync('src/pages/models.js', 'utf8')
 const testBuildModeSource = readFileSync('src/lib/test-build-mode.js', 'utf8')
@@ -57,6 +60,7 @@ test('OpenClaw MiniMax Token Plan configuration also powers packaged web search'
 })
 
 test('OpenClaw shared OCR plugin is sourced and packaged with the same relative runtime layout', () => {
+  const ocrPluginSource = readFileSync('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/index.js', 'utf8')
   assert.match(buildDesktopSource, /"superclaw-ocr"/)
   assert.match(
     buildDesktopSource,
@@ -64,6 +68,39 @@ test('OpenClaw shared OCR plugin is sourced and packaged with the same relative 
   )
   assert.match(openclawCommandsSource, /"superclaw-ocr"/)
   assert.match(modelPageSource, /superclaw_ocr/)
+  assert.match(ocrPluginSource, /path\.join\(cursor, "ocr"\)/)
+  assert.match(ocrPluginSource, /ocr-runner\.cjs/)
+  assert.match(ocrPluginSource, /tessdata/)
+  assert.match(ocrPluginSource, /systemInstallRequired: false/)
+  assert.doesNotMatch(ocrPluginSource, /C:\\Users|C:\\tmp/)
+})
+
+test('OpenClaw video skills receive bundled FFmpeg paths in dev and packaged runtimes', () => {
+  assert.match(openclawCommandsSource, /pub fn bundled_video_tools_ffmpeg_bin_dir\(\)/)
+  assert.match(openclawCommandsSource, /join\("video-tools"\)[\s\S]*?join\("ffmpeg"\)[\s\S]*?join\("bin"\)/)
+  assert.match(openclawUtilsSource, /SUPERCLAW_FFMPEG_PATH/)
+  assert.match(openclawUtilsSource, /SUPERCLAW_FFPROBE_PATH/)
+  assert.match(devApiSource, /function resolveOpenClawVideoTools\(\)/)
+  assert.match(devApiSource, /PATH: \[videoTools\?\.binDir, process\.env\.PATH \|\| ''\]/)
+  assert.match(devApiSource, /SUPERCLAW_FFMPEG_PATH: videoTools\.ffmpeg/)
+  assert.match(devApiSource, /SUPERCLAW_FFPROBE_PATH: videoTools\.ffprobe/)
+  assert.match(buildDesktopSource, /runtime\\video-tools\\ffmpeg\\bin\\ffmpeg\.exe/)
+  assert.match(buildDesktopSource, /runtime\\video-tools\\ffmpeg\\bin\\ffprobe\.exe/)
+})
+
+test('OpenClaw portable upload supports guarded CDP file drops in dev and packaged runtimes', () => {
+  assert.match(openclawUploadPatchSource, /BROWSER_UPLOAD_MODES = \["auto", "input", "drop"\]/)
+  assert.match(openclawUploadPatchSource, /async function dropFilesViaCdp/)
+  assert.match(openclawUploadPatchSource, /withPlaywrightPageCdpSession\(page/)
+  assert.match(openclawUploadPatchSource, /session\.send\("Input\.dispatchDragEvent"/)
+  assert.match(openclawUploadPatchSource, /\["dragEnter", "dragOver", "drop"\]/)
+  assert.match(openclawUploadPatchSource, /resolveStrictExistingUploadPaths/)
+  assert.match(openclawUploadPatchSource, /existing-session profiles/)
+  assert.doesNotMatch(openclawUploadPatchSource, /C:\\Users|C:\\tmp/)
+  assert.match(tauriConfigSource, /beforeDevCommand[^\n]+patch-openclaw-upload-runtime\.mjs/)
+  assert.match(tauriConfigSource, /beforeBuildCommand[^\n]+patch-openclaw-upload-runtime\.mjs/)
+  assert.match(buildDesktopSource, /Applying portable OpenClaw upload patch/)
+  assert.match(buildDesktopSource, /patch-openclaw-upload-runtime\.mjs/)
 })
 
 test('OpenClaw chat snapshots visible messages before the engine switch shell replaces content', () => {

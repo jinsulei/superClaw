@@ -7,8 +7,28 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_LANGUAGE = "eng+chi_sim";
 const MAX_TIMEOUT_MS = 30_000;
+let cachedRuntimeRoot = "";
 
 function runtimeRoot() {
+  if (cachedRuntimeRoot) return cachedRuntimeRoot;
+
+  // The source plugin lives under openclaw/dist/extensions, while the
+  // packaged plugin is loaded from openclaw/node_modules/<scope>/<package>/
+  // dist/extensions. Walk upward to the shared runtime directory instead of
+  // relying on a fixed parent count that only works in one of those layouts.
+  let cursor = __dirname;
+  for (let depth = 0; depth < 12; depth += 1) {
+    const candidate = path.join(cursor, "ocr");
+    if (fs.existsSync(path.join(candidate, "ocr-runner.cjs"))
+      && fs.existsSync(path.join(candidate, "tessdata"))) {
+      cachedRuntimeRoot = cursor;
+      return cachedRuntimeRoot;
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
   return path.resolve(__dirname, "../../../..");
 }
 
@@ -29,7 +49,13 @@ function runOcr(payload, timeoutMs) {
   const runner = resolveRunner();
   const tessdata = resolveTessdata();
   if (!fs.existsSync(runner)) {
-    return Promise.resolve({ ok: false, error: "Bundled OCR runner is missing", recoverable: true });
+    return Promise.resolve({
+      ok: false,
+      error: "Bundled OCR runner is missing",
+      recoverable: true,
+      engine: "tesseract.js",
+      systemInstallRequired: false,
+    });
   }
 
   return new Promise((resolve) => {

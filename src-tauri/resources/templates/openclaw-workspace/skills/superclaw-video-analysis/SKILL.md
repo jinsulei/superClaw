@@ -14,7 +14,9 @@ generic description.
 1. Confirm the source, requested outcome, and whether local processing or an
    approved public URL is in scope. Reuse the current browser/page for a URL.
 2. Inspect media metadata with the bundled `ffprobe`, then extract only the
-   necessary frames or short clips with the bundled `ffmpeg`.
+   necessary frames or short clips with the bundled `ffmpeg`. Prefer
+   `SUPERCLAW_FFPROBE_PATH` and `SUPERCLAW_FFMPEG_PATH` when invoking them;
+   both executables are also placed on the OpenClaw child process `PATH`.
 3. Use `superclaw_ocr` for text visible in selected frames. Use the bundled
    transcription tool when speech is relevant and a local audio track exists.
 4. Record evidence with timestamps, frame paths, OCR text, transcript snippets,

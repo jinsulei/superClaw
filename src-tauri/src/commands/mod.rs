@@ -175,6 +175,22 @@ pub fn bundled_openclaw_bin_dir() -> Option<PathBuf> {
     }
 }
 
+/// Bundled FFmpeg directory shared by OpenClaw video skills.
+/// Example: resources/runtime/video-tools/ffmpeg/bin/
+pub fn bundled_video_tools_ffmpeg_bin_dir() -> Option<PathBuf> {
+    let res = app_resources_dir()?;
+    let dir = res
+        .join("runtime")
+        .join("video-tools")
+        .join("ffmpeg")
+        .join("bin");
+    if dir.join("ffmpeg.exe").is_file() && dir.join("ffprobe.exe").is_file() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
 /// 便携模式下的 OpenClaw 数据目录（存放运行配置、日志等）
 /// 例: resources/data/.openclaw/
 /// 当内置 OpenClaw 存在或该目录已有时返回 Some，否则返回 None
@@ -1469,6 +1485,11 @@ fn build_enhanced_path() -> String {
         // 能找到 standalone 安装的 openclaw.cmd
         for sa_dir in config::all_standalone_dirs() {
             extra.push(sa_dir.to_string_lossy().into_owned());
+        }
+
+        // Bundled media tools are part of the portable OpenClaw execution environment.
+        if let Some(ffmpeg_bin) = bundled_video_tools_ffmpeg_bin_dir() {
+            extra.insert(0, ffmpeg_bin.to_string_lossy().into_owned());
         }
 
         // 便携模式：内置 OpenClaw 自带的 Node.js 路径（最高优先级）

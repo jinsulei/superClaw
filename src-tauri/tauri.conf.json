@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeDevCommand": "node scripts/patch-openclaw-upload-runtime.mjs && npm run dev",
+    "beforeBuildCommand": "node scripts/patch-openclaw-upload-runtime.mjs && npm run build"
   },
   "app": {
     "windows": [

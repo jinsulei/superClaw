@@ -43,6 +43,10 @@ fn apply_openclaw_dir_env(cmd: &mut std::process::Command) {
     cmd.env("USERPROFILE", &portable_home);
     cmd.env("APPDATA", &appdata);
     cmd.env("LOCALAPPDATA", &localappdata);
+    if let Some(ffmpeg_bin) = crate::commands::bundled_video_tools_ffmpeg_bin_dir() {
+        cmd.env("SUPERCLAW_FFMPEG_PATH", ffmpeg_bin.join("ffmpeg.exe"));
+        cmd.env("SUPERCLAW_FFPROBE_PATH", ffmpeg_bin.join("ffprobe.exe"));
+    }
 }
 
 fn apply_openclaw_dir_env_tokio(cmd: &mut tokio::process::Command) {
@@ -65,6 +69,10 @@ fn apply_openclaw_dir_env_tokio(cmd: &mut tokio::process::Command) {
     cmd.env("USERPROFILE", &portable_home);
     cmd.env("APPDATA", &appdata);
     cmd.env("LOCALAPPDATA", &localappdata);
+    if let Some(ffmpeg_bin) = crate::commands::bundled_video_tools_ffmpeg_bin_dir() {
+        cmd.env("SUPERCLAW_FFMPEG_PATH", ffmpeg_bin.join("ffmpeg.exe"));
+        cmd.env("SUPERCLAW_FFPROBE_PATH", ffmpeg_bin.join("ffprobe.exe"));
+    }
 }
 
 fn openclaw_portable_home_dir(openclaw_dir: &std::path::Path) -> std::path::PathBuf {
