@@ -493,12 +493,19 @@ export class WsClient {
 
     // 事件转发
     if (msg.type === 'event') {
+      // OpenClaw may reuse one envelope id for every frame in an agent/chat
+      // stream. Those frames carry their own run/sequence identity and are
+      // deduped by the chat renderer; dropping them here collapses a streamed
+      // tool-task conclusion into one history recovery at the end.
+      const isOpenClawLiveStreamEvent = msg.event === 'agent'
+        || ((msg.event === 'chat' || msg.event === 'chat.message') && msg.payload?.state === 'delta')
+
       // 消息去重检查
-      if (msg.id && this._seenMessageIds.has(msg.id)) {
+      if (!isOpenClawLiveStreamEvent && msg.id && this._seenMessageIds.has(msg.id)) {
         console.log('[ws] 跳过重复消息:', msg.id)
         return
       }
-      if (msg.id) {
+      if (!isOpenClawLiveStreamEvent && msg.id) {
         this._seenMessageIds.add(msg.id)
         // 保持 Set 大小，防止内存泄漏
         if (this._seenMessageIds.size > 1000) {

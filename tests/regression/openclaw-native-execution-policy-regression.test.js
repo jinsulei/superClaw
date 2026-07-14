@@ -11,6 +11,7 @@ const financeSkill = read('src-tauri/resources/templates/openclaw-workspace/skil
 const ocrSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-ocr/SKILL.md')
 const videoSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-video-analysis/SKILL.md')
 const chat = read('src/pages/chat.js')
+const wsClientSource = read('src/lib/ws-client.js')
 const messageDb = read('src/lib/message-db.js')
 const openclawHistorySource = read('src-tauri/src/commands/openclaw_history.rs')
 const ocrPlugin = read('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/index.js')
@@ -175,6 +176,38 @@ test('OpenClaw native deltaText follows gateway append, replace, and cumulative 
   assert.match(deltaHandler, /typeof payload\.deltaText === 'string'/)
   assert.match(deltaHandler, /typeof payload\.data\?\.deltaText === 'string'/)
   assert.match(deltaHandler, /nativeDeltaText != null \? !nativeReplaceDelta/)
+})
+
+test('OpenClaw tool-task conclusion deltas are not collapsed by a reused event or message id', () => {
+  const sequenceSource = chat.match(/function getChatEventSequence[\s\S]*?\n\}/)?.[0] || ''
+  const dedupeSource = chat.match(/function getChatEventDedupeKey[\s\S]*?\n\}/)?.[0] || ''
+  const sandbox = {
+    result: null,
+    _sessionKey: 'agent:main:test',
+    getChatEventText(payload) {
+      return String(payload?.message?.content || '')
+    },
+  }
+
+  vm.runInNewContext(`${sequenceSource}; ${dedupeSource}; result = [
+    getChatEventDedupeKey({ state: 'delta', runId: 'run-1', sequence: 1, message: { id: 'fixed' } }, 'fixed-event'),
+    getChatEventDedupeKey({ state: 'delta', runId: 'run-1', sequence: 2, message: { id: 'fixed' } }, 'fixed-event'),
+    getChatEventDedupeKey({ state: 'delta', runId: 'run-1', sequence: 2, message: { id: 'fixed' } }, 'fixed-event'),
+    getChatEventDedupeKey({ state: 'delta', runId: 'run-1', _openClawIncrementalDelta: true, message: { id: 'fixed', content: 'same token' } }, 'fixed-event'),
+    getChatEventDedupeKey({ state: 'final', runId: 'run-1', message: { id: 'fixed', content: 'done' } }, 'fixed-event'),
+  ]`, sandbox)
+
+  const keys = Array.from(sandbox.result)
+  assert.notEqual(keys[0], keys[1])
+  assert.equal(keys[1], keys[2])
+  assert.equal(keys[3], '')
+  assert.equal(keys[4], 'event:fixed-event')
+  assert.match(dedupeSource, /payload\.state === 'delta'/)
+  assert.match(dedupeSource, /payload\._openClawIncrementalDelta === true/)
+  assert.match(dedupeSource, /return ''/)
+  assert.match(wsClientSource, /const isOpenClawLiveStreamEvent = msg\.event === 'agent'/)
+  assert.match(wsClientSource, /!isOpenClawLiveStreamEvent && msg\.id && this\._seenMessageIds\.has\(msg\.id\)/)
+  assert.match(wsClientSource, /!isOpenClawLiveStreamEvent && msg\.id/)
 })
 
 test('OpenClaw watchdog timers are isolated to the request that created them', () => {

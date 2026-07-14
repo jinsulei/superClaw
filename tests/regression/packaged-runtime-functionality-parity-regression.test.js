@@ -10,6 +10,7 @@ const hermesMemoryStoreSource = readFileSync('src/engines/hermes/lib/hermes-memo
 const hermesChatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
 const agentMessageContentSource = readFileSync('src/components/chat/agent-message-content.js', 'utf8')
 const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
+const openclawWsClientSource = readFileSync('src/lib/ws-client.js', 'utf8')
 const openclawMessageDbSource = readFileSync('src/lib/message-db.js', 'utf8')
 const openclawHistorySource = readFileSync('src-tauri/src/commands/openclaw_history.rs', 'utf8')
 const sidebarSource = readFileSync('src/components/sidebar.js', 'utf8')
@@ -693,6 +694,14 @@ test('OpenClaw packaged chat accepts native agent-stream assistant deltas throug
   assert.match(openclawChatSource, /typeof payload\.deltaText === 'string'/)
   assert.match(openclawChatSource, /typeof payload\.data\?\.deltaText === 'string'/)
   assert.match(openclawChatSource, /nativeDeltaText != null \? !nativeReplaceDelta/)
+  assert.match(openclawChatSource, /function getChatEventSequence/)
+  assert.match(openclawChatSource, /if \(payload\.state === 'delta'\)/)
+  assert.match(openclawChatSource, /Some gateway builds reuse both the event id and message id/)
+  assert.match(adapter, /sequence: payload\.sequence \?\? payload\.seq \?\? data\.sequence \?\? data\.seq/)
+  assert.match(adapter, /_openClawSourceEventTimestamp: payload\.ts \|\| data\.ts \|\| null/)
+  assert.match(openclawChatSource, /payload\._openClawIncrementalDelta === true/)
+  assert.match(openclawWsClientSource, /const isOpenClawLiveStreamEvent = msg\.event === 'agent'/)
+  assert.match(openclawWsClientSource, /!isOpenClawLiveStreamEvent && msg\.id && this\._seenMessageIds\.has\(msg\.id\)/)
 })
 
 test('packaged OpenClaw binds the native run and preserves the full live execution timeline', () => {

@@ -4642,9 +4642,66 @@ function getChatEventText(payload) {
   return String(c?.text || '')
 }
 
+function getChatEventSequence(payload) {
+  const candidates = [
+    payload?.sequence,
+    payload?.seq,
+    payload?.data?.sequence,
+    payload?.data?.seq,
+    payload?.message?.sequence,
+    payload?.message?.seq,
+  ]
+  return candidates.find(value => value !== undefined && value !== null && value !== '') ?? null
+}
+
 function getChatEventDedupeKey(payload, eventId = '') {
   if (!payload) return ''
   const messageId = payload.message?.id || payload.messageId || payload.id || ''
+  if (payload.state === 'delta') {
+    const sequence = getChatEventSequence(payload)
+    const sessionKey = payload.sessionKey || _sessionKey || ''
+    const runId = payload.runId || ''
+    if (sequence !== null) return `delta:${sessionKey}:${runId}:${messageId}:${sequence}`
+
+    const timestamp = payload._openClawSourceEventTimestamp || payload.ts || payload.data?.timestamp || payload.data?.ts || ''
+    if (timestamp) return `delta:${sessionKey}:${runId}:${messageId}:${timestamp}`
+
+    const cumulativeText = String(payload._openClawCumulativeMessageText || '')
+    if (cumulativeText) {
+      return [
+        'delta-text',
+        sessionKey,
+        runId,
+        messageId,
+        cumulativeText.length,
+        cumulativeText.slice(0, 80),
+        cumulativeText.slice(-80),
+      ].join(':')
+    }
+
+    const isIncrementalDelta = payload._openClawIncrementalDelta === true
+      || typeof payload.deltaText === 'string'
+      || typeof payload.data?.deltaText === 'string'
+    if (isIncrementalDelta) return ''
+
+    const text = getChatEventText(payload)
+    if (text) {
+      return [
+        'delta-text',
+        sessionKey,
+        runId,
+        messageId,
+        text.length,
+        text.slice(0, 80),
+        text.slice(-80),
+      ].join(':')
+    }
+
+    // Some gateway builds reuse both the event id and message id for every
+    // incremental frame. With no sequence, timestamp, or cumulative text,
+    // deduping that stream would discard every chunk after the first one.
+    return ''
+  }
   if (eventId) return `event:${eventId}`
   if (messageId) return `message:${payload.state || ''}:${payload.runId || ''}:${messageId}`
   const text = getChatEventText(payload)
@@ -6566,12 +6623,17 @@ function normalizeOpenClawAgentChatEvent(payload = {}) {
     requestId: payload.requestId || data.requestId || '',
     idempotencyKey: payload.idempotencyKey || data.idempotencyKey || '',
     timestamp: payload.ts || data.ts || Date.now(),
+    _openClawSourceEventTimestamp: payload.ts || data.ts || null,
+    sequence: payload.sequence ?? payload.seq ?? data.sequence ?? data.seq ?? null,
     state: isFinal ? 'final' : 'delta',
     _openClawIncrementalDelta: isIncrementalDelta,
     _openClawReplaceDelta: replaceDelta,
     _openClawCumulativeMessageText: cumulativeMessageText,
     _openClawRawDeltaText: streamingText,
-    message,
+    message: {
+      ...message,
+      id: data.message?.id || data.messageId || payload.message?.id || payload.messageId || '',
+    },
   }
 }
 
