@@ -109,6 +109,42 @@ function ensureMiniMaxProvider(openclawConfig, config, apiKey) {
     models,
   }
   if (apiKey) cfg.models.providers[PROVIDER_ID].apiKey = apiKey
+
+  // OpenClaw's MiniMax web_search provider has a separate plugin-owned
+  // credential path and does not reuse models.providers.minimax.apiKey.
+  // SuperClaw's MiniMax test key is a Token Plan key, so keep both official
+  // configuration paths in sync without relying on machine-level env vars.
+  if (!cfg.plugins || typeof cfg.plugins !== 'object' || Array.isArray(cfg.plugins)) cfg.plugins = {}
+  if (!cfg.plugins.entries || typeof cfg.plugins.entries !== 'object' || Array.isArray(cfg.plugins.entries)) {
+    cfg.plugins.entries = {}
+  }
+  const minimaxPlugin = cfg.plugins.entries[PROVIDER_ID] && typeof cfg.plugins.entries[PROVIDER_ID] === 'object'
+    ? cfg.plugins.entries[PROVIDER_ID]
+    : {}
+  const minimaxPluginConfig = minimaxPlugin.config && typeof minimaxPlugin.config === 'object'
+    ? minimaxPlugin.config
+    : {}
+  const webSearch = minimaxPluginConfig.webSearch && typeof minimaxPluginConfig.webSearch === 'object'
+    ? minimaxPluginConfig.webSearch
+    : {}
+  cfg.plugins.entries[PROVIDER_ID] = {
+    ...minimaxPlugin,
+    enabled: true,
+    config: {
+      ...minimaxPluginConfig,
+      webSearch: {
+        ...webSearch,
+        ...(apiKey ? { apiKey } : {}),
+        region: config.baseUrl.includes('api.minimaxi.com') ? 'cn' : 'global',
+      },
+    },
+  }
+  if (!cfg.tools || typeof cfg.tools !== 'object' || Array.isArray(cfg.tools)) cfg.tools = {}
+  if (!cfg.tools.web || typeof cfg.tools.web !== 'object' || Array.isArray(cfg.tools.web)) cfg.tools.web = {}
+  if (!cfg.tools.web.search || typeof cfg.tools.web.search !== 'object' || Array.isArray(cfg.tools.web.search)) {
+    cfg.tools.web.search = {}
+  }
+  cfg.tools.web.search.provider = PROVIDER_ID
   delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
