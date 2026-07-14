@@ -144,7 +144,45 @@ let _voiceRate = Number(localStorage.getItem('superclaw-hermes-voice-rate') || '
 let _currentAiBubble = null, _currentAiBubbleRequestId = '', _currentAiText = '', _currentAiStreamRawText = '', _currentAiImages = [], _currentAiVideos = [], _currentAiAudios = [], _currentAiFiles = [], _currentAiTools = [], _currentAiTimeline = [], _currentRunId = null
 let _isStreaming = false, _isSending = false, _messageQueue = [], _streamStartTime = 0
 let _lastRenderTime = 0, _renderPending = false, _lastRenderedAiText = '', _lastHistoryHash = ''
-let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false
+let _autoScrollEnabled = true, _lastScrollTop = 0, _touchStartY = 0, _scrollFrame = null, _scrollForce = false, _scrollPointerActive = false
+let _messagesMutationObserver = null, _messageResizeObserver = null
+
+function endOpenClawScrollPointerInteraction() {
+  _scrollPointerActive = false
+}
+
+function observeOpenClawMessageRowsForResize() {
+  if (!_messageResizeObserver || !_messagesEl) return
+  _messagesEl.querySelectorAll('.msg, .typing-indicator').forEach(node => {
+    if (node.dataset.openclawResizeObserved === 'true') return
+    node.dataset.openclawResizeObserved = 'true'
+    _messageResizeObserver.observe(node)
+  })
+}
+
+function bindOpenClawAutoScrollObservers() {
+  _messagesMutationObserver?.disconnect()
+  _messageResizeObserver?.disconnect()
+  _messagesMutationObserver = null
+  _messageResizeObserver = null
+  if (!_messagesEl) return
+
+  if (typeof ResizeObserver === 'function') {
+    _messageResizeObserver = new ResizeObserver(() => scrollToBottom())
+  }
+  if (typeof MutationObserver === 'function') {
+    _messagesMutationObserver = new MutationObserver(() => {
+      observeOpenClawMessageRowsForResize()
+      scrollToBottom()
+    })
+    _messagesMutationObserver.observe(_messagesEl, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    })
+  }
+  observeOpenClawMessageRowsForResize()
+}
 let _isLoadingHistory = false
 let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
 let _chatSnapshotLifecycleBound = false
@@ -469,6 +507,7 @@ export async function render() {
   _voiceBtn = page.querySelector('#chat-voice-btn')
   _hostedBtn = page.querySelector('#chat-hosted-btn')
   _hostedBadgeEl = page.querySelector('#chat-hosted-badge')
+  bindOpenClawAutoScrollObservers()
   _hostedPanelEl = page.querySelector('#hosted-agent-panel')
   _hostedPromptEl = page.querySelector('#hosted-agent-prompt')
   _hostedMaxStepsEl = page.querySelector('#hosted-agent-max-steps')
@@ -786,9 +825,17 @@ function bindEvents(page) {
   _messagesEl.addEventListener('scroll', () => {
     const { scrollTop, scrollHeight, clientHeight } = _messagesEl
     _scrollBtn.style.display = (scrollHeight - scrollTop - clientHeight < 80) ? 'none' : 'flex'
-    if (scrollTop < _lastScrollTop - 2) _autoScrollEnabled = false
+    // Growing streamed content can move scrollTop without user input. Only
+    // pause following when an upward move happens during pointer interaction.
+    if (_scrollPointerActive && scrollTop < _lastScrollTop - 2) _autoScrollEnabled = false
     if (isAtBottom()) _autoScrollEnabled = true
     _lastScrollTop = scrollTop
+  })
+  _messagesEl.addEventListener('pointerdown', () => { _scrollPointerActive = true })
+  window.addEventListener('pointerup', endOpenClawScrollPointerInteraction)
+  window.addEventListener('pointercancel', endOpenClawScrollPointerInteraction)
+  _messagesEl.addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) _autoScrollEnabled = false
   })
   _messagesEl.addEventListener('wheel', (e) => {
     if (e.deltaY < 0) _autoScrollEnabled = false
@@ -4837,6 +4884,10 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
     return
   }
   if (_inFlightRequestIds.has(clientRequestId)) return
+  // Every new turn follows its answer by default. A deliberate upward scroll
+  // during generation still disables following until the user returns below.
+  _autoScrollEnabled = true
+  _scrollForce = false
   // A turn owns all of its timers. Never let an unresolved callback or elapsed
   // timestamp from the previous turn carry into this request.
   _cancelResponseWatchdog()
@@ -4910,6 +4961,7 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   recordOpenClawRunStep('start', '\u5df2\u63d0\u4ea4\u4efb\u52a1\uff0c\u6b63\u5728\u8fde\u63a5\u6267\u884c\u73af\u5883', 'running')
   renderOpenClawLiveTimeline()
   showTyping(true)
+  scrollToBottom(true)
   _isSending = true
   _startResponseWatchdog()
   startOpenClawProgressHistoryPolling()
@@ -10147,17 +10199,40 @@ function showCompactionHint(show) {
 
 function scrollToBottom(force = false) {
   if (!_messagesEl) return
-  if (force) _scrollForce = true
+  if (force) {
+    _autoScrollEnabled = true
+    _scrollForce = true
+  }
   if (!force && !_autoScrollEnabled && !_scrollForce) return
   if (_scrollFrame) return
-  _scrollFrame = requestAnimationFrame(() => {
-    const shouldForce = _scrollForce
-    _scrollFrame = null
-    _scrollForce = false
-    if (_messagesEl && (shouldForce || _autoScrollEnabled)) {
-      _messagesEl.scrollTop = _messagesEl.scrollHeight
+
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true
+  const followBottom = () => {
+    if (!_messagesEl || (!_scrollForce && !_autoScrollEnabled)) {
+      _scrollFrame = null
+      _scrollForce = false
+      return
     }
-  })
+
+    _scrollForce = false
+    const target = Math.max(0, _messagesEl.scrollHeight - _messagesEl.clientHeight)
+    const distance = target - _messagesEl.scrollTop
+    if (reduceMotion || Math.abs(distance) < 1) {
+      _messagesEl.scrollTop = target
+      _lastScrollTop = _messagesEl.scrollTop
+      _scrollFrame = null
+      return
+    }
+
+    // Keep one animation chasing the latest layout height. Process cards and
+    // Markdown can grow several times per response; restarting native smooth
+    // scrolling for every mutation causes visible flashing.
+    _messagesEl.scrollTop += distance * 0.22
+    _lastScrollTop = _messagesEl.scrollTop
+    _scrollFrame = requestAnimationFrame(followBottom)
+  }
+
+  _scrollFrame = requestAnimationFrame(followBottom)
 }
 
 function isAtBottom() {
@@ -10668,6 +10743,13 @@ export function cleanup() {
     cancelAnimationFrame(_scrollFrame)
     _scrollFrame = null
   }
+  _messagesMutationObserver?.disconnect()
+  _messageResizeObserver?.disconnect()
+  _messagesMutationObserver = null
+  _messageResizeObserver = null
+  window.removeEventListener('pointerup', endOpenClawScrollPointerInteraction)
+  window.removeEventListener('pointercancel', endOpenClawScrollPointerInteraction)
+  _scrollPointerActive = false
   _scrollForce = false
   _voiceInputController?.destroy()
   _voicePlaybackController?.destroy()

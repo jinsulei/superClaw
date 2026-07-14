@@ -103,6 +103,23 @@ test('OpenClaw portable upload supports guarded CDP file drops in dev and packag
   assert.match(buildDesktopSource, /patch-openclaw-upload-runtime\.mjs/)
 })
 
+test('OpenClaw streamed replies follow the bottom unless the user deliberately scrolls upward', () => {
+  assert.match(openclawChatSource, /_scrollPointerActive/)
+  assert.match(openclawChatSource, /_scrollPointerActive && scrollTop < _lastScrollTop - 2/)
+  assert.match(openclawChatSource, /\['ArrowUp', 'PageUp', 'Home'\]\.includes\(e\.key\)/)
+  assert.match(openclawChatSource, /new MutationObserver\(\(\) => \{[\s\S]*?scrollToBottom\(\)/)
+  assert.match(openclawChatSource, /new ResizeObserver\(\(\) => scrollToBottom\(\)\)/)
+  assert.match(openclawChatSource, /const followBottom = \(\) => \{[\s\S]*?distance \* 0\.22/)
+  assert.match(openclawChatSource, /_scrollFrame = requestAnimationFrame\(followBottom\)/)
+  assert.match(openclawChatSource, /prefers-reduced-motion: reduce/)
+  assert.match(openclawChatSource, /_messagesMutationObserver\?\.disconnect\(\)/)
+  assert.match(openclawChatSource, /_messageResizeObserver\?\.disconnect\(\)/)
+  const sendBlock = openclawChatSource.match(/async function doSend\([\s\S]*?function buildAttachmentTriggeredPrompt/)?.[0] || ''
+  assert.match(sendBlock, /_autoScrollEnabled = true/)
+  assert.match(sendBlock, /showTyping\(true\)[\s\S]*?scrollToBottom\(true\)/)
+  assert.match(openclawChatSource, /function doRender\(\)[\s\S]*?scrollToBottom\(\)/)
+})
+
 test('OpenClaw chat snapshots visible messages before the engine switch shell replaces content', () => {
   assert.match(openclawChatSource, /window\.addEventListener\('superclaw:before-engine-switch',[\s\S]*?handleOpenClawChatSnapshotLifecycle\('engine-switch'\)/)
   const switchBlock = sidebarSource.match(/if \(eid !== fromEngineId\) \{[\s\S]*?const switchProgress =/)?.[0] || ''
