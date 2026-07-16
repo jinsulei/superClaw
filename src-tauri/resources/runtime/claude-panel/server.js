@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const { spawn, spawnSync } = require("child_process");
 
 const PORT = Number(process.env.PORT || 3020);
@@ -41,7 +42,14 @@ const CLAUDE_SETTINGS_PATH =
 const CLAUDE_PROJECTS_JSON_PATH =
   process.env.CLEAN_PANEL_CLAUDE_PROJECTS_JSON_PATH || path.join(HOME, ".claude.json");
 const CLAUDE_SKILLS_DIR =
-  process.env.CLEAN_PANEL_CLAUDE_SKILLS_DIR || path.join(HOME, ".claude", "skills");
+  process.env.CLEAN_PANEL_CLAUDE_SKILLS_DIR || path.join(CLAUDE_RUNTIME_CONFIG_DIR, "skills");
+const LEGACY_CLAUDE_SKILLS_DIR = path.join(HOME, ".claude", "skills");
+const CLAUDE_DISABLED_SKILLS_DIR = path.join(CLAUDE_RUNTIME_CONFIG_DIR, "skills-disabled");
+const OFFICIAL_CLAUDE_MARKETPLACE = "claude-plugins-official";
+const OFFICIAL_CLAUDE_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official";
+const EXTENSION_SEARCH_TTL_MS = 10 * 60 * 1000;
+const EXTENSION_SEARCH_LIMIT = 40;
+const extensionSearches = new Map();
 const SUPERCLAW_PANEL_CONFIG_PATH = process.env.SUPERCLAW_PANEL_CONFIG_PATH || "";
 const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", "relay-test.err.log"];
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
@@ -56,7 +64,8 @@ const TOOL_PROFILES = {
   edit: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit"],
   command: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash"],
 };
-const BROWSER_AUTOMATION_TOOLS = [
+const WEB_RESEARCH_TOOLS = ["WebFetch", "WebSearch"];
+const PLAYWRIGHT_AUTOMATION_TOOLS = [
   "mcp__playwright__browser_navigate",
   "mcp__playwright__browser_navigate_back",
   "mcp__playwright__browser_click",
@@ -71,6 +80,7 @@ const BROWSER_AUTOMATION_TOOLS = [
   "mcp__playwright__browser_console_messages",
   "mcp__playwright__browser_network_requests",
 ];
+const BROWSER_AUTOMATION_TOOLS = [...WEB_RESEARCH_TOOLS, ...PLAYWRIGHT_AUTOMATION_TOOLS];
 const BROWSER_AUTOMATION_DENIES = [
   "mcp__playwright__browser_file_upload",
   "mcp__playwright__browser_install",
@@ -78,6 +88,7 @@ const BROWSER_AUTOMATION_DENIES = [
   "mcp__playwright__browser_evaluate",
 ];
 const HIGH_RISK_TOOL_PROFILES = new Set(["edit", "command", "network", "admin", "expert"]);
+const AUTHORIZATION_GRANT_TYPES = new Set(["web", "browser", "file", "command", "install", "sensitive", "generic"]);
 const SENSITIVE_FILE_PATTERNS = [
   /^\.env(\..*)?$/i,
   /^id_rsa$/i,
@@ -115,10 +126,18 @@ const CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT = [
 ].join("\n");
 const BROWSER_AUTOMATION_SYSTEM_PROMPT = [
   "本次已获得用户对浏览器自动化的授权。",
-  "你可以使用 Playwright MCP 浏览器工具打开网页、点击、输入、搜索、查看页面内容和截图。",
+  "你可以主动使用 WebSearch 搜索公开网络、使用 WebFetch 读取公开网页，也可以使用 Playwright MCP 浏览器工具打开网页、点击、输入、搜索、查看页面内容和截图。",
+  "对于公开信息查询，优先使用 WebSearch/WebFetch；需要交互、动态渲染或登录态时再使用 Playwright。不要声称当前没有联网工具。",
   "不要上传本地文件，不要安装浏览器组件，不要执行系统命令，不要读取本机敏感文件。",
+  "WebFetch/WebSearch 仅用于只读访问；不要发送修改远端数据的任意 HTTP 请求。",
   "如果网页要求登录、扫码、支付、提交隐私信息或高风险操作，先用中文说明并等待用户确认。",
   "用户已经授权浏览器访问网络时，不要重复询问同一个浏览器打开/搜索授权，直接继续执行。",
+].join("\n");
+const WEB_RESEARCH_SYSTEM_PROMPT = [
+  "所有对话模式均已获得公开网络只读查询权限。",
+  "可以直接使用 WebSearch 搜索公开信息，使用 WebFetch 读取公开网页；不要为这两项只读工具重复请求用户授权。",
+  "只读联网不包含登录、支付、上传文件、提交隐私信息、修改远端数据或执行任意 HTTP 写请求。",
+  "需要页面点击、输入、动态交互或使用登录态时，只有浏览器自动化/接管模式可以使用 Playwright，并继续遵守敏感操作确认规则。",
 ].join("\n");
 const TAKEOVER_CAPABILITY_SYSTEM_PROMPT = [
   "当前界面处于“电脑接管模式”，但这不是系统级远程桌面控制。",
@@ -130,8 +149,10 @@ const CAPABILITY_AUDIT_BASE_PROMPT = [
   "Capability audit mode is active for this user request.",
   "The user is asking whether a task can be done, which tool/plugin/skill is needed, or whether something should be installed.",
   "Before promising execution, inspect the currently available tool profile, browser automation status, local skills, and plugin summary provided below.",
-  "Reply in Simplified Chinese with: 1) available capability, 2) missing tool/plugin/skill if any, 3) whether web search is needed, 4) security risks, 5) a clear consent question before searching, downloading, installing, enabling, or changing configuration.",
-  "Do not install, download, enable plugins, edit config, run commands, or browse the web until the user explicitly agrees in the next message.",
+  "The CURRENT_RUNTIME_CAPABILITY block is authoritative for this run. Ignore and correct any earlier conversation claim that a listed current tool is unavailable.",
+  "Reply in Simplified Chinese with: 1) available capability, 2) missing tool/plugin/skill if any, 3) whether read-only web research is needed, 4) security risks, 5) a clear consent question only before downloading, installing, enabling, changing configuration, browser interaction with sensitive data, or other state-changing operations.",
+  "WebSearch and WebFetch are already authorized for read-only public web research in every conversation mode. Use them directly when needed and do not ask for repeated web-search consent.",
+  "Do not install, download, enable plugins, edit config, run commands, log in, upload files, submit private data, pay, or change remote state until the user explicitly agrees when that action requires confirmation.",
   "If the required capability is not native, say that clearly. Do not output fake tool_call/XML text.",
 ].join("\n");
 const RESERVED_FEATURES = {
@@ -307,7 +328,64 @@ function ensureClaudeRuntimeSettings(runtimeEnv = {}) {
     },
   };
   fs.writeFileSync(settingsPath, JSON.stringify(next, null, 2), "utf8");
+  ensurePortablePlaywrightMcp();
   return settingsPath;
+}
+
+function ensurePortablePlaywrightMcp() {
+  const runtimeRoot = path.resolve(__dirname, "..");
+  const nodeName = process.platform === "win32" ? "node.exe" : "node";
+  const nodePath = path.join(runtimeRoot, "openclaw", nodeName);
+  const mcpEntry = path.join(
+    runtimeRoot,
+    "openclaw",
+    "node_modules",
+    "@qingchencloud",
+    "openclaw-zh",
+    "node_modules",
+    "playwright-core",
+    "lib",
+    "entry",
+    "mcp.js"
+  );
+  if (!fs.existsSync(nodePath) || !fs.existsSync(mcpEntry)) return false;
+
+  const mcpConfigPath = path.join(CLAUDE_RUNTIME_CONFIG_DIR, ".claude.json");
+  const projectsConfig = readJson(mcpConfigPath) || {};
+  const existingPlaywright = projectsConfig.mcpServers?.playwright;
+  if (existingPlaywright && existingPlaywright.superclawManaged !== true) return true;
+  const browserDataDir = path.join(APP_CONFIG_DIR, "browser-profile");
+  const browserOutputDir = path.join(APP_CONFIG_DIR, "browser-output");
+  fs.mkdirSync(browserDataDir, { recursive: true });
+  fs.mkdirSync(browserOutputDir, { recursive: true });
+  const next = {
+    ...projectsConfig,
+    mcpServers: {
+      ...(projectsConfig.mcpServers && typeof projectsConfig.mcpServers === "object"
+        ? projectsConfig.mcpServers
+        : {}),
+      playwright: {
+        superclawManaged: true,
+        type: "stdio",
+        command: nodePath,
+        args: [
+          mcpEntry,
+          "--browser",
+          "msedge",
+          "--shared-browser-context",
+          "--user-data-dir",
+          browserDataDir,
+          "--output-dir",
+          browserOutputDir,
+          "--caps",
+          "vision",
+        ],
+      },
+    },
+  };
+  fs.mkdirSync(path.dirname(mcpConfigPath), { recursive: true });
+  fs.writeFileSync(mcpConfigPath, JSON.stringify(next, null, 2), "utf8");
+  return true;
 }
 
 function buildPortableEnv(extra = {}) {
@@ -673,6 +751,82 @@ function anthropicContentToText(content) {
     .join("\n");
 }
 
+function anthropicMessageToOpenAi(message) {
+  const role = message?.role === "assistant" ? "assistant" : "user";
+  const content = Array.isArray(message?.content) ? message.content : [message?.content];
+  const textParts = content
+    .filter((part) => typeof part === "string" || part?.type === "text")
+    .map((part) => typeof part === "string" ? part : String(part.text || ""))
+    .filter(Boolean);
+  const toolUses = content.filter((part) => part?.type === "tool_use");
+  const toolResults = content.filter((part) => part?.type === "tool_result");
+  const converted = [];
+
+  if (role === "assistant") {
+    const assistant = {
+      role: "assistant",
+      content: textParts.join("\n") || null,
+    };
+    if (toolUses.length) {
+      assistant.tool_calls = toolUses.map((part) => ({
+        id: String(part.id || `tool_${Date.now()}`),
+        type: "function",
+        function: {
+          name: String(part.name || "tool"),
+          arguments: JSON.stringify(part.input && typeof part.input === "object" ? part.input : {}),
+        },
+      }));
+    }
+    converted.push(assistant);
+    return converted;
+  }
+
+  if (textParts.length) converted.push({ role: "user", content: textParts.join("\n") });
+  for (const result of toolResults) {
+    converted.push({
+      role: "tool",
+      tool_call_id: String(result.tool_use_id || ""),
+      content: anthropicContentToText(result.content),
+    });
+  }
+  if (!converted.length) converted.push({ role: "user", content: anthropicContentToText(message?.content) });
+  return converted;
+}
+
+function anthropicToolsToOpenAi(tools) {
+  return (Array.isArray(tools) ? tools : [])
+    .filter((tool) => tool && tool.name)
+    .map((tool) => ({
+      type: "function",
+      function: {
+        name: String(tool.name),
+        description: String(tool.description || ""),
+        parameters: tool.input_schema && typeof tool.input_schema === "object"
+          ? tool.input_schema
+          : { type: "object", properties: {} },
+      },
+    }));
+}
+
+function openAiToolCalls(message) {
+  return (Array.isArray(message?.tool_calls) ? message.tool_calls : [])
+    .filter((call) => call?.function?.name)
+    .map((call, index) => {
+      let input = {};
+      try {
+        input = JSON.parse(call.function.arguments || "{}");
+      } catch {
+        input = { raw: String(call.function.arguments || "") };
+      }
+      return {
+        type: "tool_use",
+        id: String(call.id || `tool_${Date.now()}_${index}`),
+        name: String(call.function.name),
+        input,
+      };
+    });
+}
+
 function openAiChatUrl(baseUrl) {
   const root = String(baseUrl || "").replace(/\/+$/, "");
   if (root.endsWith("/chat/completions")) return root;
@@ -721,18 +875,23 @@ function convertAnthropicToOpenAi(body, relayConfig) {
     : String(body.system || "").trim();
   if (systemText) messages.push({ role: "system", content: systemText });
   for (const message of Array.isArray(body.messages) ? body.messages : []) {
-    messages.push({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content: anthropicContentToText(message.content),
-    });
+    messages.push(...anthropicMessageToOpenAi(message));
   }
+  const tools = anthropicToolsToOpenAi(body.tools);
   const payload = {
     model: normalizeRelayApiModel(body.model, relayConfig.model),
     messages,
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
-    stream: Boolean(body.stream),
+    // Buffer one upstream turn so OpenAI tool_calls can be converted into
+    // complete Anthropic tool_use blocks for the native Claude CLI.
+    stream: false,
   };
+  if (tools.length) payload.tools = tools;
+  if (body.tool_choice?.type === "any") payload.tool_choice = "required";
+  if (body.tool_choice?.type === "tool" && body.tool_choice.name) {
+    payload.tool_choice = { type: "function", function: { name: body.tool_choice.name } };
+  }
   const thinking = minimaxThinkingOverride(relayConfig, payload.model);
   if (thinking) payload.thinking = thinking;
   return payload;
@@ -762,6 +921,7 @@ async function handleOpenAiCompatibleMessages(req, res) {
     return;
   }
 
+  const requestedStream = Boolean(body.stream);
   const openAiBody = convertAnthropicToOpenAi(body, relayConfig);
   const upstreamResp = await fetch(openAiChatUrl(relayConfig.baseUrl), {
     method: "POST",
@@ -778,16 +938,24 @@ async function handleOpenAiCompatibleMessages(req, res) {
     return;
   }
 
-  if (!openAiBody.stream) {
-    const data = await upstreamResp.json();
-    const text = extractRelayText(data);
+  const data = await upstreamResp.json().catch(() => ({}));
+  const responseMessage = data?.choices?.[0]?.message || {};
+  const text = extractRelayText(data);
+  const toolCalls = openAiToolCalls(responseMessage);
+  const content = [
+    ...(text ? [{ type: "text", text }] : []),
+    ...toolCalls,
+  ];
+  const stopReason = toolCalls.length ? "tool_use" : "end_turn";
+
+  if (!requestedStream) {
     sendJson(res, 200, {
       id: data.id || `msg_${Date.now()}`,
       type: "message",
       role: "assistant",
       model: data.model || openAiBody.model,
-      content: [{ type: "text", text }],
-      stop_reason: "end_turn",
+      content,
+      stop_reason: stopReason,
       stop_sequence: null,
       usage: {
         input_tokens: data?.usage?.prompt_tokens || 0,
@@ -815,46 +983,46 @@ async function handleOpenAiCompatibleMessages(req, res) {
       usage: { input_tokens: 0, output_tokens: 0 },
     },
   });
-  sendAnthropicSse(res, "content_block_start", {
-    type: "content_block_start",
-    index: 0,
-    content_block: { type: "text", text: "" },
-  });
-
-  const reader = upstreamResp.body?.getReader?.();
-  if (reader) {
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const payload = trimmed.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const chunk = JSON.parse(payload);
-          const text = extractRelayText(chunk);
-          if (text) {
-            sendAnthropicSse(res, "content_block_delta", {
-              type: "content_block_delta",
-              index: 0,
-              delta: { type: "text_delta", text },
-            });
-          }
-        } catch {}
-      }
-    }
+  let blockIndex = 0;
+  if (text) {
+    sendAnthropicSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "text", text: "" },
+    });
+    sendAnthropicSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: blockIndex,
+      delta: { type: "text_delta", text },
+    });
+    sendAnthropicSse(res, "content_block_stop", { type: "content_block_stop", index: blockIndex });
+    blockIndex += 1;
   }
-
-  sendAnthropicSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+  for (const toolCall of toolCalls) {
+    sendAnthropicSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: { type: "tool_use", id: toolCall.id, name: toolCall.name, input: {} },
+    });
+    sendAnthropicSse(res, "content_block_delta", {
+      type: "content_block_delta",
+      index: blockIndex,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify(toolCall.input || {}) },
+    });
+    sendAnthropicSse(res, "content_block_stop", { type: "content_block_stop", index: blockIndex });
+    blockIndex += 1;
+  }
+  if (!text && !toolCalls.length) {
+    sendAnthropicSse(res, "content_block_start", {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    });
+    sendAnthropicSse(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+  }
   sendAnthropicSse(res, "message_delta", {
     type: "message_delta",
-    delta: { stop_reason: "end_turn", stop_sequence: null },
+    delta: { stop_reason: stopReason, stop_sequence: null },
     usage: { output_tokens: 0 },
   });
   sendAnthropicSse(res, "message_stop", { type: "message_stop" });
@@ -1685,18 +1853,94 @@ function getKnownProjects() {
     }));
 }
 
-function listLocalSkills() {
-  const skillsDir = CLAUDE_SKILLS_DIR;
+function migrateLegacyClaudeSkills() {
+  const legacyRoot = path.resolve(LEGACY_CLAUDE_SKILLS_DIR);
+  const nativeRoot = path.resolve(CLAUDE_SKILLS_DIR);
+  if (legacyRoot === nativeRoot || !fs.existsSync(legacyRoot)) return;
+  fs.mkdirSync(nativeRoot, { recursive: true });
+  for (const entry of fs.readdirSync(legacyRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const source = path.join(legacyRoot, entry.name);
+    const sourceSkill = path.join(source, "SKILL.md");
+    const destination = path.join(nativeRoot, entry.name);
+    if (!fs.existsSync(sourceSkill) || fs.existsSync(destination)) continue;
+    fs.cpSync(source, destination, { recursive: true, errorOnExist: false });
+  }
+  for (const entry of fs.readdirSync(nativeRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const skillFile = path.join(nativeRoot, entry.name, "SKILL.md");
+    if (!fs.existsSync(skillFile)) continue;
+    const content = fs.readFileSync(skillFile, "utf8");
+    if (/^---\s*\r?\n/.test(content)) continue;
+    const upgraded = [
+      "---",
+      `name: ${entry.name}`,
+      `description: Migrated portable Claude Code skill for ${entry.name}`,
+      "---",
+      "",
+      content.trim(),
+      "",
+    ].join("\n");
+    fs.writeFileSync(skillFile, upgraded, "utf8");
+  }
+}
+
+function readSkillMetadata(skillFile, fallbackName) {
+  try {
+    const content = fs.readFileSync(skillFile, "utf8");
+    const frontmatter = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+    const name = frontmatter?.[1].match(/^name:\s*["']?([^\r\n"']+)["']?\s*$/m)?.[1]?.trim() || fallbackName;
+    const description = frontmatter?.[1].match(/^description:\s*["']?([^\r\n"']+)["']?\s*$/m)?.[1]?.trim() || "";
+    return {
+      valid: Boolean(frontmatter && name && description),
+      name,
+      description,
+      error: frontmatter
+        ? (!description ? "SKILL.md 缺少 description" : "")
+        : "SKILL.md 缺少 YAML frontmatter",
+    };
+  } catch (error) {
+    return { valid: false, name: fallbackName, description: "", error: error.message || "无法读取 SKILL.md" };
+  }
+}
+
+function listSkillsFromRoot(root, enabled) {
   try {
     return fs
-      .readdirSync(skillsDir, { withFileTypes: true })
+      .readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort((a, b) => a.localeCompare(b))
-      .slice(0, 80);
+      .map((entry) => {
+        const skillFile = path.join(root, entry.name, "SKILL.md");
+        const metadata = readSkillMetadata(skillFile, entry.name);
+        return {
+          id: entry.name,
+          name: metadata.name,
+          description: metadata.description,
+          enabled,
+          valid: metadata.valid,
+          error: metadata.error,
+          path: path.relative(HOME, skillFile).replace(/\\/g, "/"),
+        };
+      });
   } catch {
     return [];
   }
+}
+
+function listLocalSkillInventory() {
+  migrateLegacyClaudeSkills();
+  return [
+    ...listSkillsFromRoot(CLAUDE_SKILLS_DIR, true),
+    ...listSkillsFromRoot(CLAUDE_DISABLED_SKILLS_DIR, false),
+  ]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 160);
+}
+
+function listLocalSkills() {
+  return listLocalSkillInventory()
+    .filter((skill) => skill.enabled && skill.valid)
+    .map((skill) => skill.name);
 }
 
 function normalizeLocalSkillName(name) {
@@ -1722,6 +1966,11 @@ function portableSkillPath(name) {
 
 function defaultSkillContent(name) {
   return [
+    "---",
+    `name: ${name}`,
+    `description: Portable Claude Code workflow for ${name}`,
+    "---",
+    "",
     `# ${name}`,
     "",
     "## When to use",
@@ -1733,6 +1982,35 @@ function defaultSkillContent(name) {
     "- Report what was changed, tested, and any remaining risk.",
     "",
   ].join("\n");
+}
+
+function normalizeSkillContent(name, rawContent) {
+  const content = String(rawContent || "").trim() || defaultSkillContent(name);
+  if (/^---\s*\r?\n/.test(content)) {
+    const metadata = readSkillMetadataFromText(content, name);
+    if (!metadata.valid) throw new Error(metadata.error || "SKILL.md frontmatter 无效");
+    return content;
+  }
+  return [
+    "---",
+    `name: ${name}`,
+    `description: User-installed portable Claude Code skill for ${name}`,
+    "---",
+    "",
+    content,
+  ].join("\n");
+}
+
+function readSkillMetadataFromText(content, fallbackName) {
+  const frontmatter = String(content || "").match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  const name = frontmatter?.[1].match(/^name:\s*["']?([^\r\n"']+)["']?\s*$/m)?.[1]?.trim() || fallbackName;
+  const description = frontmatter?.[1].match(/^description:\s*["']?([^\r\n"']+)["']?\s*$/m)?.[1]?.trim() || "";
+  return {
+    valid: Boolean(frontmatter && name && description),
+    name,
+    description,
+    error: !frontmatter ? "SKILL.md 缺少 YAML frontmatter" : (!description ? "SKILL.md 缺少 description" : ""),
+  };
 }
 
 async function handleSkillInstall(req, res) {
@@ -1754,7 +2032,7 @@ async function handleSkillInstall(req, res) {
     const dir = portableSkillPath(name);
     const skillFile = path.join(dir, "SKILL.md");
     const overwrite = Boolean(payload.overwrite);
-    const content = String(payload.content || "").trim() || defaultSkillContent(name);
+    const content = normalizeSkillContent(name, payload.content);
     if (Buffer.byteLength(content, "utf8") > 128 * 1024) {
       throw new Error("Skill 内容过大，请控制在 128KB 以内");
     }
@@ -1767,12 +2045,36 @@ async function handleSkillInstall(req, res) {
       return;
     }
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(skillFile, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    const temporaryFile = `${skillFile}.${process.pid}.${Date.now()}.tmp`;
+    const backupFile = `${skillFile}.${process.pid}.${Date.now()}.bak`;
+    fs.writeFileSync(temporaryFile, content.endsWith("\n") ? content : `${content}\n`, "utf8");
+    let backedUp = false;
+    try {
+      if (fs.existsSync(skillFile)) {
+        fs.renameSync(skillFile, backupFile);
+        backedUp = true;
+      }
+      fs.renameSync(temporaryFile, skillFile);
+      if (backedUp) fs.rmSync(backupFile, { force: true });
+    } catch (error) {
+      if (backedUp && !fs.existsSync(skillFile) && fs.existsSync(backupFile)) {
+        fs.renameSync(backupFile, skillFile);
+      }
+      throw error;
+    } finally {
+      fs.rmSync(temporaryFile, { force: true });
+    }
+    const installed = listLocalSkillInventory().find((skill) => skill.id === name && skill.enabled);
+    if (!installed?.valid) {
+      throw new Error(installed?.error || "Skill 写入后未通过原生目录校验");
+    }
     sendJson(res, 200, {
       success: true,
       name,
-      path: skillFile,
+      path: installed.path,
+      verified: true,
       skills: listLocalSkills(),
+      skillInventory: listLocalSkillInventory(),
     });
   } catch (error) {
     sendJson(res, 400, { error: error.message || "Skill 安装失败" });
@@ -1791,6 +2093,221 @@ function normalizePluginSpec(spec) {
     throw new Error("插件名称只能包含 npm 包名常用字符");
   }
   return value;
+}
+
+function runPortableClaudeCommand(args, options = {}) {
+  const claudeCommand = resolvePortableClaudeCommand();
+  const timeoutMs = Number(options.timeoutMs || 120000);
+  const maxBytes = Number(options.maxBytes || 4 * 1024 * 1024);
+  return new Promise((resolve, reject) => {
+    const child = spawn(claudeCommand, args, {
+      cwd: options.cwd || process.cwd(),
+      env: buildPortableEnv(),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new Error(`Claude Code 命令等待超过 ${Math.ceil(timeoutMs / 1000)} 秒`));
+    }, timeoutMs);
+    const append = (target, chunk) => {
+      const next = target + chunk.toString("utf8");
+      return Buffer.byteLength(next, "utf8") > maxBytes ? next.slice(-maxBytes) : next;
+    };
+    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr, output: redact(`${stdout}\n${stderr}`.trim()) });
+    });
+  });
+}
+
+function parseClaudeJson(output, label) {
+  const text = String(output || "").trim().replace(/^\uFEFF/, "");
+  try {
+    return JSON.parse(text);
+  } catch {
+    const starts = [text.indexOf("["), text.indexOf("{")].filter((index) => index >= 0).sort((a, b) => a - b);
+    for (const start of starts) {
+      try {
+        return JSON.parse(text.slice(start));
+      } catch {
+        // Try the next JSON-shaped section.
+      }
+    }
+    throw new Error(`${label} 返回了无法解析的数据`);
+  }
+}
+
+function pluginListFromPayload(payload, key) {
+  if (Array.isArray(payload)) return payload;
+  return Array.isArray(payload?.[key]) ? payload[key] : [];
+}
+
+async function getMarketplaceInventory() {
+  const result = await runPortableClaudeCommand(["plugin", "marketplace", "list", "--json"], { timeoutMs: 30000 });
+  if (result.code !== 0) throw new Error(result.output || "无法读取 Claude Code Marketplace");
+  const payload = parseClaudeJson(result.stdout, "Marketplace 列表");
+  return Array.isArray(payload) ? payload : [];
+}
+
+async function ensureOfficialMarketplace() {
+  let marketplaces = await getMarketplaceInventory();
+  if (marketplaces.some((item) => item?.name === OFFICIAL_CLAUDE_MARKETPLACE)) return marketplaces;
+  const result = await runPortableClaudeCommand(
+    ["plugin", "marketplace", "add", OFFICIAL_CLAUDE_MARKETPLACE_SOURCE],
+    { timeoutMs: 150000 }
+  );
+  if (result.code !== 0) throw new Error(result.output || "官方 Claude Code Marketplace 注册失败");
+  marketplaces = await getMarketplaceInventory();
+  if (!marketplaces.some((item) => item?.name === OFFICIAL_CLAUDE_MARKETPLACE)) {
+    throw new Error("官方 Marketplace 命令执行成功，但未出现在便携配置中");
+  }
+  return marketplaces;
+}
+
+async function getPluginCatalog() {
+  const result = await runPortableClaudeCommand(["plugin", "list", "--available", "--json"], { timeoutMs: 60000 });
+  if (result.code !== 0) throw new Error(result.output || "无法读取 Claude Code 插件目录");
+  const payload = parseClaudeJson(result.stdout, "插件目录");
+  return {
+    installed: pluginListFromPayload(payload, "installed"),
+    available: pluginListFromPayload(payload, "available"),
+  };
+}
+
+function extensionSourceLabel(source) {
+  if (typeof source === "string") return source;
+  if (!source || typeof source !== "object") return "Marketplace";
+  if (source.repo) return source.repo;
+  if (source.url) return source.path ? `${source.url}#${source.path}` : source.url;
+  if (source.package) return source.package;
+  return source.source || "Marketplace";
+}
+
+function installedPluginIds(installed) {
+  return new Set(installed.flatMap((item) => [item?.pluginId, item?.id, item?.name].filter(Boolean)));
+}
+
+function extensionMatches(item, query) {
+  const haystack = [item?.pluginId, item?.name, item?.description, item?.marketplaceName]
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
+function extensionRank(item, query) {
+  const name = String(item?.name || "").toLowerCase();
+  const id = String(item?.pluginId || "").toLowerCase();
+  if (name === query || id === query) return 0;
+  if (name.startsWith(query)) return 1;
+  if (name.includes(query)) return 2;
+  return 3;
+}
+
+function isSkillPackage(item) {
+  const text = [item?.name, item?.description, extensionSourceLabel(item?.source)].join(" ");
+  return /(?:^|[^a-z])skills?(?:[^a-z]|$)|agent-skills|workflow|commands?/i.test(text);
+}
+
+function pruneExtensionSearches() {
+  const now = Date.now();
+  for (const [searchId, entry] of extensionSearches) {
+    if (now - entry.createdAt > EXTENSION_SEARCH_TTL_MS) extensionSearches.delete(searchId);
+  }
+}
+
+async function handleExtensionSearch(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  try {
+    const payload = await readRequestBody(req, 64 * 1024);
+    const query = String(payload.query || "").trim().toLowerCase();
+    const kind = payload.kind === "skill" ? "skill" : "plugin";
+    if (query.length < 2 || query.length > 80) throw new Error("请输入 2 到 80 个字符的搜索关键词");
+    const marketplaces = await ensureOfficialMarketplace();
+    const catalog = await getPluginCatalog();
+    const installedIds = installedPluginIds(catalog.installed);
+    const results = catalog.available
+      .filter((item) => extensionMatches(item, query))
+      .filter((item) => kind !== "skill" || isSkillPackage(item))
+      .sort((a, b) => extensionRank(a, query) - extensionRank(b, query) || Number(b.installCount || 0) - Number(a.installCount || 0))
+      .slice(0, EXTENSION_SEARCH_LIMIT)
+      .map((item) => ({
+        id: String(item.pluginId || `${item.name}@${item.marketplaceName}`),
+        name: String(item.name || item.pluginId || "未命名插件"),
+        description: String(item.description || "暂无说明"),
+        marketplace: String(item.marketplaceName || ""),
+        source: extensionSourceLabel(item.source),
+        installCount: Number(item.installCount || 0),
+        installed: installedIds.has(item.pluginId) || installedIds.has(item.name),
+        kind: kind === "skill" ? "skill-package" : "plugin",
+      }));
+    pruneExtensionSearches();
+    const searchId = crypto.randomUUID();
+    extensionSearches.set(searchId, { createdAt: Date.now(), results });
+    sendJson(res, 200, {
+      success: true,
+      searchId,
+      kind,
+      query,
+      results,
+      marketplaces: marketplaces.map((item) => ({ name: item.name, source: item.source, repo: item.repo || "" })),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "扩展搜索失败" });
+  }
+}
+
+async function handleExtensionInstall(req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  try {
+    const payload = await readRequestBody(req, 64 * 1024);
+    pruneExtensionSearches();
+    const search = extensionSearches.get(String(payload.searchId || ""));
+    if (!search) throw new Error("搜索结果已过期，请重新搜索后再选择安装");
+    const pluginId = normalizePluginSpec(payload.pluginId);
+    const candidate = search.results.find((item) => item.id === pluginId);
+    if (!candidate) throw new Error("请选择当前搜索结果中的插件或 Skill 包");
+    const install = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+    if (install.code !== 0) throw new Error(install.output || "插件安装失败");
+    const catalog = await getPluginCatalog();
+    const ids = installedPluginIds(catalog.installed);
+    const verified = ids.has(pluginId) || ids.has(candidate.name);
+    if (!verified) throw new Error("安装命令已结束，但 Claude Code 已安装列表中没有找到该能力");
+    const details = await runPortableClaudeCommand(["plugin", "details", pluginId], { timeoutMs: 30000 });
+    sendJson(res, 200, {
+      success: true,
+      pluginId,
+      name: candidate.name,
+      kind: candidate.kind,
+      verified: true,
+      activation: "next-run",
+      details: details.code === 0 ? details.output.slice(0, 12000) : "已安装；组件详情暂不可用",
+      plugins: getPluginSummary(),
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message || "扩展安装失败" });
+  }
 }
 
 function resolvePortableClaudeCommand() {
@@ -1837,29 +2354,20 @@ async function handlePluginInstall(req, res) {
 
   try {
     const plugin = normalizePluginSpec(payload.plugin);
-    const claudeCommand = resolvePortableClaudeCommand();
-    const result = spawnSync(claudeCommand, ["plugin", "install", plugin], {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 120000,
-      env: buildPortableEnv(),
-    });
-    const output = redact(`${result.stdout || ""}\n${result.stderr || ""}`.trim());
-    if (result.error) {
-      throw result.error;
-    }
-    if (result.status !== 0) {
-      sendJson(res, 500, {
-        error: output || `插件安装失败，退出码 ${result.status}`,
-        plugin,
-        plugins: getPluginSummary(),
-      });
-      return;
-    }
+    await ensureOfficialMarketplace();
+    const catalog = await getPluginCatalog();
+    const candidate = catalog.available.find((item) => item.pluginId === plugin || item.name === plugin);
+    if (!candidate) throw new Error("插件不在已配置 Marketplace 中，请先搜索并从候选列表选择");
+    const pluginId = String(candidate.pluginId || `${candidate.name}@${candidate.marketplaceName}`);
+    const result = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+    if (result.code !== 0) throw new Error(result.output || "插件安装失败");
+    const installed = installedPluginIds((await getPluginCatalog()).installed);
+    if (!installed.has(pluginId) && !installed.has(candidate.name)) throw new Error("插件安装后未通过 Claude Code 列表核验");
     sendJson(res, 200, {
       success: true,
-      plugin,
-      output,
+      plugin: pluginId,
+      output: result.output,
+      verified: true,
       plugins: getPluginSummary(),
     });
   } catch (error) {
@@ -1877,16 +2385,32 @@ function getPluginSummary() {
       summary: error.message || "未找到便携式 Claude Code CLI",
     };
   }
-  const result = spawnSync(claudeCommand, ["plugin", "list"], {
+  const result = spawnSync(claudeCommand, ["plugin", "list", "--json"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 8000,
     env: buildPortableEnv(),
   });
   const output = (result.stdout || result.stderr || "").trim();
+  let installed = [];
+  if (result.status === 0 && output) {
+    try {
+      installed = pluginListFromPayload(parseClaudeJson(output, "插件列表"), "installed");
+    } catch {
+      installed = [];
+    }
+  }
   return {
     available: result.status === 0,
-    summary: output ? redact(output).split(/\r?\n/).slice(0, 8).join("\n") : "未检测到插件信息",
+    count: installed.length,
+    installed: installed.map((item) => ({
+      id: item.pluginId || item.id || item.name || "unknown",
+      name: item.name || item.pluginId || item.id || "unknown",
+      version: item.version || "",
+      enabled: item.enabled !== false,
+      marketplace: item.marketplaceName || item.marketplace || "",
+    })),
+    summary: installed.length ? `已安装 ${installed.length} 个插件` : "未安装插件",
   };
 }
 
@@ -1900,20 +2424,23 @@ function buildCapabilityAuditPrompt({ toolProfile, allowBrowserAutomation, extra
   const skills = listLocalSkills();
   const plugins = getPluginSummary();
   const profileTools = TOOL_PROFILES[toolProfile] || [];
-  const browserTools = allowBrowserAutomation ? extraTools : [];
+  const webResearchTools = WEB_RESEARCH_TOOLS;
+  const browserTools = allowBrowserAutomation ? PLAYWRIGHT_AUTOMATION_TOOLS : [];
   return [
     CAPABILITY_AUDIT_BASE_PROMPT,
     "",
     "[CURRENT_RUNTIME_CAPABILITY]",
     `toolProfile: ${toolProfile}`,
     `profileTools: ${profileTools.length ? profileTools.join(", ") : "none"}`,
+    `webResearchAuthorized: yes`,
+    `webResearchTools: ${webResearchTools.join(", ")}`,
     `browserAutomationAuthorized: ${allowBrowserAutomation ? "yes" : "no"}`,
     `browserTools: ${browserTools.length ? browserTools.join(", ") : "none"}`,
     `localSkills: ${skills.length ? skills.join(", ") : "none"}`,
     `pluginsAvailable: ${plugins.available ? "yes" : "no"}`,
     `pluginsSummary: ${plugins.summary || "none"}`,
     "desktopControlNativeTool: no",
-    "installPolicy: require explicit user consent before web search, download, plugin install, skill install, config change, or command execution.",
+    "installPolicy: read-only WebSearch/WebFetch need no extra consent; require explicit user consent before download, plugin install, skill install, config change, command execution, login, upload, payment, private-data submission, or remote writes.",
     "[/CURRENT_RUNTIME_CAPABILITY]",
   ].join("\n");
 }
@@ -2988,6 +3515,31 @@ function normalizeBrowserAccess(value) {
   return "none";
 }
 
+function normalizeAuthorizationGrant(value) {
+  const grant = String(value || "").trim().toLowerCase();
+  return AUTHORIZATION_GRANT_TYPES.has(grant) ? grant : "";
+}
+
+function authorizationGrantSystemPrompt(type, scope = "once") {
+  const labels = {
+    web: "通过 WebSearch/WebFetch 查询公开网络（只读）",
+    browser: "公开网络搜索、网页读取与浏览器自动化",
+    file: "当前任务相关文件的访问",
+    command: "当前项目内与任务直接相关的命令执行",
+    install: "当前任务明确指定的插件、Skill 或依赖安装",
+    sensitive: "当前消息明确说明的敏感操作",
+    generic: "当前任务中刚才请求确认的操作",
+  };
+  const label = labels[type] || labels.generic;
+  return [
+    "用户已通过 SuperClaw 外部授权面板完成授权；这不是一条新的聊天消息。",
+    `授权范围：${label}。授权有效期：${scope === "session" ? "当前会话" : "仅本次任务"}。`,
+    "立即从原任务继续执行，不要再次询问同一权限，也不要只回复计划或确认文字。",
+    "授权不会提升当前工具配置；只能使用本次运行实际提供的工具。",
+    "删除、覆盖、批量写入、系统级命令、登录、扫码、支付、上传文件或提交隐私信息仍需单独确认。",
+  ].join("\n");
+}
+
 function browserAutomationAllowed(payload, toolProfile) {
   if (toolProfile !== "none") return false;
   if (payload.permissionProfile !== "browser" && payload.permissionProfile !== "takeover") return false;
@@ -3010,12 +3562,15 @@ function appendToolArgs(args, profile, extraTools = [], options = {}) {
     }
   }
   if (profile === "read") {
-    ["Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash", "WebFetch", "WebSearch", "TodoWrite"].forEach((tool) =>
+    ["Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash", "TodoWrite"].forEach((tool) =>
       denied.add(tool)
     );
   }
   if (!options.allowBrowserAutomation) {
-    for (const rule of BROWSER_AUTOMATION_TOOLS) denied.add(rule);
+    for (const rule of PLAYWRIGHT_AUTOMATION_TOOLS) denied.add(rule);
+  }
+  if (!options.allowWebResearch) {
+    for (const rule of WEB_RESEARCH_TOOLS) denied.add(rule);
   }
   for (const rule of BROWSER_AUTOMATION_DENIES) denied.add(rule);
   for (const rule of SENSITIVE_TOOL_DENIES) denied.add(rule);
@@ -3034,6 +3589,35 @@ function extractText(message) {
     })
     .filter(Boolean)
     .join("");
+}
+
+function compactProcessValue(value, maxLength = 1200) {
+  let text = "";
+  if (typeof value === "string") text = value;
+  else if (value != null) {
+    try {
+      text = JSON.stringify(value, null, 2);
+    } catch {
+      text = String(value);
+    }
+  }
+  text = redact(text).trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}\n...` : text;
+}
+
+function writeClaudeProcessEvent(res, payload) {
+  writeEvent(res, "process", {
+    kind: payload.kind || "progress",
+    title: String(payload.title || "执行步骤"),
+    text: compactProcessValue(payload.text),
+    tool: String(payload.tool || ""),
+    toolUseId: String(payload.toolUseId || ""),
+    status: String(payload.status || "running"),
+  });
+}
+
+function assistantContentBlocks(message) {
+  return message && Array.isArray(message.content) ? message.content : [];
 }
 
 function isPathInside(childPath, parentPath) {
@@ -3148,10 +3732,22 @@ async function handleRun(req, res) {
   if (runAttachments.length && toolProfile === "none") {
     toolProfile = "read";
   }
+  const authorizationGrant = normalizeAuthorizationGrant(payload.authorizationGrant);
+  const authorizationGrantScope = payload.authorizationGrantScope === "session" ? "session" : "once";
   const browserAccess = normalizeBrowserAccess(payload.browserAccess);
+  const allowWebResearch = true;
   const allowBrowserAutomation = browserAutomationAllowed(payload, toolProfile);
   const highRiskToolProfile = isHighRiskToolProfile(toolProfile);
   const selfcheckPlan = convertSelfcheckPromptToExecutor(prompt);
+
+  if (payload.permissionProfile === "takeover" && payload.takeoverAccepted !== true) {
+    sendJson(res, 409, {
+      error: "接管模式必须由用户在当前会话中明确确认后才能启动。",
+      code: "TAKEOVER_CONFIRMATION_REQUIRED",
+      confirmationRequired: true,
+    });
+    return;
+  }
 
   if (selfcheckPlan.handled) {
     await handleClaudeSelfcheckRun(req, res, {
@@ -3267,6 +3863,7 @@ async function handleRun(req, res) {
     claudeUserPrompt,
     "--output-format",
     "stream-json",
+    "--include-partial-messages",
     "--verbose",
     "--permission-mode",
     mode,
@@ -3299,10 +3896,17 @@ async function handleRun(req, res) {
   if (attachmentDirs.length) {
     args.push("--add-dir", ...attachmentDirs);
   }
-  const extraTools = allowBrowserAutomation ? BROWSER_AUTOMATION_TOOLS : [];
-  appendToolArgs(args, toolProfile, extraTools, { allowBrowserAutomation });
-  if (allowBrowserAutomation && extraTools.length) {
-    args.push("--allowedTools", extraTools.join(","));
+  const extraTools = [
+    ...WEB_RESEARCH_TOOLS,
+    ...(allowBrowserAutomation ? PLAYWRIGHT_AUTOMATION_TOOLS : []),
+  ];
+  appendToolArgs(args, toolProfile, extraTools, { allowBrowserAutomation, allowWebResearch });
+  const preapprovedTools = new Set(extraTools);
+  if (authorizationGrant && authorizationGrant !== "sensitive" && authorizationGrant !== "web") {
+    for (const tool of TOOL_PROFILES[toolProfile] || []) preapprovedTools.add(tool);
+  }
+  if (preapprovedTools.size) {
+    args.push("--allowedTools", Array.from(preapprovedTools).join(","));
   }
   args.push("--append-system-prompt", CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT);
   args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
@@ -3314,7 +3918,7 @@ async function handleRun(req, res) {
   if (runAttachments.length) {
     args.push(
       "--append-system-prompt",
-      "This run includes image attachments saved as local files. You may use read-only file tools only to inspect the listed attachments. Do not modify files, run shell commands, browse the web, or access unrelated paths unless the user explicitly asks and grants permission."
+      "This run includes image attachments saved as local files. You may use read-only file tools only to inspect the listed attachments. Read-only WebSearch/WebFetch remain available when relevant. Do not modify files, run shell commands, use interactive browser automation, or access unrelated paths unless the user explicitly asks and grants permission."
     );
   }
   if (payload.permissionProfile === "browser" || payload.permissionProfile === "takeover") {
@@ -3323,28 +3927,32 @@ async function handleRun(req, res) {
   if (allowBrowserAutomation) {
     args.push("--append-system-prompt", BROWSER_AUTOMATION_SYSTEM_PROMPT);
   }
+  args.push("--append-system-prompt", WEB_RESEARCH_SYSTEM_PROMPT);
   if (isCapabilityAuditPrompt(prompt)) {
     args.push(
       "--append-system-prompt",
       buildCapabilityAuditPrompt({ toolProfile, allowBrowserAutomation, extraTools })
     );
   }
+  if (authorizationGrant) {
+    args.push("--append-system-prompt", authorizationGrantSystemPrompt(authorizationGrant, authorizationGrantScope));
+  }
   if (toolProfile === "none") {
     args.push(
       "--append-system-prompt",
       allowBrowserAutomation
         ? "本次除已授权的浏览器自动化工具外，仍禁止读取本地文件、执行命令、写入文件或输出 tool_call/XML。"
-        : "本次运行禁用了所有工具。不要读取文件，不要执行命令，不要输出 tool_call/XML，只用普通文本直接回答用户。"
+        : "本次只允许 WebSearch 和 WebFetch 查询公开信息。不要读取本地文件，不要执行命令，不要写入文件，不要输出伪造的 tool_call/XML。"
     );
   } else if (toolProfile === "read") {
     args.push(
       "--append-system-prompt",
-      `本次运行只允许读取当前项目目录：${cwd}。禁止写文件、删除文件、移动文件、执行命令、联网、上传文件或读取敏感文件。`
+      `本次运行允许读取当前项目目录：${cwd}，并允许通过 WebSearch/WebFetch 只读查询公开网络。禁止写文件、删除文件、移动文件、执行命令、上传文件或读取敏感文件。`
     );
   } else {
     args.push(
       "--append-system-prompt",
-      `本次运行限定在当前项目目录：${cwd}。删除、覆盖、批量写入、安装依赖、执行命令、联网或访问敏感文件前必须先向用户说明风险并等待确认。`
+      `本次运行限定在当前项目目录：${cwd}。WebSearch/WebFetch 查询公开网络无需重复确认；删除、覆盖、批量写入、安装依赖、执行命令、登录、上传、远端写入或访问敏感文件前必须先向用户说明风险并等待确认。`
     );
   }
   res.writeHead(200, {
@@ -3372,6 +3980,8 @@ async function handleRun(req, res) {
   let stdoutBuffer = "";
   let stderrBuffer = "";
   let assistantTextSeen = false;
+  let pendingAssistantText = "";
+  let partialTextSeenForAssistant = false;
 
   writeEvent(res, "meta", {
     runtimeMode: "NATIVE_CLAUDE_CODE",
@@ -3385,6 +3995,8 @@ async function handleRun(req, res) {
     permissionProfile: payload.permissionProfile || mode,
     toolProfile,
     browserAccess,
+    authorizationGrant,
+    authorizationGrantScope,
     attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
     resumed: Boolean(resumeSessionId),
     continued: Boolean(payload.continueSession),
@@ -3439,17 +4051,88 @@ async function handleRun(req, res) {
       return;
     }
 
+    if (parsed.type === "stream_event") {
+      const streamEvent = parsed.event && typeof parsed.event === "object" ? parsed.event : {};
+      const delta = streamEvent.delta && typeof streamEvent.delta === "object" ? streamEvent.delta : {};
+      if (streamEvent.type === "content_block_delta" && delta.type === "text_delta" && delta.text) {
+        const safeDelta = redact(String(delta.text));
+        if (safeDelta) {
+          assistantTextSeen = true;
+          partialTextSeenForAssistant = true;
+          writeEvent(res, "text", { text: safeDelta });
+        }
+      }
+      return;
+    }
+
     if (parsed.type === "assistant") {
-      const text = extractText(parsed.message);
-      if (text) {
-        assistantTextSeen = true;
-        writeEvent(res, "text", { text: sanitizeModelOutput(text, { prompt }) });
+      const blocks = assistantContentBlocks(parsed.message);
+      const toolBlocks = blocks.filter((item) => item?.type === "tool_use");
+      const text = blocks
+        .filter((item) => item?.type === "text")
+        .map((item) => item.text || "")
+        .filter(Boolean)
+        .join("\n");
+
+      if (partialTextSeenForAssistant) {
+        pendingAssistantText = "";
+      } else if (toolBlocks.length && pendingAssistantText) {
+        writeClaudeProcessEvent(res, {
+          kind: "reasoning",
+          title: "Claude 正在分析",
+          text: pendingAssistantText,
+        });
+        pendingAssistantText = "";
+      }
+      if (partialTextSeenForAssistant) {
+        // Partial text deltas have already reached the UI. The completed
+        // assistant envelope is used only for tool metadata and deduplication.
+      } else if (text && toolBlocks.length) {
+        writeClaudeProcessEvent(res, {
+          kind: "reasoning",
+          title: "Claude 正在分析",
+          text: sanitizeModelOutput(text, { prompt }),
+        });
+      } else if (text) {
+        pendingAssistantText = [pendingAssistantText, sanitizeModelOutput(text, { prompt })]
+          .filter(Boolean)
+          .join("\n");
+      }
+
+      for (const block of toolBlocks) {
+        writeClaudeProcessEvent(res, {
+          kind: "tool_use",
+          title: `调用工具：${block.name || "tool"}`,
+          text: block.input,
+          tool: block.name,
+          toolUseId: block.id,
+        });
+      }
+      partialTextSeenForAssistant = false;
+      return;
+    }
+
+    if (parsed.type === "user") {
+      const resultBlocks = assistantContentBlocks(parsed.message)
+        .filter((item) => item?.type === "tool_result");
+      for (const block of resultBlocks) {
+        writeClaudeProcessEvent(res, {
+          kind: "tool_result",
+          title: block.is_error ? "工具执行失败" : "工具执行完成",
+          text: block.content,
+          toolUseId: block.tool_use_id,
+          status: block.is_error ? "failed" : "completed",
+        });
       }
       return;
     }
 
     if (parsed.type === "result") {
-      if (!assistantTextSeen && parsed.result) {
+      if (pendingAssistantText) {
+        assistantTextSeen = true;
+        writeEvent(res, "text", { text: pendingAssistantText });
+        pendingAssistantText = "";
+      } else if (!assistantTextSeen && parsed.result) {
         writeEvent(res, "text", { text: sanitizeModelOutput(parsed.result, { prompt }) });
       }
       writeEvent(res, "done", {
@@ -3574,7 +4257,7 @@ function handleStatus(res) {
       baseHost,
     },
     securityPolicy: {
-      defaultPermissionProfile: "safe",
+      defaultPermissionProfile: "browser",
       highRiskLocked: !isHighRiskToolsEnabled(),
       executionRoots: getExecutionRoots(),
       toolProfiles: {
@@ -3610,6 +4293,7 @@ function handleStatus(res) {
       },
     },
     skills: listLocalSkills(),
+    skillInventory: listLocalSkillInventory(),
     plugins: getPluginSummary(),
     projects: getKnownProjects(),
   });
@@ -4494,6 +5178,16 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/skills/install") {
     handleSkillInstall(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/extensions/search") {
+    handleExtensionSearch(req, res);
+    return;
+  }
+
+  if (url.pathname === "/api/extensions/install") {
+    handleExtensionInstall(req, res);
     return;
   }
 

@@ -18,7 +18,26 @@ function makeMockClaude(dir) {
     "  console.log('9.9.9 (Claude Code mock)');",
     "  process.exit(0);",
     "}",
+    "if (!process.argv.includes('--include-partial-messages')) {",
+    "  console.error('missing --include-partial-messages');",
+    "  process.exit(2);",
+    "}",
+    "const tools = process.argv[process.argv.indexOf('--tools') + 1] || '';",
+    "const allowedTools = process.argv[process.argv.indexOf('--allowedTools') + 1] || '';",
+    "if (!tools.includes('WebFetch') || !tools.includes('WebSearch') || !allowedTools.includes('WebFetch') || !allowedTools.includes('WebSearch')) {",
+    "  console.error('missing all-mode read-only web research tools');",
+    "  process.exit(3);",
+    "}",
+    "const hasPlaywright = tools.includes('mcp__playwright__browser_navigate') || allowedTools.includes('mcp__playwright__browser_navigate');",
+    "if (hasPlaywright) {",
+    "  console.error('Playwright mode boundary mismatch');",
+    "  process.exit(4);",
+    "}",
     "console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'mock-session-87654321', model: 'mock-claude', tools: [] }));",
+    "console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Inspecting the project.' }, { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: 'README.md' } }] } }));",
+    "console.log(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'mock file content' }] } }));",
+    "console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'MOCK_' } } }));",
+    "console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'NATIVE_OK' } } }));",
     "console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'MOCK_NATIVE_OK' }] } }));",
     "console.log(JSON.stringify({ type: 'result', subtype: 'success', duration_ms: 1, total_cost_usd: 0 }));",
   ].join("\n"), "utf8");
@@ -32,12 +51,17 @@ function makeMockClaude(dir) {
 }
 
 function startPanel(port, env) {
+  const isolatedRoot = path.join(os.tmpdir(), `claude-run-mode-${port}`);
   const child = spawn(process.execPath, [serverPath], {
     cwd: repoRoot,
     env: {
       ...process.env,
       PORT: String(port),
-      CLEAN_PANEL_DATA_DIR: path.join(os.tmpdir(), `claude-run-mode-${port}`),
+      CLEAN_PANEL_HOME_DIR: path.join(isolatedRoot, "home"),
+      CLEAN_PANEL_DATA_DIR: path.join(isolatedRoot, "data"),
+      CLAUDE_CONFIG_DIR: path.join(isolatedRoot, "home", "claude-config"),
+      CLAUDE_CODE_PROJECTS_DIR: path.join(isolatedRoot, "projects"),
+      CLEAN_PANEL_CLAUDE_PROJECTS_JSON_PATH: path.join(isolatedRoot, "home", ".claude.json"),
       ...env,
     },
     stdio: ["ignore", "ignore", "pipe"],
@@ -99,6 +123,22 @@ function parseSseText(body) {
   return textParts.join("");
 }
 
+function parseSseEvents(body, eventName) {
+  const events = [];
+  let currentEvent = "message";
+  for (const line of String(body || "").split(/\r?\n/)) {
+    if (line.startsWith("event:")) {
+      currentEvent = line.slice(6).trim();
+      continue;
+    }
+    if (!line.startsWith("data:") || currentEvent !== eventName) continue;
+    try {
+      events.push(JSON.parse(line.slice(5).trim()));
+    } catch {}
+  }
+  return events;
+}
+
 const server = fs.readFileSync(serverPath, "utf8");
 assert(server.includes('runMode.effectiveMode === "CLAUDE_PANEL_RELAY"'), "relay branch must be mode-gated");
 assert(server.includes('runtimeMode: "NATIVE_CLAUDE_CODE"'), "native branch must emit native runtime mode");
@@ -110,6 +150,7 @@ assert(server.includes('args.push("--append-system-prompt", CLAUDE_USER_LANGUAGE
 assert(server.includes("function buildClaudeUserPrompt"), "native branch must wrap user prompt for default Chinese output");
 assert(server.includes("Reply to the user in Simplified Chinese by default."), "native user prompt wrapper must require Simplified Chinese");
 assert(server.includes("const claudeUserPrompt = buildClaudeUserPrompt(prompt);"), "native run must build language-wrapped prompt");
+assert(server.includes('"WebFetch"') && server.includes('"WebSearch"'), "browser mode must expose read-only web search and fetch tools");
 
 const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), "mock-claude-run-"));
 const mockCommand = makeMockClaude(mockDir);
@@ -122,6 +163,10 @@ const panel = startPanel(port, {
 try {
   const status = await waitForStatus(port);
   assert(status.effectiveMode === "NATIVE_CLAUDE_CODE", "mock native server did not select native mode");
+  assert(
+    status.securityPolicy?.defaultPermissionProfile === "browser",
+    "Claude panel must advertise browser automation as the default permission profile"
+  );
 
   const selfcheckPrompt = "Claude Code \u5168\u9762\u81ea\u68c0\uff1a\u53ea\u8bfb\u68c0\u67e5\uff0c\u751f\u6210\u62a5\u544a\u3002";
   const selfcheck = await request(port, "POST", "/api/run", {
@@ -156,7 +201,31 @@ try {
   assert(native.status === 200, "native request failed");
   assert(native.text.includes("NATIVE_CLAUDE_CODE"), "native run did not emit native mode");
   assert(parseSseText(native.text).includes("MOCK_NATIVE_OK"), "native mock output missing");
+  const streamedTextEvents = parseSseEvents(native.text, "text");
+  assert(streamedTextEvents.length === 2, "native partial text should be emitted as two SSE chunks without a duplicate final");
+  assert(streamedTextEvents.map((event) => event.text || "").join("") === "MOCK_NATIVE_OK", "native partial text chunks were not preserved in order");
+  const processEvents = parseSseEvents(native.text, "process");
+  assert(processEvents.some((event) => event.kind === "reasoning"), "native reasoning process event missing");
+  assert(processEvents.some((event) => event.kind === "tool_use" && event.tool === "Read"), "native tool-use process event missing");
+  assert(processEvents.some((event) => event.kind === "tool_result" && event.status === "completed"), "native tool-result process event missing");
   assert(!native.text.includes("OPENAI_RELAY"), "native mock run should not emit relay mode");
+
+  const portableClaudeConfig = path.join(os.tmpdir(), `claude-run-mode-${port}`, "home", "claude-config", ".claude.json");
+  const portableMcp = JSON.parse(fs.readFileSync(portableClaudeConfig, "utf8"));
+  assert(portableMcp.mcpServers?.playwright?.superclawManaged === true, "portable Playwright MCP was not configured");
+  assert(fs.existsSync(portableMcp.mcpServers.playwright.command), "portable Playwright MCP node path is invalid");
+  assert(fs.existsSync(portableMcp.mcpServers.playwright.args[0]), "portable Playwright MCP entry path is invalid");
+
+  const takeover = await request(port, "POST", "/api/run", {
+    prompt: "Take over the browser.",
+    cwd: repoRoot,
+    toolProfile: "none",
+    permissionProfile: "takeover",
+    mode: "default",
+    browserAccess: "once",
+  });
+  assert(takeover.status === 409, "takeover must be blocked without explicit confirmation");
+  assert(takeover.text.includes("TAKEOVER_CONFIRMATION_REQUIRED"), "takeover confirmation error code missing");
 } finally {
   panel.kill("SIGTERM");
 }
@@ -167,3 +236,7 @@ console.log("CLAUDE_RELAY_BLOCKS_TOOLCALL_TEXT: PASS");
 console.log("CLAUDE_NATIVE_RUNS_CLI_WHEN_AVAILABLE: PASS");
 console.log("CLAUDE_MODE_NOT_MISLABELED: PASS");
 console.log("CLAUDE_DEFAULT_CHINESE_PROMPT: PASS");
+console.log("CLAUDE_NATIVE_PROCESS_EVENTS: PASS");
+console.log("CLAUDE_SAFE_MODE_HAS_READ_ONLY_WEB_RESEARCH: PASS");
+console.log("CLAUDE_SAFE_MODE_EXCLUDES_PLAYWRIGHT: PASS");
+console.log("CLAUDE_TAKEOVER_REQUIRES_CONFIRMATION: PASS");

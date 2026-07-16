@@ -4,6 +4,8 @@ const introOverlay = $("#introOverlay");
 const introVideo = $("#introVideo");
 const introSkipBtn = $("#introSkipBtn");
 const introStatus = $("#introStatus");
+const introDontShow = $("#introDontShow");
+const INTRO_DISABLED_KEY = "superclaw_claude_intro_disabled";
 const projectSelect = $("#projectSelect");
 const projectTabBtn = $("#projectTabBtn");
 const projectAddTrigger = $("#projectAddTrigger");
@@ -13,7 +15,7 @@ const authDot = $("#authDot");
 const authText = $("#authText");
 const currentProject = $("#currentProject");
 const projectPath = $("#projectPath");
-const runStateChip = $("#runStateChip");
+let runStateChip = null;
 const claudePet = $("#claudePet");
 const claudePetStatus = $("#claudePetStatus");
 const claudePetMood = $("#claudePetMood");
@@ -68,6 +70,12 @@ const helpDialog = $("#helpDialog");
 const helpDialogTitle = $("#helpDialogTitle");
 const helpDialogBody = $("#helpDialogBody");
 const helpDialogClose = $("#helpDialogClose");
+const toolAuthorizationSheet = $("#toolAuthorizationSheet");
+const toolAuthorizationKicker = $("#toolAuthorizationKicker");
+const toolAuthorizationTitle = $("#toolAuthorizationTitle");
+const toolAuthorizationDescription = $("#toolAuthorizationDescription");
+const toolAuthorizationScope = $("#toolAuthorizationScope");
+const toolAuthorizationRisk = $("#toolAuthorizationRisk");
 const setupWizard = $("#setupWizard");
 const setupMissingList = $("#setupMissingList");
 const setupInterfaceType = $("#setupInterfaceType");
@@ -111,19 +119,17 @@ const conversationSearchToggleBtn = $("#conversationSearchToggleBtn");
 const conversationSearchWrap = $("#conversationSearchWrap");
 const conversationSearchInput = $("#conversationSearchInput");
 const quickCommands = $("#quickCommands");
-const pluginInput = $("#pluginInput");
-const pluginPromptBtn = $("#pluginPromptBtn");
-const pluginInstallStatus = $("#pluginInstallStatus");
-const skillInput = $("#skillInput");
-const skillPromptBtn = $("#skillPromptBtn");
 const installedExtensionsBtn = $("#installedExtensionsBtn");
+const extensionInstallerBtn = $("#extensionInstallerBtn");
 const extensionsPage = $("#extensionsPage");
 const extensionsPageCloseBtn = $("#extensionsPageCloseBtn");
 const installedSkillsList = $("#installedSkillsList");
 const installedPluginsList = $("#installedPluginsList");
-const pagePluginInput = $("#pagePluginInput");
-const pagePluginInstallBtn = $("#pagePluginInstallBtn");
-const pagePluginInstallStatus = $("#pagePluginInstallStatus");
+const extensionSearchInput = $("#extensionSearchInput");
+const extensionSearchBtn = $("#extensionSearchBtn");
+const extensionSearchStatus = $("#extensionSearchStatus");
+const extensionSearchResults = $("#extensionSearchResults");
+const extensionKindButtons = Array.from(document.querySelectorAll("[data-extension-kind]"));
 const skillInstallName = $("#skillInstallName");
 const skillInstallContent = $("#skillInstallContent");
 const skillInstallOverwrite = $("#skillInstallOverwrite");
@@ -199,7 +205,7 @@ const cwdStorageKey = "cleanClaude.cwd.v2";
 const modelStorageKey = "cleanClaude.model";
 const conversationsStorageKey = "cleanClaude.conversations.v1";
 const maxConversationMessages = 80;
-const CLAUDE_RUN_TIMEOUT_MS = 120000;
+const CLAUDE_RUN_IDLE_TIMEOUT_MS = 300000;
 const rightPanelCollapsedKey = "cleanClaude.rightPanelCollapsed.v2";
 const themeStorageKey = "cleanClaude.theme.v1";
 const colorThemeStorageKey = "cleanClaude.colorTheme.v1";
@@ -644,66 +650,66 @@ const attachmentExtensions = new Set(["txt", "md", "json", "csv", "pdf", "doc", 
 
 const modeNotes = {
   safe: {
-    note: "安全对话模式不会读取或修改本地文件。",
+    note: "安全对话模式支持公开网络查询，不会读取或修改本地文件。",
     label: "安全对话",
     title: "安全对话模式",
-    detail: "AI 只能回答问题、整理方案和生成建议，不读取项目文件，不修改文件，不执行命令。",
+    detail: "AI 可以使用 WebSearch、WebFetch 查询公开信息并回答问题，不读取项目文件，不修改文件，不执行命令。",
     cliMode: "plan",
     toolProfile: "none",
-    toolLabel: "无工具",
+    toolLabel: "联网查询",
     risk: "低",
   },
   readOnly: {
-    note: "项目分析模式只允许读取当前项目目录。",
+    note: "项目分析模式允许读取当前项目目录和查询公开网络。",
     label: "项目分析",
     title: "项目分析模式",
-    detail: "AI 可以在已授权项目目录内读取、搜索和分析代码，但不能写文件、删除文件或执行命令。",
+    detail: "AI 可以在已授权项目目录内读取、搜索和分析代码，也可以使用 WebSearch、WebFetch 查询公开信息；不能写文件、删除文件或执行命令。",
     cliMode: "plan",
     toolProfile: "read",
-    toolLabel: "只读工具",
+    toolLabel: "项目只读 + 联网查询",
     risk: "中",
   },
   browser: {
-    note: "浏览器自动化模式只用于打开网页、搜索、点击和读取页面。",
+    note: "浏览器自动化模式支持联网搜索、读取公开网页和浏览器交互。",
     label: "浏览器自动化",
     title: "浏览器自动化模式",
-    detail: "AI 可以在你授权后使用 Playwright 浏览器工具打开网页、搜索、点击、输入和读取页面内容；不会读取本地文件，不会修改控制台源码或客户配置。",
+    detail: "AI 可以直接使用 WebSearch、WebFetch 查询公开信息，并在浏览器授权后使用 Playwright 完成网页点击和输入；不会读取本地文件，不会修改控制台源码或客户配置。",
     cliMode: "default",
     toolProfile: "none",
-    toolLabel: "浏览器工具",
+    toolLabel: "联网搜索 + 浏览器工具",
     risk: "谨慎",
     browserMode: true,
   },
   takeover: {
-    note: "接管模式需要先确认，只用于谨慎的桌面辅助。",
+    note: "接管模式支持公开网络查询，页面交互和接管操作需要先确认。",
     label: "接管模式",
     title: "接管模式",
-    detail: "用于帮助客户打开桌面文件、引导页面操作或处理语音指令。此模式不允许修改本控制台源码或客户配置，危险操作仍必须再次确认。",
+    detail: "AI 可以查询公开网络，并在明确确认后帮助客户进行浏览器页面操作或桌面辅助。此模式不允许修改本控制台源码或客户配置，危险操作仍必须再次确认。",
     cliMode: "default",
     toolProfile: "none",
-    toolLabel: "桌面辅助",
+    toolLabel: "联网查询 + 桌面辅助",
     risk: "谨慎",
     caution: true,
   },
   edit: {
-    note: "授权修改模式默认锁定，开启后可修改项目文件。",
+    note: "授权修改模式支持公开网络查询，默认锁定，开启后可修改项目文件。",
     label: "授权修改",
     title: "授权修改模式",
-    detail: "AI 可以在授权项目目录内读取和修改文件。重要修改前需要确认，删除、覆盖、批量写入仍需再次确认。",
+    detail: "AI 可以查询公开网络，并在授权项目目录内读取和修改文件。重要修改前需要确认，删除、覆盖、批量写入仍需再次确认。",
     cliMode: "acceptEdits",
     toolProfile: "edit",
-    toolLabel: "读取 + 编辑",
+    toolLabel: "联网查询 + 读取编辑",
     risk: "高",
     highRisk: true,
   },
   expert: {
-    note: "专家命令模式默认锁定，只建议专业用户在可信项目中使用。",
+    note: "专家命令模式支持公开网络查询，默认锁定，只建议专业用户在可信项目中使用。",
     label: "专家命令",
     title: "专家命令模式",
-    detail: "AI 可以编辑文件并执行命令、安装依赖或运行测试。必须管理员解锁、二次确认并记录日志。",
+    detail: "AI 可以查询公开网络、编辑文件并执行命令、安装依赖或运行测试。必须管理员解锁、二次确认并记录日志。",
     cliMode: "acceptEdits",
     toolProfile: "command",
-    toolLabel: "编辑 + 命令",
+    toolLabel: "联网查询 + 编辑命令",
     risk: "极高",
     highRisk: true,
   },
@@ -849,11 +855,12 @@ const faqSections = [
 ];
 
 const permissionGuideSections = [
-  ["安全对话模式", ["AI 只能回答问题，不会读取或修改你的项目文件。适合普通聊天和咨询。", "后端参数：toolProfile=none。"]],
-  ["浏览器自动化模式", ["AI 可以在你授权后打开网页、搜索、点击、输入和读取页面内容。", "后端参数：permissionProfile=browser；toolProfile=none。"]],
-  ["接管模式", ["用于帮助客户打开桌面文件、引导操作和接收语音指令。", "开启前会弹出确认，不会修改本控制台源码或客户配置，危险操作仍需二次确认。"]],
-  ["授权修改模式", ["AI 可以在你授权的项目目录内修改文件。建议在备份项目后使用。普通客户默认不可直接开启。", "后端参数：toolProfile=edit，默认安全锁定。"]],
-  ["专家命令模式", ["AI 可能执行命令、安装依赖或进行高级操作。该模式风险较高，普通客户默认锁定。", "后端参数：toolProfile=command，默认安全锁定。"]],
+  ["所有模式的联网查询", ["所有对话模式都可以直接使用 WebSearch、WebFetch 查询和读取公开网络内容，不重复弹出联网授权。", "登录、支付、上传、提交隐私信息、远端写入及浏览器交互仍按风险单独确认。"]],
+  ["安全对话模式", ["AI 可以查询公开网络并回答问题，不会读取或修改你的项目文件。适合普通聊天和咨询。", "后端参数：toolProfile=none。"]],
+  ["浏览器自动化模式", ["除公开网络查询外，AI 还可以在授权后通过 Playwright 操作网页。", "不开放任意 HTTP 写请求、本地文件读取或 Shell 命令。"]],
+  ["接管模式", ["支持公开网络查询，用于在明确确认后引导浏览器或桌面辅助操作。", "不会修改本控制台源码或客户配置，危险操作仍需二次确认。"]],
+  ["授权修改模式", ["支持公开网络查询，并可以在授权项目目录内修改文件。建议在备份项目后使用。普通客户默认不可直接开启。", "后端参数：toolProfile=edit，默认安全锁定。"]],
+  ["专家命令模式", ["支持公开网络查询，也可能执行命令、安装依赖或进行高级操作。该模式风险较高，普通客户默认锁定。", "后端参数：toolProfile=command，默认安全锁定。"]],
 ];
 
 const LOCAL_FILE_DELETE_CONFIRM_TEXT = "确认删除本地文件";
@@ -866,19 +873,22 @@ const conversationActionLabels = {
   "delete-local-files": "删除本地文件",
 };
 
-let activeMode = "safe";
+let activeMode = "browser";
 let highRiskToolsLocked = true;
 let runController = null;
 let voiceRecognition = null;
 let voiceListening = false;
 let latestVoiceCapability = null;
 let voiceReplyPending = false;
-let browserModeAccepted = false;
+let browserModeAccepted = true;
 let takeoverModeAccepted = false;
 let pendingToolAuthorization = null;
+let activeAuthorizationRun = null;
+let queuedAuthorizationContinuation = null;
 let slashCommandIndex = 0;
 let activeAssistantMessage = null;
 let assistantTextBuffer = "";
+let activeExecutionProcess = [];
 let assistantTextFlushTimer = null;
 let transcriptScrollFrame = null;
 let conversationRenderFrame = null;
@@ -930,8 +940,29 @@ function hideIntroOverlay() {
   }
 }
 
+function isIntroDisabled() {
+  try {
+    return localStorage.getItem(INTRO_DISABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveIntroPreference(disabled) {
+  try {
+    if (disabled) localStorage.setItem(INTRO_DISABLED_KEY, "1");
+    else localStorage.removeItem(INTRO_DISABLED_KEY);
+  } catch {}
+}
+
 function initIntroVideo() {
   if (!introOverlay || !introVideo) return Promise.resolve();
+  const disabled = isIntroDisabled();
+  if (introDontShow) introDontShow.checked = disabled;
+  if (disabled) {
+    hideIntroOverlay();
+    return Promise.resolve();
+  }
   let completed = false;
   let resolved = false;
   let resolveStarted = () => {};
@@ -949,6 +980,9 @@ function initIntroVideo() {
     resolveStarted();
   };
 
+  introDontShow?.addEventListener("change", () => {
+    saveIntroPreference(introDontShow.checked);
+  });
   introSkipBtn?.addEventListener("click", finish);
   introVideo.addEventListener("ended", finish);
   introVideo.addEventListener("error", finish);
@@ -1898,12 +1932,13 @@ function renderThinkingBlocks(thoughts, wrapper, options = {}) {
   details.className = `assistant-thinking-block${options.streaming ? " is-thinking" : ""}`;
   const summary = document.createElement("summary");
   summary.innerHTML = options.streaming
-    ? '<span>正在思考</span><i class="thinking-dots" aria-hidden="true"><b></b><b></b><b></b></i><em>生成中</em>'
-    : "<span>思考过程</span><em>已折叠</em>";
+    ? '<span>执行过程</span><i class="thinking-dots" aria-hidden="true"><b></b><b></b><b></b></i><em>进行中</em>'
+    : "<span>执行过程</span><em>已折叠</em>";
   const content = document.createElement("div");
   content.className = "assistant-thinking-block__content";
   content.textContent = thoughts.join("\n\n");
   details.append(summary, content);
+  details.open = Boolean(options.streaming);
   wrapper.appendChild(details);
 }
 
@@ -2015,19 +2050,107 @@ function appendClaudeMarkdownRow(parent, line, index, type = "paragraph") {
 }
 
 function appendClaudeCodeBlock(parent, codeText, lang = "") {
+  const source = String(codeText || "");
+  const wrapper = document.createElement("div");
+  wrapper.className = "claude-code-block";
+  if (lang) wrapper.dataset.lang = lang;
+  const header = document.createElement("div");
+  header.className = "claude-code-header";
+  const label = document.createElement("span");
+  label.className = "claude-code-lang";
+  label.textContent = lang || "code";
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.className = "claude-code-copy";
+  copyButton.setAttribute("aria-label", "复制代码");
+  copyButton.innerHTML = '<span aria-hidden="true">⧉</span><span>复制</span>';
+  copyButton.addEventListener("click", async () => {
+    try {
+      const copied = await copyText(source);
+      copyButton.lastElementChild.textContent = copied ? "已复制" : "复制失败";
+    } catch {
+      copyButton.lastElementChild.textContent = "复制失败";
+    }
+    window.setTimeout(() => {
+      if (copyButton.lastElementChild) copyButton.lastElementChild.textContent = "复制";
+    }, 1400);
+  });
+  header.append(label, copyButton);
   const pre = document.createElement("pre");
-  pre.className = "claude-code-block";
-  if (lang) {
-    pre.dataset.lang = lang;
-    const label = document.createElement("span");
-    label.className = "claude-code-lang";
-    label.textContent = lang;
-    pre.appendChild(label);
-  }
+  pre.className = "claude-code-content";
   const code = document.createElement("code");
-  code.textContent = String(codeText || "");
+  code.textContent = source;
   pre.appendChild(code);
-  parent.appendChild(pre);
+  wrapper.append(header, pre);
+  parent.appendChild(wrapper);
+}
+
+function splitClaudeMarkdownTableRow(line) {
+  const source = String(line || "").trim();
+  if (!source.includes("|")) return [];
+  const content = source.replace(/^\|/, "").replace(/\|$/, "");
+  const cells = [];
+  let cell = "";
+  let escaped = false;
+  for (const character of content) {
+    if (escaped) {
+      cell += character;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "|") {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  if (escaped) cell += "\\";
+  cells.push(cell.trim());
+  return cells;
+}
+
+function isClaudeMarkdownTableDivider(cells) {
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || "").trim()));
+}
+
+function appendClaudeMarkdownTable(parent, headers, dividerCells, rows) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "claude-markdown-table-wrap";
+  const table = document.createElement("table");
+  table.className = "claude-markdown-table";
+  const head = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  const alignments = dividerCells.map((cell) => {
+    const value = String(cell || "").trim();
+    if (value.startsWith(":") && value.endsWith(":")) return "center";
+    if (value.endsWith(":")) return "right";
+    return "left";
+  });
+
+  headers.forEach((header, index) => {
+    const cell = document.createElement("th");
+    cell.style.textAlign = alignments[index] || "left";
+    appendMarkdownFragment(cell, renderClaudeMarkdownInline(header));
+    headRow.appendChild(cell);
+  });
+  head.appendChild(headRow);
+  table.appendChild(head);
+
+  const body = document.createElement("tbody");
+  for (const rowCells of rows) {
+    const row = document.createElement("tr");
+    headers.forEach((_, index) => {
+      const cell = document.createElement("td");
+      cell.style.textAlign = alignments[index] || "left";
+      appendMarkdownFragment(cell, renderClaudeMarkdownInline(rowCells[index] || ""));
+      row.appendChild(cell);
+    });
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  wrapper.appendChild(table);
+  parent.appendChild(wrapper);
 }
 
 function renderClaudeMarkdownBlocks(value, parent) {
@@ -2054,7 +2177,8 @@ function renderClaudeMarkdownBlocks(value, parent) {
     blockIndex += 1;
   };
 
-  for (const rawLine of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
     const fence = rawLine.match(/^```([a-zA-Z0-9_-]*)\s*$/);
     if (fence) {
       if (codeFence) {
@@ -2077,6 +2201,36 @@ function renderClaudeMarkdownBlocks(value, parent) {
     if (!line) {
       flushParagraph();
       flushList();
+      continue;
+    }
+
+    const headerCells = splitClaudeMarkdownTableRow(rawLine);
+    let dividerIndex = lineIndex + 1;
+    while (dividerIndex < lines.length && !String(lines[dividerIndex] || "").trim()) dividerIndex += 1;
+    const dividerCells = splitClaudeMarkdownTableRow(lines[dividerIndex] || "");
+    if (
+      headerCells.length >= 2
+      && dividerCells.length === headerCells.length
+      && isClaudeMarkdownTableDivider(dividerCells)
+    ) {
+      flushParagraph();
+      flushList();
+      const rows = [];
+      let rowIndex = dividerIndex + 1;
+      let lastConsumedIndex = dividerIndex;
+      while (rowIndex < lines.length) {
+        while (rowIndex < lines.length && !String(lines[rowIndex] || "").trim()) rowIndex += 1;
+        if (rowIndex >= lines.length) break;
+        const rowLine = lines[rowIndex];
+        const rowCells = splitClaudeMarkdownTableRow(rowLine);
+        if (rowCells.length < 2) break;
+        rows.push(rowCells);
+        lastConsumedIndex = rowIndex;
+        rowIndex += 1;
+      }
+      appendClaudeMarkdownTable(parent, headerCells, dividerCells, rows);
+      blockIndex += 1;
+      lineIndex = lastConsumedIndex;
       continue;
     }
 
@@ -2170,15 +2324,23 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   wrapper.className = "assistant-compact-message";
   if (compact.collapsed) wrapper.classList.add("is-collapsed");
 
+  const executionProcess = Array.isArray(options.executionProcess)
+    ? options.executionProcess.filter(Boolean)
+    : [];
   const detailText = [
+    ...executionProcess,
     ...(Array.isArray(parsed.thoughts) ? parsed.thoughts : []),
     ...(Array.isArray(compact.toolLines) ? compact.toolLines : []),
   ].join("\n\n");
 
+  if (detailText) {
+    renderThinkingBlocks([detailText], wrapper, { streaming: Boolean(options.streaming) });
+  }
+
   const content = document.createElement("div");
   content.className = "assistant-compact-message__content";
   const renderContent = (value) => {
-    renderClaudeAgentMessageContent(value || "", content, detailText);
+    renderClaudeAgentMessageContent(value || "", content);
   };
   renderContent(compact.preview);
   if (compact.preview || compact.content) wrapper.appendChild(content);
@@ -2203,12 +2365,16 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
 function flushAssistantTextBuffer() {
   if (!assistantTextBuffer) return;
   if (!activeAssistantMessage) {
-    activeAssistantMessage = addMessage("assistant", "Claude");
+    activeAssistantMessage = addMessage("assistant", "Claude", "", { executionProcess: activeExecutionProcess, streaming: true });
+    mountRunStateBelowActiveAssistantMessage();
   }
   const chunk = assistantTextBuffer;
   assistantTextBuffer = "";
   activeAssistantMessage.rawText = `${activeAssistantMessage.rawText || ""}${chunk}`;
-  renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText), activeAssistantMessage.body, { streaming: true });
+  renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText), activeAssistantMessage.body, {
+    streaming: true,
+    executionProcess: activeExecutionProcess,
+  });
   renderAuthorizationCard(activeAssistantMessage.message, activeAssistantMessage.rawText);
   scheduleTranscriptScroll();
 }
@@ -2239,7 +2405,7 @@ function removeRuntimeSummaryMessages() {
   }
 }
 
-function addMessage(kind, title, text = "") {
+function addMessage(kind, title, text = "", options = {}) {
   if (isRuntimeSummaryMessage(kind, title, text)) {
     const placeholder = document.createElement("span");
     return { message: placeholder, body: placeholder };
@@ -2256,7 +2422,7 @@ function addMessage(kind, title, text = "") {
   body.className = "message-body";
   const displayText = formatClaudeCodeToolCallForZh(text);
   if (kind === "user") body.textContent = displayText;
-  else renderCompactClaudePanelMessage(displayText, body);
+  else renderCompactClaudePanelMessage(displayText, body, options);
   message.append(head, body);
   row.append(message);
   transcript.append(row);
@@ -2432,6 +2598,15 @@ function isBrowserAuthorizationRequest(text) {
   return mentionsBrowserTool && asksAuthorization;
 }
 
+function isReadOnlyWebAuthorizationRequest(text) {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const mentionsReadOnlyWeb = /WebSearch|WebFetch|联网(搜索|查询)|网络(搜索|查询)|搜索公开(网络|网页)|读取公开网页/i.test(value);
+  const asksAuthorization = /授权|允许|确认|是否|approve|allow|permission|authorize|proceed/i.test(value);
+  const mentionsInteractiveOrSensitive = /Playwright|mcp__playwright|browser_(click|type|navigate|select|press)|点击|输入|登录|扫码|支付|上传|提交|隐私|修改远端|写入/i.test(value);
+  return mentionsReadOnlyWeb && asksAuthorization && !mentionsInteractiveOrSensitive;
+}
+
 function isExplicitBrowserTask(text) {
   const value = String(text || "").trim();
   if (!value) return false;
@@ -2458,82 +2633,155 @@ function implicitBrowserRunOverrides(prompt, overrides = {}) {
 function authorizationRequestType(text) {
   const value = String(text || "");
   if (!value.trim()) return "";
+  if (isReadOnlyWebAuthorizationRequest(value)) return "web";
   if (isBrowserAuthorizationRequest(value)) return "browser";
 
   const hasChoiceText = /本次允许|始终允许|拒绝|是\/否|是否|yes|no|always allow|allow once|deny/i.test(value);
   const asksConfirmation =
     /是否(继续|允许|授权|接受|执行|打开|使用)|请(确认|选择|授权)|需要.{0,16}(确认|授权).{0,8}(吗|？|\?)|等待.{0,8}确认|do you want|proceed\?|accept\?|allow\?|authorize|permission/i.test(value);
-  if (hasChoiceText && asksConfirmation) return "generic";
+  if (hasChoiceText && asksConfirmation) {
+    if (/安装|下载|依赖|插件|skill|plugin|package/i.test(value)) return "install";
+    if (/命令|终端|shell|powershell|cmd|执行脚本|运行脚本/i.test(value)) return "command";
+    if (/登录|扫码|支付|隐私|凭据|密码|token|api\s*key|密钥/i.test(value)) return "sensitive";
+    if (/文件|目录|路径|读取|写入|修改|覆盖|删除|上传/i.test(value)) return "file";
+    return "generic";
+  }
   return "";
 }
 
-function browserAuthorizationPrompt(choice) {
-  if (choice === "deny") {
-    return [
-      "我拒绝本次浏览器网络访问授权。",
-      "请不要调用浏览器自动化工具，改用中文文字说明下一步需要我手动怎么做。",
-    ].join("\n");
-  }
-
-  const scopeText = choice === "always" ? "本会话始终允许" : "本次允许";
-  return [
-    `我确认：${scopeText}你使用 Playwright 浏览器自动化工具访问网络。`,
-    "请继续执行上一步打开网页、搜索、点击、读取页面内容等浏览器任务。",
-    "不要再次询问同一个浏览器访问授权；如果涉及登录、扫码、支付、提交隐私信息或上传本地文件，必须再次用中文等待我确认。",
-    "全程使用简体中文回复。",
-  ].join("\n");
+function authorizationPresentation(type) {
+  const presentations = {
+    web: {
+      kicker: "公开网络查询",
+      title: "正在继续联网查询",
+      description: "WebSearch、WebFetch 是所有模式的基础只读能力，无需重复授权。",
+      scope: "公开网页的搜索与只读内容获取",
+      risk: "不包含登录、上传、支付、隐私提交或远端写入",
+    },
+    browser: {
+      kicker: "联网与浏览器",
+      title: "允许 Claude 访问网页？",
+      description: "Claude Code 请求使用 WebSearch、WebFetch 或 Playwright 搜索、读取并操作公开网页。",
+      scope: "公开网页的搜索、读取与浏览器交互",
+      risk: "登录、支付、上传文件或提交隐私信息时会再次确认",
+    },
+    file: {
+      kicker: "文件访问",
+      title: "允许 Claude 访问文件？",
+      description: "Claude Code 请求读取或修改当前任务相关的文件和目录。",
+      scope: "当前项目与本次任务明确涉及的文件",
+      risk: "删除、覆盖和批量写入仍需再次确认",
+    },
+    command: {
+      kicker: "命令执行",
+      title: "允许 Claude 执行命令？",
+      description: "Claude Code 请求在当前项目环境中运行终端命令或脚本。",
+      scope: "当前项目目录内与本次任务相关的命令",
+      risk: "系统级、破坏性或高权限命令不会自动放行",
+    },
+    install: {
+      kicker: "安装与配置",
+      title: "允许 Claude 安装或配置？",
+      description: "Claude Code 请求下载、安装插件或依赖，或者调整当前任务所需配置。",
+      scope: "本次明确请求的插件、Skill、依赖或配置",
+      risk: "来源不明、全局安装或修改客户配置时会再次确认",
+    },
+    sensitive: {
+      kicker: "敏感操作",
+      title: "确认继续敏感操作？",
+      description: "该操作可能涉及登录、凭据、支付、隐私信息或外部提交。",
+      scope: "仅限当前消息中明确说明的操作",
+      risk: "请确认目标、账号与提交内容无误后再授权",
+    },
+    generic: {
+      kicker: "操作确认",
+      title: "允许 Claude 继续操作？",
+      description: "Claude Code 需要你确认是否继续执行刚才说明的操作。",
+      scope: "仅限当前任务与当前权限模式",
+      risk: "提升权限或高风险操作仍需再次确认",
+    },
+  };
+  return presentations[type] || presentations.generic;
 }
 
-function genericAuthorizationPrompt(choice) {
-  if (choice === "deny") {
-    return [
-      "我拒绝本次操作授权。",
-      "请不要继续执行上一步需要确认的操作，改用中文说明原因和我可以手动完成的步骤。",
-    ].join("\n");
-  }
+function closeToolAuthorizationSheet() {
+  if (!toolAuthorizationSheet) return;
+  toolAuthorizationSheet.hidden = true;
+  document.body.classList.remove("tool-authorization-open");
+}
 
-  const scopeText = choice === "always" ? "本会话对同类低风险操作始终允许" : "本次允许";
-  return [
-    `我确认：${scopeText}你继续执行上一条消息中明确请求确认的操作。`,
-    "请不要提升权限，不要突破当前权限模式，不要修改控制台源码或客户配置。",
-    "如果涉及删除、覆盖、批量写入、命令执行、安装依赖、上传文件、登录、扫码、支付或提交隐私信息，仍必须再次用中文等待我确认。",
-    "全程使用简体中文回复。",
-  ].join("\n");
+function openToolAuthorizationSheet(type) {
+  if (!toolAuthorizationSheet) return;
+  const presentation = authorizationPresentation(type);
+  toolAuthorizationSheet.dataset.authorizationType = type;
+  toolAuthorizationKicker.textContent = presentation.kicker;
+  toolAuthorizationTitle.textContent = presentation.title;
+  toolAuthorizationDescription.textContent = presentation.description;
+  toolAuthorizationScope.textContent = presentation.scope;
+  toolAuthorizationRisk.textContent = presentation.risk;
+  toolAuthorizationSheet.querySelectorAll("[data-tool-auth]").forEach((button) => {
+    button.disabled = false;
+  });
+  const alwaysButton = toolAuthorizationSheet.querySelector('[data-tool-auth="always"]');
+  if (alwaysButton) alwaysButton.hidden = type !== "browser";
+  toolAuthorizationSheet.hidden = false;
+  document.body.classList.add("tool-authorization-open");
+  toolAuthorizationSheet.querySelector('[data-tool-auth="once"]')?.focus();
+}
+
+function authorizationAlwaysStorageKey(type) {
+  return `superclaw_claude_authorization_always_${String(type || "generic")}`;
+}
+
+function authorizationAlwaysGranted(type) {
+  return window.sessionStorage.getItem(authorizationAlwaysStorageKey(type)) === "true";
+}
+
+function scheduleAuthorizationContinuation(task, authorizationType, choice) {
+  if (!task?.prompt) return;
+  const attempts = { ...(task.authorizationAttempts || {}) };
+  attempts[authorizationType] = Number(attempts[authorizationType] || 0) + 1;
+  const overrides = {
+    ...(task.overrides || {}),
+    authorizationContinuation: true,
+    authorizationGrant: authorizationType,
+    authorizationGrantScope: choice === "always" ? "session" : "once",
+    authorizationAttempts: attempts,
+    continueSession: false,
+  };
+  if (authorizationType === "browser") {
+    overrides.permissionProfile = "browser";
+    overrides.toolProfile = "none";
+    overrides.browserAccess = choice === "always" ? "always" : "once";
+  }
+  queuedAuthorizationContinuation = { prompt: task.prompt, overrides };
+  if (!runController) {
+    const continuation = queuedAuthorizationContinuation;
+    queuedAuthorizationContinuation = null;
+    queueMicrotask(() => startRun(continuation.prompt, continuation.overrides));
+  }
 }
 
 async function submitToolAuthorization(choice) {
   const current = pendingToolAuthorization;
   pendingToolAuthorization = null;
   const authorizationType = current?.type || "generic";
-  if (authorizationType === "browser" && choice === "always") {
+  const persistentChoice = choice === "always" && authorizationType === "browser";
+  if (persistentChoice) {
+    window.sessionStorage.setItem(authorizationAlwaysStorageKey(authorizationType), "true");
     window.sessionStorage.setItem(browserAccessAlwaysKey, "true");
   }
-  if (current?.card) {
-    current.card.querySelectorAll("button").forEach((button) => {
+  if (current?.sheet) {
+    current.sheet.querySelectorAll("[data-tool-auth]").forEach((button) => {
       button.disabled = true;
     });
-    current.card.classList.add("is-used");
   }
-  const nextPrompt =
-    authorizationType === "browser" ? browserAuthorizationPrompt(choice) : genericAuthorizationPrompt(choice);
-  if (choice === "deny") {
-    await startRun(nextPrompt, { permissionProfile: "safe", toolProfile: "none" });
-    return;
-  }
+  closeToolAuthorizationSheet();
+  if (choice === "deny") return;
   if (authorizationType === "browser") {
     browserModeAccepted = true;
-    await startRun(nextPrompt, {
-      permissionProfile: "browser",
-      toolProfile: "none",
-      browserAccess: choice === "always" ? "always" : "once",
-    });
-    return;
   }
-  const currentConfig = modeNotes[activeMode] || modeNotes.safe;
-  await startRun(nextPrompt, {
-    permissionProfile: activeMode,
-    toolProfile: currentConfig.toolProfile,
-  });
+  scheduleAuthorizationContinuation(current?.task, authorizationType, persistentChoice ? "always" : "once");
 }
 
 function renderAuthorizationCard(targetMessage, text) {
@@ -2541,38 +2789,125 @@ function renderAuthorizationCard(targetMessage, text) {
   const type = authorizationRequestType(text);
   if (!type) return;
   targetMessage.dataset.authorizationCard = "shown";
-  const card = document.createElement("div");
-  card.className = "tool-authorization-card";
-  const title = type === "browser" ? "浏览器自动化授权" : "操作授权确认";
-  const description =
-    type === "browser"
-      ? "Claude Code 想使用浏览器打开网页或搜索内容。请选择授权范围。"
-      : "Claude Code 需要你确认是否继续执行上一步操作。请选择授权范围。";
-  card.innerHTML = `
-    <div class="tool-authorization-copy">
-      <strong>${title}</strong>
-      <span>${description}</span>
-    </div>
-    <div class="tool-authorization-actions">
-      <button type="button" data-tool-auth="once">本次允许</button>
-      <button type="button" data-tool-auth="always">始终允许</button>
-      <button type="button" data-tool-auth="deny">拒绝</button>
-    </div>
-  `;
-  targetMessage.append(card);
-  pendingToolAuthorization = { card, text, type };
+  const task = activeAuthorizationRun
+    ? {
+        prompt: activeAuthorizationRun.prompt,
+        overrides: { ...activeAuthorizationRun.overrides },
+        authorizationAttempts: { ...(activeAuthorizationRun.authorizationAttempts || {}) },
+        conversationId: activeAuthorizationRun.conversationId,
+      }
+    : null;
+  const attemptCount = Number(task?.authorizationAttempts?.[type] || 0);
+  if (attemptCount >= 1) {
+    targetMessage.dataset.authorizationLoopStopped = "true";
+    return;
+  }
+  if (type === "web") {
+    targetMessage.dataset.authorizationAutoContinued = "true";
+    scheduleAuthorizationContinuation(task, type, "once");
+    return;
+  }
+  pendingToolAuthorization = { sheet: toolAuthorizationSheet, text, type, task };
+  if (authorizationAlwaysGranted(type)) {
+    submitToolAuthorization("always");
+    return;
+  }
+  openToolAuthorizationSheet(type);
 }
 
 function appendAssistantText(text) {
   const translatedText = translateClaudeChoices(text);
   if (!activeAssistantMessage && !translatedText.trim()) return;
+  if (translatedText && runStateChip?.textContent !== "回复中...") {
+    setRunState("thinking", "回复中...");
+  }
   assistantTextBuffer += translatedText;
   scheduleAssistantTextFlush();
 }
 
+function formatExecutionProcessEntry(payload = {}) {
+  const title = String(payload.title || "执行步骤").trim();
+  const text = String(payload.text || "").trim();
+  if (!text) return title;
+  return `${title}\n${text}`;
+}
+
+function appendExecutionProcess(payload = {}) {
+  const entry = formatExecutionProcessEntry(payload);
+  if (!entry) return;
+  if (runStateChip?.textContent !== "执行中...") {
+    setRunState("thinking", "执行中...");
+  }
+  const previous = activeExecutionProcess[activeExecutionProcess.length - 1];
+  if (previous !== entry) activeExecutionProcess.push(entry);
+  if (activeExecutionProcess.length > 120) activeExecutionProcess = activeExecutionProcess.slice(-120);
+  if (!activeAssistantMessage) {
+    activeAssistantMessage = addMessage("assistant", "Claude", "", {
+      executionProcess: activeExecutionProcess,
+      streaming: true,
+    });
+    mountRunStateBelowActiveAssistantMessage();
+  } else if (activeAssistantMessage.body) {
+    renderCompactClaudePanelMessage(
+      formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""),
+      activeAssistantMessage.body,
+      { executionProcess: activeExecutionProcess, streaming: true }
+    );
+  }
+  scheduleTranscriptScroll();
+}
+
+function clearConversationRunState() {
+  if (!transcript) return;
+  transcript.querySelectorAll(".message-row.has-turn-run-status").forEach((row) => {
+    row.classList.remove("has-turn-run-status");
+  });
+  transcript.querySelectorAll(".turn-run-status-only").forEach((row) => row.remove());
+  runStateChip?.remove();
+  runStateChip = null;
+}
+
+function ensureConversationRunState() {
+  if (runStateChip) return runStateChip;
+  runStateChip = document.createElement("span");
+  runStateChip.className = "run-state turn-run-state thinking";
+  runStateChip.setAttribute("aria-live", "polite");
+  return runStateChip;
+}
+
+function mountRunStateBelowActiveAssistantMessage() {
+  if (!transcript) return;
+  const stateChip = ensureConversationRunState();
+  const activeRow = activeAssistantMessage?.row;
+  const targetRow = activeRow?.isConnected ? activeRow : null;
+  transcript.querySelectorAll(".message-row.has-turn-run-status").forEach((row) => {
+    if (row !== targetRow) row.classList.remove("has-turn-run-status");
+  });
+  if (targetRow) {
+    transcript.querySelectorAll(".turn-run-status-only").forEach((row) => row.remove());
+    targetRow.classList.add("has-turn-run-status");
+    if (stateChip.parentElement !== targetRow) targetRow.append(stateChip);
+  } else {
+    let statusRow = transcript.querySelector(".turn-run-status-only");
+    if (!statusRow) {
+      statusRow = document.createElement("div");
+      statusRow.className = "message-row assistant sc-msg-row assistant turn-run-status-only";
+      transcript.append(statusRow);
+    }
+    if (stateChip.parentElement !== statusRow) statusRow.append(stateChip);
+  }
+  scheduleTranscriptScroll();
+}
+
 function setRunState(state, label) {
-  runStateChip.className = `pill run-state ${state}`;
-  runStateChip.textContent = label;
+  if (state === "thinking") {
+    const stateChip = ensureConversationRunState();
+    stateChip.className = `run-state turn-run-state ${state}`;
+    stateChip.textContent = label;
+    mountRunStateBelowActiveAssistantMessage();
+  } else {
+    clearConversationRunState();
+  }
   updateTopbarPetState(state);
   updateClaudePetStateV2(state, label);
 }
@@ -3037,6 +3372,9 @@ function normalizeConversationMessages(messages) {
       role: ["user", "assistant", "system", "error"].includes(message.role) ? message.role : "system",
       title: String(message.title || ""),
       content: String(message.content || ""),
+      executionProcess: Array.isArray(message.executionProcess)
+        ? message.executionProcess.map((item) => String(item || "")).filter(Boolean).slice(-120)
+        : [],
       timestamp: message.timestamp || new Date().toISOString(),
     }))
     .filter((message) => message.content.trim());
@@ -3058,7 +3396,7 @@ function compactConversationMessages(messages) {
   ];
 }
 
-function appendConversationMessage(conversationId, role, title, content) {
+function appendConversationMessage(conversationId, role, title, content, options = {}) {
   const text = String(content || "").trim();
   if (!conversationId || !text) return;
   conversations = conversations.map((conversation) => {
@@ -3069,7 +3407,10 @@ function appendConversationMessage(conversationId, role, title, content) {
         id: makeId(),
         role,
         title,
-        content: text,
+          content: text,
+          executionProcess: Array.isArray(options.executionProcess)
+            ? options.executionProcess.slice(-120)
+            : [],
         timestamp: new Date().toISOString(),
       },
     ]);
@@ -3087,8 +3428,8 @@ function appendCurrentConversationMessage(role, title, content) {
   appendConversationMessage(currentConversationId, role, title, content);
 }
 
-function appendActiveRunConversationMessage(role, title, content) {
-  appendConversationMessage(activeRunConversationId || currentConversationId, role, title, content);
+function appendActiveRunConversationMessage(role, title, content, options = {}) {
+  appendConversationMessage(activeRunConversationId || currentConversationId, role, title, content, options);
 }
 
 function createConversation(prompt, titleSource = prompt) {
@@ -3218,7 +3559,12 @@ function showConversation(conversation) {
   const messages = normalizeConversationMessages(conversation.messages || []);
   if (messages.length) {
     for (const message of messages) {
-      addMessage(message.role, message.title || (message.role === "user" ? "你" : message.role === "assistant" ? "Claude" : "记录"), message.content);
+      addMessage(
+        message.role,
+        message.title || (message.role === "user" ? "你" : message.role === "assistant" ? "Claude" : "记录"),
+        message.content,
+        { executionProcess: message.executionProcess || [], streaming: false }
+      );
     }
   } else if (conversation.prompt || conversation.result) {
     if (conversation.prompt) addMessage("user", "你", conversation.prompt);
@@ -3747,13 +4093,9 @@ function renderProjectOptions(projects) {
     option.textContent = `${chineseProjectName(project.path, project.name)}  ·  ${project.path}`;
     projectSelect.append(option);
   }
-  const knownPaths = new Set((projects || []).map((project) => String(project.path || "").trim().toLowerCase()).filter(Boolean));
-  const beforeCount = conversations.length;
-  conversations = conversations.filter((conversation) => {
-    if (!conversation.projectPath) return true;
-    return knownPaths.has(String(conversation.projectPath).trim().toLowerCase());
-  });
-  if (conversations.length !== beforeCount) saveConversations();
+  // A project can temporarily disappear while the portable panel reloads its
+  // managed paths. Conversation history must remain durable and must never be
+  // replaced by a newly-created empty project card during that refresh.
   syncProjectConversationCards(projects || []);
 }
 
@@ -4272,8 +4614,6 @@ function installedPluginItemsFromSummary(summary = "") {
     .filter((line) => !/^[-=]+$/.test(line));
 }
 
-const SKILL_TOGGLE_STORAGE_KEY = "cleanClaudePanel.skillToggleState";
-
 const SKILL_DESCRIPTION_PATTERNS = [
   ["adguardhome", "广告过滤与家庭网络服务管理辅助技能。"],
   ["anygen", "内容生成辅助技能，可用于生成脚本、文本或素材指令。"],
@@ -4338,84 +4678,29 @@ function skillDescription(name = "") {
   return hit ? hit[1] : "已安装的本机技能，可在需要时辅助 Claude Code 完成对应任务。";
 }
 
-function readSkillToggleState() {
-  try {
-    return JSON.parse(localStorage.getItem(SKILL_TOGGLE_STORAGE_KEY) || "{}");
-  } catch {
-    return {};
-  }
-}
-
-function writeSkillToggleState(state) {
-  try {
-    localStorage.setItem(SKILL_TOGGLE_STORAGE_KEY, JSON.stringify(state || {}));
-  } catch {
-    // localStorage may be unavailable in a restricted embedded browser.
-  }
-}
-
-function skillIsEnabled(name = "") {
-  const state = readSkillToggleState();
-  return state[String(name || "")] !== false;
-}
-
-function setSkillEnabled(name = "", enabled = true) {
-  const state = readSkillToggleState();
-  state[String(name || "")] = Boolean(enabled);
-  writeSkillToggleState(state);
-}
-
-function extensionListItem(text, type = "skill") {
+function extensionListItem(entry, type = "skill") {
+  const record = typeof entry === "string" ? { name: entry } : (entry || {});
+  const text = String(record.name || record.id || "未知能力");
   const item = document.createElement("div");
   item.className = `installed-extension-item ${type}`;
 
   const badge = document.createElement("span");
   badge.className = "installed-extension-badge";
-  badge.textContent = type === "plugin" ? "插件" : "已安装";
+  badge.textContent = type === "plugin"
+    ? (record.enabled === false ? "已停用" : "插件")
+    : (record.valid === false ? "需修复" : record.enabled === false ? "已暂停" : "已启用");
 
   const name = document.createElement("strong");
   name.textContent = text;
 
   const note = document.createElement("small");
   note.textContent = type === "plugin"
-    ? "已检测到的插件信息"
-    : skillDescription(text);
+    ? [record.version, record.marketplace].filter(Boolean).join(" · ") || "已由 Claude Code 原生插件列表确认"
+    : record.error || record.description || skillDescription(text);
 
   item.append(badge, name, note);
 
-  if (type === "skill") {
-    const actions = document.createElement("div");
-    actions.className = "installed-extension-actions";
-
-    const uninstall = document.createElement("button");
-    uninstall.className = "skill-uninstall-button";
-    uninstall.type = "button";
-    uninstall.textContent = "卸载";
-    uninstall.title = "生成卸载指令，执行前仍需确认";
-    uninstall.addEventListener("click", () => {
-      fillPrompt(`请卸载 Claude Code Skill：${text}。先说明将删除的位置、风险和影响，等待我确认后再执行。`);
-      closeInstalledExtensionsPage();
-    });
-
-    const toggle = document.createElement("label");
-    toggle.className = "skill-enable-toggle";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = skillIsEnabled(text);
-    const slider = document.createElement("span");
-    slider.className = "skill-enable-slider";
-    const toggleText = document.createElement("em");
-    toggleText.textContent = checkbox.checked ? "开启" : "暂停";
-    checkbox.addEventListener("change", () => {
-      setSkillEnabled(text, checkbox.checked);
-      toggleText.textContent = checkbox.checked ? "开启" : "暂停";
-      item.classList.toggle("is-skill-disabled", !checkbox.checked);
-    });
-    toggle.append(checkbox, slider, toggleText);
-    item.classList.toggle("is-skill-disabled", !checkbox.checked);
-    actions.append(uninstall, toggle);
-    item.append(actions);
-  }
+  item.classList.toggle("is-skill-disabled", record.enabled === false || record.valid === false);
 
   return item;
 }
@@ -4423,6 +4708,13 @@ function extensionListItem(text, type = "skill") {
 function renderInstalledExtensionList(container, items, type) {
   if (!container) return;
   container.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "extension-search-empty";
+    empty.textContent = type === "plugin" ? "暂未安装插件" : "暂未安装有效 Skill";
+    container.append(empty);
+    return;
+  }
   for (const item of items) {
     container.append(extensionListItem(item, type));
   }
@@ -4431,6 +4723,11 @@ function renderInstalledExtensionList(container, items, type) {
 function skillInstallTemplate(name = "") {
   const title = String(name || "").trim() || "my-skill";
   return [
+    "---",
+    `name: ${title.replace(/\s+/g, "-")}`,
+    `description: Portable Claude Code workflow for ${title}`,
+    "---",
+    "",
     `# ${title}`,
     "",
     "## When to use",
@@ -4450,76 +4747,179 @@ function setSkillInstallStatus(message = "", ok = true) {
   skillInstallStatus.dataset.state = ok ? "ok" : "error";
 }
 
-function setPluginInstallStatus(message = "", ok = true) {
-  if (!pluginInstallStatus) return;
-  pluginInstallStatus.textContent = message;
-  pluginInstallStatus.dataset.state = ok ? "ok" : "error";
+let activeExtensionKind = "plugin";
+let activeExtensionSearchId = "";
+
+function setExtensionSearchStatus(message = "", ok = true) {
+  if (!extensionSearchStatus) return;
+  extensionSearchStatus.textContent = message;
+  extensionSearchStatus.dataset.state = ok ? "ok" : "error";
 }
 
-async function installPluginFromPanel() {
-  if (!pluginInput || !pluginPromptBtn) return;
-  const plugin = pluginInput.value.trim();
-  if (!plugin) {
-    setPluginInstallStatus("请先填写插件名称", false);
-    pluginInput.focus();
+function setExtensionKind(kind = "plugin") {
+  activeExtensionKind = kind === "skill" ? "skill" : "plugin";
+  activeExtensionSearchId = "";
+  extensionKindButtons.forEach((button) => {
+    const active = button.dataset.extensionKind === activeExtensionKind;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  if (extensionSearchInput) {
+    extensionSearchInput.placeholder = activeExtensionKind === "skill"
+      ? "搜索 Skill 能力包，例如 review、docs、design"
+      : "搜索插件，例如 github、ui、database";
+  }
+  if (extensionSearchResults) extensionSearchResults.replaceChildren();
+  setExtensionSearchStatus("");
+}
+
+const extensionDescriptionZh = {
+  superpowers: "为 Claude 提供头脑风暴、子智能体协作开发、代码审查、系统化调试、红绿测试驱动开发，以及 Skill 编写与测试能力。",
+  "feature-dev": "提供完整的功能开发工作流，使用专用智能体完成代码库探索、架构设计和质量审查。",
+  coderabbit: "代码审查助手，结合静态分析、语法树和代码关系检查缺陷、安全漏洞、逻辑错误与边界情况，并给出可直接采用的修复建议。",
+  "atomic-agents": "用于构建 Atomic Agents 智能体的完整开发工作流，覆盖结构设计、架构规划、代码审查、工具开发和最佳实践校验。",
+  "code-modernization": "提供遗留代码现代化工作流，支持评估、规则提取、方案设计、转换加固、拓扑查看和专家审查。",
+  "aws-dev-toolkit": "AWS 开发工具包，包含构建、迁移和架构审查所需的 Skills、专用智能体与 MCP 服务。",
+  "qt-development-skills": "面向 Qt C++ 与 QML 开发，提供代码审查、编码辅助和代码文档能力。",
+  "snowflake-cortex-code": "将 Snowflake 相关任务路由到 Cortex Code 执行，支持代码审查、任务委派、运行和配置。",
+  mercadopago: "Mercado Pago 产品集成工具包，覆盖接入向导、Webhook、测试配置和集成审查；使用时需要连接官方 MCP 服务。",
+  outputai: "Output.ai 工作流开发工具包，包含规划、构建、调试、提示词和质量审查智能体，以及脚手架、评估和凭据管理能力。",
+  "forge-skills": "面向 Atlassian Forge 的开发能力包，支持应用创建与部署、Rovo 连接器、发布前审查、系统化调试和文档查询。",
+  "datahub-skills": "DataHub 开发与交互工具包，支持连接器规划、代码审查、目录搜索、元数据增强、血缘追踪和数据质量管理。",
+  canva: "通过 Canva MCP 服务创建、编辑、审查、调整尺寸并检查 Canva 设计的品牌规范。",
+};
+
+function localizedExtensionDescription(item = {}) {
+  const name = String(item.name || item.id || "").trim();
+  const key = name.toLowerCase();
+  if (extensionDescriptionZh[key]) return extensionDescriptionZh[key];
+
+  const source = String(item.description || "").toLowerCase();
+  const capabilities = [];
+  const add = (pattern, label) => {
+    if (pattern.test(source) && !capabilities.includes(label)) capabilities.push(label);
+  };
+  add(/code review|quality review|reviewer/, "代码审查");
+  add(/debug|troubleshoot/, "调试排错");
+  add(/test|tdd|evaluation/, "测试验证");
+  add(/security|vulnerabilit/, "安全检查");
+  add(/architect|schema design/, "架构设计");
+  add(/document|docs/, "文档处理");
+  add(/deploy|release/, "部署发布");
+  add(/migrat|moderniz|legacy/, "迁移与现代化");
+  add(/workflow|orchestrat/, "工作流编排");
+  add(/agent|subagent/, "专用智能体协作");
+  add(/mcp|connector/, "MCP 与外部服务连接");
+  add(/data|metadata|catalog|lineage/, "数据管理");
+  add(/design|ui|brand|canva/, "设计辅助");
+
+  const featureText = capabilities.slice(0, 5).join("、");
+  if (featureText) return `${name || "该能力包"} 用于 Claude Code，主要提供${featureText}等能力。`;
+  return `${name || "该能力包"} 是来自官方 Marketplace 的 Claude Code 扩展能力；安装前请核对来源和权限范围。`;
+}
+
+function extensionResultCard(item, searchId) {
+  const card = document.createElement("article");
+  card.className = "extension-search-result";
+
+  const main = document.createElement("div");
+  main.className = "extension-search-result-main";
+  const title = document.createElement("div");
+  title.className = "extension-search-result-title";
+  const name = document.createElement("strong");
+  name.textContent = item.name || item.id;
+  const badge = document.createElement("span");
+  badge.textContent = item.kind === "skill-package" ? "Skill 能力包" : "插件";
+  title.append(name, badge);
+
+  const description = document.createElement("p");
+  description.textContent = localizedExtensionDescription(item);
+  if (item.description) description.title = `英文原文：${item.description}`;
+  const metadata = document.createElement("div");
+  metadata.className = "extension-search-result-meta";
+  const marketplace = document.createElement("span");
+  marketplace.textContent = `市场：${item.marketplace || "未知"}`;
+  const source = document.createElement("span");
+  source.textContent = `来源：${item.source || "Marketplace"}`;
+  const installs = document.createElement("span");
+  installs.textContent = item.installCount ? `安装量：${Number(item.installCount).toLocaleString()}` : "安装量：未提供";
+  metadata.append(marketplace, source, installs);
+  main.append(title, description, metadata);
+
+  const installButton = document.createElement("button");
+  installButton.className = "secondary-button primary extension-result-install";
+  installButton.type = "button";
+  installButton.textContent = item.installed ? "已安装" : "选择安装";
+  installButton.disabled = Boolean(item.installed);
+  installButton.addEventListener("click", async () => {
+    installButton.disabled = true;
+    installButton.textContent = "安装并核验中...";
+    setExtensionSearchStatus(`正在通过便携 Claude Code 安装 ${item.name}，完成后会核对原生插件列表...`);
+    try {
+      const response = await fetch("/api/extensions/install", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ searchId, pluginId: item.id }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error || !data.verified) throw new Error(data.error || "安装后未通过 Claude Code 原生核验");
+      item.installed = true;
+      installButton.textContent = "已安装并核验";
+      setExtensionSearchStatus(`${data.name || item.name} 已安装；下一次 Claude 任务会加载该能力。`);
+      await refreshInstalledExtensions({ expectPluginId: data.pluginId || item.id });
+    } catch (error) {
+      installButton.disabled = false;
+      installButton.textContent = "重试安装";
+      setExtensionSearchStatus(error.message || "安装失败", false);
+    }
+  });
+
+  card.append(main, installButton);
+  return card;
+}
+
+function renderExtensionSearchResults(results, searchId) {
+  if (!extensionSearchResults) return;
+  extensionSearchResults.replaceChildren();
+  if (!results.length) {
+    const empty = document.createElement("div");
+    empty.className = "extension-search-empty";
+    empty.textContent = activeExtensionKind === "skill"
+      ? "没有找到明确包含 Skills 的官方能力包，可换一个用途关键词，或使用下方自定义 Skill 高级入口。"
+      : "没有找到匹配插件，请换一个名称或用途关键词。";
+    extensionSearchResults.append(empty);
     return;
   }
-  pluginPromptBtn.disabled = true;
-  setPluginInstallStatus("正在通过便携式 Claude Code 安装插件...");
-  try {
-    const res = await fetch("/api/plugins/install", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ plugin }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) {
-      throw new Error(data.error || "插件安装失败");
-    }
-    setPluginInstallStatus(`已安装插件：${data.plugin || plugin}`);
-    if (data.plugins?.summary) pluginSummary.textContent = data.plugins.summary;
-    await openInstalledExtensionsView();
-  } catch (error) {
-    setPluginInstallStatus(error.message || "插件安装失败", false);
-  } finally {
-    pluginPromptBtn.disabled = false;
-  }
+  results.forEach((item) => extensionSearchResults.append(extensionResultCard(item, searchId)));
 }
 
-function setPagePluginInstallStatus(message = "", ok = true) {
-  if (!pagePluginInstallStatus) return;
-  pagePluginInstallStatus.textContent = message;
-  pagePluginInstallStatus.dataset.state = ok ? "ok" : "error";
-}
-
-async function installPluginFromExtensionsPage() {
-  if (!pagePluginInput || !pagePluginInstallBtn) return;
-  const plugin = pagePluginInput.value.trim();
-  if (!plugin) {
-    setPagePluginInstallStatus("请先填写插件名称", false);
-    pagePluginInput.focus();
+async function searchExtensions() {
+  if (!extensionSearchInput || !extensionSearchBtn) return;
+  const query = extensionSearchInput.value.trim();
+  if (query.length < 2) {
+    setExtensionSearchStatus("请输入至少 2 个字符的关键词", false);
+    extensionSearchInput.focus();
     return;
   }
-  pagePluginInstallBtn.disabled = true;
-  setPagePluginInstallStatus("正在通过便携式 Claude Code 安装插件...");
+  extensionSearchBtn.disabled = true;
+  setExtensionSearchStatus("正在读取官方 Marketplace；首次使用可能需要约 1 分钟...");
+  if (extensionSearchResults) extensionSearchResults.replaceChildren();
   try {
-    const res = await fetch("/api/plugins/install", {
+    const response = await fetch("/api/extensions/search", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ plugin }),
+      body: JSON.stringify({ query, kind: activeExtensionKind }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error) {
-      const methodHint = res.status === 405 ? "插件安装接口请求方法不匹配，请重启 Claude Code 面板服务后再试。" : "";
-      throw new Error(data.error || methodHint || "插件安装失败");
-    }
-    setPagePluginInstallStatus(`已安装插件：${data.plugin || plugin}`);
-    if (data.plugins?.summary) pluginSummary.textContent = data.plugins.summary;
-    await openInstalledExtensionsView();
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.error) throw new Error(data.error || "搜索失败");
+    activeExtensionSearchId = data.searchId || "";
+    const results = Array.isArray(data.results) ? data.results : [];
+    renderExtensionSearchResults(results, activeExtensionSearchId);
+    setExtensionSearchStatus(results.length ? `找到 ${results.length} 个候选，请核对来源后选择安装。` : "没有匹配结果。", Boolean(results.length));
   } catch (error) {
-    setPagePluginInstallStatus(error.message || "插件安装失败", false);
+    setExtensionSearchStatus(error.message || "搜索失败", false);
   } finally {
-    pagePluginInstallBtn.disabled = false;
+    extensionSearchBtn.disabled = false;
   }
 }
 
@@ -4558,14 +4958,16 @@ async function installSkillFromPanel() {
 }
 
 function installedExtensionItems(status = latestStatus || {}) {
-  const pluginItems = installedPluginItemsFromSummary(status.plugins?.summary);
-  const skills = Array.isArray(status.skills)
-    ? status.skills.map((skill) => String(skill || "").trim()).filter(Boolean)
-    : [];
+  const pluginItems = Array.isArray(status.plugins?.installed)
+    ? status.plugins.installed
+    : installedPluginItemsFromSummary(status.plugins?.summary);
+  const skills = Array.isArray(status.skillInventory)
+    ? status.skillInventory
+    : Array.isArray(status.skills) ? status.skills : [];
 
   return {
-    plugins: pluginItems.length ? pluginItems : ["暂未检测到已安装插件"],
-    skills: skills.length ? skills : ["暂未检测到已安装 Skill"],
+    plugins: pluginItems,
+    skills,
   };
 }
 
@@ -4576,50 +4978,43 @@ function closeInstalledExtensionsPage() {
   if (promptForm) promptForm.hidden = false;
 }
 
-function installedExtensionsSections(status = latestStatus || {}) {
-  const pluginLines = installedPluginItemsFromSummary(status.plugins?.summary);
-  const pluginItems = pluginLines.length ? pluginLines : ["未检测到已安装插件，或 Claude Code 插件列表暂不可用。"];
-  const skills = Array.isArray(status.skills) && status.skills.length
-    ? status.skills
-    : ["未检测到已安装 Skill。"];
-
-  return [
-    ["插件", pluginItems],
-    ["Skills", skills],
-    [
-      "说明",
-      [
-        "这里是只读查看页，只显示本机当前检测到的插件与 Skills，不会安装、删除或修改任何内容。",
-        "如果刚安装完插件或 Skill，请点击右侧刷新或重新打开本页面查看最新状态。",
-      ],
-    ],
-  ];
-}
-
-async function openInstalledExtensionsView() {
-  try {
+async function refreshInstalledExtensions({ expectPluginId = "", attempts = 4 } = {}) {
+  const expected = String(expectPluginId || "").trim();
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const res = await fetch("/api/status", { cache: "no-store" });
     if (!res.ok) throw new Error("无法读取插件与 Skills 状态");
     latestStatus = await res.json();
-    pluginSummary.textContent = latestStatus.plugins?.summary || "未检测到插件信息";
-    skillsSummary.textContent = Array.isArray(latestStatus.skills)
-      ? `${latestStatus.skills.length} 个：${latestStatus.skills.slice(0, 3).join("、")}${latestStatus.skills.length > 3 ? "..." : ""}`
-      : "未检测到 Skills";
-    const items = installedExtensionItems(latestStatus);
-    renderInstalledExtensionList(installedSkillsList, items.skills, "skill");
-    renderInstalledExtensionList(installedPluginsList, items.plugins, "plugin");
-    closeHelpDialog();
-    document.body.classList.add("extensions-page-mode");
-    if (transcript) transcript.hidden = true;
-    if (promptForm) promptForm.hidden = true;
-    if (extensionsPage) extensionsPage.hidden = false;
+    const installedIds = new Set(
+      (Array.isArray(latestStatus.plugins?.installed) ? latestStatus.plugins.installed : [])
+        .flatMap((plugin) => [plugin?.id, plugin?.name].filter(Boolean).map(String)),
+    );
+    if (!expected || installedIds.has(expected) || attempt === attempts - 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+  }
+  pluginSummary.textContent = latestStatus.plugins?.summary || "未检测到插件信息";
+  const enabledSkills = Array.isArray(latestStatus.skillInventory)
+    ? latestStatus.skillInventory.filter((skill) => skill.enabled && skill.valid)
+    : Array.isArray(latestStatus.skills) ? latestStatus.skills : [];
+  skillsSummary.textContent = enabledSkills.length
+    ? `${enabledSkills.length} 个已启用`
+    : "未检测到有效 Skill";
+  const items = installedExtensionItems(latestStatus);
+  renderInstalledExtensionList(installedSkillsList, items.skills, "skill");
+  renderInstalledExtensionList(installedPluginsList, items.plugins, "plugin");
+  return latestStatus;
+}
+
+async function openInstalledExtensionsView() {
+  closeHelpDialog();
+  document.body.classList.add("extensions-page-mode");
+  if (transcript) transcript.hidden = true;
+  if (promptForm) promptForm.hidden = true;
+  if (extensionsPage) extensionsPage.hidden = false;
+  try {
+    await refreshInstalledExtensions();
   } catch (error) {
     renderInstalledExtensionList(installedSkillsList, ["读取失败，请确认本地服务正常运行后重试"], "skill");
     renderInstalledExtensionList(installedPluginsList, [error.message || "无法读取当前插件与 Skills 信息"], "plugin");
-    document.body.classList.add("extensions-page-mode");
-    if (transcript) transcript.hidden = true;
-    if (promptForm) promptForm.hidden = true;
-    if (extensionsPage) extensionsPage.hidden = false;
   }
 }
 
@@ -5347,6 +5742,20 @@ function closeRightPanel() {
   applyRightPanelState();
 }
 
+const compactRightPanelMedia = window.matchMedia("(max-width: 1180px)");
+
+function collapseRightPanelAtCompactBreakpoint(event) {
+  if (event.matches && !document.body.classList.contains("right-panel-collapsed")) {
+    closeRightPanel();
+  }
+}
+
+if (typeof compactRightPanelMedia.addEventListener === "function") {
+  compactRightPanelMedia.addEventListener("change", collapseRightPanelAtCompactBreakpoint);
+} else if (typeof compactRightPanelMedia.addListener === "function") {
+  compactRightPanelMedia.addListener(collapseRightPanelAtCompactBreakpoint);
+}
+
 function setRunSection(section = "install") {
   if (!runPanel) return;
   const active = section || "install";
@@ -5815,7 +6224,7 @@ function checkTemporaryTask() {
   });
 }
 
-async function readSse(response) {
+async function readSse(response, onActivity = () => {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -5824,6 +6233,7 @@ async function readSse(response) {
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    if (value?.length) onActivity();
     buffer += decoder.decode(value, { stream: true });
     const packets = buffer.split("\n\n");
     buffer = packets.pop() || "";
@@ -5854,13 +6264,18 @@ function handlePacket(packet) {
 
   if (event === "text") {
     appendAssistantText(payload.text || "");
+  } else if (event === "process") {
+    appendExecutionProcess(payload);
   } else if (event === "stderr") {
     const text = payload.text || "";
     if (text.trim()) console.warn("[ClaudeCode stderr]", text);
   } else if (event === "error") {
     flushAssistantTextBuffer();
     if (activeAssistantMessage?.body) {
-      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, { streaming: false });
+      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, {
+        streaming: false,
+        executionProcess: activeExecutionProcess,
+      });
     }
     setRunState("error", "运行异常");
     addMessage("error", "运行异常", payload.text || "执行失败");
@@ -5870,14 +6285,19 @@ function handlePacket(packet) {
   } else if (event === "done") {
     flushAssistantTextBuffer();
     if (activeAssistantMessage?.body) {
-      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, { streaming: false });
+      renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, {
+        streaming: false,
+        executionProcess: activeExecutionProcess,
+      });
     }
     removeRuntimeSummaryMessages();
     const replyText = activeAssistantMessage?.body?.dataset?.visibleText
       || activeAssistantMessage?.body?.querySelector(".assistant-compact-message__content")?.textContent
       || "";
     setRunState("done", "已完成");
-    appendActiveRunConversationMessage("assistant", "Claude", replyText || "已完成。");
+    appendActiveRunConversationMessage("assistant", "Claude", replyText || "已完成。", {
+      executionProcess: activeExecutionProcess,
+    });
     updateActiveRunConversation({
       status: "已完成",
       result: replyText,
@@ -6000,6 +6420,8 @@ function buildClaudeRunBlockingConfigMessageStable() {
 async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
   overrides = implicitBrowserRunOverrides(prompt, overrides);
+  const authorizationContinuation = overrides.authorizationContinuation === true;
+  const authorizationAttempts = { ...(overrides.authorizationAttempts || {}) };
   const projectReady = await ensureProjectForPrompt(prompt, overrides);
   if (!projectReady) return;
   if (!projectSelect.value) {
@@ -6033,6 +6455,7 @@ async function startRun(prompt, overrides = {}) {
 
   activeAssistantMessage = null;
   assistantTextBuffer = "";
+  activeExecutionProcess = [];
   if (assistantTextFlushTimer) {
     clearTimeout(assistantTextFlushTimer);
     assistantTextFlushTimer = null;
@@ -6040,23 +6463,43 @@ async function startRun(prompt, overrides = {}) {
   const finalPrompt = `${prompt}${attachmentSummary()}`;
   const outgoingAttachments = selectedAttachments.map(makeAttachmentMetadata);
   inspectPromptForPetMood(prompt);
-  createOrUpdateProjectConversation(finalPrompt, prompt);
+  if (!authorizationContinuation) createOrUpdateProjectConversation(finalPrompt, prompt);
   activeRunConversationId = currentConversationId;
-  appendActiveRunConversationMessage("user", "你", finalPrompt);
-  addMessage("user", "你", finalPrompt);
-  if (selectedAttachments.length) {
+  activeAuthorizationRun = {
+    prompt: finalPrompt,
+    conversationId: currentConversationId,
+    authorizationAttempts,
+    overrides: {
+      permissionProfile: overrides.permissionProfile || activeMode,
+      toolProfile: overrides.toolProfile || permissionConfig.toolProfile,
+      mode: overrides.mode || permissionConfig.cliMode,
+      browserAccess: overrides.browserAccess,
+      riskAccepted,
+    },
+  };
+  if (!authorizationContinuation) {
+    appendActiveRunConversationMessage("user", "你", finalPrompt);
+    addMessage("user", "你", finalPrompt);
+  }
+  if (!authorizationContinuation && selectedAttachments.length) {
     addMessage("system", "附件", "已把附件元信息随本次消息发送给 Claude Code；未上传的文件只保留前端元信息。");
   }
   modelInput.value = modelInput.value.trim();
   window.localStorage.setItem(modelStorageKey, modelInput.value);
 
-  runController = new AbortController();
+  const currentRunController = new AbortController();
+  runController = currentRunController;
   let runTimedOut = false;
-  const runTimeoutTimer = setTimeout(() => {
-    if (!runController) return;
-    runTimedOut = true;
-    runController.abort();
-  }, CLAUDE_RUN_TIMEOUT_MS);
+  let runIdleTimeoutTimer = null;
+  const resetRunIdleTimeout = () => {
+    clearTimeout(runIdleTimeoutTimer);
+    runIdleTimeoutTimer = setTimeout(() => {
+      if (runController !== currentRunController) return;
+      runTimedOut = true;
+      currentRunController.abort();
+    }, CLAUDE_RUN_IDLE_TIMEOUT_MS);
+  };
+  resetRunIdleTimeout();
   voiceReplyPending = Boolean(overrides.voiceInput);
   setRunning(true);
   setRunState("thinking", "正在思考");
@@ -6088,6 +6531,9 @@ async function startRun(prompt, overrides = {}) {
     const continueSession = Object.prototype.hasOwnProperty.call(overrides, "continueSession")
       ? Boolean(overrides.continueSession)
       : Boolean(resumeSessionId);
+    const requestOverrides = { ...overrides };
+    delete requestOverrides.authorizationContinuation;
+    delete requestOverrides.authorizationAttempts;
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6101,13 +6547,14 @@ async function startRun(prompt, overrides = {}) {
         permissionProfile: overrides.permissionProfile || activeMode,
         toolProfile: overrides.toolProfile || permissionConfig.toolProfile,
         browserAccess,
+        takeoverAccepted: requestedPermissionProfile === "takeover" && takeoverModeAccepted,
         riskAccepted,
         continueSession,
         resumeSessionId,
         attachments: outgoingAttachments,
-        ...overrides,
+        ...requestOverrides,
       }),
-      signal: runController.signal,
+      signal: currentRunController.signal,
     });
 
     if (!response.ok) {
@@ -6123,7 +6570,8 @@ async function startRun(prompt, overrides = {}) {
     clearAttachments();
     promptInput.value = "";
     resizePromptInput();
-    const sawFinalEvent = await readSse(response);
+    resetRunIdleTimeout();
+    const sawFinalEvent = await readSse(response, resetRunIdleTimeout);
     if (!sawFinalEvent) {
       const incompleteMessage =
         "ClaudeCode stream ended without a final response. Please check model configuration, relay connectivity, or retry.";
@@ -6135,7 +6583,7 @@ async function startRun(prompt, overrides = {}) {
     }
   } catch (error) {
     if (error.name === "AbortError" && runTimedOut) {
-      const timeoutMessage = "ClaudeCode request timed out before a final response. Please check model configuration, relay connectivity, or retry.";
+      const timeoutMessage = "Claude Code 连续 300 秒未收到任何执行进度或回复，已结束本次任务。请检查模型连接后重试。";
       setRunState("error", "Request timed out");
       addMessage("error", "Request timed out", timeoutMessage);
       appendActiveRunConversationMessage("error", "Request timed out", timeoutMessage);
@@ -6151,7 +6599,7 @@ async function startRun(prompt, overrides = {}) {
       updateActiveRunConversation({ status: "已停止" });
     }
   } finally {
-    clearTimeout(runTimeoutTimer);
+    clearTimeout(runIdleTimeoutTimer);
     flushAssistantTextBuffer();
     if (runController && voiceReplyPending && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
@@ -6164,6 +6612,11 @@ async function startRun(prompt, overrides = {}) {
     activeAssistantMessage = null;
     setRunning(false);
     promptInput.focus();
+    const continuation = queuedAuthorizationContinuation;
+    queuedAuthorizationContinuation = null;
+    if (continuation) {
+      queueMicrotask(() => startRun(continuation.prompt, continuation.overrides));
+    }
   }
 }
 
@@ -6639,23 +7092,17 @@ quickCommands.addEventListener("click", (event) => {
     addMessage("error", "快捷指令", error.message || "快捷指令发送失败");
   });
 });
-pluginPromptBtn.addEventListener("click", () => {
-  installPluginFromPanel().catch((error) => {
-    setPluginInstallStatus(error.message || "插件安装失败", false);
-  });
-});
-skillPromptBtn.addEventListener("click", () => {
-  if (skillInstallName && skillInput?.value.trim()) {
-    skillInstallName.value = skillInput.value.trim();
-  }
-  openInstalledExtensionsView();
-});
 installedExtensionsBtn?.addEventListener("click", openInstalledExtensionsView);
+extensionInstallerBtn?.addEventListener("click", openInstalledExtensionsView);
 extensionsPageCloseBtn?.addEventListener("click", closeInstalledExtensionsPage);
-pagePluginInstallBtn?.addEventListener("click", () => {
-  installPluginFromExtensionsPage().catch((error) => {
-    setPagePluginInstallStatus(error.message || "插件安装失败", false);
-  });
+extensionKindButtons.forEach((button) => {
+  button.addEventListener("click", () => setExtensionKind(button.dataset.extensionKind));
+});
+extensionSearchBtn?.addEventListener("click", searchExtensions);
+extensionSearchInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  searchExtensions();
 });
 skillInstallTemplateBtn?.addEventListener("click", () => {
   if (skillInstallContent) skillInstallContent.value = skillInstallTemplate(skillInstallName?.value || "");
@@ -6769,7 +7216,7 @@ promptInput.addEventListener("input", () => {
   renderSlashCommandMenu();
 });
 
-transcript.addEventListener("click", (event) => {
+toolAuthorizationSheet?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-tool-auth]");
   if (!button) return;
   event.preventDefault();
@@ -6782,6 +7229,11 @@ document.addEventListener("keydown", (event) => {
   const modifier = event.ctrlKey || event.metaKey;
 
   if (event.key === "Escape") {
+    if (toolAuthorizationSheet && !toolAuthorizationSheet.hidden) {
+      event.preventDefault();
+      submitToolAuthorization("deny");
+      return;
+    }
     openConversationMenuId = null;
     closeSlashCommandMenu();
     closeModelGuideMenus();
@@ -6883,7 +7335,9 @@ syncSuperclawConsoleLinks();
 setMode(activeMode);
 setWorkspaceTab("project");
 setRunSection("install");
+setExtensionKind("plugin");
 applyRightPanelState();
+collapseRightPanelAtCompactBreakpoint(compactRightPanelMedia);
 scheduleNextDefaultTime();
 appendAdvancedAccessCommand();
 removeRuntimeSummaryMessages();

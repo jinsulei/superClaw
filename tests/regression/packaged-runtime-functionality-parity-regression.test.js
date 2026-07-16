@@ -21,6 +21,8 @@ const openclawUtilsSource = readFileSync('src-tauri/src/utils.rs', 'utf8')
 const openclawDeviceSource = readFileSync('src-tauri/src/commands/device.rs', 'utf8')
 const claudeCommandsSource = readFileSync('src-tauri/src/commands/claude_code.rs', 'utf8')
 const claudePanelSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/app.js', 'utf8')
+const claudePanelStylesSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/styles.css', 'utf8')
+const claudePanelHtmlSource = readFileSync('src-tauri/resources/runtime/claude-panel/public/index.html', 'utf8')
 const claudePanelServerSource = readFileSync('src-tauri/resources/runtime/claude-panel/server.js', 'utf8')
 const buildDesktopSource = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const devApiSource = readFileSync('scripts/dev-api.js', 'utf8')
@@ -907,33 +909,62 @@ test('OpenClaw packaged gateway start refuses foreign global gateway ownership',
   )
 })
 
-test('ClaudeCode packaged panel resolves native CLI path or explicitly allows relay fallback', () => {
+test('ClaudeCode packaged panel resolves and requires the bundled native CLI', () => {
   assert.match(claudeCommandsSource, /fn\s+effective_claude_cli_path\(resources:\s*&Path\)\s*->\s*PathBuf/)
   assert.match(claudeCommandsSource, /claude\.cmd/)
   assert.match(claudeCommandsSource, /windows_npm_global_prefix/)
   assert.match(claudeCommandsSource, /CLAUDE_CLI_PATH",\s*effective_claude/)
-  assert.match(claudeCommandsSource, /CLAUDE_PANEL_ALLOW_RELAY_FALLBACK",\s*"1"/)
-  assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+  assert.match(claudeCommandsSource, /CLAUDE_PANEL_ALLOW_RELAY_FALLBACK",\s*"0"/)
+  assert.match(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
 })
 
-test('ClaudeCode packaged chat uses relay fallback instead of indefinite native CLI pending', () => {
-  assert.match(claudeCommandsSource, /CLAUDE_PANEL_FORCE_RELAY",\s*"1"/)
+test('ClaudeCode packaged chat executes through native Claude instead of silently using relay', () => {
+  assert.match(claudeCommandsSource, /CLAUDE_PANEL_FORCE_RELAY",\s*"0"/)
   assert.match(claudeCommandsSource, /CLEAN_PANEL_RELAY_CONFIG_ENABLED",\s*"1"/)
   assert.match(claudeCommandsSource, /SUPERCLAW_PANEL_CONFIG_PATH/)
-  assert.doesNotMatch(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+  assert.match(claudeCommandsSource, /CLAUDE_PANEL_NATIVE_REQUIRED",\s*"1"/)
+  assert.match(claudePanelServerSource, /spawnClaude\(runMode\.nativeClaude\.path/)
+  assert.match(claudePanelServerSource, /writeClaudeProcessEvent/)
+  assert.match(claudePanelServerSource, /function anthropicToolsToOpenAi/)
+  assert.match(claudePanelServerSource, /function anthropicMessageToOpenAi/)
+  assert.match(claudePanelServerSource, /role:\s*"tool"[\s\S]*?tool_call_id/)
+  assert.match(claudePanelServerSource, /function openAiToolCalls/)
+  assert.match(claudePanelServerSource, /payload\.tools = tools/)
+  assert.match(claudePanelServerSource, /type:\s*"input_json_delta"/)
+  assert.match(claudePanelSource, /event === "process"/)
+  assert.match(claudePanelSource, /executionProcess/)
+  assert.match(claudePanelServerSource, /function ensurePortablePlaywrightMcp/)
+  assert.match(claudePanelServerSource, /path\.join\(CLAUDE_RUNTIME_CONFIG_DIR, "\.claude\.json"\)/)
+  assert.match(claudePanelServerSource, /playwright-core[\s\S]*?lib[\s\S]*?entry[\s\S]*?mcp\.js/)
+  assert.match(claudePanelServerSource, /payload\.permissionProfile === "takeover"[\s\S]*?payload\.takeoverAccepted !== true/)
+  assert.match(claudePanelSource, /takeoverAccepted:\s*requestedPermissionProfile === "takeover" && takeoverModeAccepted/)
+  assert.match(buildDesktopSource, /claude-panel\\browser-output/)
+  assert.match(buildDesktopSource, /claude-panel\\browser-profile/)
+})
+
+test('ClaudeCode defaults to an authorized browser automation profile in dev and packaged UI', () => {
+  assert.match(claudePanelSource, /let activeMode = "browser";/)
+  assert.match(claudePanelSource, /let browserModeAccepted = true;/)
+  assert.match(claudePanelServerSource, /defaultPermissionProfile:\s*"browser"/)
+  assert.match(claudePanelSource, /permissionProfile:\s*overrides\.permissionProfile \|\| activeMode/)
+  assert.match(claudePanelSource, /browserModeRequested && browserModeConfirmed[\s\S]*?"once"/)
 })
 
 test('ClaudeCode packaged chat cannot stay pending without a timeout final state', () => {
-  assert.match(claudePanelSource, /CLAUDE_RUN_TIMEOUT_MS/)
+  assert.match(claudePanelSource, /CLAUDE_RUN_IDLE_TIMEOUT_MS = 300000/)
+  assert.match(claudePanelSource, /function readSse\(response, onActivity = \(\) => \{\}\)/)
+  assert.match(claudePanelSource, /if \(value\?\.length\) onActivity\(\)/)
+  assert.match(claudePanelSource, /const resetRunIdleTimeout = \(\) =>/)
+  assert.match(claudePanelSource, /if \(runController !== currentRunController\) return/)
   assert.match(claudePanelSource, /runTimedOut\s*=\s*true/)
-  assert.match(claudePanelSource, /runController\.abort\(\)/)
-  assert.match(claudePanelSource, /ClaudeCode request timed out before a final response/)
+  assert.match(claudePanelSource, /currentRunController\.abort\(\)/)
+  assert.match(claudePanelSource, /连续 300 秒未收到任何执行进度或回复/)
 
   assert.match(claudePanelSource, /if \(error\.name === "AbortError" && runTimedOut\)/)
   assert.match(claudePanelSource, /setRunState\("error",\s*"Request timed out"\)/)
   assert.match(claudePanelSource, /appendActiveRunConversationMessage\("error",\s*"Request timed out"/)
-  assert.match(claudePanelSource, /clearTimeout\(runTimeoutTimer\)/)
-  assert.match(claudePanelSource, /const sawFinalEvent = await readSse\(response\)/)
+  assert.match(claudePanelSource, /clearTimeout\(runIdleTimeoutTimer\)/)
+  assert.match(claudePanelSource, /const sawFinalEvent = await readSse\(response, resetRunIdleTimeout\)/)
   assert.match(claudePanelSource, /ClaudeCode stream ended without a final response/)
   assert.match(claudePanelSource, /if \(!sawFinalEvent\)[\s\S]*?setRunState\("error",\s*"运行异常"\)/)
   assert.match(claudePanelSource, /function handlePacket\(packet\)[\s\S]*?return true;[\s\S]*?event === "done"[\s\S]*?return true;/)
@@ -955,12 +986,12 @@ test('ClaudeCode packaged missing run configuration fails before thinking state'
   assert.match(claudePanelSource, /main model is not configured/)
   assert.match(claudePanelSource, /project path is not configured/)
 
-  const startRunBlock = claudePanelSource.match(/async function startRun\(prompt, overrides = \{\}\)[\s\S]*?runController = new AbortController\(\)/)?.[0] || ''
+  const startRunBlock = claudePanelSource.match(/async function startRun\(prompt, overrides = \{\}\)[\s\S]*?const currentRunController = new AbortController\(\)/)?.[0] || ''
   assert.match(startRunBlock, /buildClaudeRunBlockingConfigMessageStable\(\)/)
   assert.match(startRunBlock, /setRunState\("error",\s*"Configuration incomplete"\)/)
   assert.match(startRunBlock, /addMessage\("error",\s*"Configuration incomplete"/)
   assert.match(startRunBlock, /updateCurrentConversation\(\{\s*status:\s*"\\u8fd0\\u884c\\u5f02\\u5e38"/)
-  assert.match(startRunBlock, /return;[\s\S]*?runController = new AbortController\(\)/)
+  assert.match(startRunBlock, /return;[\s\S]*?const currentRunController = new AbortController\(\)/)
 })
 
 test('ClaudeCode packaged relay model hydrates the active main model before run blocking', () => {
@@ -1019,12 +1050,204 @@ test('ClaudeCode packaged panel renders markdown and code without unsafe HTML', 
   const rendererBlock = claudePanelSource.match(/function renderClaudeMarkdownBlocks[\s\S]*?function renderClaudeAgentMessageContent/)?.[0] || ''
   const collapseBlock = claudePanelSource.match(/function shouldCollapseCompactMessage[\s\S]*?function createCompactPanelPreview/)?.[0] || ''
   const spacingBlock = claudePanelSource.match(/function compactPanelMarkdownSpacing[\s\S]*?function compactClaudePanelMessage/)?.[0] || ''
-  assert.match(claudePanelSource, /code\.textContent\s*=\s*String\(codeText\s*\|\|\s*""\)/)
+  assert.match(claudePanelSource, /const source = String\(codeText \|\| ""\)/)
+  assert.match(claudePanelSource, /code\.textContent\s*=\s*source/)
   assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*finalText/)
   assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*value/)
   assert.doesNotMatch(collapseBlock, /codeBlockCount\s*>?=/)
   assert.doesNotMatch(spacingBlock, /compactPanelBulletSections\(normalized\)/)
   assert.doesNotMatch(spacingBlock, /\[代码块已折叠\]/)
+})
+
+test('ClaudeCode packaged panel renders markdown tables as safe responsive tables', () => {
+  assert.match(claudePanelSource, /function\s+splitClaudeMarkdownTableRow\(/)
+  assert.match(claudePanelSource, /function\s+isClaudeMarkdownTableDivider\(/)
+  assert.match(claudePanelSource, /function\s+appendClaudeMarkdownTable\(/)
+  assert.match(claudePanelSource, /createElement\("table"\)/)
+  assert.match(claudePanelSource, /createElement\("thead"\)/)
+  assert.match(claudePanelSource, /createElement\("tbody"\)/)
+  assert.match(claudePanelSource, /appendMarkdownFragment\(cell,\s*renderClaudeMarkdownInline/)
+  assert.match(claudePanelStylesSource, /\.claude-markdown-table-wrap\s*\{[\s\S]*?overflow-x:\s*auto/)
+  assert.match(claudePanelStylesSource, /\.claude-markdown-table\s*\{/)
+
+  const rendererBlock = claudePanelSource.match(/function renderClaudeMarkdownBlocks[\s\S]*?function renderClaudeAgentMessageContent/)?.[0] || ''
+  assert.match(rendererBlock, /if \(codeFence\)[\s\S]*?continue;/)
+  assert.match(rendererBlock, /isClaudeMarkdownTableDivider\(dividerCells\)/)
+  assert.doesNotMatch(rendererBlock, /innerHTML\s*=\s*(?:rawLine|header|rowCells|finalText|value)/)
+
+  const parserStart = claudePanelSource.indexOf('function splitClaudeMarkdownTableRow')
+  const parserEnd = claudePanelSource.indexOf('function appendClaudeMarkdownTable', parserStart)
+  const parserSource = `${claudePanelSource.slice(parserStart, parserEnd)}\nmodule.exports = { splitClaudeMarkdownTableRow, isClaudeMarkdownTableDivider };`
+  const sandbox = { module: { exports: {} } }
+  vm.createContext(sandbox)
+  vm.runInContext(parserSource, sandbox)
+  const { splitClaudeMarkdownTableRow, isClaudeMarkdownTableDivider } = sandbox.module.exports
+  assert.equal(JSON.stringify(splitClaudeMarkdownTableRow('| 日期 | 天气 | 气温 | 风力风向 |')), JSON.stringify(['日期', '天气', '气温', '风力风向']))
+  assert.equal(isClaudeMarkdownTableDivider(splitClaudeMarkdownTableRow('|---|---|---|---|')), true)
+  assert.equal(isClaudeMarkdownTableDivider(splitClaudeMarkdownTableRow('| 今天 | 阴转中雨 | 26-34C | 东北风 |')), false)
+  assert.match(rendererBlock, /while \(dividerIndex < lines\.length && !String\(lines\[dividerIndex\]/)
+  assert.match(rendererBlock, /while \(rowIndex < lines\.length && !String\(lines\[rowIndex\]/)
+})
+
+test('ClaudeCode code blocks place code below the header and copy only their own source', () => {
+  const codeBlock = claudePanelSource.match(/function appendClaudeCodeBlock[\s\S]*?function splitClaudeMarkdownTableRow/)?.[0] || ''
+  assert.match(codeBlock, /wrapper\.append\(header, pre\)/)
+  assert.match(codeBlock, /header\.append\(label, copyButton\)/)
+  assert.match(codeBlock, /copyText\(source\)/)
+  assert.match(codeBlock, /aria-label", "复制代码"/)
+  assert.match(claudePanelStylesSource, /\.claude-code-header\s*\{[\s\S]*?justify-content:\s*space-between/)
+  assert.match(claudePanelStylesSource, /\.claude-code-content[\s\S]*?margin:\s*0/)
+})
+
+test('ClaudeCode assistant bubbles use a responsive percentage max width', () => {
+  assert.match(claudePanelStylesSource, /message-row\.assistant > \.message[\s\S]*?max-width:\s*70%\s*!important/)
+  assert.match(claudePanelStylesSource, /@media \(max-width:\s*760px\)[\s\S]*?message-row\.assistant > \.message[\s\S]*?max-width:\s*90%\s*!important/)
+})
+
+test('packaged ClaudeCode uses the same searchable extension installer and native skill path as dev', () => {
+  const extensionInstallerBlock = claudePanelServerSource.slice(
+    claudePanelServerSource.indexOf('function runPortableClaudeCommand'),
+    claudePanelServerSource.indexOf('function resolvePortableClaudeCommand')
+  )
+  assert.match(claudePanelHtmlSource, /id="extensionSearchInput"/)
+  assert.match(claudePanelHtmlSource, /id="extensionSearchResults"/)
+  assert.match(claudePanelSource, /fetch\("\/api\/extensions\/search"/)
+  assert.match(claudePanelSource, /fetch\("\/api\/extensions\/install"/)
+  assert.match(claudePanelServerSource, /plugin", "list", "--available", "--json"/)
+  assert.match(claudePanelServerSource, /安装命令已结束，但 Claude Code 已安装列表中没有找到该能力/)
+  assert.match(claudePanelServerSource, /path\.join\(CLAUDE_RUNTIME_CONFIG_DIR, "skills"\)/)
+  assert.match(claudeCommandsSource, /home\.join\("claude-config"\)\.join\("skills"\)/)
+  assert.doesNotMatch(extensionInstallerBlock, /C:\\\\Users\\\\ZXKJ|C:\\\\tmp/)
+})
+
+test('ClaudeCode packaged panel cache-busts the matching markdown script and styles', () => {
+  assert.match(claudePanelHtmlSource, /styles\.css\?v=20260716-claude-history1/)
+  assert.match(claudePanelHtmlSource, /app\.js\?v=20260716-claude-history1/)
+})
+
+test('ClaudeCode project refresh preserves portable conversation messages and native session ids', () => {
+  const renderProjectOptionsBlock = claudePanelSource.match(
+    /function renderProjectOptions\(projects\) \{[\s\S]*?\n\}/
+  )?.[0] || ''
+  assert.match(renderProjectOptionsBlock, /syncProjectConversationCards\(projects \|\| \[\]\)/)
+  assert.doesNotMatch(renderProjectOptionsBlock, /conversations\s*=\s*conversations\.filter/)
+  assert.doesNotMatch(renderProjectOptionsBlock, /saveConversations\(/)
+  assert.match(claudePanelSource, /Conversation history must remain durable/)
+})
+
+test('ClaudeCode left rail keeps scrolling while hiding its scrollbar with symmetric insets', () => {
+  assert.match(claudePanelStylesSource, /\.context-panel\s*\{[\s\S]*?padding:\s*20px 16px 24px/)
+  assert.match(claudePanelStylesSource, /\.context-panel\s*\{[\s\S]*?scrollbar-width:\s*none/)
+  assert.match(claudePanelStylesSource, /\.context-panel::\-webkit-scrollbar,[\s\S]*?display:\s*none/)
+  assert.match(claudePanelStylesSource, /\.conversation-list\s*\{[\s\S]*?padding-inline:\s*0/)
+})
+
+test('ClaudeCode fullscreen intro can be persistently disabled in dev and packaged UI', () => {
+  assert.match(claudePanelHtmlSource, /id="introDontShow"[^>]*type="checkbox"/)
+  assert.match(claudePanelHtmlSource, /<span>不再显示<\/span>/)
+  assert.match(claudePanelSource, /INTRO_DISABLED_KEY = "superclaw_claude_intro_disabled"/)
+  assert.match(claudePanelSource, /localStorage\.setItem\(INTRO_DISABLED_KEY, "1"\)/)
+  assert.match(claudePanelSource, /if \(disabled\) \{[\s\S]*?hideIntroOverlay\(\);[\s\S]*?return Promise\.resolve\(\)/)
+})
+
+test('ClaudeCode permission requests use one accessible bottom sheet instead of inline chat cards', () => {
+  assert.match(claudePanelHtmlSource, /id="toolAuthorizationSheet"[^>]*role="dialog"[^>]*aria-modal="true"/)
+  assert.match(claudePanelHtmlSource, /id="toolAuthorizationTitle"/)
+  assert.match(claudePanelHtmlSource, /data-tool-auth="once"/)
+  assert.match(claudePanelHtmlSource, /data-tool-auth="always"/)
+  assert.match(claudePanelHtmlSource, /data-tool-auth="deny"/)
+  assert.match(claudePanelSource, /function authorizationPresentation\(type\)/)
+  assert.match(claudePanelSource, /browser:[\s\S]*?file:[\s\S]*?command:[\s\S]*?install:[\s\S]*?sensitive:/)
+  assert.match(claudePanelSource, /function openToolAuthorizationSheet\(type\)/)
+  assert.match(claudePanelSource, /pendingToolAuthorization = \{ sheet: toolAuthorizationSheet, text, type, task \}/)
+  assert.match(claudePanelSource, /toolAuthorizationSheet\?\.addEventListener\("click"/)
+  assert.doesNotMatch(claudePanelSource, /createElement\("div"\)[\s\S]{0,120}tool-authorization-card/)
+  assert.doesNotMatch(claudePanelStylesSource, /\.tool-authorization-card\s*\{/)
+  assert.match(claudePanelStylesSource, /\.tool-authorization-sheet\s*\{[\s\S]*?position:\s*fixed[\s\S]*?align-items:\s*end/)
+  assert.match(claudePanelStylesSource, /\.tool-authorization-panel\s*\{[\s\S]*?width:\s*min\(680px/)
+})
+
+test('ClaudeCode authorization resumes the original task without a user permission message', () => {
+  assert.match(claudePanelSource, /function scheduleAuthorizationContinuation\(task, authorizationType, choice\)/)
+  assert.match(claudePanelSource, /authorizationContinuation:\s*true/)
+  assert.match(claudePanelSource, /authorizationGrant:\s*authorizationType/)
+  assert.match(claudePanelSource, /if \(!authorizationContinuation\) \{[\s\S]*?appendActiveRunConversationMessage\("user"/)
+  assert.doesNotMatch(claudePanelSource, /function browserAuthorizationPrompt\(/)
+  assert.doesNotMatch(claudePanelSource, /function genericAuthorizationPrompt\(/)
+  assert.doesNotMatch(claudePanelSource, /startRun\(nextPrompt/)
+  assert.match(claudePanelSource, /if \(attemptCount >= 1\)[\s\S]*?authorizationLoopStopped/)
+  assert.match(claudePanelSource, /alwaysButton\.hidden = type !== "browser"/)
+  assert.match(claudePanelSource, /persistentChoice = choice === "always" && authorizationType === "browser"/)
+  assert.match(claudePanelServerSource, /function authorizationGrantSystemPrompt\(type, scope = "once"\)/)
+  assert.match(claudePanelServerSource, /用户已通过 SuperClaw 外部授权面板完成授权；这不是一条新的聊天消息/)
+  assert.match(claudePanelServerSource, /const preapprovedTools = new Set/)
+  assert.match(claudePanelServerSource, /args\.push\("--allowedTools", Array\.from\(preapprovedTools\)\.join\(","\)\)/)
+})
+
+test('ClaudeCode run status follows the active assistant reply and disappears after completion', () => {
+  assert.doesNotMatch(claudePanelHtmlSource, /id="runStateChip"/)
+  assert.match(claudePanelSource, /let runStateChip = null/)
+  assert.match(claudePanelSource, /function ensureConversationRunState\(\)/)
+  assert.match(claudePanelSource, /document\.createElement\("span"\)/)
+  assert.match(claudePanelSource, /function mountRunStateBelowActiveAssistantMessage\(\)/)
+  assert.match(claudePanelSource, /activeAssistantMessage\?\.row/)
+  assert.match(claudePanelSource, /stateChip\.parentElement !== targetRow[\s\S]*?targetRow\.append\(stateChip\)/)
+  assert.match(claudePanelSource, /function clearConversationRunState\(\)/)
+  assert.match(claudePanelSource, /runStateChip\?\.remove\(\);[\s\S]*?runStateChip = null/)
+  assert.match(claudePanelSource, /if \(state === "thinking"\)[\s\S]*?mountRunStateBelowActiveAssistantMessage\(\);[\s\S]*?else \{[\s\S]*?clearConversationRunState\(\)/)
+  assert.match(claudePanelSource, /setRunState\("thinking", "执行中\.\.\."\)/)
+  assert.match(claudePanelSource, /setRunState\("thinking", "回复中\.\.\."\)/)
+  assert.match(claudePanelStylesSource, /\.message-row\.assistant\.has-turn-run-status[\s\S]*?flex-direction:\s*column\s*!important/)
+  assert.match(claudePanelStylesSource, /\.turn-run-status-only[\s\S]*?justify-content:\s*flex-start\s*!important/)
+  assert.match(claudePanelStylesSource, /\.turn-run-state\s*\{[\s\S]*?width:\s*max-content/)
+  assert.match(claudePanelStylesSource, /\.turn-run-state\.thinking\s*\{[\s\S]*?border:\s*0\s*!important/)
+  assert.match(claudePanelStylesSource, /@keyframes claude-turn-status-light/)
+  assert.match(claudePanelStylesSource, /\.message-row\.user \.turn-run-state[\s\S]*?display:\s*none\s*!important/)
+})
+
+test('ClaudeCode native CLI streams partial text deltas through packaged SSE', () => {
+  assert.match(claudePanelServerSource, /"--include-partial-messages"/)
+  assert.match(claudePanelServerSource, /parsed\.type === "stream_event"/)
+  assert.match(claudePanelServerSource, /streamEvent\.type === "content_block_delta"/)
+  assert.match(claudePanelServerSource, /delta\.type === "text_delta"/)
+  assert.match(claudePanelServerSource, /writeEvent\(res, "text", \{ text: safeDelta \}\)/)
+  assert.match(claudePanelServerSource, /if \(partialTextSeenForAssistant\) \{[\s\S]*?pendingAssistantText = ""/)
+})
+
+test('ClaudeCode compact layout cannot let the right panel consume the chat grid', () => {
+  assert.match(claudePanelSource, /matchMedia\("\(max-width: 1180px\)"\)/)
+  assert.match(claudePanelSource, /collapseRightPanelAtCompactBreakpoint\(compactRightPanelMedia\)/)
+  assert.match(claudePanelStylesSource, /Final compact layout:[\s\S]*?@media \(max-width: 1180px\)/)
+  assert.match(claudePanelStylesSource, /right-panel-collapsed \.run-panel\s*\{\s*display:\s*none\s*!important/)
+  assert.match(claudePanelStylesSource, /body:not\(\.right-panel-collapsed\) \.run-panel[\s\S]*?position:\s*fixed\s*!important/)
+  assert.match(claudePanelStylesSource, /@media \(max-width: 980px\)[\s\S]*?\.context-panel\s*\{\s*display:\s*none\s*!important/)
+  assert.match(claudePanelStylesSource, /@media \(max-width: 980px\)[\s\S]*?\.workspace[\s\S]*?grid-column:\s*1\s*!important/)
+  assert.match(claudePanelStylesSource, /@media \(max-width: 980px\)[\s\S]*?body\.conversation-mode\.right-panel-collapsed \.app-shell[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)\s*!important/)
+  assert.match(claudePanelStylesSource, /body\.conversation-mode\.right-panel-collapsed \.app-shell\s*\{\s*grid-template-columns:\s*300px minmax\(0, 1fr\)\s*!important/)
+  assert.match(claudePanelStylesSource, /@media \(max-width: 1180px\)[\s\S]*?body\.conversation-mode\.right-panel-collapsed \.app-shell[\s\S]*?grid-template-columns:\s*300px minmax\(0, 1fr\)\s*!important/)
+})
+
+test('ClaudeCode every mode grants read-only web research while Playwright stays mode-gated', () => {
+  assert.match(claudePanelServerSource, /const WEB_RESEARCH_TOOLS = \["WebFetch", "WebSearch"\]/)
+  assert.match(claudePanelServerSource, /const allowWebResearch = true/)
+  assert.match(claudePanelServerSource, /\.\.\.WEB_RESEARCH_TOOLS,[\s\S]*?allowBrowserAutomation \? PLAYWRIGHT_AUTOMATION_TOOLS : \[\]/)
+  assert.match(claudePanelServerSource, /if \(!options\.allowBrowserAutomation\) \{[\s\S]*?PLAYWRIGHT_AUTOMATION_TOOLS/)
+  assert.match(claudePanelServerSource, /if \(!options\.allowWebResearch\) \{[\s\S]*?WEB_RESEARCH_TOOLS/)
+  assert.match(claudePanelServerSource, /WebSearch and WebFetch are already authorized for read-only public web research in every conversation mode/)
+  assert.match(claudePanelServerSource, /read-only WebSearch\/WebFetch need no extra consent/)
+  assert.match(claudePanelServerSource, /authorizationGrant !== "web"/)
+  assert.match(claudePanelServerSource, /主动使用 WebSearch 搜索公开网络/)
+  assert.match(claudePanelServerSource, /WebFetch\/WebSearch 仅用于只读访问/)
+  assert.match(claudePanelServerSource, /CURRENT_RUNTIME_CAPABILITY block is authoritative/)
+  assert.match(claudePanelSource, /安全对话模式支持公开网络查询/)
+  assert.match(claudePanelSource, /项目分析模式允许读取当前项目目录和查询公开网络/)
+  assert.match(claudePanelSource, /查询公开信息，并在浏览器授权后使用 Playwright/)
+  assert.match(claudePanelSource, /function isReadOnlyWebAuthorizationRequest\(text\)/)
+  assert.match(claudePanelSource, /if \(isReadOnlyWebAuthorizationRequest\(value\)\) return "web"/)
+  assert.match(claudePanelSource, /if \(type === "web"\) \{[\s\S]*?scheduleAuthorizationContinuation\(task, type, "once"\)/)
+  assert.match(claudePanelSource, /所有对话模式都可以直接使用 WebSearch、WebFetch/)
+  assert.match(claudePanelSource, /browserAccess:\s*window\.sessionStorage\.getItem\(browserAccessAlwaysKey\)/)
+  assert.match(claudePanelHtmlSource, /20260716-claude-history1/)
 })
 
 test('packaged runtime parity regression is release-gated and avoids forbidden edits', () => {

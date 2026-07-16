@@ -27,6 +27,7 @@ const gates = [
       ['node', '--test', 'tests/regression/openclaw-portable-device-identity-regression.test.js'],
       ['node', '--test', 'tests/regression/openclaw-portable-device-handshake-regression.test.js'],
       ['node', '--test', 'tests/regression/packaged-runtime-functionality-parity-regression.test.js'],
+      ['node', '--test', 'tests/regression/claude-extension-installer-regression.test.js'],
       ['node', '--test', 'tests/regression/agent-capability-intro-routing-regression.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-ops-regression.test.js'],
       ['node', '--test', 'tests/regression/ecommerce-stage-guard-integration.test.js'],

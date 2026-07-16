@@ -585,6 +585,8 @@ function Copy-PackagedResourcesAllowlist([string]$SourceResources, [string]$Dest
     "data\claude-code\home\claude-config\sessions",
     "data\claude-panel\logs",
     "data\claude-panel\sessions",
+    "data\claude-panel\browser-output",
+    "data\claude-panel\browser-profile",
     "data\hermes\logs",
     "data\hermes\sessions",
     "data\runtime\data\secrets",
@@ -889,6 +891,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
     "claude-config\.last-cleanup",
     "claude-config\backups",
     "claude-config\plans",
+    "claude-config\plugins",
     "claude-config\projects",
     "claude-config\sessions"
   )) {
@@ -896,7 +899,7 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
   }
 
   $ClaudeConfig = Join-Path $DataRoot "claude-code\home\claude-config"
-  foreach ($name in @(".claude.json", "settings.json", ".last-cleanup", "backups", "plans", "projects", "sessions")) {
+  foreach ($name in @(".claude.json", "settings.json", ".last-cleanup", "backups", "plans", "plugins", "projects", "sessions")) {
     Remove-IfExists (Join-Path $ClaudeConfig $name)
   }
 
@@ -924,6 +927,7 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-code\home\Documents",
     "claude-code\home\claude-config\backups",
     "claude-code\home\claude-config\plans",
+    "claude-code\home\claude-config\plugins",
     "claude-code\home\claude-config\projects",
     "claude-code\home\claude-config\sessions",
     "claude-code\projects",
@@ -950,7 +954,9 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "clawpanel\logs",
     "clawpanel\sessions",
     "clawpanel\cache",
-    "claude-panel\logs"
+    "claude-panel\logs",
+    "claude-panel\browser-output",
+    "claude-panel\browser-profile"
   )) {
     Remove-IfExists (Join-Path $DataRoot $rel)
   }
@@ -964,6 +970,8 @@ function Clear-PackagedRuntimeArtifacts([string]$DataRoot) {
     "claude-panel\project-folders.json",
     "claude-panel\projects.json",
     "claude-panel\recent-projects.json",
+    "claude-panel\browser-output",
+    "claude-panel\browser-profile",
     "claude-code\home\claude-config\.claude.json",
     "claude-code\home\claude-config\settings.json",
     "clawpanel\auth.json",
@@ -1190,6 +1198,7 @@ function Assert-NoPackagedUserState([string]$DataRoot) {
     "claude-code\home\claude-config\settings.json",
     "claude-code\home\claude-config\backups",
     "claude-code\home\claude-config\plans",
+    "claude-code\home\claude-config\plugins",
     "claude-code\home\claude-config\projects",
     "claude-code\home\claude-config\sessions",
     "claude-code\projects",
@@ -1205,6 +1214,8 @@ function Assert-NoPackagedUserState([string]$DataRoot) {
     "claude-panel\project-folders.json",
     "claude-panel\projects.json",
     "claude-panel\recent-projects.json",
+    "claude-panel\browser-output",
+    "claude-panel\browser-profile",
     "clawpanel\auth.json",
     "clawpanel\license.json",
     "clawpanel\payment.json",
