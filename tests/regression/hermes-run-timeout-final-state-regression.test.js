@@ -39,6 +39,29 @@ test('stream error abort and timeout share final-state cleanup path', () => {
   assert.doesNotMatch(storeSource, /throw e\s*\n\s*assistantMessage\.error/, 'unreachable legacy error handling must not remain after throw')
 })
 
+test('Hermes timeout and user stop cancel the native gateway run', () => {
+  assert.match(storeSource, /function stopActiveHermesServerRun/, 'chat-store must own a native run stop helper')
+  assert.match(storeSource, /\/v1\/runs\/\$\{encodeURIComponent\(runId\)\}\/stop/, 'native stop must use the Hermes run stop endpoint')
+  const timeoutBlock = storeSource.match(/function handleHermesRunTimeout[\s\S]*?\n  \}/)?.[0] || ''
+  assert.match(timeoutBlock, /stopActiveHermesServerRun\('run-timeout'\)/, 'timeout must stop the native run')
+  const stopBlock = storeSource.match(/function stopStreaming\(\)[\s\S]*?\n  \}/)?.[0] || ''
+  assert.match(stopBlock, /stopActiveHermesServerRun\('user-stop'\)/, 'user stop must stop the native run')
+})
+
+test('Hermes serializes replacement runs and quarantines stale SSE errors', () => {
+  assert.match(storeSource, /await stopActiveHermesServerRun\('superseded-by-new-request'\)/, 'replacement send must stop the previous run first')
+  assert.match(storeSource, /if \(pendingHermesStopPromise\) await pendingHermesStopPromise\.promise/, 'new native run must wait for an in-flight stop request')
+  assert.match(storeSource, /if \(state\.runningClientRequestId !== clientRequestId\)[\s\S]*?superseded-run-error/, 'stale invoke errors must not clean up the active request')
+})
+
+test('Hermes injects current-turn boundaries and avoids approval-only parsing for read-only news lookups', () => {
+  assert.match(storeSource, /const currentTurnInstructions = buildHermesCurrentTurnBoundaryInstruction/, 'native Hermes runs must receive current-turn boundaries')
+  assert.match(storeSource, /withHermesReplyStyleInstruction\(/, 'native Hermes runs must receive the common reply and renderer contract')
+  assert.match(storeSource, /News\/ranking lookup rule/, 'news/ranking queries must have a read-only execution rule')
+  assert.match(storeSource, /Do not call execute_code, Python, python3, Node\.js, PowerShell/, 'news/ranking parsing must not enter interactive script approval')
+  assert.match(storeSource, /Do not request interactive command approval for a read-only news\/ranking lookup/, 'news/ranking queries must not block on unavailable approval UI')
+})
+
 test('existing protected chat integrations remain anchored', () => {
   assert.match(chatSource, /normalizeLinkReaderResult/, 'Link Reader normalization must remain in chat.js')
   assert.match(chatSource, /metadata:\s*\{[\s\S]*?link_reader_result/, 'Link Reader metadata must remain in chat.js')

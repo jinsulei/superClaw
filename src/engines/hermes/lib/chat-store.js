@@ -656,6 +656,14 @@ function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = 
       '- If the first fetch already returned JSON or text, parse it directly in the model response. Do not request interactive command approval.',
     )
   }
+  if (/(?:\u4eca\u65e5\u5934\u6761|\u5934\u6761|\u70ed\u699c|\u70ed\u641c|\u65b0\u95fb.*(?:\u524d|\u6392\u884c)|(?:toutiao|headline|news).*(?:top|ranking))/i.test(current)) {
+    lines.push(
+      '- News/ranking lookup rule: use one read-only public fetch, with at most one fallback source only when the first source is unavailable.',
+      '- If a fetch already returned JSON, HTML, or text, extract the requested top items directly in the model response.',
+      '- Do not call execute_code, Python, python3, Node.js, PowerShell, shell scripts, or create a parsing file merely to process fetched news/ranking data.',
+      '- Do not request interactive command approval for a read-only news/ranking lookup. State the source and any freshness limitation in the final answer.',
+    )
+  }
   return lines.join('\n')
 }
 
@@ -1446,6 +1454,7 @@ function createStore() {
     if (streamAbortController) {
       try { streamAbortController.abort() } catch {}
     }
+    void stopActiveHermesServerRun('run-timeout')
     finalizeHermesRequestState({
       status: 'failed',
       reason: 'run-timeout',
@@ -2187,7 +2196,29 @@ function createStore() {
   let streamAbortController = null
   let activeResponseAssembler = null
   let hermesRunTimeoutTimer = null
+  let activeHermesRunId = ''
+  let pendingHermesStopPromise = null
   const forceRemoteRefreshIds = new Set()
+
+  function stopActiveHermesServerRun(reason = 'client-stop') {
+    const runId = String(activeHermesRunId || activeResponseAssembler?.runId || '').trim()
+    if (!runId) return Promise.resolve(false)
+    if (pendingHermesStopPromise?.runId === runId) return pendingHermesStopPromise.promise
+
+    const promise = api.hermesApiProxy(
+      'POST',
+      `/v1/runs/${encodeURIComponent(runId)}/stop`,
+      JSON.stringify({ reason }),
+    )
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => {
+        if (pendingHermesStopPromise?.runId === runId) pendingHermesStopPromise = null
+        if (activeHermesRunId === runId) activeHermesRunId = ''
+      })
+    pendingHermesStopPromise = { runId, promise }
+    return promise
+  }
 
   function executionEventText(evt = {}) {
     const value = evt.reasoning
@@ -2275,6 +2306,7 @@ function createStore() {
     const u0 = await tauriListen('hermes-run-started', (e) => {
       const payload = e?.payload || {}
       if (!acceptRequestEvent(payload)) return
+      activeHermesRunId = String(payload.run_id || payload.runId || activeResponseAssembler?.runId || '').trim()
       adoptEventSession(payload)
     })
     const u1 = await tauriListen('hermes-run-delta', (e) => {
@@ -2702,6 +2734,7 @@ function createStore() {
     state.liveTools = []
     streamAbortController = null
     activeResponseAssembler = null
+    activeHermesRunId = ''
     detachStreamListeners()
     notify()
     refreshSessionsAfterRun()
@@ -2734,6 +2767,7 @@ function createStore() {
     if (streamAbortController) {
       try { streamAbortController.abort() } catch {}
     }
+    void stopActiveHermesServerRun('user-stop')
     if (activeResponseAssembler) activeResponseAssembler.abort()
     const s = state.sessions.find(x => x.id === state.runningSessionId) || activeSession()
     if (s) {
@@ -3094,6 +3128,7 @@ function createStore() {
       return Promise.resolve({ status: 'success', reason: 'status-report' })
     }
     if (state.streaming) {
+      await stopActiveHermesServerRun('superseded-by-new-request')
       if (streamAbortController) {
         try { streamAbortController.abort() } catch {}
       }
@@ -3181,12 +3216,20 @@ function createStore() {
 
     const runPromise = Promise.resolve().then(async () => {
     try {
+      if (pendingHermesStopPromise) await pendingHermesStopPromise.promise
       const conversationHistory = Array.isArray(opts.conversationHistory)
         ? sanitizeHermesConversationHistoryForRun(opts.conversationHistory, runText || displayText)
         : null
       // Native Hermes owns context, planning, tools, skills and memory. The
       // App sends the current turn and only renders native execution events.
-      const runInstructions = opts.instructions || ''
+      const suppliedInstructions = typeof opts.instructions === 'string' ? opts.instructions.trim() : ''
+      const currentTurnInstructions = buildHermesCurrentTurnBoundaryInstruction(
+        runText || displayText,
+        conversationHistory || [],
+      )
+      const runInstructions = withHermesReplyStyleInstruction(
+        [suppliedInstructions, currentTurnInstructions].filter(Boolean).join('\n\n'),
+      )
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id, clientRequestId)
@@ -3205,6 +3248,11 @@ function createStore() {
       }
     } catch (e) {
       if (e?.name === 'AbortError') return
+      // A stopped Tauri invoke can fail after a newer turn has started. Do not
+      // let that stale SSE error overwrite or clean up the current request.
+      if (state.runningClientRequestId !== clientRequestId) {
+        return { status: 'stale', reason: 'superseded-run-error' }
+      }
       userMessage.status = 'error'
       const friendlyError = mapHermesErrorToUserMessage(e?.message || e)
       assistantMessage.error = friendlyError
