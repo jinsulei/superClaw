@@ -15,6 +15,7 @@ const APP_CONFIG_DIR = process.env.CLEAN_PANEL_DATA_DIR
   ? path.resolve(process.env.CLEAN_PANEL_DATA_DIR)
   : path.join(HOME, ".clean-claude-panel");
 const RELAY_CONFIG_PATH = path.join(APP_CONFIG_DIR, "relay-config.json");
+const LOCAL_DESKTOP_OPEN_STATE_PATH = path.join(APP_CONFIG_DIR, "local-desktop-open.json");
 const BUNDLED_RELAY_CONFIG_PATHS = [
   path.resolve(__dirname, "..", "..", "data", "claude-panel", "relay-config.json"),
   path.resolve(__dirname, "relay-config.json"),
@@ -49,23 +50,39 @@ const OFFICIAL_CLAUDE_MARKETPLACE = "claude-plugins-official";
 const OFFICIAL_CLAUDE_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official";
 const EXTENSION_SEARCH_TTL_MS = 10 * 60 * 1000;
 const EXTENSION_SEARCH_LIMIT = 40;
-const extensionSearches = new Map();
 const CLAUDE_PLUGIN_CACHE_DIR = path.join(CLAUDE_RUNTIME_CONFIG_DIR, "plugins", "cache");
+const extensionSearches = new Map();
 const SUPERCLAW_PANEL_CONFIG_PATH = process.env.SUPERCLAW_PANEL_CONFIG_PATH || "";
 const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", "relay-test.err.log"];
-const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_UPLOAD_REQUEST_BYTES = 32 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_UPLOAD_REQUEST_BYTES = 30 * 1024 * 1024;
 const RELAY_TEST_TIMEOUT_MS = 12000;
 const RELAY_RUN_TIMEOUT_MS = Number(process.env.CLAUDE_PANEL_RELAY_RUN_TIMEOUT_MS || 120000);
 const NATIVE_CLAUDE_WINDOW_TITLE = "SuperClaw Claude Code Native";
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const ALLOWED_ATTACHMENT_EXTENSIONS = new Set([
+  ".txt", ".md", ".json", ".csv", ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+  ".png", ".jpg", ".jpeg", ".webp", ".gif",
+]);
+const MAX_XLSX_PREVIEW_ROWS = 200;
+const MAX_XLSX_PREVIEW_COLUMNS = 40;
+const MAX_XLSX_PREVIEW_CHARS = 240000;
+const SOURCE_GUARD_ENABLED = process.env.SUPERCLAW_SOURCE_GUARD_ENABLED !== "0";
 const TOOL_PROFILES = {
   none: [],
   read: ["Glob", "Grep", "Read", "LS"],
   edit: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit"],
   command: ["Glob", "Grep", "Read", "LS", "Edit", "Write", "MultiEdit", "Bash", "BashOutput", "KillBash"],
 };
-const WEB_RESEARCH_TOOLS = ["WebFetch", "WebSearch"];
+const SUPERCLAW_WEB_RESEARCH_TOOLS = [
+  "mcp__superclaw_web_research__web_search",
+  "mcp__superclaw_web_research__web_fetch",
+];
+const SUPERCLAW_LOCAL_DESKTOP_TOOLS = [
+  "mcp__superclaw_local_desktop__open_local_file",
+];
+let portableToolRuntimeCache = null;
+const WEB_RESEARCH_TOOLS = SUPERCLAW_WEB_RESEARCH_TOOLS;
 const PLAYWRIGHT_AUTOMATION_TOOLS = [
   "mcp__playwright__browser_navigate",
   "mcp__playwright__browser_navigate_back",
@@ -139,6 +156,12 @@ const WEB_RESEARCH_SYSTEM_PROMPT = [
   "可以直接使用 WebSearch 搜索公开信息，使用 WebFetch 读取公开网页；不要为这两项只读工具重复请求用户授权。",
   "只读联网不包含登录、支付、上传文件、提交隐私信息、修改远端数据或执行任意 HTTP 写请求。",
   "需要页面点击、输入、动态交互或使用登录态时，只有浏览器自动化/接管模式可以使用 Playwright，并继续遵守敏感操作确认规则。",
+].join("\n");
+const SUPERCLAW_WEB_RESEARCH_SYSTEM_PROMPT = [
+  "Use SuperClaw's local read-only web research MCP for public internet research.",
+  "The available tools are mcp__superclaw_web_research__web_search and mcp__superclaw_web_research__web_fetch.",
+  "Do not use Claude cloud WebSearch or WebFetch for this product: the configured third-party model provider does not supply those Claude cloud services.",
+  "For public news, weather, rankings, and webpage reading, call the SuperClaw local MCP tools directly and summarize their returned sources. They are read-only and need no extra consent.",
 ].join("\n");
 const TAKEOVER_CAPABILITY_SYSTEM_PROMPT = [
   "当前界面处于“电脑接管模式”，但这不是系统级远程桌面控制。",
@@ -329,6 +352,7 @@ function ensureClaudeRuntimeSettings(runtimeEnv = {}) {
     },
   };
   fs.writeFileSync(settingsPath, JSON.stringify(next, null, 2), "utf8");
+  ensurePortableWebResearchMcp();
   ensurePortablePlaywrightMcp();
   return settingsPath;
 }
@@ -389,7 +413,150 @@ function ensurePortablePlaywrightMcp() {
   return true;
 }
 
+function removeAccidentalHomeMcpEntries(names) {
+  const homeConfig = readJson(CLAUDE_PROJECTS_JSON_PATH);
+  if (!homeConfig?.mcpServers || typeof homeConfig.mcpServers !== "object") return;
+  let changed = false;
+  for (const name of names) {
+    if (homeConfig.mcpServers[name]?.superclawManaged === true) {
+      delete homeConfig.mcpServers[name];
+      changed = true;
+    }
+  }
+  if (changed) fs.writeFileSync(CLAUDE_PROJECTS_JSON_PATH, JSON.stringify(homeConfig, null, 2), "utf8");
+}
+
+function ensurePortableWebResearchMcp() {
+  const runtimeRoot = path.resolve(__dirname, "..");
+  const nodeName = process.platform === "win32" ? "node.exe" : "node";
+  const nodePath = path.join(runtimeRoot, "openclaw", nodeName);
+  const mcpEntry = path.join(__dirname, "web-research-mcp.js");
+  if (!fs.existsSync(nodePath) || !fs.existsSync(mcpEntry)) return false;
+
+  const mcpConfigPath = path.join(CLAUDE_RUNTIME_CONFIG_DIR, ".claude.json");
+  const projectsConfig = readJson(mcpConfigPath) || {};
+  const existing = projectsConfig.mcpServers?.superclaw_web_research;
+  if (existing && existing.superclawManaged !== true) return true;
+  const next = {
+    ...projectsConfig,
+    mcpServers: {
+      ...(projectsConfig.mcpServers && typeof projectsConfig.mcpServers === "object"
+        ? projectsConfig.mcpServers
+        : {}),
+      superclaw_web_research: {
+        superclawManaged: true,
+        type: "stdio",
+        command: nodePath,
+        args: [mcpEntry],
+      },
+    },
+  };
+  fs.mkdirSync(path.dirname(mcpConfigPath), { recursive: true });
+  fs.writeFileSync(mcpConfigPath, JSON.stringify(next, null, 2), "utf8");
+  return true;
+}
+
+function ensurePortableLocalDesktopMcp(options = {}) {
+  const runtimeRoot = path.resolve(__dirname, "..");
+  const nodeName = process.platform === "win32" ? "node.exe" : "node";
+  const nodePath = path.join(runtimeRoot, "openclaw", nodeName);
+  const mcpEntry = path.join(__dirname, "local-desktop-mcp.js");
+  if (!fs.existsSync(nodePath) || !fs.existsSync(mcpEntry)) return false;
+
+  const allowedRoots = Array.from(new Set([
+    UPLOAD_DIR,
+    ...(Array.isArray(options.allowedRoots) ? options.allowedRoots : []),
+  ].map((item) => path.resolve(String(item || ""))).filter(Boolean)));
+  const mcpConfigPath = path.join(CLAUDE_RUNTIME_CONFIG_DIR, ".claude.json");
+  const projectsConfig = readJson(mcpConfigPath) || {};
+  const existing = projectsConfig.mcpServers?.superclaw_local_desktop;
+  if (existing && existing.superclawManaged !== true) return true;
+  const next = {
+    ...projectsConfig,
+    mcpServers: {
+      ...(projectsConfig.mcpServers && typeof projectsConfig.mcpServers === "object"
+        ? projectsConfig.mcpServers
+        : {}),
+      superclaw_local_desktop: {
+        superclawManaged: true,
+        type: "stdio",
+        command: nodePath,
+        args: [mcpEntry],
+        env: {
+          SUPERCLAW_CLAUDE_DESKTOP_OPEN_ENABLED: options.enabled === true ? "1" : "0",
+          SUPERCLAW_CLAUDE_DESKTOP_OPEN_ROOTS: JSON.stringify(allowedRoots),
+        },
+      },
+    },
+  };
+  fs.mkdirSync(path.dirname(mcpConfigPath), { recursive: true });
+  fs.writeFileSync(mcpConfigPath, JSON.stringify(next, null, 2), "utf8");
+  return true;
+}
+
+function writePortableLocalDesktopOpenState(options = {}) {
+  const roots = Array.from(new Set(
+    (Array.isArray(options.allowedRoots) ? options.allowedRoots : [])
+      .map((item) => path.resolve(String(item || "")))
+      .filter(Boolean)
+  ));
+  ensureAppConfigDir();
+  fs.writeFileSync(LOCAL_DESKTOP_OPEN_STATE_PATH, JSON.stringify({
+    enabled: options.enabled === true,
+    roots,
+    // A run gets a short-lived local-only approval. The file is reset on
+    // panel startup and again as soon as the Native Claude child closes.
+    expiresAt: options.enabled === true ? Date.now() + 5 * 60 * 1000 : 0,
+  }), "utf8");
+}
+
+function portableToolRuntime() {
+  if (portableToolRuntimeCache) return portableToolRuntimeCache;
+  const runtimeRoot = path.resolve(__dirname, "..");
+  const nodeName = process.platform === "win32" ? "node.exe" : "node";
+  const pythonName = process.platform === "win32" ? "python.exe" : "python";
+  const python = findFileRecursive(
+    path.join(runtimeRoot, "uv-python"),
+    (filePath, entry) => entry.name.toLowerCase() === pythonName && path.basename(path.dirname(filePath)).toLowerCase() !== "lib",
+    6000
+  );
+  const node = path.join(runtimeRoot, "openclaw", nodeName);
+  const candidateDirs = [
+    python ? path.dirname(python) : "",
+    fs.existsSync(node) ? path.dirname(node) : "",
+    path.join(runtimeRoot, "git", "bin"),
+    path.join(runtimeRoot, "video-tools", "ffmpeg", "bin"),
+    path.join(runtimeRoot, "video-tools", "yt-dlp"),
+    path.join(runtimeRoot, "video-tools", "whisper.cpp"),
+  ].filter((dir) => dir && fs.existsSync(dir));
+  const seen = new Set();
+  const dirs = candidateDirs.filter((dir) => {
+    const key = path.resolve(dir).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  portableToolRuntimeCache = { dirs, python, node: fs.existsSync(node) ? node : "" };
+  return portableToolRuntimeCache;
+}
+
+function prependPortableToolPath(existingPath, dirs) {
+  const separator = process.platform === "win32" ? ";" : ":";
+  const seen = new Set();
+  return [...dirs, ...String(existingPath || "").split(separator)]
+    .map((entry) => String(entry || "").trim())
+    .filter((entry) => {
+      if (!entry) return false;
+      const key = process.platform === "win32" ? entry.toLowerCase() : entry;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(separator);
+}
+
 function buildPortableEnv(extra = {}) {
+  const tools = portableToolRuntime();
   const env = {
     ...process.env,
     ...extra,
@@ -408,8 +575,16 @@ function buildPortableEnv(extra = {}) {
     env.HOME = HOME;
     env.USERPROFILE = HOME;
     env.APPDATA = appData;
-    env.LOCALAPPDATA = localAppData;
+      env.LOCALAPPDATA = localAppData;
   }
+
+  const portablePath = prependPortableToolPath(env.PATH || env.Path, tools.dirs);
+  if (portablePath) {
+    env.PATH = portablePath;
+    env.Path = portablePath;
+  }
+  if (tools.python) env.SUPERCLAW_PORTABLE_PYTHON = tools.python;
+  if (tools.node) env.SUPERCLAW_PORTABLE_NODE = tools.node;
 
   return env;
 }
@@ -1492,7 +1667,7 @@ function writeNativeClaudeLauncher({ cwd, claudeCommand }) {
     `set "CLAUDE_CONFIG_DIR=${configDir}"`,
     `set "CLAUDE_CODE_PROJECTS_DIR=${projectsDir}"`,
     'set "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"',
-    `set "PATH=${path.dirname(claudeCommand)};%PATH%"`,
+    `set "PATH=${path.dirname(claudeCommand)};${env.PATH || "%PATH%"}"`,
     quoteCmd(claudeCommand),
   ];
   fs.writeFileSync(launcherPath, lines.join("\r\n"), "utf8");
@@ -2096,6 +2271,59 @@ function normalizePluginSpec(spec) {
   return value;
 }
 
+function samePortablePath(left, right) {
+  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+}
+
+function portablePluginCacheTarget(candidate) {
+  const marketplace = String(candidate?.marketplace || candidate?.marketplaceName || "").trim();
+  const pluginName = String(candidate?.name || "").trim();
+  if (!marketplace || !pluginName) return "";
+  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
+  const target = path.resolve(cacheRoot, marketplace, pluginName);
+  return isSameOrInside(target, cacheRoot) ? target : "";
+}
+
+function recoverEmptyPluginInstallTarget(errorOutput, candidate) {
+  const candidateRoot = portablePluginCacheTarget(candidate);
+  if (!candidateRoot) return false;
+
+  const renameMatch = String(errorOutput || "").match(/rename\s+'([^']+)'\s*->\s*'([^']+)'/i);
+  if (!renameMatch) return false;
+  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
+  const temporarySource = path.resolve(renameMatch[1]);
+  const target = path.resolve(renameMatch[2]);
+  const isCandidateRoot = samePortablePath(target, candidateRoot);
+  const isVersionTarget = path.dirname(target) === candidateRoot;
+  if (
+    (!isCandidateRoot && !isVersionTarget) ||
+    !isSameOrInside(temporarySource, cacheRoot) ||
+    path.dirname(temporarySource) !== cacheRoot ||
+    !path.basename(temporarySource).startsWith("temp_local_") ||
+    !fs.existsSync(target)
+  ) {
+    return false;
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(target);
+  } catch {
+    return false;
+  }
+  if (entries.length !== 0) return false;
+
+  fs.rmSync(target, { recursive: true, force: true });
+  if (fs.existsSync(temporarySource)) fs.rmSync(temporarySource, { recursive: true, force: true });
+  return true;
+}
+
+async function installPortableMarketplacePlugin(pluginId, candidate) {
+  let install = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+  if (install.code === 0 || !recoverEmptyPluginInstallTarget(install.output, candidate)) return install;
+  return runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+}
+
 function runPortableClaudeCommand(args, options = {}) {
   const claudeCommand = resolvePortableClaudeCommand();
   const timeoutMs = Number(options.timeoutMs || 120000);
@@ -2271,59 +2499,6 @@ async function handleExtensionSearch(req, res) {
       results,
       marketplaces: marketplaces.map((item) => ({ name: item.name, source: item.source, repo: item.repo || "" })),
     });
-function samePortablePath(left, right) {
-  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
-}
-
-function portablePluginCacheTarget(candidate) {
-  const marketplace = String(candidate?.marketplace || candidate?.marketplaceName || "").trim();
-  const pluginName = String(candidate?.name || "").trim();
-  if (!marketplace || !pluginName) return "";
-  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
-  const target = path.resolve(cacheRoot, marketplace, pluginName);
-  return isSameOrInside(target, cacheRoot) ? target : "";
-}
-
-function recoverEmptyPluginInstallTarget(errorOutput, candidate) {
-  const candidateRoot = portablePluginCacheTarget(candidate);
-  if (!candidateRoot) return false;
-
-  const renameMatch = String(errorOutput || "").match(/rename\s+'([^']+)'\s*->\s*'([^']+)'/i);
-  if (!renameMatch) return false;
-  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
-  const temporarySource = path.resolve(renameMatch[1]);
-  const target = path.resolve(renameMatch[2]);
-  const isCandidateRoot = samePortablePath(target, candidateRoot);
-  const isVersionTarget = path.dirname(target) === candidateRoot;
-  if (
-    (!isCandidateRoot && !isVersionTarget) ||
-    !isSameOrInside(temporarySource, cacheRoot) ||
-    path.dirname(temporarySource) !== cacheRoot ||
-    !path.basename(temporarySource).startsWith("temp_local_") ||
-    !fs.existsSync(target)
-  ) {
-    return false;
-  }
-
-  let entries = [];
-  try {
-    entries = fs.readdirSync(target);
-  } catch {
-    return false;
-  }
-  if (entries.length !== 0) return false;
-
-  fs.rmSync(target, { recursive: true, force: true });
-  if (fs.existsSync(temporarySource)) fs.rmSync(temporarySource, { recursive: true, force: true });
-  return true;
-}
-
-async function installPortableMarketplacePlugin(pluginId, candidate) {
-  let install = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
-  if (install.code === 0 || !recoverEmptyPluginInstallTarget(install.output, candidate)) return install;
-  return runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
-}
-
   } catch (error) {
     sendJson(res, 400, { error: error.message || "扩展搜索失败" });
   }
@@ -3232,6 +3407,7 @@ function isVisibleStatusSelfCheckRequest(text) {
 }
 
 function detectSourceGuardViolation(text) {
+  if (!SOURCE_GUARD_ENABLED) return null;
   const value = String(text || "");
   if (isVisibleStatusSelfCheckRequest(value)) return null;
   if (SOURCE_GUARD_CRITICAL_SECRET_PATTERNS.some((pattern) => pattern.test(value))) {
@@ -3254,6 +3430,7 @@ function detectSourceGuardViolation(text) {
 }
 
 function looksLikeProtectedSourceOutput(text) {
+  if (!SOURCE_GUARD_ENABLED) return false;
   const value = String(text || "");
   if (!matchPatterns(value, SOURCE_GUARD_TARGET_PATTERNS).length) return false;
   return /```|(?:^|\n)\s*(?:function|const|let|class|import|export|pub\s+fn|fn\s+|impl\s+|use\s+|def\s+)\b/.test(value)
@@ -3436,6 +3613,24 @@ function extensionForMime(mimeType) {
   return "";
 }
 
+function isAllowedAttachment(fileName, mimeType) {
+  const extension = path.extname(String(fileName || "")).toLowerCase();
+  if (!ALLOWED_ATTACHMENT_EXTENSIONS.has(extension)) return false;
+  const normalizedMimeType = String(mimeType || "").toLowerCase();
+  return !normalizedMimeType ||
+    normalizedMimeType === "application/octet-stream" ||
+    normalizedMimeType === "text/plain" ||
+    normalizedMimeType === "text/markdown" ||
+    normalizedMimeType === "application/json" ||
+    normalizedMimeType === "text/csv" ||
+    normalizedMimeType === "application/pdf" ||
+    normalizedMimeType === "application/msword" ||
+    normalizedMimeType === "application/vnd.ms-excel" ||
+    normalizedMimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    normalizedMimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    ALLOWED_IMAGE_TYPES.has(normalizedMimeType);
+}
+
 function parseDataUrl(dataUrl) {
   const match = /^data:([^;,]+);base64,(.+)$/i.exec(String(dataUrl || ""));
   if (!match) {
@@ -3447,15 +3642,134 @@ function parseDataUrl(dataUrl) {
   };
 }
 
+function decodeXmlText(value) {
+  return String(value || "")
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, "&");
+}
+
+function xmlAttribute(tag, name) {
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`\\b${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(String(tag || ""));
+  return decodeXmlText(match?.[1] ?? match?.[2] ?? "");
+}
+
+function xlsxTextContent(fragment) {
+  const values = [];
+  const matcher = /<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/gi;
+  let match;
+  while ((match = matcher.exec(String(fragment || "")))) values.push(decodeXmlText(match[1]));
+  return values.length ? values.join("") : decodeXmlText(String(fragment || "").replace(/<[^>]+>/g, ""));
+}
+
+function xlsxColumnIndex(reference) {
+  const letters = /^([A-Z]+)/i.exec(String(reference || ""))?.[1]?.toUpperCase() || "";
+  let index = 0;
+  for (const letter of letters) index = index * 26 + letter.charCodeAt(0) - 64;
+  return index;
+}
+
+async function createXlsxPreview(filePath, fileName) {
+  const jszipPath = path.resolve(__dirname, "..", "openclaw", "node_modules", "jszip");
+  let JSZip;
+  try {
+    JSZip = require(jszipPath);
+  } catch {
+    return { previewPath: "", previewError: "本地 Excel 解析器不可用" };
+  }
+
+  try {
+    const zip = await JSZip.loadAsync(fs.readFileSync(filePath));
+    const readZipText = async (name) => {
+      const entry = zip.file(name);
+      return entry ? (await entry.async("string")).slice(0, MAX_XLSX_PREVIEW_CHARS) : "";
+    };
+    const sharedStringsXml = await readZipText("xl/sharedStrings.xml");
+    const sharedStrings = [];
+    const sharedMatcher = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/gi;
+    let sharedMatch;
+    while ((sharedMatch = sharedMatcher.exec(sharedStringsXml))) sharedStrings.push(xlsxTextContent(sharedMatch[1]));
+
+    const workbookXml = await readZipText("xl/workbook.xml");
+    const relsXml = await readZipText("xl/_rels/workbook.xml.rels");
+    const targets = new Map();
+    const relMatcher = /<Relationship\b[^>]*\/?\s*>/gi;
+    let relMatch;
+    while ((relMatch = relMatcher.exec(relsXml))) {
+      const id = xmlAttribute(relMatch[0], "Id");
+      const target = xmlAttribute(relMatch[0], "Target");
+      if (id && target && !/^https?:/i.test(target)) targets.set(id, path.posix.normalize(path.posix.join("xl", target)));
+    }
+
+    const sheets = [];
+    const sheetMatcher = /<sheet\b[^>]*\/?\s*>/gi;
+    let sheetMatch;
+    while ((sheetMatch = sheetMatcher.exec(workbookXml))) {
+      const name = xmlAttribute(sheetMatch[0], "name") || `Sheet${sheets.length + 1}`;
+      const relationId = xmlAttribute(sheetMatch[0], "r:id");
+      const target = targets.get(relationId);
+      if (target) sheets.push({ name, target });
+    }
+    if (!sheets.length) {
+      for (const entryName of Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name)).sort()) {
+        sheets.push({ name: path.basename(entryName, ".xml"), target: entryName });
+      }
+    }
+
+    const sections = [`[Excel workbook preview: ${sanitizeFileName(fileName)}]`];
+    for (const sheet of sheets.slice(0, 10)) {
+      const xml = await readZipText(sheet.target);
+      if (!xml) continue;
+      const rows = [];
+      const rowMatcher = /<row\b([^>]*)>([\s\S]*?)<\/row>/gi;
+      let rowMatch;
+      while ((rowMatch = rowMatcher.exec(xml)) && rows.length < MAX_XLSX_PREVIEW_ROWS) {
+        const cells = new Map();
+        const cellMatcher = /<c\b([^>]*)>([\s\S]*?)<\/c>/gi;
+        let cellMatch;
+        let nextColumn = 1;
+        while ((cellMatch = cellMatcher.exec(rowMatch[2]))) {
+          const column = xlsxColumnIndex(xmlAttribute(cellMatch[1], "r")) || nextColumn;
+          nextColumn = column + 1;
+          if (column > MAX_XLSX_PREVIEW_COLUMNS) continue;
+          const type = xmlAttribute(cellMatch[1], "t");
+          const rawValue = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/i.exec(cellMatch[2])?.[1] || "";
+          const value = type === "s"
+            ? (sharedStrings[Number.parseInt(rawValue, 10)] || "")
+            : type === "inlineStr"
+              ? xlsxTextContent(cellMatch[2])
+              : xlsxTextContent(rawValue);
+          if (value) cells.set(column, value.replace(/[\t\r\n]+/g, " ").trim());
+        }
+        if (!cells.size) continue;
+        const lastColumn = Math.min(Math.max(...cells.keys()), MAX_XLSX_PREVIEW_COLUMNS);
+        rows.push(Array.from({ length: lastColumn }, (_, index) => cells.get(index + 1) || "").join("\t"));
+      }
+      if (rows.length) sections.push(`\n[Sheet: ${sheet.name}]`, ...rows);
+    }
+
+    if (sections.length === 1) return { previewPath: "", previewError: "未能从工作簿提取可读单元格" };
+    const previewPath = `${filePath}.preview.txt`;
+    fs.writeFileSync(previewPath, `${sections.join("\n").slice(0, MAX_XLSX_PREVIEW_CHARS)}\n`, { encoding: "utf8", mode: 0o600 });
+    return { previewPath, previewError: "" };
+  } catch (error) {
+    return { previewPath: "", previewError: `Excel 预览生成失败: ${error.message}` };
+  }
+}
+
 function uploadContract() {
   return {
-    feature: "本地图片上传",
+    feature: "本地附件上传",
     path: "/api/upload",
     enabled: true,
     externalWriteLocked: !isReservedFeatureEnabled(RESERVED_FEATURES.upload),
     maxFileMb: Math.round(MAX_UPLOAD_BYTES / 1024 / 1024),
-    allowedTypes: Array.from(ALLOWED_IMAGE_TYPES),
-    note: "页面内选择的图片会保存到本机用户目录，并把本地路径随对话发送给 Claude Code；外部后台推送仍需管理员开关和鉴权。",
+    allowedExtensions: Array.from(ALLOWED_ATTACHMENT_EXTENSIONS),
+    note: "页面内选择的受支持附件会保存到本机便携数据目录，并把本地路径随对话发送给 Claude Code；不会上传到外部后台。",
   };
 }
 
@@ -3474,11 +3788,11 @@ async function handleUpload(req, res) {
     const payload = await readRequestBody(req, MAX_UPLOAD_REQUEST_BYTES);
     const files = Array.isArray(payload.files) ? payload.files : [];
     if (!files.length) {
-      sendJson(res, 400, { error: "没有收到图片文件" });
+      sendJson(res, 400, { error: "没有收到附件" });
       return;
     }
     if (files.length > 6) {
-      sendJson(res, 400, { error: "一次最多上传 6 张图片" });
+      sendJson(res, 400, { error: "一次最多上传 6 个附件" });
       return;
     }
 
@@ -3490,11 +3804,11 @@ async function handleUpload(req, res) {
     for (const file of files) {
       const parsed = parseDataUrl(file.dataUrl);
       const mimeType = parsed.mimeType || String(file.type || "").toLowerCase();
-      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
-        throw new Error(`${file.name || "图片"} 的格式暂不支持`);
+      if (!isAllowedAttachment(file.name, mimeType)) {
+        throw new Error(`${file.name || "附件"} 的格式暂不支持`);
       }
       if (parsed.buffer.length > MAX_UPLOAD_BYTES) {
-        throw new Error(`${file.name || "图片"} 超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`);
+        throw new Error(`${file.name || "附件"} 超过 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB`);
       }
 
       const safeName = sanitizeFileName(file.name);
@@ -3504,17 +3818,22 @@ async function handleUpload(req, res) {
       const storedName = `${id}-${stem}${ext}`;
       const storedPath = path.join(targetDir, storedName);
       fs.writeFileSync(storedPath, parsed.buffer, { mode: 0o600 });
+      const spreadsheetPreview = ext.toLowerCase() === ".xlsx"
+        ? await createXlsxPreview(storedPath, safeName)
+        : { previewPath: "", previewError: "" };
       saved.push({
         id,
         name: safeName,
         mimeType,
         size: parsed.buffer.length,
         path: storedPath,
+        previewPath: spreadsheetPreview.previewPath,
+        previewError: spreadsheetPreview.previewError,
       });
     }
 
     appendAuditLog({
-      feature: "本地图片上传",
+      feature: "本地附件上传",
       action: "local-upload",
       result: `success:${saved.length}`,
       source: req.socket.remoteAddress,
@@ -3522,12 +3841,12 @@ async function handleUpload(req, res) {
     sendJson(res, 200, { success: true, files: saved, contract: uploadContract() });
   } catch (error) {
     appendAuditLog({
-      feature: "本地图片上传",
+      feature: "本地附件上传",
       action: "local-upload",
       result: `failed:${error.message}`,
       source: req.socket.remoteAddress,
     });
-    sendJson(res, 400, { error: error.message || "图片上传失败" });
+    sendJson(res, 400, { error: error.message || "附件上传失败" });
   }
 }
 
@@ -3667,6 +3986,7 @@ function writeClaudeProcessEvent(res, payload) {
     tool: String(payload.tool || ""),
     toolUseId: String(payload.toolUseId || ""),
     status: String(payload.status || "running"),
+    captureAssistantText: payload.captureAssistantText === true,
   });
 }
 
@@ -3688,12 +4008,16 @@ function normalizeRunAttachments(rawAttachments) {
     const filePath = path.resolve(String(item?.path || ""));
     if (!filePath || !isPathInside(filePath, UPLOAD_DIR)) continue;
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) continue;
-    const ext = path.extname(filePath).toLowerCase();
-    const looksLikeImage = [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
-    if (!looksLikeImage) continue;
+    if (!isAllowedAttachment(item?.name || filePath, item?.type)) continue;
+    const previewPath = path.resolve(String(item?.previewPath || ""));
+    const hasPreview = previewPath &&
+      isPathInside(previewPath, UPLOAD_DIR) &&
+      fs.existsSync(previewPath) &&
+      fs.statSync(previewPath).isFile();
     normalized.push({
       name: sanitizeFileName(item?.name || path.basename(filePath)),
       path: filePath,
+      previewPath: hasPreview ? previewPath : "",
       type: String(item?.type || "").toLowerCase(),
       size: Number(item?.size || fs.statSync(filePath).size || 0),
     });
@@ -3701,16 +4025,48 @@ function normalizeRunAttachments(rawAttachments) {
   return normalized;
 }
 
+function isExplicitAttachedFileOpenRequest(prompt, attachments) {
+  if (!Array.isArray(attachments) || attachments.length === 0) return false;
+  const request = String(prompt || "").trim();
+  return /(?:打开|启动|用(?:默认)?程序打开|查看|预览|open|launch|preview)/i.test(request);
+}
+
+function findNamedUploadedFilesForOpenRequest(prompt) {
+  const request = String(prompt || "");
+  if (!/(?:打开|启动|用(?:默认)?程序打开|查看|预览|open|launch|preview)/i.test(request)) return [];
+  const requestedNames = new Set(
+    Array.from(request.matchAll(/([^\\/:*?"<>|\s]+\.(?:txt|md|json|csv|pdf|docx?|xlsx?|png|jpe?g|webp|gif|mp4))/gi))
+      .map((match) => String(match[1] || "").toLowerCase())
+      .filter(Boolean)
+  );
+  if (!requestedNames.size || !fs.existsSync(UPLOAD_DIR)) return [];
+  const matches = [];
+  for (const dateEntry of fs.readdirSync(UPLOAD_DIR, { withFileTypes: true })) {
+    if (!dateEntry.isDirectory()) continue;
+    const dateDir = path.join(UPLOAD_DIR, dateEntry.name);
+    for (const entry of fs.readdirSync(dateDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !requestedNames.has(entry.name.toLowerCase())) continue;
+      const filePath = path.join(dateDir, entry.name);
+      matches.push({ name: entry.name, path: filePath, type: "", size: fs.statSync(filePath).size });
+    }
+  }
+  return matches.slice(-6);
+}
+
 function attachmentPromptBlock(attachments) {
   if (!attachments.length) return "";
-  const lines = attachments.map((item, index) => `${index + 1}. ${item.name}: ${item.path}`);
+  const lines = attachments.flatMap((item, index) => [
+    `${index + 1}. ${item.name}: ${item.path}`,
+    ...(item.previewPath ? [`   extracted spreadsheet preview: ${item.previewPath}`] : []),
+  ]);
   return [
     "",
     "",
     "[Claude Code native attachment bridge]",
-    "The user attached image files in this turn. Read and analyze these local files as image inputs.",
+    "The user attached local files in this turn. Read and analyze the listed files with the available local read tools.",
     "Only access the listed attachment files unless the user explicitly asks for broader project work.",
-    "If the image cannot be decoded directly, explain that clearly and summarize any useful file metadata.",
+    "For .xlsx attachments, prefer the extracted spreadsheet preview when present, then use the original file only if more detail is needed.",
+    "For other office documents, inspect the file format first and state clearly if a parser is unavailable; do not claim to have read content that was not successfully inspected.",
     ...lines,
     "[/Claude Code native attachment bridge]",
   ].join("\n");
@@ -3726,6 +4082,7 @@ async function handleRun(req, res) {
   }
 
   let prompt = String(payload.prompt || "").trim();
+  const originalUserPrompt = prompt;
   if (!prompt) {
     sendJson(res, 400, { error: "请输入指令" });
     return;
@@ -3736,7 +4093,9 @@ async function handleRun(req, res) {
     prompt += attachmentPromptBlock(runAttachments);
   }
 
-  const sourceGuardViolation = detectSourceGuardViolation(prompt);
+  // The attachment bridge is trusted server-generated text. Only evaluate the
+  // user-authored prompt so its own runtime wording cannot block file analysis.
+  const sourceGuardViolation = detectSourceGuardViolation(originalUserPrompt);
   if (sourceGuardViolation) {
     appendAuditLog({
       feature: "/api/run",
@@ -3923,6 +4282,12 @@ async function handleRun(req, res) {
     mode,
   ];
 
+  // Newer Claude Code versions make --strict-mcp-config opt in to an empty
+  // MCP set unless the portable configuration is passed explicitly. Keep the
+  // managed config on the command line so the packaged panel exposes the same
+  // local bridges as dev (web research, browser automation, and approved file
+  // open) without depending on a machine-wide Claude home directory.
+  args.push("--mcp-config", path.join(CLAUDE_RUNTIME_CONFIG_DIR, ".claude.json"));
   if (!allowBrowserAutomation) {
     args.push("--strict-mcp-config");
   }
@@ -3950,8 +4315,36 @@ async function handleRun(req, res) {
   if (attachmentDirs.length) {
     args.push("--add-dir", ...attachmentDirs);
   }
+  // A direct request to open this turn's uploaded attachment is already an
+  // explicit, narrowly-scoped user authorization. Keep the normal bottom
+  // sheet for other local paths, but do not let a stale UI state strip this
+  // one-file intent before it reaches the native Claude CLI.
+  const namedUploadedFiles = findNamedUploadedFilesForOpenRequest(originalUserPrompt);
+  const approvedLocalFiles = [...runAttachments];
+  for (const file of namedUploadedFiles) {
+    if (!approvedLocalFiles.some((item) => path.resolve(item.path) === path.resolve(file.path))) {
+      approvedLocalFiles.push(file);
+    }
+  }
+  const attachedFileOpenRequested = isExplicitAttachedFileOpenRequest(originalUserPrompt, approvedLocalFiles);
+  const desktopOpenEnabled = authorizationGrant === "file" || attachedFileOpenRequested;
+  if (attachedFileOpenRequested) {
+    // The CLI receives this as user-facing task context, not only as a system
+    // hint. Native Claude otherwise sometimes asks the user to repeat a path
+    // that the panel has already matched against its own upload store.
+    args[1] = buildClaudeUserPrompt([
+      prompt,
+      "",
+      "[Approved local file open request]",
+      "Open the following already-approved uploaded file now with mcp__superclaw_local_desktop__open_local_file.",
+      "Do not ask the user to repeat its path or grant another permission.",
+      ...approvedLocalFiles.map((item) => item.path),
+      "[/Approved local file open request]",
+    ].join("\n"));
+  }
   const extraTools = [
     ...WEB_RESEARCH_TOOLS,
+    ...(desktopOpenEnabled ? SUPERCLAW_LOCAL_DESKTOP_TOOLS : []),
     ...(allowBrowserAutomation ? PLAYWRIGHT_AUTOMATION_TOOLS : []),
   ];
   appendToolArgs(args, toolProfile, extraTools, { allowBrowserAutomation, allowWebResearch });
@@ -3963,7 +4356,7 @@ async function handleRun(req, res) {
     args.push("--allowedTools", Array.from(preapprovedTools).join(","));
   }
   args.push("--append-system-prompt", CLAUDE_USER_LANGUAGE_SYSTEM_PROMPT);
-  args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
+  if (SOURCE_GUARD_ENABLED) args.push("--append-system-prompt", SOURCE_GUARD_SYSTEM_PROMPT);
   args.push("--append-system-prompt", buildClaudeCodeSystemPrompt("NATIVE_CLAUDE_CODE"));
   if (isClaudeCodeUserVisibleSelfCheck(prompt).allow) {
     args.push("--append-system-prompt", CLAUDECODE_SELF_CHECK_SYSTEM_PROMPT);
@@ -3982,6 +4375,7 @@ async function handleRun(req, res) {
     args.push("--append-system-prompt", BROWSER_AUTOMATION_SYSTEM_PROMPT);
   }
   args.push("--append-system-prompt", WEB_RESEARCH_SYSTEM_PROMPT);
+  args.push("--append-system-prompt", SUPERCLAW_WEB_RESEARCH_SYSTEM_PROMPT);
   if (isCapabilityAuditPrompt(prompt)) {
     args.push(
       "--append-system-prompt",
@@ -3991,10 +4385,25 @@ async function handleRun(req, res) {
   if (authorizationGrant) {
     args.push("--append-system-prompt", authorizationGrantSystemPrompt(authorizationGrant, authorizationGrantScope));
   }
+  if (desktopOpenEnabled) {
+    const approvedAttachmentPaths = attachedFileOpenRequested
+      ? approvedLocalFiles.map((item) => item.path).join("\n")
+      : "";
+    args.push(
+      "--append-system-prompt",
+      [
+        "The user has approved opening a local file for this run. Use mcp__superclaw_local_desktop__open_local_file only for a file the user explicitly asked to open.",
+        "It is limited to the current project and this conversation's uploaded files. Do not browse unrelated folders or operate the desktop.",
+        ...(approvedAttachmentPaths ? ["The user directly requested opening these uploaded files. Call the tool for the requested file now:\n" + approvedAttachmentPaths] : []),
+      ].join("\n")
+    );
+  }
   if (toolProfile === "none") {
     args.push(
       "--append-system-prompt",
-      allowBrowserAutomation
+      desktopOpenEnabled
+        ? "This run may use only mcp__superclaw_local_desktop__open_local_file for the explicitly approved local file. Do not read other local files, run commands, write files, or emit fake tool_call/XML."
+        : allowBrowserAutomation
         ? "本次除已授权的浏览器自动化工具外，仍禁止读取本地文件、执行命令、写入文件或输出 tool_call/XML。"
         : "本次只允许 WebSearch 和 WebFetch 查询公开信息。不要读取本地文件，不要执行命令，不要写入文件，不要输出伪造的 tool_call/XML。"
     );
@@ -4016,12 +4425,31 @@ async function handleRun(req, res) {
     "x-accel-buffering": "no",
   });
 
+  const desktopOpenRoots = [cwd, ...approvedLocalFiles.map((item) => path.dirname(item.path))];
   const runtimeEnv = buildPortableEnv({
     ...settings.env,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:
       settings.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC || "1",
+    // Claude CLI may not forward MCP config env values to every stdio child.
+    // Mirror the per-run scoped values into its environment for the bridge.
+    SUPERCLAW_CLAUDE_DESKTOP_OPEN_ENABLED: desktopOpenEnabled ? "1" : "0",
+    SUPERCLAW_CLAUDE_DESKTOP_OPEN_ROOTS: JSON.stringify(desktopOpenRoots),
   });
   const runtimeSettingsPath = ensureClaudeRuntimeSettings(runtimeEnv);
+  writePortableLocalDesktopOpenState({
+    enabled: desktopOpenEnabled,
+    // Keep earlier conversation uploads available after the user approves a
+    // follow-up "open this file" request. The state file takes precedence in
+    // the MCP child, so omitting UPLOAD_DIR here accidentally rejected the
+    // panel's own portable uploads on every later turn.
+    allowedRoots: [UPLOAD_DIR, ...desktopOpenRoots],
+  });
+  ensurePortableLocalDesktopMcp({
+    enabled: desktopOpenEnabled,
+    // Keep the bridge scope deterministic. Old prompt-named managed projects
+    // must not inflate the MCP configuration or become implicitly approved.
+    allowedRoots: desktopOpenRoots,
+  });
 
   const child = spawnClaude(runMode.nativeClaude.path || resolveClaudeCommand(), args, {
     cwd,
@@ -4051,6 +4479,8 @@ async function handleRun(req, res) {
     browserAccess,
     authorizationGrant,
     authorizationGrantScope,
+    localFileOpenEnabled: desktopOpenEnabled,
+    localFileOpenMatchedUploads: approvedLocalFiles.length,
     attachments: runAttachments.map((item) => ({ name: item.name, path: item.path })),
     resumed: Boolean(resumeSessionId),
     continued: Boolean(payload.continueSession),
@@ -4072,6 +4502,7 @@ async function handleRun(req, res) {
     action: "start-run",
     permissionMode: payload.permissionProfile || mode,
     toolProfile,
+    localFileOpen: desktopOpenEnabled,
     projectPath: cwd,
     result: "started",
     source: req.socket.remoteAddress,
@@ -4128,7 +4559,15 @@ async function handleRun(req, res) {
         .filter(Boolean)
         .join("\n");
 
-      if (partialTextSeenForAssistant) {
+      if (partialTextSeenForAssistant && toolBlocks.length) {
+        // Claude emits planning text before the enclosing tool_use block. It
+        // was already streamed to the UI, so mark it as execution detail
+        // instead of leaving it in the final-answer bubble.
+        writeClaudeProcessEvent(res, {
+          kind: "reasoning",
+          title: "Claude 正在分析",
+          captureAssistantText: true,
+        });
         pendingAssistantText = "";
       } else if (toolBlocks.length && pendingAssistantText) {
         writeClaudeProcessEvent(res, {
@@ -4229,6 +4668,7 @@ async function handleRun(req, res) {
   });
 
   child.on("close", (code) => {
+    writePortableLocalDesktopOpenState({ enabled: false });
     if (stdoutBuffer.trim()) handleJsonLine(stdoutBuffer.trim());
     if (stderrBuffer.trim()) {
       const text = sanitizeModelOutput(stderrBuffer.trim(), { prompt });
@@ -5279,6 +5719,10 @@ const server = http.createServer((req, res) => {
 });
 
 function runSourceGuardSelfTest() {
+  if (!SOURCE_GUARD_ENABLED) {
+    console.log("SOURCE_GUARD_SELF_TEST skipped: source guard is disabled");
+    return;
+  }
   const cases = [
     {
       name: "A",
@@ -5343,6 +5787,17 @@ function runSourceGuardSelfTest() {
 if (process.env.SOURCE_GUARD_SELF_TEST === "1") {
   runSourceGuardSelfTest();
 }
+
+// Register the portable bridge before the UI accepts a run. The per-run call
+// below only flips its authorization switch and approved roots. This avoids a
+// stale WebView or first-run timing gap making the tool disappear entirely.
+ensurePortableWebResearchMcp();
+removeAccidentalHomeMcpEntries(["superclaw_web_research", "superclaw_local_desktop"]);
+writePortableLocalDesktopOpenState({ enabled: false });
+ensurePortableLocalDesktopMcp({
+  enabled: false,
+  allowedRoots: [],
+});
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Clean Claude Panel: http://127.0.0.1:${PORT}`);

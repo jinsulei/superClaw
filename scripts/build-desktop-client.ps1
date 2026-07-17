@@ -1318,6 +1318,13 @@ Assert-Dir $ResourcesDir "Tauri resources"
 Assert-Dir (Join-Path $ResourcesDir "runtime\uv-python") "Portable Python runtime source"
 Assert-Dir (Join-Path $ResourcesDir "runtime\uv-tools") "UV tools runtime source"
 Assert-File (Join-Path $ResourcesDir "runtime\uv-tools\uv.exe") "UV tools executable source"
+$SourceOpenpyxl = Get-ChildItem -LiteralPath (Join-Path $ResourcesDir "runtime\uv-python") -Recurse -Directory -Filter "openpyxl" -ErrorAction SilentlyContinue |
+  Where-Object { Test-Path (Join-Path $_.FullName "__init__.py") } |
+  Select-Object -First 1
+if (-not $SourceOpenpyxl) {
+  Fail "Portable Python openpyxl module source not found; Claude Code Excel editing would fail in the package"
+}
+Ok "Portable Python openpyxl module source"
 Assert-Dir (Join-Path $ResourcesDir "runtime\hermes-agent") "Hermes agent runtime source"
 Assert-File (Join-Path $ResourcesDir "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable source"
 Ensure-ResourceDir "portable"
@@ -1329,6 +1336,9 @@ foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
 Assert-SuperClawOpenClawPluginSources
 Assert-Dir (Join-Path $ResourcesDir "runtime\claude-panel") "Claude UI panel runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\server.js") "Claude UI panel server"
+Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\web-research-mcp.js") "Claude local web research MCP"
+Assert-File (Join-Path $ResourcesDir "runtime\claude-panel\local-desktop-mcp.js") "Claude local desktop MCP"
+Assert-File (Join-Path $ResourcesDir "runtime\openclaw\node_modules\jszip\lib\index.js") "Claude local Excel preview parser"
 if (Test-Path -LiteralPath (Join-Path $ResourcesDir "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
   Ok "Claude Code native CLI"
 } else {
@@ -1547,7 +1557,16 @@ if (-not $PackagedPythonProbe) {
   Fail "Packaged UV Python executable not found under resources\runtime\uv-python"
 }
 Ok "Packaged UV Python executable"
+$PackagedOpenpyxl = Get-ChildItem -LiteralPath (Join-Path $PackagedResources "runtime\uv-python") -Recurse -Directory -Filter "openpyxl" -ErrorAction SilentlyContinue |
+  Where-Object { Test-Path (Join-Path $_.FullName "__init__.py") } |
+  Select-Object -First 1
+if (-not $PackagedOpenpyxl) {
+  Fail "Packaged Python openpyxl module not found; Claude Code Excel editing is unavailable"
+}
+Ok "Packaged Python openpyxl module"
 Assert-File (Join-Path $PackagedResources "runtime\claude-panel\server.js") "Packaged Claude UI panel"
+Assert-File (Join-Path $PackagedResources "runtime\claude-panel\local-desktop-mcp.js") "Packaged Claude local desktop MCP"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\jszip\lib\index.js") "Packaged Claude local Excel preview parser"
 if (Test-Path -LiteralPath (Join-Path $PackagedResources "runtime\claude-code\bin\claude.exe") -PathType Leaf) {
   Ok "Packaged Claude Code native CLI"
 } else {

@@ -644,7 +644,7 @@ const petTriggerRules = [
     bubble: "稳住，今天能拿下。",
   },
 ];
-const maxUploadBytes = 25 * 1024 * 1024;
+const maxUploadBytes = 20 * 1024 * 1024;
 const attachmentAccept = "image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp";
 const attachmentExtensions = new Set(["txt", "md", "json", "csv", "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "webp"]);
 
@@ -2630,6 +2630,47 @@ function implicitBrowserRunOverrides(prompt, overrides = {}) {
   };
 }
 
+function isExcelEditTask(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const mentionsWorkbook = /(?:excel|\.xlsx?\b|表格(?:文件)?|工作簿|单元格|csv\b)/i.test(value);
+  const requestsEdit = /(?:编辑|修改|清理|删除|保留|整理|格式|合并|拆分|导出|另存|保存|复制|新建|写(?:入)?|追加|转换|处理|填充|替换|去重|排序|筛选|统计|生成)/i.test(value);
+  return mentionsWorkbook && requestsEdit;
+}
+
+function isDesktopOpenTask(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const asksToOpen = /(?:打开|启动|用(?:默认)?程序打开|查看|预览|open|launch|preview)/i.test(value);
+  const mentionsLocalTarget = /(?:附件|上传|文件|文档|表格|工作簿|图片|视频|pdf|word|excel|\.xlsx?\b|\.csv\b|\.docx?\b|\.pdf\b|\.png\b|\.jpe?g\b|\.mp4\b)/i.test(value);
+  return asksToOpen && mentionsLocalTarget;
+}
+
+function isExplicitCommandTask(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (isExcelEditTask(value)) return true;
+  return /(?:运行|执行|调用|启动|测试|调试|检查|分析|转换|处理|生成|继续|接着|run|execute|invoke|test|debug|continue|resume).{0,36}(?:python|py\b|node(?:\.js)?|npm|npx|pnpm|yarn|ffmpeg|ffprobe|powershell|cmd|shell|bash|终端|命令|脚本)|(?:python|py\b|node(?:\.js)?|npm|npx|pnpm|yarn|ffmpeg|ffprobe|powershell|cmd|shell|bash|终端|命令|脚本).{0,36}(?:运行|执行|调用|启动|测试|调试|检查|分析|转换|处理|生成|继续|接着|run|execute|invoke|test|debug|continue|resume)/i.test(value);
+}
+
+function isCommandContinuation(prompt) {
+  const value = String(prompt || "").trim();
+  if (!/(?:继续|接着|延续|上一项|之前的任务|continue|resume)/i.test(value)) return false;
+  const conversation = currentConversationId ? getConversation(currentConversationId) : null;
+  return conversation?.lastToolProfile === "command";
+}
+
+function needsCommandAuthorization(prompt, overrides, permissionConfig) {
+  if (overrides.authorizationContinuation || overrides.commandAuthorized) return false;
+  if (permissionConfig?.toolProfile === "command") return false;
+  return isExplicitCommandTask(prompt) || isCommandContinuation(prompt);
+}
+
+function needsDesktopOpenAuthorization(prompt, overrides) {
+  if (overrides.authorizationContinuation || overrides.fileOpenAuthorized) return false;
+  return isDesktopOpenTask(prompt);
+}
+
 function authorizationRequestType(text) {
   const value = String(text || "");
   if (!value.trim()) return "";
@@ -2641,7 +2682,7 @@ function authorizationRequestType(text) {
     /是否(继续|允许|授权|接受|执行|打开|使用)|请(确认|选择|授权)|需要.{0,16}(确认|授权).{0,8}(吗|？|\?)|等待.{0,8}确认|do you want|proceed\?|accept\?|allow\?|authorize|permission/i.test(value);
   if (hasChoiceText && asksConfirmation) {
     if (/安装|下载|依赖|插件|skill|plugin|package/i.test(value)) return "install";
-    if (/命令|终端|shell|powershell|cmd|执行脚本|运行脚本/i.test(value)) return "command";
+    if (/命令|终端|shell|powershell|cmd|执行脚本|运行脚本|python|node(?:\.js)?|npm|npx|pnpm|yarn|ffmpeg|ffprobe/i.test(value)) return "command";
     if (/登录|扫码|支付|隐私|凭据|密码|token|api\s*key|密钥/i.test(value)) return "sensitive";
     if (/文件|目录|路径|读取|写入|修改|覆盖|删除|上传/i.test(value)) return "file";
     return "generic";
@@ -2741,18 +2782,37 @@ function scheduleAuthorizationContinuation(task, authorizationType, choice) {
   if (!task?.prompt) return;
   const attempts = { ...(task.authorizationAttempts || {}) };
   attempts[authorizationType] = Number(attempts[authorizationType] || 0) + 1;
+  const conversation = task.conversationId ? getConversation(task.conversationId) : null;
+  const resumeSessionId = String(conversation?.nativeSessionId || "").trim();
   const overrides = {
     ...(task.overrides || {}),
     authorizationContinuation: true,
+    // A pre-flight authorization has not written a user turn yet. An
+    // authorization emitted during a native run has, and must resume it.
+    authorizationOriginalUserMessageRecorded: task.userMessageRecorded === true,
     authorizationGrant: authorizationType,
     authorizationGrantScope: choice === "always" ? "session" : "once",
     authorizationAttempts: attempts,
-    continueSession: false,
+    continueSession: Boolean(resumeSessionId),
+    resumeSessionId: resumeSessionId || undefined,
   };
   if (authorizationType === "browser") {
     overrides.permissionProfile = "browser";
     overrides.toolProfile = "none";
     overrides.browserAccess = choice === "always" ? "always" : "once";
+  }
+  if (authorizationType === "command") {
+    // The bottom-sheet confirmation is the explicit per-task risk acceptance.
+    // Keep this elevation scoped to the resumed task instead of changing the
+    // user's global mode or silently enabling commands for later messages.
+    overrides.permissionProfile = "expert";
+    overrides.toolProfile = "command";
+    overrides.mode = "acceptEdits";
+    overrides.riskAccepted = true;
+    overrides.commandAuthorized = true;
+  }
+  if (authorizationType === "file") {
+    overrides.fileOpenAuthorized = true;
   }
   queuedAuthorizationContinuation = { prompt: task.prompt, overrides };
   if (!runController) {
@@ -2795,6 +2855,7 @@ function renderAuthorizationCard(targetMessage, text) {
         overrides: { ...activeAuthorizationRun.overrides },
         authorizationAttempts: { ...(activeAuthorizationRun.authorizationAttempts || {}) },
         conversationId: activeAuthorizationRun.conversationId,
+        userMessageRecorded: true,
       }
     : null;
   const attemptCount = Number(task?.authorizationAttempts?.[type] || 0);
@@ -2832,8 +2893,47 @@ function formatExecutionProcessEntry(payload = {}) {
   return `${title}\n${text}`;
 }
 
+function captureActiveAssistantTextForProcess() {
+  flushAssistantTextBuffer();
+  const captured = String(activeAssistantMessage?.rawText || "").trim();
+  if (!captured) return "";
+  activeAssistantMessage.rawText = "";
+  return captured;
+}
+
+function splitClaudeExecutionNarrative(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) return null;
+  const resultMarker = /^(?:#{1,6}\s*)?(?:输出文件|处理结果|执行结果|验证结果|最终结果|处理摘要|总结|结论|完成情况)\s*(?:[:：]|$)/mi;
+  const match = resultMarker.exec(text);
+  if (!match || match.index <= 0) return null;
+
+  const narrative = text.slice(0, match.index).trim();
+  const finalText = text.slice(match.index).trim();
+  return narrative && finalText ? { narrative, finalText } : null;
+}
+
+function moveClaudeExecutionNarrativeToProcess() {
+  if (!activeExecutionProcess.length || !activeAssistantMessage) return;
+  const split = splitClaudeExecutionNarrative(activeAssistantMessage.rawText);
+  if (!split) return;
+
+  const entry = formatExecutionProcessEntry({
+    title: "执行说明",
+    text: split.narrative,
+  });
+  const previous = activeExecutionProcess[activeExecutionProcess.length - 1];
+  if (previous !== entry) activeExecutionProcess.push(entry);
+  if (activeExecutionProcess.length > 120) activeExecutionProcess = activeExecutionProcess.slice(-120);
+  activeAssistantMessage.rawText = split.finalText;
+}
+
 function appendExecutionProcess(payload = {}) {
-  const entry = formatExecutionProcessEntry(payload);
+  const capturedText = payload.captureAssistantText ? captureActiveAssistantTextForProcess() : "";
+  const processPayload = capturedText
+    ? { ...payload, text: [payload.text, capturedText].filter(Boolean).join("\n") }
+    : payload;
+  const entry = formatExecutionProcessEntry(processPayload);
   if (!entry) return;
   if (runStateChip?.textContent !== "执行中...") {
     setRunState("thinking", "执行中...");
@@ -3367,16 +3467,27 @@ function createConversationTitle(text) {
 function normalizeConversationMessages(messages) {
   return (Array.isArray(messages) ? messages : [])
     .filter((message) => message && typeof message === "object")
-    .map((message) => ({
-      id: message.id || makeId(),
-      role: ["user", "assistant", "system", "error"].includes(message.role) ? message.role : "system",
-      title: String(message.title || ""),
-      content: String(message.content || ""),
-      executionProcess: Array.isArray(message.executionProcess)
+    .map((message) => {
+      const role = ["user", "assistant", "system", "error"].includes(message.role) ? message.role : "system";
+      const executionProcess = Array.isArray(message.executionProcess)
         ? message.executionProcess.map((item) => String(item || "")).filter(Boolean).slice(-120)
-        : [],
-      timestamp: message.timestamp || new Date().toISOString(),
-    }))
+        : [];
+      const split = role === "assistant" && executionProcess.length
+        ? splitClaudeExecutionNarrative(message.content)
+        : null;
+      if (split) {
+        const entry = formatExecutionProcessEntry({ title: "执行说明", text: split.narrative });
+        if (executionProcess[executionProcess.length - 1] !== entry) executionProcess.push(entry);
+      }
+      return {
+        id: message.id || makeId(),
+        role,
+        title: String(message.title || ""),
+        content: split?.finalText || String(message.content || ""),
+        executionProcess: executionProcess.slice(-120),
+        timestamp: message.timestamp || new Date().toISOString(),
+      };
+    })
     .filter((message) => message.content.trim());
 }
 
@@ -3773,13 +3884,13 @@ function sameProjectPath(a, b) {
 }
 
 function shouldAutoCreateProjectForPrompt(overrides = {}) {
-  const selected = projectSelect.value || "";
   if (overrides.source === "quick-command") return false;
-  if (!selected) return true;
-  if (!isManagedProjectPath(selected)) return true;
   const activeConversation = currentConversationId ? getConversation(currentConversationId) : null;
-  if (!activeConversation) return false;
-  return !sameProjectPath(activeConversation.projectPath, selected);
+  // A prompt must never become a new project folder. That fragments the
+  // native Claude session and makes a follow-up appear to have no history.
+  // Create a workspace only for a genuinely blank first-run state.
+  if (projectSelect.value) return false;
+  return !activeConversation;
 }
 
 async function createManagedProjectFromPrompt(prompt) {
@@ -6284,6 +6395,7 @@ function handlePacket(packet) {
     return true;
   } else if (event === "done") {
     flushAssistantTextBuffer();
+    moveClaudeExecutionNarrativeToProcess();
     if (activeAssistantMessage?.body) {
       renderCompactClaudePanelMessage(formatClaudeCodeToolCallForZh(activeAssistantMessage.rawText || ""), activeAssistantMessage.body, {
         streaming: false,
@@ -6322,14 +6434,13 @@ function attachmentSummary() {
   if (!selectedAttachments.length) return "";
   const lines = selectedAttachments
     .map((item) => {
-      const status = item.path ? `uploaded local path: ${item.path}` : "frontend metadata only; file content was not uploaded";
-      return `- ${item.name} (${formatFileSize(item.size)}, ${item.kind || "file"}): ${status}`;
+      return `- ${item.name} (${formatFileSize(item.size)}, ${item.kind || "file"}): uploaded local path: ${item.path}`;
     })
     .join("\n");
   return [
     "",
     "",
-    "[本次对话包含本地附件元信息。图片可能包含本机上传路径；非图片文件只保留前端元信息，尚未持久化或上传。除非存在可读路径，否则不要声称已经读取文件内容。]",
+    "[本次对话包含已保存到本机便携数据目录的附件。只可读取下方列出的附件路径；除非实际读取成功，否则不要声称已经读取文件内容。]",
     lines,
   ].join("\n");
 }
@@ -6370,6 +6481,7 @@ function makeAttachmentMetadata(item) {
     lastModified: item.lastModified,
     kind: item.kind || (String(item.type || "").startsWith("image/") ? "image" : "file"),
     path: item.path || "",
+    previewPath: item.previewPath || "",
     localPreviewUrl: item.previewUrl || "",
     uploaded: Boolean(item.path),
     localOnly: !item.path,
@@ -6421,6 +6533,8 @@ async function startRun(prompt, overrides = {}) {
   if (!prompt || runController) return;
   overrides = implicitBrowserRunOverrides(prompt, overrides);
   const authorizationContinuation = overrides.authorizationContinuation === true;
+  const authorizationOriginalUserMessageRecorded =
+    authorizationContinuation && overrides.authorizationOriginalUserMessageRecorded === true;
   const authorizationAttempts = { ...(overrides.authorizationAttempts || {}) };
   const projectReady = await ensureProjectForPrompt(prompt, overrides);
   if (!projectReady) return;
@@ -6431,6 +6545,36 @@ async function startRun(prompt, overrides = {}) {
   }
 
   const permissionConfig = modeNotes[overrides.permissionProfile || activeMode] || modeNotes.safe;
+  if (needsDesktopOpenAuthorization(prompt, overrides)) {
+    pendingToolAuthorization = {
+      sheet: toolAuthorizationSheet,
+      type: "file",
+      task: {
+        prompt,
+        overrides: { ...overrides },
+        authorizationAttempts,
+        conversationId: currentConversationId,
+        userMessageRecorded: false,
+      },
+    };
+    openToolAuthorizationSheet("file");
+    return;
+  }
+  if (needsCommandAuthorization(prompt, overrides, permissionConfig)) {
+    pendingToolAuthorization = {
+      sheet: toolAuthorizationSheet,
+      type: "command",
+      task: {
+        prompt,
+        overrides: { ...overrides },
+        authorizationAttempts,
+        conversationId: currentConversationId,
+        userMessageRecorded: false,
+      },
+    };
+    openToolAuthorizationSheet("command");
+    return;
+  }
   if (permissionConfig.highRisk && highRiskToolsLocked) {
     addMessage("error", "权限已锁定", "高权限工具当前未启用，无法执行授权修改或专家命令模式。");
     return;
@@ -6463,7 +6607,7 @@ async function startRun(prompt, overrides = {}) {
   const finalPrompt = `${prompt}${attachmentSummary()}`;
   const outgoingAttachments = selectedAttachments.map(makeAttachmentMetadata);
   inspectPromptForPetMood(prompt);
-  if (!authorizationContinuation) createOrUpdateProjectConversation(finalPrompt, prompt);
+  if (!authorizationOriginalUserMessageRecorded) createOrUpdateProjectConversation(finalPrompt, prompt);
   activeRunConversationId = currentConversationId;
   activeAuthorizationRun = {
     prompt: finalPrompt,
@@ -6477,12 +6621,16 @@ async function startRun(prompt, overrides = {}) {
       riskAccepted,
     },
   };
-  if (!authorizationContinuation) {
+  updateActiveRunConversation({
+    lastToolProfile: overrides.toolProfile || permissionConfig.toolProfile,
+    lastPermissionProfile: overrides.permissionProfile || activeMode,
+  });
+  if (!authorizationOriginalUserMessageRecorded) {
     appendActiveRunConversationMessage("user", "你", finalPrompt);
     addMessage("user", "你", finalPrompt);
   }
-  if (!authorizationContinuation && selectedAttachments.length) {
-    addMessage("system", "附件", "已把附件元信息随本次消息发送给 Claude Code；未上传的文件只保留前端元信息。");
+  if (!authorizationOriginalUserMessageRecorded && selectedAttachments.length) {
+    addMessage("system", "附件", "附件已保存到本机便携数据目录，并已随本次消息提供给 Claude Code 读取。");
   }
   modelInput.value = modelInput.value.trim();
   window.localStorage.setItem(modelStorageKey, modelInput.value);
@@ -6527,13 +6675,15 @@ async function startRun(prompt, overrides = {}) {
           ? "once"
         : "none");
     const activeConversation = currentConversationId ? getConversation(currentConversationId) : null;
-    const resumeSessionId = activeConversation?.nativeSessionId || "";
+    const resumeSessionId = String(overrides.resumeSessionId || activeConversation?.nativeSessionId || "").trim();
     const continueSession = Object.prototype.hasOwnProperty.call(overrides, "continueSession")
       ? Boolean(overrides.continueSession)
       : Boolean(resumeSessionId);
     const requestOverrides = { ...overrides };
     delete requestOverrides.authorizationContinuation;
+    delete requestOverrides.authorizationOriginalUserMessageRecorded;
     delete requestOverrides.authorizationAttempts;
+    delete requestOverrides.resumeSessionId;
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6753,7 +6903,7 @@ function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("读取图片失败"));
+    reader.onerror = () => reject(new Error("读取附件失败"));
     reader.readAsDataURL(file);
   });
 }
@@ -6765,7 +6915,7 @@ function clipboardImageFiles(event) {
     .filter(Boolean);
 }
 
-async function uploadImageFile(file) {
+async function uploadAttachmentFile(file) {
   const dataUrl = await fileToDataUrl(file);
   const response = await fetch("/api/upload", {
     method: "POST",
@@ -6783,7 +6933,7 @@ async function uploadImageFile(file) {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.files?.[0]) {
-    throw new Error(result.error || "图片上传失败");
+    throw new Error(result.error || "附件上传失败");
   }
   return result.files[0];
 }
@@ -6794,46 +6944,31 @@ async function addAttachmentFile(file) {
     return;
   }
   if (file.size > maxUploadBytes) {
-    addMessage("error", "文件过大", `${file.name} 文件过大，最大支持 25MB`);
+    addMessage("error", "文件过大", `${file.name} 文件过大，最大支持 20MB`);
     return;
   }
 
   const isImage = isImageFile(file);
   const previewUrl = isImage ? URL.createObjectURL(file) : "";
 
-  if (!isImage) {
-    selectedAttachments.push({
-      id: makeId(),
-      name: file.name,
-      size: file.size,
-      type: file.type || "application/octet-stream",
-      lastModified: file.lastModified,
-      kind: "file",
-      file,
-      previewUrl,
-      path: "",
-      localOnly: true,
-    });
-    return;
-  }
-
   try {
-    const uploaded = await uploadImageFile(file);
+    const uploaded = await uploadAttachmentFile(file);
     selectedAttachments.push({
       id: uploaded.id || makeId(),
       name: uploaded.name || file.name,
       size: uploaded.size || file.size,
       type: uploaded.mimeType || file.type,
       lastModified: file.lastModified,
-      kind: "image",
+      kind: isImage ? "image" : "file",
       file,
       path: uploaded.path || "",
+      previewPath: uploaded.previewPath || "",
       previewUrl,
-      localOnly: !uploaded.path,
+      localOnly: false,
     });
   } catch (error) {
     URL.revokeObjectURL(previewUrl);
-    addMessage("error", "图片上传失败", error.message || "图片上传失败");
+    addMessage("error", "附件上传失败", error.message || "附件上传失败");
   }
 }
 

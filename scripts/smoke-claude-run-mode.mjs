@@ -24,7 +24,7 @@ function makeMockClaude(dir) {
     "}",
     "const tools = process.argv[process.argv.indexOf('--tools') + 1] || '';",
     "const allowedTools = process.argv[process.argv.indexOf('--allowedTools') + 1] || '';",
-    "if (!tools.includes('WebFetch') || !tools.includes('WebSearch') || !allowedTools.includes('WebFetch') || !allowedTools.includes('WebSearch')) {",
+    "if (!tools.includes('mcp__superclaw_web_research__web_fetch') || !tools.includes('mcp__superclaw_web_research__web_search') || !allowedTools.includes('mcp__superclaw_web_research__web_fetch') || !allowedTools.includes('mcp__superclaw_web_research__web_search')) {",
     "  console.error('missing all-mode read-only web research tools');",
     "  process.exit(3);",
     "}",
@@ -150,7 +150,7 @@ assert(server.includes('args.push("--append-system-prompt", CLAUDE_USER_LANGUAGE
 assert(server.includes("function buildClaudeUserPrompt"), "native branch must wrap user prompt for default Chinese output");
 assert(server.includes("Reply to the user in Simplified Chinese by default."), "native user prompt wrapper must require Simplified Chinese");
 assert(server.includes("const claudeUserPrompt = buildClaudeUserPrompt(prompt);"), "native run must build language-wrapped prompt");
-assert(server.includes('"WebFetch"') && server.includes('"WebSearch"'), "browser mode must expose read-only web search and fetch tools");
+assert(server.includes('mcp__superclaw_web_research__web_fetch') && server.includes('mcp__superclaw_web_research__web_search'), "every mode must expose SuperClaw read-only web research tools");
 
 const mockDir = fs.mkdtempSync(path.join(os.tmpdir(), "mock-claude-run-"));
 const mockCommand = makeMockClaude(mockDir);
@@ -215,6 +215,9 @@ try {
   assert(portableMcp.mcpServers?.playwright?.superclawManaged === true, "portable Playwright MCP was not configured");
   assert(fs.existsSync(portableMcp.mcpServers.playwright.command), "portable Playwright MCP node path is invalid");
   assert(fs.existsSync(portableMcp.mcpServers.playwright.args[0]), "portable Playwright MCP entry path is invalid");
+  assert(portableMcp.mcpServers?.superclaw_web_research?.superclawManaged === true, "portable web research MCP was not configured");
+  assert(fs.existsSync(portableMcp.mcpServers.superclaw_web_research.command), "portable web research MCP node path is invalid");
+  assert(fs.existsSync(portableMcp.mcpServers.superclaw_web_research.args[0]), "portable web research MCP entry path is invalid");
 
   const takeover = await request(port, "POST", "/api/run", {
     prompt: "Take over the browser.",
