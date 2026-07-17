@@ -11621,6 +11621,26 @@ const handlers = {
     return json
   },
 
+  async hermes_save_document_attachment({ id, fileName, mimeType, data } = {}) {
+    const safeId = String(id || '')
+    const safeName = path.basename(String(fileName || ''))
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(safeId)) throw new Error('Invalid document identifier')
+    if (!/^[A-Za-z0-9._ -]+\.(xlsx|docx|pdf)$/i.test(safeName)) {
+      throw new Error('Only .xlsx, .docx, and .pdf documents are supported')
+    }
+    const raw = String(data || '')
+    const encoded = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw
+    const bytes = Buffer.from(encoded, 'base64')
+    if (!bytes.length || bytes.length > 20 * 1024 * 1024) {
+      throw new Error('Document must be between 1 byte and 20MB')
+    }
+    const uploads = path.join(hermesHome(), 'workspace', 'uploads')
+    fs.mkdirSync(uploads, { recursive: true })
+    const target = path.join(uploads, `${safeId}-${safeName}`)
+    fs.writeFileSync(target, bytes)
+    return { path: target, fileName: safeName, mimeType: String(mimeType || '') }
+  },
+
   async hermes_agent_run({ input, sessionId, conversationHistory, instructions, attachments, agentName, agent_name } = {}) {
     // Web 模式下简化实现：POST /v1/runs 然后轮询或直接返回
     await handlers._hermesEnsureGatewayReady()
@@ -13648,14 +13668,31 @@ function _normalizeHermesImageDetail(detail) {
   return undefined
 }
 
+function hermesDocumentToolPath() {
+  for (const candidate of [
+    path.join(appRootDir(), 'resources', 'runtime', 'document-tools', 'hermes_document_tool.py'),
+    path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'document-tools', 'hermes_document_tool.py'),
+  ]) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return ''
+}
+
 function _buildHermesRunInput(input, attachments = []) {
-  const text = String(input || '').trim()
+  let text = String(input || '').trim()
   const parts = []
   if (text) parts.push({ type: 'text', text })
+  const documents = []
 
   for (const item of Array.isArray(attachments) ? attachments : []) {
     const category = String(item?.category || item?.type || '').toLowerCase()
     const mimeType = String(item?.mimeType || item?.mediaType || item?.mime || 'image/png')
+    if (category === 'document' || category === 'file') {
+      const fileName = path.basename(String(item?.fileName || item?.name || ''))
+      const savedPath = String(item?.savedPath || item?.localPath || item?.filePath || item?.path || '')
+      if (savedPath && /\.(xlsx|docx|pdf)$/i.test(fileName)) documents.push({ fileName, savedPath })
+      continue
+    }
     if (category !== 'image' && !mimeType.toLowerCase().startsWith('image/')) continue
 
     let url = String(item?.url || item?.dataUrl || '').trim()
@@ -13671,8 +13708,17 @@ function _buildHermesRunInput(input, attachments = []) {
     parts.push({ type: 'image_url', image_url: imageUrl })
   }
 
+  if (documents.length) {
+    const python = hermesPortablePython() || 'python'
+    const tool = hermesDocumentToolPath()
+    const files = documents.map(item => `- ${item.fileName}: ${item.savedPath}`).join('\n')
+    text += `\n\n[SuperClaw attached documents]\n${files}\nUse the terminal and bundled document tool to inspect or edit only these files. Command: "${python}" "${tool}" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. Report the output path after verification.\n[/SuperClaw attached documents]`
+  }
+
   const hasImage = parts.some(part => part.type === 'image_url')
   if (!hasImage) return text
+  const textPart = parts.find(part => part.type === 'text')
+  if (textPart) textPart.text = text
   if (!parts.some(part => part.type === 'text')) {
     parts.unshift({ type: 'text', text: '请分析我刚刚上传或粘贴的图片。' })
   }

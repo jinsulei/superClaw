@@ -4861,14 +4861,77 @@ fn normalize_image_detail(detail: Option<String>) -> Option<String> {
     }
 }
 
+fn safe_hermes_document_name(name: &str) -> Option<String> {
+    let value = name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ' '))
+        .collect::<String>();
+    let extension = Path::new(&value)
+        .extension()
+        .and_then(|item| item.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if value.is_empty() || !matches!(extension.as_str(), "xlsx" | "docx" | "pdf") {
+        return None;
+    }
+    Some(value)
+}
+
+fn hermes_document_tool_path() -> PathBuf {
+    if let Some(resources) = super::app_resources_dir() {
+        let packaged = resources.join("runtime").join("document-tools").join("hermes_document_tool.py");
+        if packaged.exists() {
+            return packaged;
+        }
+    }
+    app_root_dir()
+        .join("src-tauri")
+        .join("resources")
+        .join("runtime")
+        .join("document-tools")
+        .join("hermes_document_tool.py")
+}
+
+#[tauri::command]
+pub async fn hermes_save_document_attachment(
+    id: String,
+    file_name: String,
+    mime_type: Option<String>,
+    data: String,
+) -> Result<Value, String> {
+    use base64::Engine as _;
+    let safe_name = safe_hermes_document_name(&file_name)
+        .ok_or("仅支持 .xlsx、.docx 或 .pdf 文档")?;
+    if id.len() > 80 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
+        return Err("文档标识格式无效".into());
+    }
+    let encoded = data.split_once(',').map(|(_, value)| value).unwrap_or(&data);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|e| format!("文档 base64 解码失败: {e}"))?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("文档不能超过 20MB".into());
+    }
+    let uploads = hermes_home().join("workspace").join("uploads");
+    std::fs::create_dir_all(&uploads).map_err(|e| format!("创建 Hermes 文档目录失败: {e}"))?;
+    let target = uploads.join(format!("{id}-{safe_name}"));
+    std::fs::write(&target, bytes).map_err(|e| format!("保存 Hermes 文档失败: {e}"))?;
+    Ok(serde_json::json!({
+        "path": target.to_string_lossy(),
+        "fileName": safe_name,
+        "mimeType": mime_type.unwrap_or_default(),
+    }))
+}
+
 fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
-    let text = input.trim();
+    let mut text = input.trim().to_string();
     let mut parts: Vec<Value> = Vec::new();
     if !text.is_empty() {
         parts.push(serde_json::json!({ "type": "text", "text": text }));
     }
 
     if let Some(items) = attachments.as_ref().and_then(|v| v.as_array()) {
+        let mut documents = Vec::new();
         for item in items {
             let category = json_string_field(item, &["category", "type"]).to_ascii_lowercase();
             let mime_type = {
@@ -4879,6 +4942,14 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
                     mime
                 }
             };
+            if matches!(category.as_str(), "document" | "file") {
+                let path = json_string_field(item, &["savedPath", "localPath", "filePath", "path"]);
+                let name = json_string_field(item, &["fileName", "name"]);
+                if !path.is_empty() && safe_hermes_document_name(&name).is_some() {
+                    documents.push((name, path));
+                }
+                continue;
+            }
             if category != "image" && !mime_type.to_ascii_lowercase().starts_with("image/") {
                 continue;
             }
@@ -4913,13 +4984,35 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
                 "image_url": Value::Object(image_url)
             }));
         }
+        if !documents.is_empty() {
+            let list = documents
+                .iter()
+                .map(|(name, path)| format!("- {name}: {path}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tool_path = hermes_document_tool_path();
+            let python_path = hermes_agent_python()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_else(|| "python".to_string());
+            let note = format!(
+                "\n\n[SuperClaw attached documents]\n{list}\nUse the terminal and the bundled document tool to inspect or edit only these files. Command: \"{python_path}\" \"{}\" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. Report the output path after verification.\n[/SuperClaw attached documents]",
+                tool_path.to_string_lossy(),
+            );
+            text.push_str(&note);
+        }
     }
 
     let has_image = parts
         .iter()
         .any(|part| part.get("type").and_then(|v| v.as_str()) == Some("image_url"));
     if !has_image {
-        return Value::String(text.to_string());
+        return Value::String(text);
+    }
+    if let Some(text_part) = parts
+        .iter_mut()
+        .find(|part| part.get("type").and_then(|value| value.as_str()) == Some("text"))
+    {
+        *text_part = serde_json::json!({ "type": "text", "text": text });
     }
     if !parts
         .iter()
@@ -8318,5 +8411,82 @@ platforms:
             !patched.contains("enabled: false"),
             "disabled marker should have been removed"
         );
+    }
+}
+
+#[cfg(test)]
+mod document_attachment_tests {
+    use super::{build_hermes_run_input, hermes_save_document_attachment, safe_hermes_document_name};
+    use base64::Engine as _;
+    use serde_json::json;
+
+    #[test]
+    fn only_allows_supported_document_extensions() {
+        assert_eq!(safe_hermes_document_name("report.xlsx"), Some("report.xlsx".into()));
+        assert_eq!(safe_hermes_document_name("notes.docx"), Some("notes.docx".into()));
+        assert_eq!(safe_hermes_document_name("scan.pdf"), Some("scan.pdf".into()));
+        assert_eq!(safe_hermes_document_name("payload.exe"), None);
+        assert_eq!(safe_hermes_document_name("../escape.pdf"), Some("..escape.pdf".into()));
+    }
+
+    #[test]
+    fn document_context_reaches_the_native_hermes_turn() {
+        let attachments = Some(json!([
+            {
+                "category": "document",
+                "fileName": "report.xlsx",
+                "savedPath": "relative/workspace/uploads/report.xlsx"
+            }
+        ]));
+        let input = build_hermes_run_input("请整理这份表格", &attachments);
+        let text = input.as_str().expect("document-only input stays text");
+        assert!(text.contains("请整理这份表格"));
+        assert!(text.contains("[SuperClaw attached documents]"));
+        assert!(text.contains("report.xlsx"));
+        assert!(text.contains("hermes_document_tool.py"));
+        assert!(text.contains("--output"));
+    }
+
+    #[test]
+    fn document_context_is_preserved_when_an_image_is_attached_too() {
+        let attachments = Some(json!([
+            {
+                "category": "document",
+                "fileName": "report.docx",
+                "savedPath": "relative/workspace/uploads/report.docx"
+            },
+            {
+                "category": "image",
+                "mimeType": "image/png",
+                "data": "iVBORw0KGgo="
+            }
+        ]));
+        let input = build_hermes_run_input("比较附件", &attachments);
+        let parts = input[0]["content"].as_array().expect("mixed input is multimodal");
+        let text = parts
+            .iter()
+            .find(|part| part["type"] == "text")
+            .and_then(|part| part["text"].as_str())
+            .expect("text part exists");
+        assert!(text.contains("report.docx"));
+        assert!(text.contains("[SuperClaw attached documents]"));
+    }
+
+    #[tokio::test]
+    async fn native_document_attachment_command_saves_only_a_scoped_upload() {
+        let id = format!("hermes-document-test-{}", std::process::id());
+        let payload = base64::engine::general_purpose::STANDARD.encode(b"test workbook bytes");
+        let result = hermes_save_document_attachment(
+            id.clone(),
+            "report.xlsx".into(),
+            Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into()),
+            format!("data:application/octet-stream;base64,{payload}"),
+        )
+        .await
+        .expect("native document attachment is saved");
+        let saved = result["path"].as_str().expect("saved path");
+        assert!(saved.ends_with("report.xlsx"));
+        assert_eq!(std::fs::read(saved).expect("read saved document"), b"test workbook bytes");
+        std::fs::remove_file(saved).expect("remove test upload");
     }
 }

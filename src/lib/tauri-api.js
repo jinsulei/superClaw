@@ -518,6 +518,7 @@ export const api = {
   hermesGatewayAction: (action) => invoke('hermes_gateway_action', { action }),
   hermesHealthCheck: () => invoke('hermes_health_check'),
   hermesApiProxy: (method, path, body, headers) => invoke('hermes_api_proxy', { method, path, body: body || null, headers: headers || null }),
+  hermesSaveDocumentAttachment: (id, fileName, mimeType, data) => invoke('hermes_save_document_attachment', { id, fileName, mimeType: mimeType || null, data }),
   hermesAgentRun: (input, sessionId, conversationHistory, instructions, attachments, options = {}) => invoke('hermes_agent_run', {
     input,
     sessionId: sessionId || null,

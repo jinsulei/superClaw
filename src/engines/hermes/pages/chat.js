@@ -1093,6 +1093,10 @@ function isReadableTextFile(file) {
   return /\.(txt|md|markdown|json|csv|log|yaml|yml|toml|ini|xml|html|css|js|jsx|ts|tsx|py|rs|go|java|sql|sh|bat|cmd|ps1)$/i.test(file?.name || '')
 }
 
+function isSupportedHermesDocument(file) {
+  return /\.(xlsx|docx|pdf)$/i.test(String(file?.name || ''))
+}
+
 // ----------------------------------------------------------- icons
 
 const ICONS = {
@@ -2215,7 +2219,11 @@ export function render() {
       const mime = String(att?.mimeType || att?.mediaType || att?.mime || '').toLowerCase()
       return category === 'image' || mime.startsWith('image/') || !!att?.mediaPath
     })
-    if (!images.length) return ''
+    const documents = (attachments || []).filter(att => {
+      const category = String(att?.category || att?.type || '').toLowerCase()
+      return category === 'document' || /\.(xlsx|docx|pdf)$/i.test(String(att?.fileName || att?.name || ''))
+    })
+    if (!images.length && !documents.length) return ''
     return `
       <div class="hm-chat-attachments">
         ${images.map(att => {
@@ -2238,6 +2246,11 @@ export function render() {
             </figure>
           `
         }).join('')}
+        ${documents.map(att => `
+          <div class="hm-chat-document-card" title="${escAttr(att.savedPath || att.filePath || '')}">
+            <span class="hm-chat-document-name">${escHtml(att.fileName || att.name || 'document')}</span>
+          </div>
+        `).join('')}
       </div>
     `
   }
@@ -2467,7 +2480,7 @@ export function render() {
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
-            <input id="hm-chat-file-input" type="file" multiple hidden>
+            <input id="hm-chat-file-input" type="file" accept="image/*,.txt,.md,.json,.csv,.xlsx,.docx,.pdf" multiple hidden>
           </div>
         </div>
       </div>
@@ -3230,7 +3243,8 @@ export function render() {
     if (linkBusy) return
     const isImage = file?.type?.startsWith('image/')
     const isText = isReadableTextFile(file)
-    if (!isImage && !isText) {
+    const isDocument = isSupportedHermesDocument(file)
+    if (!isImage && !isText && !isDocument) {
       linkError = '请选择图片或常见文本文件'
       toast(linkError, 'warning')
       draw()
@@ -3238,6 +3252,7 @@ export function render() {
     }
     const maxImageBytes = 8 * 1024 * 1024
     const maxTextBytes = 1024 * 1024
+    const maxDocumentBytes = 20 * 1024 * 1024
     if (isImage && file.size > maxImageBytes) {
       linkError = '图片过大，请选择 8MB 以内的图片'
       toast(linkError, 'warning')
@@ -3246,6 +3261,12 @@ export function render() {
     }
     if (isText && file.size > maxTextBytes) {
       linkError = '文件过大，请选择 1MB 以内的文本文件'
+      toast(linkError, 'warning')
+      draw()
+      return
+    }
+    if (isDocument && file.size > maxDocumentBytes) {
+      linkError = 'Document exceeds 20MB'
       toast(linkError, 'warning')
       draw()
       return
@@ -3276,6 +3297,18 @@ export function render() {
           '请直接调用可用的视觉/图片读取能力分析该图片，不要等待用户再次确认；普通文本对话不要主动启用视觉。',
           '如果当前模型或工具链不支持图片识别，请用中文明确说明当前无法看图。',
         ].join('\n')
+      } else if (isDocument) {
+        const dataUrl = await readFileAsDataUrl(file)
+        const documentId = `hermes-document-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        const saved = await api.hermesSaveDocumentAttachment(documentId, file.name, file.type || '', dataUrl)
+        pendingAttachments.push({
+          category: 'document',
+          type: 'document',
+          mimeType: saved?.mimeType || file.type || '',
+          fileName: saved?.fileName || file.name,
+          savedPath: saved?.path || '',
+        })
+        nextInstructions = 'The user attached a document. Use the bundled Hermes document tool to preview or edit only this file. Save edits as a new file and verify the output.'
       } else {
         const content = await readFileAsText(file)
         block = formatSelectedFileForPrompt(file, content)

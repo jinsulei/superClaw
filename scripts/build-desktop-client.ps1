@@ -432,7 +432,7 @@ function Test-PackagedHermesRuntime([string]$PackagedResources, [string]$PythonE
     $env:HERMES_HOME = Join-Path $PackagedResources "data\hermes"
     $env:HERMES_DISABLE_UPDATE_CHECK = "1"
     $env:PYTHONNOUSERSITE = "1"
-    & $PythonExe -c "import hermes_cli.main; import aiohttp; print('HERMES_RUNTIME_OK')" | Out-Null
+    & $PythonExe -c "import hermes_cli.main; import aiohttp; import openpyxl; import docx; import pypdf; import reportlab; print('HERMES_RUNTIME_OK')" | Out-Null
     return ($LASTEXITCODE -eq 0)
   } finally {
     Restore-EnvValue "PYTHONPATH" $OldPythonPath
@@ -477,9 +477,9 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
 
     $ToolPython = Join-Path $ToolHome "Scripts\python.exe"
     Assert-File $ToolPython "Portable Hermes venv Python"
-    & $UvExe pip install --python $ToolPython aiohttp
+    & $UvExe pip install --python $ToolPython aiohttp openpyxl python-docx pypdf reportlab
     if ($LASTEXITCODE -ne 0) {
-      throw "Failed to install portable Hermes API server dependency: aiohttp"
+      throw "Failed to install portable Hermes API/document dependencies"
     }
   } finally {
     Restore-EnvValue "UV_TOOL_DIR" $OldToolDir
@@ -1537,6 +1537,7 @@ Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\super
 Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\superclaw-video-analysis\SKILL.md") "Packaged SuperClaw video analysis workflow skill"
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
+Assert-File (Join-Path $PackagedResources "runtime\document-tools\hermes_document_tool.py") "Hermes portable document tool"
 Assert-File (Join-Path $PackagedResources "data\hermes\SOUL.md") "Packaged Hermes identity SOUL.md"
 Assert-File (Join-Path $PackagedResources "data\hermes\plugins\desktop_control_bridge\__init__.py") "Packaged Hermes desktop control bridge plugin"
 Assert-File (Join-Path $PackagedResources "runtime\git\bin\bash.exe") "Packaged Git Bash for Hermes terminal"

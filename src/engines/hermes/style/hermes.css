@@ -5623,6 +5623,24 @@ body[data-active-engine="hermes"][data-theme="dark"] {
   font-size: 10.5px;
 }
 
+[data-engine="hermes"] .hm-chat-document-card {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--hm-accent) 28%, transparent);
+  border-radius: var(--hm-radius-sm);
+  background: color-mix(in srgb, var(--hm-surface-0) 88%, var(--hm-accent) 12%);
+  color: var(--hm-text-primary);
+  font-size: 12px;
+}
+
+[data-engine="hermes"] .hm-chat-document-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 [data-engine="hermes"] .hm-chat-media-status {
   padding: 8px 10px;
   color: var(--hm-text-tertiary);
