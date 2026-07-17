@@ -50,6 +50,7 @@ const OFFICIAL_CLAUDE_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official";
 const EXTENSION_SEARCH_TTL_MS = 10 * 60 * 1000;
 const EXTENSION_SEARCH_LIMIT = 40;
 const extensionSearches = new Map();
+const CLAUDE_PLUGIN_CACHE_DIR = path.join(CLAUDE_RUNTIME_CONFIG_DIR, "plugins", "cache");
 const SUPERCLAW_PANEL_CONFIG_PATH = process.env.SUPERCLAW_PANEL_CONFIG_PATH || "";
 const LOCAL_LOG_FILES = ["panel.err.log", "panel.log", "relay-ui-test.err.log", "relay-test.err.log"];
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
@@ -2270,6 +2271,59 @@ async function handleExtensionSearch(req, res) {
       results,
       marketplaces: marketplaces.map((item) => ({ name: item.name, source: item.source, repo: item.repo || "" })),
     });
+function samePortablePath(left, right) {
+  return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
+}
+
+function portablePluginCacheTarget(candidate) {
+  const marketplace = String(candidate?.marketplace || candidate?.marketplaceName || "").trim();
+  const pluginName = String(candidate?.name || "").trim();
+  if (!marketplace || !pluginName) return "";
+  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
+  const target = path.resolve(cacheRoot, marketplace, pluginName);
+  return isSameOrInside(target, cacheRoot) ? target : "";
+}
+
+function recoverEmptyPluginInstallTarget(errorOutput, candidate) {
+  const candidateRoot = portablePluginCacheTarget(candidate);
+  if (!candidateRoot) return false;
+
+  const renameMatch = String(errorOutput || "").match(/rename\s+'([^']+)'\s*->\s*'([^']+)'/i);
+  if (!renameMatch) return false;
+  const cacheRoot = path.resolve(CLAUDE_PLUGIN_CACHE_DIR);
+  const temporarySource = path.resolve(renameMatch[1]);
+  const target = path.resolve(renameMatch[2]);
+  const isCandidateRoot = samePortablePath(target, candidateRoot);
+  const isVersionTarget = path.dirname(target) === candidateRoot;
+  if (
+    (!isCandidateRoot && !isVersionTarget) ||
+    !isSameOrInside(temporarySource, cacheRoot) ||
+    path.dirname(temporarySource) !== cacheRoot ||
+    !path.basename(temporarySource).startsWith("temp_local_") ||
+    !fs.existsSync(target)
+  ) {
+    return false;
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(target);
+  } catch {
+    return false;
+  }
+  if (entries.length !== 0) return false;
+
+  fs.rmSync(target, { recursive: true, force: true });
+  if (fs.existsSync(temporarySource)) fs.rmSync(temporarySource, { recursive: true, force: true });
+  return true;
+}
+
+async function installPortableMarketplacePlugin(pluginId, candidate) {
+  let install = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+  if (install.code === 0 || !recoverEmptyPluginInstallTarget(install.output, candidate)) return install;
+  return runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+}
+
   } catch (error) {
     sendJson(res, 400, { error: error.message || "扩展搜索失败" });
   }
@@ -2288,7 +2342,7 @@ async function handleExtensionInstall(req, res) {
     const pluginId = normalizePluginSpec(payload.pluginId);
     const candidate = search.results.find((item) => item.id === pluginId);
     if (!candidate) throw new Error("请选择当前搜索结果中的插件或 Skill 包");
-    const install = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+    const install = await installPortableMarketplacePlugin(pluginId, candidate);
     if (install.code !== 0) throw new Error(install.output || "插件安装失败");
     const catalog = await getPluginCatalog();
     const ids = installedPluginIds(catalog.installed);
@@ -2359,7 +2413,7 @@ async function handlePluginInstall(req, res) {
     const candidate = catalog.available.find((item) => item.pluginId === plugin || item.name === plugin);
     if (!candidate) throw new Error("插件不在已配置 Marketplace 中，请先搜索并从候选列表选择");
     const pluginId = String(candidate.pluginId || `${candidate.name}@${candidate.marketplaceName}`);
-    const result = await runPortableClaudeCommand(["plugin", "install", pluginId, "--scope", "user"], { timeoutMs: 150000 });
+    const result = await installPortableMarketplacePlugin(pluginId, candidate);
     if (result.code !== 0) throw new Error(result.output || "插件安装失败");
     const installed = installedPluginIds((await getPluginCatalog()).installed);
     if (!installed.has(pluginId) && !installed.has(candidate.name)) throw new Error("插件安装后未通过 Claude Code 列表核验");
