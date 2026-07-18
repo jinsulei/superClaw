@@ -92,6 +92,74 @@ def replace_excel(source: Path, output: Path, find: str, replace: str) -> dict:
     return {"ok": True, "kind": "excel", "output": str(output), "changed": changed}
 
 
+def clean_excel(source: Path, output: Path) -> dict:
+    """Clear empty-cell residue without changing values, formulas, or merged content."""
+    from openpyxl import load_workbook
+    from openpyxl.cell.cell import MergedCell
+    from openpyxl.utils import column_index_from_string
+
+    workbook = load_workbook(source, data_only=False)
+    total_removed_cells = 0
+    total_removed_dimensions = 0
+    sheets = []
+
+    for sheet in workbook.worksheets:
+        content_rows = set()
+        content_columns = set()
+        stale_cells = []
+        cells = list(sheet._cells.items())
+        merged_ranges = tuple(sheet.merged_cells.ranges)
+
+        def is_merged(cell) -> bool:
+            if isinstance(cell, MergedCell):
+                return True
+            return any(cell.coordinate in merged for merged in merged_ranges)
+
+        for (row, column), cell in cells:
+            value = cell.value
+            has_content = value is not None and (not isinstance(value, str) or value.strip() != "")
+            has_content = has_content or cell.comment is not None or cell.hyperlink is not None
+            if has_content:
+                content_rows.add(row)
+                content_columns.add(column)
+            elif not is_merged(cell):
+                stale_cells.append((row, column))
+
+        for key in stale_cells:
+            del sheet._cells[key]
+        total_removed_cells += len(stale_cells)
+
+        for row in list(sheet.row_dimensions):
+            if row not in content_rows:
+                del sheet.row_dimensions[row]
+                total_removed_dimensions += 1
+        for column in list(sheet.column_dimensions):
+            try:
+                index = column_index_from_string(column.split(":", 1)[0])
+            except ValueError:
+                continue
+            if index not in content_columns:
+                del sheet.column_dimensions[column]
+                total_removed_dimensions += 1
+
+        sheets.append({
+            "name": sheet.title,
+            "contentRows": len(content_rows),
+            "contentColumns": len(content_columns),
+            "removedBlankCells": len(stale_cells),
+        })
+
+    workbook.save(output)
+    return {
+        "ok": True,
+        "kind": "excel",
+        "output": str(output),
+        "removedBlankCells": total_removed_cells,
+        "removedBlankDimensions": total_removed_dimensions,
+        "sheets": sheets,
+    }
+
+
 def replace_word(source: Path, output: Path, find: str, replace: str) -> dict:
     from docx import Document
 
@@ -143,7 +211,7 @@ def watermark_pdf(source: Path, output: Path, text: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="SuperClaw Hermes offline document tool")
-    parser.add_argument("command", choices=["preview", "replace", "watermark"])
+    parser.add_argument("command", choices=["preview", "replace", "clean-excel", "watermark"])
     parser.add_argument("input", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--find", default="")
@@ -163,6 +231,8 @@ def main() -> int:
             kind = document_kind(source)
             if args.command == "replace" and kind == "excel":
                 result = replace_excel(source, output, args.find, args.replace)
+            elif args.command == "clean-excel" and kind == "excel":
+                result = clean_excel(source, output)
             elif args.command == "replace" and kind == "word":
                 result = replace_word(source, output, args.find, args.replace)
             elif args.command == "watermark" and kind == "pdf":
