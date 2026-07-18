@@ -48,6 +48,19 @@ function sanitizeAgentMarkdownUrl(url) {
   }
 }
 
+function sanitizeAgentMarkdownImageUrl(url) {
+  const raw = String(url || '').trim().replace(/&amp;/gi, '&')
+  if (!raw) return ''
+  if (raw.startsWith('/') && !raw.startsWith('//')) return raw
+  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i.test(raw)) return raw
+  try {
+    const parsed = new URL(raw, 'https://superclaw.local')
+    return ['http:', 'https:', 'tauri:', 'asset:'].includes(parsed.protocol) ? raw : ''
+  } catch {
+    return ''
+  }
+}
+
 function unwrapOuterMarkdownFence(value) {
   const text = normalizeText(value)
   if (!text) return ''
@@ -244,7 +257,11 @@ function isListLine(line) {
 function renderInline(rawText) {
   const escaped = escapeHtml(rawText)
   return escaped
-    .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, '<span class="agent-message-image-ref">$1</span>')
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_, alt, url) => {
+      const safeUrl = sanitizeAgentMarkdownImageUrl(url)
+      if (!safeUrl) return `<span class="agent-message-image-ref">${alt || 'image unavailable'}</span>`
+      return `<img class="agent-message-markdown-image" src="${escapeHtml(safeUrl)}" alt="${alt}" loading="lazy" referrerpolicy="no-referrer">`
+    })
     .replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (_, label, url) => `<a class="agent-message-link" href="${escapeHtml(sanitizeAgentMarkdownUrl(url))}" target="_blank" rel="noreferrer">${label}</a>`)
     .replace(/`([^`]+)`/g, '<code class="agent-message-inline-code">$1</code>')
     .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong class="agent-message-strong"><em>$1</em></strong>')
@@ -254,16 +271,20 @@ function renderInline(rawText) {
 }
 
 function isGfmTableSeparatorLine(line) {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || '').trim())
+  const value = String(line || '').replace(/[｜]/g, '|').replace(/[—–]/g, '-').trim()
+  // Providers often return a compact table divider (`--`) or Unicode dashes.
+  // Treat those as the same GFM structure so the final renderer does not fall
+  // back to showing the original pipe-delimited text.
+  return /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(value)
 }
 
 function isGfmTableRowLine(line) {
-  const value = String(line || '').trim()
+  const value = String(line || '').replace(/[｜]/g, '|').trim()
   return value.includes('|') && !isGfmTableSeparatorLine(value)
 }
 
 function splitGfmTableRow(line) {
-  let value = String(line || '').trim()
+  let value = String(line || '').replace(/[｜]/g, '|').trim()
   if (value.startsWith('|')) value = value.slice(1)
   if (value.endsWith('|')) value = value.slice(0, -1)
   const cells = []
@@ -410,7 +431,7 @@ function renderFinalText(text) {
   }).join('')
 }
 
-function renderMarkdownTextSegment(text) {
+function renderMarkdownTextSegment(text, { preserveSoftBreaks = false } = {}) {
   const lines = restoreCollapsedMarkdownLineBreaks(text).split('\n')
   const rows = []
   let paragraph = []
@@ -419,9 +440,9 @@ function renderMarkdownTextSegment(text) {
   let itemIndex = 0
 
   const flushParagraph = () => {
-    const content = paragraph.join(' ').trim()
+    const content = paragraph.map(renderInline).join(preserveSoftBreaks ? '<br>' : ' ').trim()
     paragraph = []
-    if (content) rows.push(`<p>${renderInline(content)}</p>`)
+    if (content) rows.push(`<p>${content}</p>`)
   }
 
   const flushList = () => {
@@ -508,7 +529,7 @@ function renderMarkdownTextSegment(text) {
   return rows.join('')
 }
 
-function renderMarkdownFinalText(text) {
+function renderMarkdownFinalText(text, options = {}) {
   const normalizedText = restoreCollapsedMarkdownLineBreaks(unwrapOuterMarkdownFence(text))
   const segments = splitCodeFences(normalizedText)
   return segments.map((segment) => {
@@ -516,7 +537,7 @@ function renderMarkdownFinalText(text) {
       const lang = segment.language ? `<span class="agent-message-code-lang">${escapeHtml(segment.language)}</span>` : ''
       return `<pre class="agent-message-code-block">${renderCodeCopyButton()}${lang}<code>${escapeHtml(segment.content.trim())}</code></pre>`
     }
-    return renderMarkdownTextSegment(segment.content)
+    return renderMarkdownTextSegment(segment.content, options)
   }).join('')
 }
 
@@ -533,7 +554,7 @@ export function renderAgentMessageContent({ agent = 'hermes', message = '', cont
 
   const bodyClass = markdown ? 'agent-message-body agent-message-body--markdown markdown-body' : 'agent-message-body'
   const body = finalText
-    ? `<div class="${bodyClass}">${markdown ? renderMarkdownFinalText(finalText) : renderFinalText(finalText)}</div>`
+    ? `<div class="${bodyClass}">${markdown ? renderMarkdownFinalText(finalText, { preserveSoftBreaks: agent === 'hermes' }) : renderFinalText(finalText)}</div>`
     : ''
   const detail = detailText
     ? `<details class="agent-message-detail"><summary><span aria-hidden="true">${ICONS.detail}</span><span>查看分析详情</span></summary><pre class="agent-message-detail-panel">${escapeHtml(detailText)}</pre></details>`

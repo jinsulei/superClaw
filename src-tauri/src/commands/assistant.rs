@@ -56,6 +56,11 @@ fn normalize_media_path(raw: &str) -> PathBuf {
 fn hermes_media_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     roots.push(data_dir().join("images"));
+    roots.push(super::hermes::hermes_home().join("image_cache").join("chat-media"));
+    // Desktop-control screenshots are deliberately written into the portable
+    // OpenClaw workspace. They are Hermes-owned runtime artifacts, not an
+    // arbitrary user directory, so allow this one scoped screenshot folder.
+    roots.push(super::openclaw_dir().join("workspace").join(".shots"));
     if let Some(resources) = super::app_resources_dir() {
         roots.push(resources.join("data").join("generated"));
         roots.push(resources.join("data").join("hermes").join("generated"));

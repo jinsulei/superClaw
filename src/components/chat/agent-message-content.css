@@ -194,6 +194,18 @@
   color: inherit;
 }
 
+.agent-message-markdown-image {
+  display: block;
+  width: auto;
+  max-width: min(100%, 620px);
+  max-height: 420px;
+  margin: 8px 0;
+  border: 1px solid rgba(126, 148, 178, 0.26);
+  border-radius: 10px;
+  background: rgba(80, 125, 190, 0.06);
+  object-fit: contain;
+}
+
 .agent-message-code-block {
   position: relative;
   margin: 4px 0;

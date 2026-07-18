@@ -197,6 +197,10 @@ function compactHermesWhitespace(text) {
 function stripHermesRawToolText(text) {
   let next = String(text || '')
 
+  // Some providers emit a closing reasoning tag after the hidden reasoning
+  // payload has already been removed upstream. Never show that stray marker
+  // as part of the user-facing final answer.
+  next = next.replace(/<\/?(?:think|thinking|reasoning|analysis)>\s*/gi, '')
   next = next.replace(/```(?:json|tool|tools|output|result)?\s*[\s\S]*?(?:tool_call|toolCallId|tool_call_id|arguments|image_prompt|negative_prompt|prompt)[\s\S]*?```/gi, '')
   next = next.replace(/^\s*[{[][\s\S]{0,2400}(?:tool_call|toolCallId|tool_call_id|arguments|image_prompt|negative_prompt|prompt)[\s\S]{0,2400}[}\]]\s*$/gim, '')
 
@@ -270,7 +274,9 @@ function cleanHermesMarkdownArtifacts(text) {
     .split('\n')
     .filter(line => {
       const trimmed = line.trim()
-      if (/^\|.+\|$/.test(trimmed)) return false
+      // GFM tables are valid user-visible Markdown. This finalizer runs after
+      // streaming completes, so removing pipe-delimited rows here made a table
+      // appear while streaming and disappear in the final Hermes reply.
       if (/^\*\*[^*\n]{1,120}\s+\*$/.test(trimmed)) return false
       return true
     })
@@ -279,6 +285,42 @@ function cleanHermesMarkdownArtifacts(text) {
     .replace(/\*\*([^*\n]{1,120})\*\*/g, '$1')
     .replace(/(^|\n)\s*\*\s*[:\uff1a]?\s*(?=\n|$)/g, '$1')
     .replace(/(^|\n)\s*\*\s*[:\uff1a]\s*/g, '$1')
+}
+
+function isHermesGfmTableDivider(line = '') {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(String(line || '').trim())
+}
+
+function isHermesGfmTableRow(line = '') {
+  const value = String(line || '').trim()
+  return value.includes('|') && !isHermesGfmTableDivider(value)
+}
+
+function protectHermesGfmTableBlocks(text = '') {
+  const lines = String(text || '').split('\n')
+  const blocks = []
+  const output = []
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isHermesGfmTableRow(lines[index]) && isHermesGfmTableDivider(lines[index + 1])) {
+      const rows = [lines[index], lines[index + 1]]
+      index += 2
+      while (index < lines.length && isHermesGfmTableRow(lines[index])) {
+        rows.push(lines[index])
+        index += 1
+      }
+      index -= 1
+      const key = `__HERMES_GFM_TABLE_${blocks.length}__`
+      blocks.push(rows.join('\n'))
+      output.push(key)
+      continue
+    }
+    output.push(lines[index])
+  }
+  return { text: output.join('\n'), blocks }
+}
+
+function restoreHermesGfmTableBlocks(text = '', blocks = []) {
+  return String(text || '').replace(/__HERMES_GFM_TABLE_(\d+)__/g, (_, index) => blocks[Number(index)] || '')
 }
 
 function isHermesIdentityPrompt(text) {
@@ -496,11 +538,13 @@ export function enforceHermesReplyLength(text, userText = '') {
 }
 
 export function tidyHermesMarkdown(text) {
-  return compactHermesWhitespace(cleanHermesMarkdownArtifacts(stripHermesRawToolText(text)))
+  const protectedTables = protectHermesGfmTableBlocks(cleanHermesMarkdownArtifacts(stripHermesRawToolText(text)))
+  const tidied = compactHermesWhitespace(protectedTables.text)
     .replace(/([^\n])(\s*)(#{1,4}\s+)/g, '$1\n\n$3')
     .replace(/([^\n])(\s*)([-*]\s+)/g, '$1\n$3')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+  return restoreHermesGfmTableBlocks(tidied, protectedTables.blocks)
 }
 
 export function looksHermesReplyIncomplete(text) {

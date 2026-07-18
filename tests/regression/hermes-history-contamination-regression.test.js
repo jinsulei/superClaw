@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
-import { compactHermesHistoryContentForPrompt } from '../../src/engines/hermes/lib/chat-store.js'
+import {
+  compactHermesHistoryContentForPrompt,
+  extractHermesVisibleExecutionNarration,
+  stripHermesVisibleExecutionNarration,
+} from '../../src/engines/hermes/lib/chat-store.js'
 import {
   completeHermesReplyIfNeeded,
   normalizeHermesVisibleReply,
@@ -32,6 +36,27 @@ test('Hermes default history contains completed user-assistant turns only', () =
   assert.match(historyBlock, /if \(!pendingUser\) continue/)
   assert.match(historyBlock, /completedTurns\.push\(\[pendingUser, \{ role, content \}\]\)/)
   assert.match(historyBlock, /selectedTurns\.reverse\(\)\.flat\(\)/)
+})
+
+test('Hermes native chat sends bounded local history when the runtime session is unavailable', () => {
+  const sendBlock = hermesStoreSource.match(/const runPromise = Promise\.resolve\(\)\.then\(async \(\) => \{[\s\S]*?const suppliedInstructions/)?.[0] || ''
+
+  assert.match(sendBlock, /: buildDefaultConversationHistory\(s, userMessage\.id\)/)
+  assert.match(sendBlock, /const conversationHistory = forceEmptyHistory \? null : requestedHistory/)
+  assert.match(sendBlock, /The portable runtime does not reliably persist native Hermes sessions/)
+})
+
+test('Hermes actionable tasks require execution evidence in both desktop and web completion paths', () => {
+  const taskBlock = hermesStoreSource.match(/function isHermesLongTaskRequest\(text\) \{[\s\S]*?function getHermesExactShortReplyTarget/)?.[0] || ''
+  const boundaryBlock = hermesStoreSource.match(/function buildHermesCurrentTurnBoundaryInstruction\(currentInput = '', history = \[\]\) \{[\s\S]*?function loadJson/)?.[0] || ''
+  const webCompletionBlock = hermesStoreSource.match(/function completeStreamRun\(runSessionId, output = '', clientRequestId = state\.runningClientRequestId\) \{[\s\S]*?function replaceStreamOutput/)?.[0] || ''
+  const desktopCompletionBlock = hermesStoreSource.match(/const u3 = await tauriListen\('hermes-run-done'[\s\S]*?const u4 = await tauriListen/)?.[0] || ''
+
+  assert.match(taskBlock, /\\u6253\\u5f00|\\u67e5\\u8be2|\\u641c\\u7d22|\\u8bfb\\u53d6/)
+  assert.match(boundaryBlock, /Execution contract: this is an actionable task/)
+  assert.match(boundaryBlock, /Do not finalize with a plan, intent/)
+  assert.match(webCompletionBlock, /applyHermesPromiseOnlyTaskGuard\(msg, currentVisibleUserPrompt\(\), runTools, clientRequestId\)/)
+  assert.match(desktopCompletionBlock, /applyHermesPromiseOnlyTaskGuard\(msg, currentVisibleUserPrompt\(\), runTools, clientRequestId\)/)
 })
 
 test('Hermes weather lookups avoid a second interpreter command that cannot be approved in chat', () => {
@@ -95,6 +120,54 @@ test('Hermes finalization is idempotent and does not truncate a complete reply',
   assert.match(once, /第 20 项完整内容/)
   assert.match(normalized, /第 20 项完整内容/)
   assert.doesNotMatch(once, /以上是当前结果|如果你要继续/)
+})
+
+test('Hermes finalization preserves GFM tables that were visible during streaming', () => {
+  const tableReply = [
+    '## 查询结果',
+    '',
+    '| 名称 | 状态 |',
+    '| --- | --- |',
+    '| 表格内容 | 正常保留 |',
+  ].join('\n')
+
+  const finalized = normalizeHermesVisibleReply(tableReply, { userText: '请用表格展示结果' })
+
+  assert.match(finalized, /\| 名称 \| 状态 \|/)
+  assert.match(finalized, /\| --- \| --- \|/)
+  assert.match(finalized, /\| 表格内容 \| 正常保留 \|/)
+})
+
+test('Hermes routes visible execution narration into the trace instead of the final answer', () => {
+  const narration = '我来看看之前的脚本和当前状态，定位“查一周”指的是哪个任务。'
+  assert.equal(extractHermesVisibleExecutionNarration(narration), narration)
+  assert.equal(extractHermesVisibleExecutionNarration('## 最终结论\n\n| 日期 | 天气 |'), '')
+
+  const finalReply = `${narration}\n\n## 查询结果\n\n已获取未来七天预报。`
+  const visible = stripHermesVisibleExecutionNarration(finalReply, [{
+    kind: 'reasoning',
+    source: 'stream-visible',
+    summary: narration,
+  }])
+  assert.equal(visible, '## 查询结果\n\n已获取未来七天预报。')
+})
+
+test('Hermes collapses repeated generic reasoning placeholders and stores stream narration as a trace step', () => {
+  const executionBlock = hermesStoreSource.match(/function recordAssistantExecutionEvent\(session, clientRequestId, eventType, evt = \{\}\) \{[\s\S]*?function setPendingHermesApproval/)?.[0] || ''
+  const appendBlock = hermesStoreSource.match(/function appendStreamDelta\(runSessionId, delta, clientRequestId = state\.runningClientRequestId\) \{[\s\S]*?function acceptActiveStreamEvent/)?.[0] || ''
+
+  assert.match(executionBlock, /const isGenericReasoning = kind === 'reasoning' && text === HERMES_REASONING_PLACEHOLDER/)
+  assert.match(executionBlock, /existing = trace\.find\(item => item\.id === pendingId\)/)
+  assert.match(appendBlock, /extractHermesVisibleExecutionNarration\(delta\)/)
+  assert.match(appendBlock, /source: 'stream-visible'/)
+  assert.match(appendBlock, /recordAssistantExecutionEvent\(s, clientRequestId, 'reasoning\.available'/)
+})
+
+test('Hermes never exposes a dangling hidden-reasoning close tag in the final reply', () => {
+  const normalized = normalizeHermesVisibleReply('</think>\nHERMES_TOOL_OK', { userText: '执行终端校验' })
+
+  assert.match(normalized, /HERMES_TOOL_OK/)
+  assert.doesNotMatch(normalized, /<\/?think>|<\/?thinking>|<\/?reasoning>|<\/?analysis>/i)
 })
 
 test('Hermes stream assembler refuses unrelated longer final snapshots', () => {

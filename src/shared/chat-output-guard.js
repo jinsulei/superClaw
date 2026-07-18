@@ -193,7 +193,7 @@ export function splitMediaProtocol(text) {
   const mediaLines = []
   const visibleLines = []
   for (const line of String(text || '').split(/\r?\n/)) {
-    if (/^\s*MEDIA\s*:/i.test(line)) mediaLines.push(line.trim())
+    if (/^\s*MEDIA(?:_DATA)?\s*:/i.test(line)) mediaLines.push(line.trim())
     else visibleLines.push(line)
   }
   return { mediaLines, visibleText: visibleLines.join('\n').trim() }

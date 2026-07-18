@@ -37,12 +37,41 @@ test('execution trace persists on the assistant message and renders above its an
   assert.match(store, /typeof output !== 'boolean'/)
 })
 
+test('Hermes execution cards expose safe progress without persisting private reasoning', () => {
+  assert.match(store, /function executionEventText\(evt = \{\}, eventType = ''\)/)
+  assert.match(store, /if \(eventType === 'reasoning\.available'\)/)
+  assert.match(store, /evt\.visible_text \?\? evt\.visibleText \?\? evt\.userVisibleText \?\? evt\.summary \?\? evt\.preview/)
+  assert.match(store, /正在分析任务并准备下一步。/)
+  assert.match(store, /const text = executionEventText\(evt, eventType\)/)
+})
+
 test('Web dev and packaged Tauri expose the same Hermes capabilities', () => {
   assert.match(rust, /pub fn hermes_native_terminal_start/)
   assert.match(devApi, /async hermes_native_terminal_start\(\)/)
   assert.match(rust, /"reasoning\.available"/)
   assert.match(devApi, /hermes_agent_run_stream/)
   assert.match(devApi, /\.dev-data', 'hermes'/)
+  for (const toolset of ['web', 'browser', 'terminal', 'file', 'code_execution', 'vision', 'video', 'skills', 'memory', 'session_search', 'delegation']) {
+    assert.match(rust, new RegExp(`"${toolset}"`))
+    assert.match(devApi, new RegExp(`'${toolset}'`))
+  }
+  assert.match(rust, /ensure_hermes_api_server_toolsets/)
+  assert.match(devApi, /_ensureHermesApiServerToolsets/)
+  assert.match(rust, /tools", "list", "--platform", "api_server"/)
+  assert.match(devApi, /\['tools', 'list', '--platform', 'api_server'\]/)
+  assert.match(rust, /\("API_SERVER_ENABLED"\.into\(\), "true"\.into\(\)\)/)
+  assert.match(rust, /\("API_SERVER_PORT"\.into\(\), hermes_gateway_port\(\)\.to_string\(\)\)/)
+  assert.match(devApi, /\['API_SERVER_ENABLED', 'true'\]/)
+  assert.match(devApi, /\['API_SERVER_PORT', String\(hermesGatewayPort\(\)\)\]/)
+})
+
+test('Hermes execution artifacts persist without leaking a host path into portable sessions', () => {
+  assert.match(store, /function normalizeExecutionArtifacts\(evt = \{\}\)/)
+  assert.match(store, /const isAbsolutePath = \/\^\[A-Za-z\]:\\\//)
+  assert.match(store, /normalizedPath\.split\('\/'\).*\.pop\(\)/)
+  assert.match(store, /message\.artifacts = Array\.from\(byKey\.values\(\)\)\.slice\(-40\)/)
+  assert.match(chat, /hm-chat-execution-artifacts/)
+  assert.match(chat, /hm-chat-execution-artifact/)
 })
 
 test('portable Hermes bridge contains no fixed development path', () => {

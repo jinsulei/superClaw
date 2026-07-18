@@ -651,7 +651,8 @@ export function render() {
   }
 
   /**
-   * Parse `hermes tools list --platform <p>` stdout. Format observed
+   * Parse `hermes tools list --platform api_server` stdout. The desktop chat
+   * runs there, so this must not be confused with the standalone CLI profile.
    * (Hermes 0.6+):
    *
    *   Built-in toolsets (cli):

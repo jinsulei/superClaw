@@ -5,22 +5,33 @@ import { test } from 'node:test'
 const chatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
 const storeSource = readFileSync('src/engines/hermes/lib/chat-store.js', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
+const rustSource = readFileSync('src-tauri/src/commands/hermes.rs', 'utf8')
+const devApiSource = readFileSync('scripts/dev-api.js', 'utf8')
 
-test('Hermes run timeout guard finalizes visible assistant error and cleanup', () => {
+test('Hermes disables Python bytecode writes in Tauri-watched runtime resources', () => {
+  const rustBytecodeGuards = rustSource.match(/\.env\("PYTHONDONTWRITEBYTECODE", "1"\)/g) || []
+  assert.ok(rustBytecodeGuards.length >= 4, 'all native Hermes command paths must disable bytecode caches')
+  assert.match(devApiSource, /env\.PYTHONDONTWRITEBYTECODE\s*=\s*'1'/, 'web/dev Hermes launcher must use the same guard')
+  assert.match(rustSource, /Avoid\s+\n?\s*\/\/ writing __pycache__/, 'native guard must document the watched-resource restart risk')
+})
+
+test('Hermes idle watchdog observes progress instead of enforcing a wall-clock failure', () => {
   assert.match(storeSource, /HERMES_RUN_TIMEOUT_MS/, 'chat-store must define a stable Hermes run timeout constant')
   assert.match(storeSource, /createHermesRunTimeoutError/, 'timeout must use a stable error constructor')
   assert.match(storeSource, /startHermesRunTimeoutGuard/, 'send lifecycle must start a timeout guard')
   assert.match(storeSource, /clearHermesRunTimeoutGuard/, 'send lifecycle must clear the timeout guard')
-  assert.match(storeSource, /setTimeout\([\s\S]*?createHermesRunTimeoutError/, 'timeout guard must be timer-backed')
+  assert.match(storeSource, /touchHermesRunWatchdog/, 'progress must renew the idle watchdog')
+  assert.match(storeSource, /setTimeout\([\s\S]*?handleHermesRunTimeout/, 'watchdog must remain timer-backed')
   assert.match(storeSource, /clearTimeout\([\s\S]*?hermesRunTimeoutTimer/, 'timeout guard must clear its timer')
 })
 
-test('Hermes timeout is user-visible and is not only console logging', () => {
+test('Hermes idle recovery checks the native run before deciding a final state', () => {
   const timeoutBlock = storeSource.match(/function handleHermesRunTimeout[\s\S]*?\n  \}/)?.[0] || ''
-  assert.match(timeoutBlock, /ensureAssistantMessage/, 'timeout must target the pending assistant message')
-  assert.match(timeoutBlock, /sanitizeHermesVisibleReply/, 'timeout must write sanitized user-visible content')
-  assert.match(timeoutBlock, /mapHermesErrorToUserMessage/, 'timeout must use stable error wording')
-  assert.match(timeoutBlock, /finalizeHermesRequestState/, 'timeout must converge on final-state cleanup')
+  assert.match(timeoutBlock, /api\.hermesHealthCheck/, 'recovery must check gateway health')
+  assert.match(timeoutBlock, /api\.hermesApiProxy\('GET', `\/v1\/runs\//, 'recovery must poll native run status')
+  assert.match(timeoutBlock, /status === 'completed'/, 'completed runs must be finalized from native status')
+  assert.match(timeoutBlock, /status === 'waiting_for_approval'/, 'approval waits must reopen the approval flow')
+  assert.match(timeoutBlock, /startHermesRunTimeoutGuard/, 'active runs must continue watching after recovery')
   assert.doesNotMatch(timeoutBlock, /console\.(error|warn|log)/, 'timeout must not be console-only')
 })
 
@@ -32,18 +43,17 @@ test('Hermes final-state cleanup clears streaming and running identifiers', () =
   assert.match(storeSource, /state\.liveTools\s*=\s*\[\]/, 'cleanup must clear live tools')
 })
 
-test('stream error abort and timeout share final-state cleanup path', () => {
+test('stream errors still finalize, but idle recovery does not force-stop a healthy run', () => {
   assert.match(storeSource, /cleanupAfterRun\(\{ status: 'failed', reason: 'run-error'/, 'stream error must clean up failed run')
   assert.match(storeSource, /cleanupAfterRun\(\{ status: 'failed', reason: 'send-error'/, 'send error must clean up failed run')
-  assert.match(storeSource, /finalizeHermesRequestState\(\{[\s\S]*?reason: 'run-timeout'/, 'timeout must finalize as failed run-timeout')
+  const timeoutBlock = storeSource.match(/function handleHermesRunTimeout[\s\S]*?\n  \}/)?.[0] || ''
+  assert.doesNotMatch(timeoutBlock, /stopActiveHermesServerRun\('run-timeout'\)/, 'idle recovery must not kill a potentially healthy run')
   assert.doesNotMatch(storeSource, /throw e\s*\n\s*assistantMessage\.error/, 'unreachable legacy error handling must not remain after throw')
 })
 
-test('Hermes timeout and user stop cancel the native gateway run', () => {
+test('only an explicit user stop cancels the native gateway run', () => {
   assert.match(storeSource, /function stopActiveHermesServerRun/, 'chat-store must own a native run stop helper')
   assert.match(storeSource, /\/v1\/runs\/\$\{encodeURIComponent\(runId\)\}\/stop/, 'native stop must use the Hermes run stop endpoint')
-  const timeoutBlock = storeSource.match(/function handleHermesRunTimeout[\s\S]*?\n  \}/)?.[0] || ''
-  assert.match(timeoutBlock, /stopActiveHermesServerRun\('run-timeout'\)/, 'timeout must stop the native run')
   const stopBlock = storeSource.match(/function stopStreaming\(\)[\s\S]*?\n  \}/)?.[0] || ''
   assert.match(stopBlock, /stopActiveHermesServerRun\('user-stop'\)/, 'user stop must stop the native run')
 })

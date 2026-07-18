@@ -1076,6 +1076,9 @@ function hermesRuntimeEnv(extra = {}) {
     PATH: hermesEnhancedPath(),
     ...extra,
   }
+  // Hermes runs from a Tauri-watched portable resource directory. Python bytecode
+  // caches there make tauri:dev rebuild and restart while a task is in progress.
+  env.PYTHONDONTWRITEBYTECODE = '1'
   if (hermesProvider) env.HERMES_PROVIDER = hermesProvider
   if (openAiBaseUrl) env.OPENAI_BASE_URL = openAiBaseUrl
   if (openAiModel) env.OPENAI_MODEL = openAiModel
@@ -7152,6 +7155,8 @@ function writeMiniMaxHermesEnv(normalized, apiKey) {
     'MINIMAX_CN_BASE_URL',
     'GATEWAY_ALLOW_ALL_USERS',
     'API_SERVER_KEY',
+    'API_SERVER_ENABLED',
+    'API_SERVER_PORT',
   ]
   const pairs = [
     ['HERMES_PROVIDER', providerId],
@@ -7160,6 +7165,8 @@ function writeMiniMaxHermesEnv(normalized, apiKey) {
     ['SUPERCLAW_FORCE_PROVIDER', 'minimax'],
     ['GATEWAY_ALLOW_ALL_USERS', 'true'],
     ['API_SERVER_KEY', 'clawpanel-local'],
+    ['API_SERVER_ENABLED', 'true'],
+    ['API_SERVER_PORT', String(hermesGatewayPort())],
   ]
   if (apiKey) {
     pairs.push(['OPENAI_API_KEY', apiKey])
@@ -7185,8 +7192,7 @@ model:
   api_mode: chat_completions
   base_url: ${normalized.baseUrl}
 platform_toolsets:
-  api_server:
-    - hermes-api-server
+${_defaultHermesApiServerToolsetsYaml('  ')}
 terminal:
   backend: local
 platforms:
@@ -11424,7 +11430,7 @@ const handlers = {
       const existing = fs.readFileSync(configPath, 'utf8')
       configContent = _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine, customProvidersBlock)
     } else {
-      configContent = `# Hermes Agent configuration (managed by ClawPanel)\nmodel:\n  default: ${modelStr}\n${providerLine}${baseUrlLine}platform_toolsets:\n  api_server:\n    - hermes-api-server\nterminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n${customProvidersBlock}`
+      configContent = `# Hermes Agent configuration (managed by ClawPanel)\nmodel:\n  default: ${modelStr}\n${providerLine}${baseUrlLine}platform_toolsets:\n${_defaultHermesApiServerToolsetsYaml('  ')}terminal:\n  backend: local\nplatforms:\n  api_server:\n    enabled: true\n${customProvidersBlock}`
     }
     fs.writeFileSync(configPath, configContent)
     // .env
@@ -11450,8 +11456,8 @@ const handlers = {
             : lowerProvider === 'openrouter'
               ? 'OPENROUTER_BASE_URL'
               : 'OPENAI_BASE_URL'
-    const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','MINIMAX_API_KEY','MINIMAX_CN_API_KEY','CUSTOM_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','MINIMAX_BASE_URL','MINIMAX_CN_BASE_URL','CUSTOM_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY']
-    const newPairs = [[envKey, apiKey], ['GATEWAY_ALLOW_ALL_USERS', 'true'], ['API_SERVER_KEY', 'clawpanel-local']]
+    const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','MINIMAX_API_KEY','MINIMAX_CN_API_KEY','CUSTOM_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','MINIMAX_BASE_URL','MINIMAX_CN_BASE_URL','CUSTOM_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY','API_SERVER_ENABLED','API_SERVER_PORT']
+    const newPairs = [[envKey, apiKey], ['GATEWAY_ALLOW_ALL_USERS', 'true'], ['API_SERVER_KEY', 'clawpanel-local'], ['API_SERVER_ENABLED', 'true'], ['API_SERVER_PORT', String(hermesGatewayPort())]]
     if (baseUrlValue) {
       newPairs.push([baseEnvKey, baseUrlValue])
     }
@@ -11668,6 +11674,34 @@ const handlers = {
     return body.run_id || JSON.stringify(body)
   },
 
+  async hermes_agent_resolve_approval({ runId, choice } = {}) {
+    const safeRunId = String(runId || '').trim()
+    const safeChoice = String(choice || '').trim().toLowerCase()
+    if (!/^[A-Za-z0-9_-]+$/.test(safeRunId)) throw new Error('无效的 Hermes 运行标识')
+    if (!['once', 'session', 'always', 'deny'].includes(safeChoice)) throw new Error('无效的授权选项')
+
+    const gwUrl = hermesGatewayUrl()
+    let apiKey = ''
+    try {
+      const envContent = fs.readFileSync(path.join(hermesHome(), '.env'), 'utf8')
+      const match = envContent.match(/^API_SERVER_KEY=(.+)$/m)
+      if (match) apiKey = match[1].trim()
+    } catch {}
+    const headers = { 'Content-Type': 'application/json', 'User-Agent': 'ClawPanel-Web' }
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+    const response = await globalThis.fetch(`${gwUrl}/v1/runs/${encodeURIComponent(safeRunId)}/approval`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ choice: safeChoice }),
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!response.ok) {
+      const detail = await response.text()
+      throw new Error(`提交 Hermes 授权失败 HTTP ${response.status}: ${detail.slice(0, 360)}`)
+    }
+    return response.json()
+  },
+
   hermes_read_config() {
     const home = hermesHome()
     const configPath = path.join(home, 'config.yaml')
@@ -11864,13 +11898,16 @@ const handlers = {
     const configPath = path.join(hermesHome(), 'config.yaml')
     if (!fs.existsSync(configPath)) return
     const raw = fs.readFileSync(configPath, 'utf8')
-    if (handlers._hermesConfigHasApiServerEnabled(raw)) return
+    const needsPlatformEnable = !handlers._hermesConfigHasApiServerEnabled(raw)
+    const patched = _ensureHermesApiServerToolsets(
+      needsPlatformEnable ? handlers._hermesPatchYamlEnsureApiServer(raw) : raw,
+    )
+    if (patched === raw) return
     const ts = Math.floor(Date.now() / 1000)
     const backupPath = configPath + `.bak-${ts}`
     try { fs.writeFileSync(backupPath, raw) } catch {}
-    const patched = handlers._hermesPatchYamlEnsureApiServer(raw)
     fs.writeFileSync(configPath, patched)
-    console.warn(`[hermes guardian] patched config.yaml (api_server.enabled). Backup: ${backupPath}`)
+    console.warn(`[hermes guardian] patched config.yaml (api_server tools/enabled). Backup: ${backupPath}`)
   },
 
   // =========================================================================  // =========================================================================
@@ -12259,7 +12296,7 @@ const handlers = {
   },
 
   hermes_toolsets_list() {
-    const r = runHermesSilent('hermes', ['tools', 'list', '--platform', 'cli'])
+    const r = runHermesSilent('hermes', ['tools', 'list', '--platform', 'api_server'])
     if (r.ok && String(r.stdout || '').trim()) return { raw: r.stdout }
     const defaultOff = new Set(['moa', 'homeassistant', 'spotify', 'discord', 'discord_admin', 'video', 'video_gen', 'x_search'])
     const builtin = [
@@ -13191,6 +13228,49 @@ const handlers = {
   },
 }
 
+// Keep Web/dev config generation in sync with the desktop command layer. These
+// are capability declarations only; write and desktop actions still use the
+// shared approval bridge at runtime.
+const HERMES_API_SERVER_TOOLSETS = [
+  'hermes-api-server', 'web', 'browser', 'terminal', 'file', 'code_execution',
+  'vision', 'video', 'image_gen', 'tts', 'skills', 'todo', 'memory', 'session_search',
+  'clarify', 'delegation', 'cronjob', 'messaging', 'yuanbao', 'computer_use',
+  'desktop_control',
+]
+
+function _defaultHermesApiServerToolsetsYaml(indent = '') {
+  const child = `${indent}  `
+  return `${indent}api_server:\n${HERMES_API_SERVER_TOOLSETS.map(toolset => `${child}- ${toolset}\n`).join('')}`
+}
+
+function _ensureHermesApiServerToolsets(content = '') {
+  const value = String(content || '')
+  if (!value.includes('platform_toolsets:')) {
+    return `${value.replace(/\s*$/, '')}\nplatform_toolsets:\n${_defaultHermesApiServerToolsetsYaml('  ')}`
+  }
+
+  const lines = value.split('\n')
+  const platformStart = lines.findIndex(line => line.trim() === 'platform_toolsets:')
+  if (platformStart < 0) return value
+  const platformEnd = lines.findIndex((line, index) => index > platformStart && line.trim() && !/^\s/.test(line))
+  const end = platformEnd < 0 ? lines.length : platformEnd
+  const apiStart = lines.findIndex((line, index) => index > platformStart && index < end && line.trim() === 'api_server:')
+  if (apiStart < 0) {
+    lines.splice(platformStart + 1, 0, ..._defaultHermesApiServerToolsetsYaml('  ').trimEnd().split('\n'))
+    return lines.join('\n')
+  }
+  const apiEndRelative = lines.slice(apiStart + 1, end).findIndex(line => line.trim() && !/^\s{4}/.test(line))
+  const apiEnd = apiEndRelative < 0 ? end : apiStart + 1 + apiEndRelative
+  const existing = new Set(lines.slice(apiStart + 1, apiEnd)
+    .map(line => line.trim().replace(/^-\s*/, ''))
+    .filter(Boolean))
+  const additions = HERMES_API_SERVER_TOOLSETS
+    .filter(toolset => !existing.has(toolset))
+    .map(toolset => `    - ${toolset}`)
+  if (additions.length) lines.splice(apiEnd, 0, ...additions)
+  return lines.join('\n')
+}
+
 // Hermes 配置合并辅助函数
 function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = '', customProvidersBlock = '') {
   const lines = existing.split('\n')
@@ -13234,7 +13314,7 @@ function _mergeHermesConfigYaml(existing, modelStr, baseUrlLine, providerLine = 
     if (baseUrlLine) result.push(baseUrlLine.trimEnd())
   }
   let final = result.join('\n')
-  if (!final.includes('platform_toolsets:')) final += '\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\n'
+  final = _ensureHermesApiServerToolsets(final)
   if (!final.includes('terminal:')) final += 'terminal:\n  backend: local\n'
   if (!final.includes('platforms:')) final += 'platforms:\n  api_server:\n    enabled: true\n'
   if (customProvidersBlock && customProvidersBlock.trim()) {
@@ -13712,7 +13792,7 @@ function _buildHermesRunInput(input, attachments = []) {
     const python = hermesPortablePython() || 'python'
     const tool = hermesDocumentToolPath()
     const files = documents.map(item => `- ${item.fileName}: ${item.savedPath}`).join('\n')
-    text += `\n\n[SuperClaw attached documents]\n${files}\nUse the terminal and bundled document tool to inspect or edit only these files. Command: "${python}" "${tool}" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. Report the output path after verification.\n[/SuperClaw attached documents]`
+    text += `\n\n[SuperClaw attached documents]\n${files}\nUse the terminal and bundled document tool to inspect or edit only these files. Command: "${python}" "${tool}" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. For Excel cleanup (empty rows, empty columns, or residual blank-cell formatting), run \`clean-excel <file> --output <new-file>\` directly with this bundled tool. Do not use execute_code for attached-document work. Report the output path after verification.\n[/SuperClaw attached documents]`
   }
 
   const hasImage = parts.some(part => part.type === 'image_url')
@@ -14292,6 +14372,11 @@ async function _handleHermesAgentRunStream(req, res, args = {}) {
       if (eventName === 'run.failed' || eventName === 'failed' || eventName === 'error') {
         return { ...evt, event: 'run.failed', error: evt.error || output || 'unknown error' }
       }
+      // Hermes' TUI gateway emits compact tool names while the desktop chat
+      // consumes the historical spelling. Keep dev on the same stream
+      // contract as the Tauri bridge so structured tool results are retained.
+      if (eventName === 'tool.start') return { ...evt, event: 'tool.started' }
+      if (eventName === 'tool.complete') return { ...evt, event: 'tool.completed' }
       if (eventName.startsWith('tool.')) return evt
       return evt.event ? evt : (output ? { ...evt, event: 'message.delta', delta: output, snapshot: true, streamMode: 'snapshot' } : evt)
     }

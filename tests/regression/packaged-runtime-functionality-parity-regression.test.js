@@ -3,11 +3,23 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import vm from 'node:vm'
 
-import { compactHermesHistoryContentForPrompt } from '../../src/engines/hermes/lib/chat-store.js'
+import {
+  compactHermesHistoryContentForPrompt,
+  extractHermesVisibleExecutionNarration,
+  preserveHermesMediaProtocol,
+  stripHermesVisibleExecutionNarration,
+} from '../../src/engines/hermes/lib/chat-store.js'
+import { normalizeHermesVisibleReply } from '../../src/engines/hermes/lib/hermes-response-assembler.js'
+import { splitMediaProtocol } from '../../src/shared/chat-output-guard.js'
 
 const hermesStoreSource = readFileSync('src/engines/hermes/lib/chat-store.js', 'utf8')
 const hermesMemoryStoreSource = readFileSync('src/engines/hermes/lib/hermes-memory-store.js', 'utf8')
+const assistantCommandSource = readFileSync('src-tauri/src/commands/assistant.rs', 'utf8')
 const hermesChatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
+const hermesStyleSource = readFileSync('src/engines/hermes/style/hermes.css', 'utf8')
+const hermesChatMediaToolSource = readFileSync('src-tauri/resources/runtime/hermes-agent/Lib/site-packages/tools/chat_media_return_tool.py', 'utf8')
+const hermesApiServerSource = readFileSync('src-tauri/resources/runtime/hermes-agent/Lib/site-packages/gateway/platforms/api_server.py', 'utf8')
+const hermesCommandsSource = readFileSync('src-tauri/src/commands/hermes.rs', 'utf8')
 const agentMessageContentSource = readFileSync('src/components/chat/agent-message-content.js', 'utf8')
 const openclawChatSource = readFileSync('src/pages/chat.js', 'utf8')
 const openclawWsClientSource = readFileSync('src/lib/ws-client.js', 'utf8')
@@ -427,6 +439,130 @@ test('Hermes assistant markdown blocks unsafe javascript links', () => {
   assert.doesNotMatch(html, /href="javascript:/)
 })
 
+test('Hermes assistant markdown renders safe raster images but never executable image URLs', () => {
+  const html = renderAgentMessageContentForRegression([
+    '![天气图](https://example.com/weather.png)',
+    '![unsafe](javascript:alert(1))',
+    '![inline](data:image/png;base64,aGVsbG8=)',
+  ].join('\n\n'))
+
+  assert.match(html, /<img class="agent-message-markdown-image" src="https:\/\/example\.com\/weather\.png" alt="天气图"/)
+  assert.match(html, /src="data:image\/png;base64,aGVsbG8="/)
+  assert.doesNotMatch(html, /src="javascript:/i)
+  assert.match(html, /agent-message-image-ref">unsafe<\/span>/)
+})
+
+test('Hermes assistant markdown preserves soft paragraph breaks inside the chat bubble', () => {
+  const html = renderAgentMessageContentForRegression('first line\nsecond line\n\nthird paragraph')
+
+  assert.match(html, /first line<br>second line/)
+  assert.match(html, /<p>third paragraph<\/p>/)
+})
+
+test('Hermes media-return requests instruct the native agent to use the current-chat attachment tool', () => {
+  const intentBlock = hermesChatSource.match(/function buildIntentTriggeredToolInstructions\(text\) \{[\s\S]*?function stripFirstHttpUrl/)?.[0] || ''
+
+  assert.match(intentBlock, /MEDIA_RETURN_TRIGGER/)
+  assert.match(intentBlock, /call superclaw_return_media with that verified absolute path/)
+  assert.match(intentBlock, /attaches the image to the current SuperClaw chat automatically/)
+  assert.match(intentBlock, /workspace \.shots directory/)
+  assert.match(intentBlock, /do not call, retry, or discuss send_message/)
+  assert.match(intentBlock, /For a sandbox image \(for example \/tmp\), call superclaw_return_media/)
+  assert.match(intentBlock, /\\u751f\\u6210/)
+  assert.match(intentBlock, /\\u5f53\\u524d\\u804a\\u5929/)
+  assert.match(intentBlock, /\\u53d1\\u51fa\\u6765/)
+  assert.match(intentBlock, /vision_analyze analyzes an image but cannot return it to chat/)
+})
+
+test('Hermes media loader accepts only its portable image roots including desktop screenshots', () => {
+  const rootsBlock = assistantCommandSource.match(/fn hermes_media_roots\(\) -> Vec<PathBuf> \{[\s\S]*?^\}/m)?.[0] || ''
+
+  assert.match(rootsBlock, /data_dir\(\)\.join\("images"\)/)
+  assert.match(rootsBlock, /openclaw_dir\(\)\.join\("workspace"\)\.join\("\.shots"\)/)
+  assert.match(assistantCommandSource, /MEDIA image path is outside allowed Hermes generated directories/)
+})
+
+test('Hermes keeps the internal MEDIA envelope while redacting ordinary local paths', () => {
+  const mediaPath = 'C:\\Users\\demo\\SuperClaw\\resources\\data\\.openclaw\\workspace\\.shots\\capture.png'
+  const output = preserveHermesMediaProtocol(
+    `MEDIA: ${mediaPath}\nCreated at ${mediaPath}`,
+    (visible) => visible.replace(mediaPath, '[REDACTED_PATH]'),
+  )
+
+  assert.match(output, new RegExp(`MEDIA: ${mediaPath.replace(/[\\\\.^$*+?()[\]{}|]/g, '\\$&')}`))
+  assert.match(output, /Created at \[REDACTED_PATH\]/)
+  assert.match(hermesStoreSource, /preserveHermesMediaProtocol\(text, \(mediaFreeText\)/)
+})
+
+test('Hermes preserves sandbox image bytes as a current-chat MEDIA_DATA attachment protocol', () => {
+  const payload = 'aGVsbG8='
+  const split = splitMediaProtocol(`MEDIA_DATA: image/png;base64,${payload}\n图片已返回。`)
+
+  assert.deepEqual(split.mediaLines, [`MEDIA_DATA: image/png;base64,${payload}`])
+  assert.equal(split.visibleText, '图片已返回。')
+  const parserBlock = hermesChatSource.match(/function parseHermesMediaDirectiveData\(value = ''\) \{[\s\S]*?function splitHermesMediaDirectives/)?.[0] || ''
+  assert.match(parserBlock, /HERMES_MEDIA_DATA_MAX_BYTES/)
+  assert.match(parserBlock, /image\\\/\(\?:png\|jpe\?g\|webp\|gif\)/)
+})
+
+test('Hermes current-chat media tool stages an attachment directly from its tool completion event', () => {
+  assert.match(hermesStoreSource, /function attachHermesReturnedMedia\(session, clientRequestId, evt = \{\}\)/)
+  assert.match(hermesStoreSource, /toolName !== 'superclaw_return_media'/)
+  assert.match(hermesStoreSource, /return mediaPath/)
+  assert.match(hermesStoreSource, /message\.attachments = attachments/)
+  assert.match(hermesStoreSource, /function normalizeHermesToolEventName\(eventName\)/)
+  assert.match(hermesStoreSource, /if \(name === 'tool\.complete'\) return 'tool\.completed'/)
+  assert.match(hermesStoreSource, /async function hydrateHermesReturnedMedia\(sessionId, clientRequestId, mediaPath\)/)
+  assert.match(hermesStoreSource, /api\.loadHermesMediaImage\(path\)/)
+  assert.match(hermesStoreSource, /attachment\.dataUrl = dataUrl/)
+  assert.match(hermesStoreSource, /hydrateHermesReturnedMedia\(session\?\.id, clientRequestId, returnedMediaPath\)/)
+  assert.match(hermesChatSource, /superclaw_return_media/)
+  assert.match(assistantCommandSource, /image_cache"\)\.join\("chat-media"\)/)
+  assert.match(hermesChatMediaToolSource, /Return a verified local raster image to the current SuperClaw chat turn/)
+  assert.match(hermesChatMediaToolSource, /For a simple text PNG, provide the text to render directly/)
+  assert.match(hermesChatMediaToolSource, /def _render_text_png\(text: str, target_dir: Path\) -> Path/)
+  assert.match(hermesChatMediaToolSource, /Path\("\/tmp"\)\.resolve\(\)/)
+  assert.match(hermesChatMediaToolSource, /image_cache" \/ "chat-media"/)
+  assert.match(hermesCommandsSource, /"tool\.start" => "tool\.started"/)
+  assert.match(hermesCommandsSource, /"tool\.complete" => "tool\.completed"/)
+  assert.match(devApiSource, /if \(eventName === 'tool\.complete'\) return \{ \.\.\.evt, event: 'tool\.completed' \}/)
+  assert.match(hermesApiServerSource, /result = kwargs\.get\("result", ""\)/)
+  assert.match(hermesApiServerSource, /"result": result/)
+  assert.match(hermesCommandsSource, /\.get\("tool_id"\)/)
+  const toolEventHandler = hermesStoreSource.match(/function applyStreamToolEvent\(evt\) \{[\s\S]*?\n  \}/)?.[0] || ''
+  assert.ok(
+    toolEventHandler.indexOf('const session = state.sessions.find') < toolEventHandler.indexOf('attachHermesReturnedMedia(session'),
+    'the assistant session must exist before a media tool completion is attached',
+  )
+})
+
+test('Hermes returned chat images support a safe in-app preview in packaged and web builds', () => {
+  assert.match(hermesChatSource, /data-hermes-media-preview/)
+  assert.match(hermesChatSource, /function openHermesImagePreview\(image\)/)
+  assert.match(hermesChatSource, /if \(!isSafeRenderableImageSrc\(src\)\) return/)
+  assert.match(hermesChatSource, /event\.key === 'Escape'/)
+  assert.match(hermesChatSource, /if \(event\.target === overlay\) closeHermesImagePreview\(\)/)
+  assert.match(hermesChatSource, /panel\.addEventListener\('wheel'/)
+  assert.match(hermesChatSource, /zoom = Math\.min\(4, Math\.max\(0\.5,/)
+  assert.match(hermesChatSource, /preview\.addEventListener\('dblclick'/)
+  assert.match(hermesStyleSource, /\.hm-chat-image-preview-overlay/)
+  assert.match(hermesStyleSource, /cursor:\s*zoom-in/)
+})
+
+test('Hermes current-chat media return clears only this turn history without creating sidebar sessions', () => {
+  assert.match(hermesStoreSource, /function isHermesCurrentChatMediaReturnRequest\(text = ''\)/)
+  assert.match(hermesStoreSource, /function isHermesEphemeralMediaSession\(sessionOrId = ''\)/)
+  assert.match(hermesStoreSource, /\^\(\?:media-protocol\|raw-media\|media-e2e\)-/)
+  assert.match(hermesStoreSource, /!isHermesEphemeralMediaSession\(s\)/)
+  assert.match(hermesStoreSource, /const visibleCached = cached\.filter\(session => !isHermesEphemeralMediaSession\(session\)\)/)
+  assert.match(hermesStoreSource, /sessions: visibleCached/)
+  assert.match(hermesStoreSource, /const isolateNativeMediaRun = Boolean\(opts\.isolateNativeMediaRun \|\| isHermesCurrentChatMediaReturnRequest/)
+  assert.match(hermesStoreSource, /if \(isolateNativeMediaRun\) forceEmptyHistory = true/)
+  assert.match(hermesStoreSource, /HERMES_MEDIA_RETURN_HARD_INSTRUCTION/)
+  assert.match(hermesStoreSource, /const nativeSessionId = s\.id/)
+  assert.doesNotMatch(hermesStoreSource, /hermesIsolatedMediaSessionId/)
+})
+
 test('Hermes assistant markdown renders standard tables as real table elements', () => {
   const html = renderAgentMessageContentForRegression([
     '| Column A | Column B |',
@@ -439,6 +575,35 @@ test('Hermes assistant markdown renders standard tables as real table elements',
   assert.match(html, /<thead><tr><th style="text-align:left">Column A<\/th><th style="text-align:left">Column B<\/th><\/tr><\/thead>/)
   assert.match(html, /<tbody><tr><td style="text-align:left">1<\/td><td style="text-align:left">2<\/td><\/tr>/)
   assert.doesNotMatch(html, /\| --- \| --- \|/)
+})
+
+test('Hermes shared markdown renderer accepts compact and full-width table delimiters', () => {
+  const html = renderAgentMessageContentForRegression([
+    '｜ 日期 ｜ 天气 ｜',
+    '｜ -- ｜ —— ｜',
+    '｜ 周一 ｜ 晴 ｜',
+  ].join('\n'))
+
+  assert.match(html, /<table class="agent-message-markdown-table">/)
+  assert.match(html, /日期/)
+  assert.match(html, /周一/)
+  assert.doesNotMatch(html, /｜ -- ｜ —— ｜/)
+})
+
+test('Hermes final reply keeps a streamed GFM table for the shared packaged renderer', () => {
+  const finalText = normalizeHermesVisibleReply([
+    '## 最终结果',
+    '',
+    '| 项目 | 状态 |',
+    '| --- | --- |',
+    '| 表格 | 已保留 |',
+  ].join('\n'), { userText: '请用表格展示最终结果' })
+  const html = renderAgentMessageContentForRegression(finalText)
+
+  assert.match(finalText, /\| --- \| --- \|/)
+  assert.match(html, /<table class="agent-message-markdown-table">/)
+  assert.match(html, /表格/)
+  assert.match(html, /已保留/)
 })
 
 test('Hermes assistant markdown table cells escape html content', () => {
@@ -488,6 +653,21 @@ test('Hermes streaming deltas do not run final reply completion on every chunk',
 
   const streamDeltaCalls = hermesStoreSource.match(/sanitizeHermesVisibleReply\(msg\.content \+ (?:delta|accepted\.text), currentVisibleUserPrompt\(\), \{ streaming: true \}\)/g) || []
   assert.ok(streamDeltaCalls.length >= 2)
+})
+
+test('Hermes packaged and web builds route visible work narration into the execution trace', () => {
+  const narration = '让我再搜一下最近的会话，看看一周具体指什么任务。'
+  assert.equal(extractHermesVisibleExecutionNarration(narration), narration)
+  assert.equal(stripHermesVisibleExecutionNarration(`${narration}\n\n最终结论。`, [{
+    kind: 'reasoning',
+    source: 'stream-visible',
+    summary: narration,
+  }]), '最终结论。')
+
+  const appendBlock = hermesStoreSource.match(/function appendStreamDelta\(runSessionId, delta, clientRequestId = state\.runningClientRequestId\) \{[\s\S]*?function acceptActiveStreamEvent/)?.[0] || ''
+  assert.match(appendBlock, /extractHermesVisibleExecutionNarration\(delta\)/)
+  assert.match(appendBlock, /source: 'stream-visible'/)
+  assert.match(hermesStoreSource, /executionTrace: msg\.executionTrace/)
 })
 
 test('Hermes default conversation history uses bounded completed turns', () => {
@@ -594,11 +774,11 @@ test('Hermes packaged long-task requests cannot complete with promise-only text'
   assert.match(hermesStoreSource, /function\s+hasHermesExecutionEvidence\(/)
   assert.match(hermesStoreSource, /function\s+buildHermesLongTaskUnavailableReply\(/)
 
-  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?cleanupAfterRun\(\{ status: 'success', reason: 'run-completed' \}\)/)?.[0] || ''
-  assert.match(doneBlock, /isHermesLongTaskRequest\(currentVisibleUserPrompt\(\)\)/)
-  assert.match(doneBlock, /isHermesPromiseOnlyLongTaskReply\(msg\.content\)/)
-  assert.match(doneBlock, /hasHermesExecutionEvidence\(/)
-  assert.match(doneBlock, /buildHermesLongTaskUnavailableReply\(currentVisibleUserPrompt\(\)\)/)
+  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?const u4 = await tauriListen/)?.[0] || ''
+  assert.match(doneBlock, /applyHermesPromiseOnlyTaskGuard\(msg, currentVisibleUserPrompt\(\), runTools, clientRequestId\)/)
+  assert.match(hermesStoreSource, /function\s+applyHermesPromiseOnlyTaskGuard\(/)
+  const webCompletionBlock = hermesStoreSource.match(/function completeStreamRun\(runSessionId, output = '', clientRequestId = state\.runningClientRequestId\) \{[\s\S]*?function replaceStreamOutput/)?.[0] || ''
+  assert.match(webCompletionBlock, /applyHermesPromiseOnlyTaskGuard\(msg, currentVisibleUserPrompt\(\), runTools, clientRequestId\)/)
 })
 
 test('Hermes long-task guard keeps short-answer prompts untouched', () => {
@@ -626,7 +806,7 @@ test('Hermes packaged exact short-answer prompts override contaminated final tex
   assert.match(hermesStoreSource, /\\u4e24\\u4e2a\\u5b57/)
   assert.match(hermesStoreSource, /\\u6536\\u5230/)
 
-  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?cleanupAfterRun\(\{ status: 'success', reason: 'run-completed' \}\)/)?.[0] || ''
+  const doneBlock = hermesStoreSource.match(/tauriListen\('hermes-run-done'[\s\S]*?const u4 = await tauriListen/)?.[0] || ''
   assert.match(doneBlock, /normalizeHermesExactShortReply\(currentVisibleUserPrompt\(\),\s*msg\.content\)/)
   assert.match(doneBlock, /completeHermesReplyIfNeeded/)
 })
@@ -675,6 +855,13 @@ test('Hermes packaged candidate includes offline skills and keeps terminal page 
 
 test('Hermes packaged terminal uses bundled Git Bash instead of Windows WSL shim', () => {
   const launcherBlock = buildDesktopSource.match(/function Write-PortableHermesLauncher[\s\S]*?^}/m)?.[0] || ''
+  assert.match(launcherBlock, /uv-python\\python\\python\.exe/)
+  assert.match(launcherBlock, /setlocal EnableExtensions EnableDelayedExpansion/)
+  assert.match(launcherBlock, /for \/d %%D in \("%SUPERCLAW_RUNTIME_DIR%uv-python\\\*"\)/)
+  assert.match(launcherBlock, /PYTHON_EXE_VERSIONED/)
+  assert.match(launcherBlock, /%%~fD\\python\.exe/)
+  assert.match(launcherBlock, /set "PYTHON_EXE=!PYTHON_EXE_VERSIONED!"/)
+  assert.match(launcherBlock, /"!PYTHON_EXE!" -m hermes_cli\.main/)
   assert.match(launcherBlock, /HERMES_PORTABLE_GIT_BASH=%SUPERCLAW_RUNTIME_DIR%git\\bin\\bash\.exe/)
   assert.match(launcherBlock, /HERMES_GIT_BASH_PATH=%HERMES_PORTABLE_GIT_BASH%/)
   assert.match(launcherBlock, /%ProgramFiles%\\Git\\bin\\bash\.exe/)
@@ -1338,22 +1525,24 @@ test('ClaudeCode run status follows the active assistant reply and disappears af
   assert.match(claudePanelStylesSource, /\.message-row\.user \.turn-run-state[\s\S]*?display:\s*none\s*!important/)
 })
 
-test('ClaudeCode native CLI streams partial text deltas through packaged SSE', () => {
+test('ClaudeCode classifies native CLI prose as execution detail before tool calls', () => {
   assert.match(claudePanelServerSource, /"--include-partial-messages"/)
   assert.match(claudePanelServerSource, /parsed\.type === "stream_event"/)
   assert.match(claudePanelServerSource, /streamEvent\.type === "content_block_delta"/)
   assert.match(claudePanelServerSource, /delta\.type === "text_delta"/)
-  assert.match(claudePanelServerSource, /writeEvent\(res, "text", \{ text: safeDelta \}\)/)
-  assert.match(claudePanelServerSource, /partialTextSeenForAssistant && toolBlocks\.length/)
-  assert.match(claudePanelServerSource, /captureAssistantText: true/)
-  assert.match(claudePanelSource, /function captureActiveAssistantTextForProcess\(\)/)
-  assert.match(claudePanelSource, /payload\.captureAssistantText \? captureActiveAssistantTextForProcess\(\) : ""/)
+  assert.match(claudePanelServerSource, /let bufferedAssistantDeltas = ""/)
+  assert.match(claudePanelServerSource, /bufferedAssistantDeltas \+= safeDelta/)
+  assert.match(claudePanelServerSource, /const turnText = text \|\| streamedText/)
+  assert.match(claudePanelServerSource, /if \(toolBlocks\.length\) \{[\s\S]*?kind: "reasoning"[\s\S]*?text: sanitizeModelOutput\(turnText, \{ prompt \}\)/)
+  assert.match(claudePanelServerSource, /if \(turnText\) \{[\s\S]*?writeEvent\(res, "text", \{ text: sanitizeModelOutput\(turnText, \{ prompt \}\) \}\)/)
+  assert.match(claudePanelSource, /assistant-thinking-block__item-title/)
+  assert.match(claudePanelSource, /assistant-thinking-block__item-detail/)
   assert.match(claudePanelSource, /function moveClaudeExecutionNarrativeToProcess\(\)/)
   assert.match(claudePanelSource, /function splitClaudeExecutionNarrative\(rawText\)/)
   assert.match(claudePanelSource, /输出文件\|处理结果\|执行结果\|验证结果\|最终结果/)
   assert.match(claudePanelSource, /moveClaudeExecutionNarrativeToProcess\(\);[\s\S]*?executionProcess: activeExecutionProcess/)
   assert.match(claudePanelSource, /role === "assistant" && executionProcess\.length[\s\S]*?splitClaudeExecutionNarrative\(message\.content\)/)
-  assert.match(claudePanelServerSource, /if \(partialTextSeenForAssistant\) \{[\s\S]*?pendingAssistantText = ""/)
+  assert.match(claudePanelStylesSource, /\.assistant-thinking-block__item \+ \.assistant-thinking-block__item/)
 })
 
 test('ClaudeCode compact layout cannot let the right panel consume the chat grid', () => {

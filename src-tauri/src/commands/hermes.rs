@@ -475,7 +475,7 @@ fn stop_guardian() {
 /// - 新便携结构: <app_root>/resources/data/hermes/
 /// - 旧便携结构: <app_root>/data/hermes/
 /// - Dev 模式兜底: ~/.hermes/（让 dev 环境复用打包版已安装的 Hermes 配置）
-fn hermes_home() -> PathBuf {
+pub(super) fn hermes_home() -> PathBuf {
     if let Ok(h) = std::env::var("HERMES_HOME") {
         return PathBuf::from(h);
     }
@@ -1866,6 +1866,9 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
             .args(args)
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
+            // The bundled runtime lives under Tauri's watched resources. Avoid
+            // writing __pycache__ there, which would restart tauri:dev mid-run.
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
             .env(
@@ -1883,6 +1886,7 @@ fn hermes_command(args: &[&str], enhanced: &str) -> std::process::Command {
             .current_dir(hermes_launcher_cwd(&home, Some(&launcher)))
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd
     }
@@ -1925,6 +1929,7 @@ fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Comman
             .args(args)
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd.env("PYTHONPATH", site.to_string_lossy().to_string())
             .env(
@@ -1942,6 +1947,7 @@ fn hermes_tokio_command(args: &[&str], enhanced: &str) -> tokio::process::Comman
             .current_dir(hermes_launcher_cwd(&home, Some(&launcher)))
             .env("PATH", enhanced)
             .env("HERMES_DISABLE_UPDATE_CHECK", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("HERMES_HOME", home.to_string_lossy().to_string());
         cmd
     }
@@ -3291,13 +3297,11 @@ pub async fn configure_hermes(
         )
     } else {
         // 首次创建：生成完整的基线配置
-        format!(
+        let baseline = format!(
             r#"# Hermes Agent configuration (managed by ClawPanel)
 model:
   default: {model_str}
-{provider_line}{base_url_line}platform_toolsets:
-  api_server:
-    - hermes-api-server
+{provider_line}{base_url_line}{toolsets}
 terminal:
   backend: local
 platforms:
@@ -3305,7 +3309,10 @@ platforms:
     enabled: true
 {custom_provider_block}
 "#
-        )
+            ,
+            toolsets = default_hermes_api_server_toolsets_yaml(),
+        );
+        ensure_hermes_api_server_toolsets(&baseline)
     };
     std::fs::write(&config_path, &config_content)
         .map_err(|e| format!("写入 config.yaml 失败: {e}"))?;
@@ -3317,13 +3324,15 @@ platforms:
     let url_env = hermes_providers::primary_base_url_env(&provider);
 
     // ClawPanel 管理的 key 列表：包含所有 provider 的 api_key_env_vars + base_url_env_vars
-    // + ClawPanel 特定的两个 key。换 provider 时这些会被重写或清除。
+    // + ClawPanel 特定的 Gateway API 配置。换 provider 时这些会被重写或清除。
     let managed_keys_owned = hermes_providers::all_managed_env_keys();
     let managed_keys: Vec<&str> = managed_keys_owned.to_vec();
 
     let mut new_pairs: Vec<(String, String)> = vec![
         ("GATEWAY_ALLOW_ALL_USERS".into(), "true".into()),
         ("API_SERVER_KEY".into(), "clawpanel-local".into()),
+        ("API_SERVER_ENABLED".into(), "true".into()),
+        ("API_SERVER_PORT".into(), hermes_gateway_port().to_string()),
     ];
 
     if let Some(env) = key_env {
@@ -3470,9 +3479,7 @@ fn merge_hermes_config_yaml(
     // 确保 platform_toolsets 和 platforms 存在（首次合并保底）
     let joined = result.join("\n");
     let mut final_content = joined.clone();
-    if !final_content.contains("platform_toolsets:") {
-        final_content.push_str("\nplatform_toolsets:\n  api_server:\n    - hermes-api-server\n");
-    }
+    final_content = ensure_hermes_api_server_toolsets(&final_content);
     if !final_content.contains("terminal:") {
         final_content.push_str("terminal:\n  backend: local\n");
     }
@@ -3502,6 +3509,80 @@ fn is_hermes_model_provider_section(trimmed: &str) -> bool {
         || trimmed.starts_with("credential_pool_strategies:")
         || trimmed == "auxiliary:"
         || trimmed.starts_with("auxiliary:")
+}
+
+// The API server is the desktop chat surface. Keep this registry explicit so
+// fresh portable profiles expose the same native tools as configured profiles.
+// Write and command actions still stop at the native approval bridge.
+const HERMES_API_SERVER_TOOLSETS: &[&str] = &[
+    "hermes-api-server", "web", "browser", "terminal", "file", "code_execution",
+    "vision", "video", "image_gen", "tts", "skills", "todo", "memory", "session_search",
+    "clarify", "delegation", "cronjob", "messaging", "yuanbao", "computer_use",
+    "desktop_control",
+];
+
+fn default_hermes_api_server_toolsets_yaml() -> String {
+    let entries = HERMES_API_SERVER_TOOLSETS
+        .iter()
+        .map(|toolset| format!("    - {toolset}\n"))
+        .collect::<String>();
+    format!("platform_toolsets:\n  api_server:\n{entries}")
+}
+
+/// Narrow text merge for platform_toolsets.api_server. Other YAML sections
+/// remain untouched, including custom platform mappings and user settings.
+fn ensure_hermes_api_server_toolsets(content: &str) -> String {
+    if !content.contains("platform_toolsets:") {
+        let mut next = content.trim_end().to_string();
+        next.push('\n');
+        next.push_str(&default_hermes_api_server_toolsets_yaml());
+        return next;
+    }
+
+    let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let Some(platform_start) = lines.iter().position(|line| line.trim() == "platform_toolsets:") else {
+        return content.to_string();
+    };
+    let platform_end = lines
+        .iter()
+        .enumerate()
+        .skip(platform_start + 1)
+        .find_map(|(index, line)| {
+            let trimmed = line.trim();
+            (!trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t')).then_some(index)
+        })
+        .unwrap_or(lines.len());
+    let api_start = (platform_start + 1..platform_end)
+        .find(|index| lines[*index].trim() == "api_server:");
+
+    let Some(api_start) = api_start else {
+        let additions = HERMES_API_SERVER_TOOLSETS
+            .iter()
+            .map(|toolset| format!("    - {toolset}"))
+            .collect::<Vec<_>>();
+        lines.splice(platform_start + 1..platform_start + 1, std::iter::once("  api_server:".to_string()).chain(additions));
+        return lines.join("\n");
+    };
+    let api_end = (api_start + 1..platform_end)
+        .find(|index| {
+            let line = &lines[*index];
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !line.starts_with("    ") && !line.starts_with('\t')
+        })
+        .unwrap_or(platform_end);
+    let existing = lines[api_start + 1..api_end]
+        .iter()
+        .filter_map(|line| line.trim().strip_prefix('-').map(str::trim))
+        .collect::<std::collections::HashSet<_>>();
+    let additions = HERMES_API_SERVER_TOOLSETS
+        .iter()
+        .filter(|toolset| !existing.contains(**toolset))
+        .map(|toolset| format!("    - {toolset}"))
+        .collect::<Vec<_>>();
+    if !additions.is_empty() {
+        lines.splice(api_end..api_end, additions);
+    }
+    lines.join("\n")
 }
 
 /// 合并 .env 文件：更新 managed_keys 对应的值，保留用户自定义的其他环境变量。
@@ -4995,7 +5076,7 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_else(|| "python".to_string());
             let note = format!(
-                "\n\n[SuperClaw attached documents]\n{list}\nUse the terminal and the bundled document tool to inspect or edit only these files. Command: \"{python_path}\" \"{}\" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. Report the output path after verification.\n[/SuperClaw attached documents]",
+                "\n\n[SuperClaw attached documents]\n{list}\nUse the terminal and the bundled document tool to inspect or edit only these files. Command: \"{python_path}\" \"{}\" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. For Excel cleanup (empty rows, empty columns, or residual blank-cell formatting), run `clean-excel <file> --output <new-file>` directly with this bundled tool. Do not use execute_code for attached-document work. Report the output path after verification.\n[/SuperClaw attached documents]",
                 tool_path.to_string_lossy(),
             );
             text.push_str(&note);
@@ -5354,7 +5435,10 @@ pub async fn hermes_agent_run(
 
     // 2. GET /v1/runs/{run_id}/events — SSE 事件流
     let events_url = format!("{gw_url}/v1/runs/{run_id}/events");
-    let sse_client = hermes_gateway_http_client(std::time::Duration::from_secs(300))
+    // A healthy run may spend several minutes in a tool or awaiting user
+    // approval. The UI uses an idle watchdog and polls run status, so this
+    // transport must not cut an otherwise recoverable run short.
+    let sse_client = hermes_gateway_http_client(std::time::Duration::from_secs(1800))
         .map_err(|e| format!("SSE 客户端创建失败: {e}"))?;
 
     let mut sse_req = sse_client.get(&events_url);
@@ -5413,8 +5497,22 @@ pub async fn hermes_agent_run(
                 return Ok(run_id);
             }
 
-            if let Ok(evt) = serde_json::from_str::<Value>(data) {
-                let event_type = evt["event"].as_str().unwrap_or("");
+            if let Ok(mut evt) = serde_json::from_str::<Value>(data) {
+                // Hermes' TUI gateway uses `tool.start` / `tool.complete`,
+                // while the desktop renderer contract uses the historical
+                // `tool.started` / `tool.completed` names. Normalize at the
+                // bridge so all runtime modes carry the same rich result.
+                let raw_event_type = evt["event"].as_str().unwrap_or("").to_string();
+                let event_type = match raw_event_type.as_str() {
+                    "tool.start" => "tool.started",
+                    "tool.complete" => "tool.completed",
+                    other => other,
+                };
+                if event_type != raw_event_type {
+                    if let Some(obj) = evt.as_object_mut() {
+                        obj.insert("event".into(), Value::String(event_type.to_string()));
+                    }
+                }
                 match event_type {
                     "message.delta" => {
                         if let Some(delta) = evt["delta"].as_str() {
@@ -5471,9 +5569,14 @@ pub async fn hermes_agent_run(
                                     .or_else(|| obj.get("name"))
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("tool");
+                                let call_id = obj
+                                    .get("tool_id")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| format!("{run_id}:{name}"));
                                 obj.insert(
                                     "tool_call_id".into(),
-                                    Value::String(format!("{run_id}:{name}")),
+                                    Value::String(call_id),
                                 );
                             }
                         }
@@ -5561,6 +5664,74 @@ pub async fn hermes_agent_run(
         }),
     );
     Ok(run_id)
+}
+
+/// Resolve a pending native Hermes approval without starting another gateway
+/// or creating a new chat turn. The bundled runtime owns the actual approval
+/// policy; this command only validates the UI choice and forwards it to the
+/// run that requested it.
+#[tauri::command]
+pub async fn hermes_agent_resolve_approval(
+    run_id: String,
+    choice: String,
+) -> Result<Value, String> {
+    let run_id = run_id.trim();
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err("无效的 Hermes 运行标识".to_string());
+    }
+
+    let choice = choice.trim().to_ascii_lowercase();
+    if !matches!(choice.as_str(), "once" | "session" | "always" | "deny") {
+        return Err("无效的授权选项".to_string());
+    }
+
+    let api_key = {
+        let env_path = hermes_home().join(".env");
+        let mut key = String::new();
+        if let Ok(content) = std::fs::read_to_string(&env_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if let Some(value) = line.strip_prefix("API_SERVER_KEY=") {
+                    key = value.trim().to_string();
+                    break;
+                }
+            }
+        }
+        key
+    };
+
+    let gateway_url = hermes_gateway_url();
+    let url = format!("{gateway_url}/v1/runs/{run_id}/approval");
+    let client = hermes_gateway_http_client(std::time::Duration::from_secs(10))
+        .map_err(|error| format!("HTTP 客户端创建失败: {error}"))?;
+    let mut request = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "choice": choice }));
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("提交 Hermes 授权失败: {}", reqwest_error_detail(&error)))?;
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "提交 Hermes 授权失败 HTTP {status}: {}",
+            detail.chars().take(360).collect::<String>()
+        ));
+    }
+    response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("解析 Hermes 授权响应失败: {error}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -7147,7 +7318,7 @@ fn parse_env_file_lines(raw: &str) -> Vec<(String, String, usize)> {
 /// Return every non-managed `KEY=VALUE` pair from ~/.hermes/.env.
 ///
 /// Output is ordered by the order of appearance in the file. Managed keys
-/// (provider API keys, base URLs, `GATEWAY_ALLOW_ALL_USERS`, `API_SERVER_KEY`)
+/// (provider API keys, base URLs and managed Gateway API settings)
 /// are filtered out — those are surfaced separately in the config UI.
 #[tauri::command]
 pub fn hermes_env_read_unmanaged() -> Result<Vec<(String, String)>, String> {
@@ -7967,8 +8138,9 @@ pub fn hermes_dashboard_plugins_rescan() -> Result<Value, String> {
     Ok(serde_json::json!({ "ok": true, "count": plugins.len() }))
 }
 
-/// Hermes 内置工具集（configurable toolsets），来自 hermes_cli/tools_config.py
-/// 当 `hermes tools list --platform cli` CLI 调用失败时作为回退数据源。
+/// Hermes 内置工具集（configurable toolsets），来自 hermes_cli/tools_config.py。
+/// 聊天页面运行在 api_server 平台，列表也必须查询同一平台，不能把 CLI
+/// 的工具状态误展示为桌面聊天的实际可用能力。
 const BUILTIN_TOOLSETS: &[(&str, &str)] = &[
     ("web", "🔍 网页搜索与内容抓取"),
     ("browser", "🌐 浏览器自动化操作"),
@@ -8013,14 +8185,14 @@ const DEFAULT_OFF_TOOLSETS: &[&str] = &[
 #[tauri::command]
 pub fn hermes_toolsets_list() -> Result<Value, String> {
     // 1) 优先尝试 CLI
-    let output = run_silent("hermes", &["tools", "list", "--platform", "cli"]).unwrap_or_default();
+    let output = run_silent("hermes", &["tools", "list", "--platform", "api_server"]).unwrap_or_default();
     if !output.is_empty() {
         return Ok(serde_json::json!({ "raw": output }));
     }
 
     // 2) CLI 失败，回退到内置工具集列表
     let off: HashSet<&str> = DEFAULT_OFF_TOOLSETS.iter().copied().collect();
-    let mut fallback = String::from("Built-in toolsets (cli):\n");
+    let mut fallback = String::from("Built-in toolsets (api_server):\n");
     for (name, desc) in BUILTIN_TOOLSETS {
         let enabled = !off.contains(name);
         let status = if enabled {
@@ -8411,6 +8583,28 @@ platforms:
             !patched.contains("enabled: false"),
             "disabled marker should have been removed"
         );
+    }
+}
+
+#[cfg(test)]
+mod hermes_api_server_toolset_tests {
+    use super::ensure_hermes_api_server_toolsets;
+
+    #[test]
+    fn fresh_config_gets_the_portable_agent_toolsets() {
+        let merged = ensure_hermes_api_server_toolsets("model:\n  default: test\n");
+        for toolset in ["web", "browser", "terminal", "file", "vision", "memory", "delegation"] {
+            assert!(merged.contains(&format!("    - {toolset}")), "missing {toolset}");
+        }
+    }
+
+    #[test]
+    fn existing_api_server_preserves_custom_platform_sections() {
+        let source = "platform_toolsets:\n  api_server:\n    - hermes-api-server\n  telegram:\n    - messaging\nplatforms:\n  api_server:\n    enabled: true\n";
+        let merged = ensure_hermes_api_server_toolsets(source);
+        assert!(merged.contains("  telegram:\n    - messaging"));
+        assert!(merged.contains("    - browser"));
+        assert_eq!(merged.matches("    - hermes-api-server").count(), 1);
     }
 }
 

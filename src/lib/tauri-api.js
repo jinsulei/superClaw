@@ -539,6 +539,10 @@ export const api = {
     agentName: options?.agentName || 'hermes',
     agent_name: options?.agentName || 'hermes',
   }, onEvent, options),
+  hermesAgentResolveApproval: (runId, choice) => invoke('hermes_agent_resolve_approval', {
+    runId: String(runId || '').trim(),
+    choice: String(choice || '').trim(),
+  }),
   hermesNativeTerminalStart: () => invoke('hermes_native_terminal_start'),
   hermesReadConfig: () => invoke('hermes_read_config'),
   hermesFetchModels: (baseUrl, apiKey, apiType, provider) => invoke('hermes_fetch_models', { baseUrl, apiKey, apiType: apiType || null, provider: provider || null }),

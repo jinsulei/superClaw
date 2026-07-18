@@ -561,6 +561,7 @@ function buildIntentTriggeredToolInstructions(text) {
     hasUrl ||
     /(浏览器|网页|网站|网址|链接|页面|打开网页|打开网站|搜索网页|网上搜索|联网搜索|网页搜索|抓取|读取链接|浏览)/i.test(base) ||
     /\b(browser|website|web page|url|search web|open url|navigate|scrape)\b/i.test(lower)
+  const mediaReturnIntent = /(?:\u628a|\u5c06|\u7ed9\u6211|\u91cd\u65b0).{0,24}(?:\u56fe\u7247|\u622a\u56fe|\u622a\u5c4f|\u56fe\u50cf).{0,24}(?:\u53d1|\u53d1\u9001|\u56de\u4f20|\u663e\u793a|\u6e32\u67d3|\u8d34\u5230|\u653e\u5230).{0,24}(?:\u804a\u5929|\u5bf9\u8bdd|\u8fd9\u91cc|\u7a97\u53e3)?|(?:\u751f\u6210|\u521b\u5efa|\u7ed8\u5236|\u505a|\u622a|\u622a\u53d6).{0,36}(?:\u56fe\u7247|\u622a\u56fe|\u622a\u5c4f|\u56fe\u50cf|png|jpe?g|webp|gif).{0,36}(?:\u5f53\u524d\u804a\u5929|\u804a\u5929|\u5f53\u524d\u5bf9\u8bdd|\u5bf9\u8bdd|\u8fd4\u56de|\u53d1\u56de|\u53d1\u51fa|\u663e\u793a|\u56de\u4f20)|(?:\u622a\u56fe|\u622a\u5c4f).{0,36}(?:\u53d1\u51fa\u6765|\u53d1\u5230\u804a\u5929|\u53d1\u56de|\u8fd4\u56de|\u663e\u793a|\u56de\u4f20)|(?:\u56fe\u7247|\u622a\u56fe|\u622a\u5c4f|\u56fe\u50cf).{0,24}(?:\u80fd\u5426|\u662f\u5426|\u6b63\u5e38).{0,24}(?:\u663e\u793a|\u6e32\u67d3)|(?:send|return|show|generate|create).{0,36}(?:image|screenshot|png|jpe?g|webp|gif)/i.test(base)
   const lines = []
   if (capabilityAuditIntent) {
     lines.push(
@@ -584,6 +585,17 @@ function buildIntentTriggeredToolInstructions(text) {
       '若目标是抖音、快手、小红书、微信、飞书、钉钉、QQ 等桌面客户端，必须优先操作用户已打开的桌面客户端；只有在桌面工具确实无法激活可见窗口，且用户同意网页兜底时，才改用浏览器。',
       '普通聊天、文案、表格、解释类问题不要触发 desktop_control。',
       '[/DESKTOP_CONTROL_TRIGGER]',
+    )
+  }
+  if (mediaReturnIntent) {
+    lines.push(
+      '[MEDIA_RETURN_TRIGGER]',
+      'The user wants an existing image or screenshot displayed in this chat bubble, not a text description and not a second image analysis.',
+      'First use an available tool to locate and verify a real image file. vision_analyze analyzes an image but cannot return it to chat, so never use it as a substitute for media return.',
+      'After finding a valid PNG/JPG/JPEG/WEBP/GIF, call superclaw_return_media with that verified absolute path. It attaches the image to the current SuperClaw chat automatically. This instruction overrides generic messaging/tool documentation: do not call, retry, or discuss send_message for this task. A send_message call is a failed media-return attempt.',
+      'Desktop-control screenshots saved under the portable workspace .shots directory are valid MEDIA sources. Return the exact path reported by the screenshot tool.',
+      'For a sandbox image (for example /tmp), call superclaw_return_media with the verified path. Do not call read_file on binary data, do not call vision_analyze again, and do not encode the image as base64 in the final reply. Do not send an acknowledgement before the tool call. If no real readable image path is available, state the concrete blocker. Never claim an image was sent without a successful superclaw_return_media result.',
+      '[/MEDIA_RETURN_TRIGGER]',
     )
   }
   if (browserIntent && !desktopIntent) {
@@ -996,6 +1008,7 @@ const HERMES_MEDIA_IMAGE_EXTENSIONS = {
   '.webp': 'image/webp',
   '.gif': 'image/gif',
 }
+const HERMES_MEDIA_DATA_MAX_BYTES = 3 * 1024 * 1024
 
 function isWindowsAbsoluteImagePath(value = '') {
   return /^[A-Za-z]:[\\/]/.test(String(value || '').trim())
@@ -1058,11 +1071,36 @@ function parseHermesMediaDirectivePath(value = '') {
   }
 }
 
+function parseHermesMediaDirectiveData(value = '') {
+  const raw = String(value || '').trim()
+  const match = /^(?:data:)?(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/i.exec(raw)
+  if (!match) return null
+  const mimeType = match[1].toLowerCase().replace('jpg', 'jpeg')
+  const content = match[2].replace(/\s+/g, '')
+  if (!content || Math.floor((content.length * 3) / 4) > HERMES_MEDIA_DATA_MAX_BYTES) return null
+  const extension = mimeType.split('/')[1]
+  return {
+    category: 'image',
+    type: 'image',
+    mimeType,
+    content,
+    fileName: `hermes-sandbox-image.${extension}`,
+  }
+}
+
 function splitHermesMediaDirectives(rawText = '') {
   const attachments = []
   const lines = String(rawText || '').split(/\r?\n/)
   const visibleLines = []
   for (const line of lines) {
+    const dataMatch = /^\s*MEDIA_DATA:\s*(.+?)\s*$/i.exec(line)
+    if (dataMatch) {
+      const parsed = parseHermesMediaDirectiveData(dataMatch[1])
+      if (parsed) {
+        attachments.push(parsed)
+        continue
+      }
+    }
     const match = /^\s*MEDIA:\s*(.+?)\s*$/i.exec(line)
     if (match) {
       const parsed = parseHermesMediaDirectivePath(match[1])
@@ -1316,6 +1354,9 @@ export function render() {
   let currentModel = ''
   let statusRefreshInFlight = false
   let unlistenGatewayStatus = null
+  let approvalOverlay = null
+  let approvalOverlayRunId = ''
+  let imagePreviewOverlay = null
   const mobileQuery = window.matchMedia('(max-width: 720px)')
 
   // Input state must live outside the textarea DOM node because every draw()
@@ -1650,6 +1691,69 @@ export function render() {
       store.state.activeSessionId === lastActiveSessionId &&
       store.state.streaming === lastRenderedStreaming
     scheduleDraw(canPatchMessages ? 'messages' : 'full')
+    syncApprovalPrompt()
+  }
+
+  function closeApprovalPrompt() {
+    if (approvalOverlay?.isConnected) approvalOverlay.close?.()
+    approvalOverlay = null
+    approvalOverlayRunId = ''
+  }
+
+  function syncApprovalPrompt() {
+    const approval = store.state.pendingApproval
+    if (!approval?.runId) {
+      closeApprovalPrompt()
+      return
+    }
+    if (approvalOverlay?.isConnected && approvalOverlayRunId === approval.runId) return
+    closeApprovalPrompt()
+    const command = approval.command
+      ? `<pre style="margin:10px 0 0;max-height:180px;overflow:auto;white-space:pre-wrap">${escHtml(approval.command)}</pre>`
+      : ''
+    approvalOverlayRunId = approval.runId
+    approvalOverlay = showContentModal({
+      title: '需要授权',
+      width: 560,
+      content: `<p style="margin:0;line-height:1.65">${escHtml(approval.description || '此操作需要你的授权后才能继续。')}</p>${command}<p style="margin:12px 0 0;color:var(--text-secondary);font-size:13px">授权会直接继续当前任务，不会额外发送一条聊天消息。</p>`,
+      buttons: [
+        { id: 'hm-approval-once', label: '本次允许', className: 'btn btn-primary btn-sm' },
+        { id: 'hm-approval-session', label: '本会话允许', className: 'btn btn-secondary btn-sm' },
+        { id: 'hm-approval-deny', label: '拒绝', className: 'btn btn-danger btn-sm' },
+      ],
+    })
+    const decide = async (choice) => {
+      const buttons = approvalOverlay?.querySelectorAll('button') || []
+      buttons.forEach(button => { button.disabled = true })
+      try {
+        await store.resolvePendingHermesApproval(choice)
+        closeApprovalPrompt()
+      } catch (error) {
+        buttons.forEach(button => { button.disabled = false })
+        toast(String(error?.message || error || '提交授权失败'), 'error')
+      }
+    }
+    approvalOverlay.querySelector('#hm-approval-once')?.addEventListener('click', () => decide('once'))
+    approvalOverlay.querySelector('#hm-approval-session')?.addEventListener('click', () => decide('session'))
+    approvalOverlay.querySelector('#hm-approval-deny')?.addEventListener('click', () => decide('deny'))
+    const cancelButton = approvalOverlay.querySelector('[data-action="cancel"]')
+    if (cancelButton) cancelButton.onclick = (event) => {
+      event.preventDefault()
+      decide('deny')
+    }
+    // An approval must never disappear silently: clicking the backdrop or
+    // pressing Escape explicitly declines the pending native request.
+    approvalOverlay.addEventListener('click', (event) => {
+      if (event.target !== approvalOverlay) return
+      event.stopImmediatePropagation()
+      decide('deny')
+    }, true)
+    approvalOverlay.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      decide('deny')
+    }, true)
   }
 
   async function refreshHermesRuntimeStatus(force = false) {
@@ -2104,6 +2208,15 @@ export function render() {
         input ? `输入\n${input}` : '',
         output ? `结果\n${output}` : '',
       ].filter(Boolean).join('\n\n')
+      const artifacts = Array.isArray(step?.artifacts) ? step.artifacts : []
+      const artifactsHtml = artifacts.length ? `
+        <div class="hm-chat-execution-artifacts">
+          ${artifacts.map((artifact) => {
+            const label = String(artifact?.path || artifact?.text || artifact?.type || 'artifact').trim()
+            return `<span class="hm-chat-execution-artifact" title="${escAttr(label)}">${escHtml(label)}</span>`
+          }).join('')}
+        </div>
+      ` : ''
       return `
         <div class="hm-chat-execution-step" data-status="${escAttr(status)}">
           <span class="hm-chat-execution-index">${index + 1}</span>
@@ -2111,6 +2224,7 @@ export function render() {
             <div class="hm-chat-execution-title">${escHtml(step?.title || '执行步骤')}</div>
             ${summary ? `<div class="hm-chat-execution-summary">${escHtml(summary)}</div>` : ''}
             ${detail ? `<pre class="hm-chat-execution-detail">${escHtml(detail)}</pre>` : ''}
+            ${artifactsHtml}
           </div>
           <span class="hm-chat-execution-state">${status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'completed' ? '完成' : '处理中'}</span>
         </div>
@@ -2233,7 +2347,7 @@ export function render() {
           if (!src && mediaPath) {
             return `
               <figure class="hm-chat-attachment-image is-loading" data-hermes-media-figure>
-                <img data-hermes-media-path="${escAttr(mediaPath)}" alt="${escAttr(att.fileName || att.name || 'image')}" hidden>
+                <img data-hermes-media-preview data-hermes-media-path="${escAttr(mediaPath)}" alt="${escAttr(att.fileName || att.name || 'image')}" hidden>
                 ${att.fileName || att.name ? `<figcaption>${escHtml(att.fileName || att.name)}</figcaption>` : ''}
                 <div class="hm-chat-media-status" data-hermes-media-status>正在加载图片...</div>
               </figure>
@@ -2241,7 +2355,7 @@ export function render() {
           }
           return `
             <figure class="hm-chat-attachment-image">
-              <img src="${escAttr(src)}" alt="${escAttr(att.fileName || att.name || 'image')}">
+              <img data-hermes-media-preview src="${escAttr(src)}" alt="${escAttr(att.fileName || att.name || 'image')}">
               ${att.fileName || att.name ? `<figcaption>${escHtml(att.fileName || att.name)}</figcaption>` : ''}
             </figure>
           `
@@ -2284,6 +2398,72 @@ export function render() {
         console.warn('[Hermes] MEDIA image load failed', err)
       }
     }
+  }
+
+  function closeHermesImagePreview() {
+    if (!imagePreviewOverlay) return
+    const { element, onKeyDown } = imagePreviewOverlay
+    document.removeEventListener('keydown', onKeyDown)
+    element.remove()
+    imagePreviewOverlay = null
+  }
+
+  function openHermesImagePreview(image) {
+    const src = String(image?.currentSrc || image?.src || '').trim()
+    if (!isSafeRenderableImageSrc(src)) return
+    closeHermesImagePreview()
+
+    const overlay = document.createElement('div')
+    overlay.className = 'hm-chat-image-preview-overlay'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+    overlay.setAttribute('aria-label', '图片预览')
+
+    const panel = document.createElement('div')
+    panel.className = 'hm-chat-image-preview-panel'
+    const closeButton = document.createElement('button')
+    closeButton.type = 'button'
+    closeButton.className = 'hm-chat-image-preview-close'
+    closeButton.setAttribute('aria-label', '关闭图片预览')
+    closeButton.title = '关闭'
+    closeButton.textContent = '×'
+    const preview = document.createElement('img')
+    preview.src = src
+    preview.alt = image?.alt || '图片预览'
+    preview.title = '滚轮缩放，双击恢复'
+    let zoom = 1
+    const applyZoom = () => {
+      preview.style.transform = `scale(${zoom})`
+      panel.dataset.zoom = String(Math.round(zoom * 100))
+    }
+    const resetZoom = () => {
+      zoom = 1
+      applyZoom()
+    }
+    panel.addEventListener('wheel', (event) => {
+      event.preventDefault()
+      const delta = event.deltaY < 0 ? 0.14 : -0.14
+      zoom = Math.min(4, Math.max(0.5, Math.round((zoom + delta) * 100) / 100))
+      applyZoom()
+    }, { passive: false })
+    preview.addEventListener('dblclick', (event) => {
+      event.preventDefault()
+      resetZoom()
+    })
+    panel.append(closeButton, preview)
+    overlay.appendChild(panel)
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeHermesImagePreview()
+    }
+    closeButton.addEventListener('click', closeHermesImagePreview)
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeHermesImagePreview()
+    })
+    document.addEventListener('keydown', onKeyDown)
+    document.body.appendChild(overlay)
+    imagePreviewOverlay = { element: overlay, onKeyDown }
+    closeButton.focus()
   }
 
   function renderPendingAttachments() {
@@ -2727,6 +2907,15 @@ export function render() {
           if (label && originalLabel) label.textContent = originalLabel
         }, 1400)
         toast(ok ? t('common.copied') : t('engine.chatCopyFailed'), ok ? 'success' : 'error')
+      })
+    })
+
+    el.querySelectorAll('img[data-hermes-media-preview]').forEach(image => {
+      image.title = '点击放大预览'
+      image.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        openHermesImagePreview(image)
       })
     })
 
@@ -3308,7 +3497,7 @@ export function render() {
           fileName: saved?.fileName || file.name,
           savedPath: saved?.path || '',
         })
-        nextInstructions = 'The user attached a document. Use the bundled Hermes document tool to preview or edit only this file. Save edits as a new file and verify the output.'
+        nextInstructions = 'The user attached a document. Use the bundled Hermes document tool to preview or edit only this file. For Excel cleanup or formatting cleanup, use its clean-excel command directly instead of execute_code. Save edits as a new file and verify the output.'
       } else {
         const content = await readFileAsText(file)
         block = formatSelectedFileForPrompt(file, content)
@@ -4354,6 +4543,7 @@ export function render() {
     store.switchSession(sid)
     if (mobileQuery.matches) sidebarOpen = false
     closeSearch()
+    closeApprovalPrompt()
   }
 
   // --- Global keyboard: Ctrl/Cmd+K opens search, keys navigate when open ---

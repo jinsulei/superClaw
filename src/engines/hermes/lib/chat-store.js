@@ -53,6 +53,7 @@ import {
   mapHermesErrorToUserMessage,
   normalizeHermesStreamText,
   normalizeHermesVisibleReply as normalizeHermesVisibleReplyText,
+  splitHermesMediaLines,
 } from './hermes-response-assembler.js'
 
 // Normal user turns are executed by the bundled Hermes Agent. Frontend-only
@@ -91,8 +92,19 @@ const HISTORY_ASSISTANT_OMITTED_MARKER = '[previous assistant response omitted t
 const FIRST_SEND_SESSION_HOLD_MS = 45 * 1000
 const HERMES_EXACT_SHORT_LOCAL_TAIL_HOLD_MS = 12 * 1000
 const DELETED_SESSION_TTL_MS = 24 * 60 * 60 * 1000
-const HERMES_RUN_TIMEOUT_MS = 180 * 1000
+// This is an idle watchdog, not a wall-clock deadline. Native Hermes runs can
+// legitimately take time while tools work or a user reviews an approval.
+const HERMES_RUN_TIMEOUT_MS = 5 * 60 * 1000
+const HERMES_RUN_RECOVERY_DELAY_MS = 30 * 1000
 const HERMES_GENERIC_RETRY_FALLBACK_TEXT = '\u8fd9\u6b21\u56de\u590d\u6ca1\u6709\u5b8c\u6574\u751f\u6210\u3002\u8bf7\u4f60\u518d\u53d1\u4e00\u6b21\u95ee\u9898\uff0c\u6211\u4f1a\u91cd\u65b0\u6574\u7406\u6210\u5b8c\u6574\u7ed3\u8bba\u3002'
+const HERMES_REASONING_PLACEHOLDER = '\u6b63\u5728\u5206\u6790\u4efb\u52a1\u5e76\u51c6\u5907\u4e0b\u4e00\u6b65\u3002'
+const HERMES_MEDIA_RETURN_HARD_INSTRUCTION = [
+  'CURRENT-CHAT MEDIA RETURN IS A REQUIRED TOOL ACTION FOR THIS TURN.',
+  'Do not answer with a capability explanation. Do not use send_message, MEDIA:, MEDIA_DATA:, or vision_analyze as a substitute.',
+  'When the request asks to generate a simple PNG containing text, call superclaw_return_media exactly once with its text argument. Do not use terminal or a sandbox path for that simple case. For an existing screenshot or generated image file, call it with the verified absolute path.',
+  'The successful superclaw_return_media result is the only evidence that the image reached the current SuperClaw chat. Keep the final text empty or to one short caption after the successful tool call.',
+].join('\n')
+const HERMES_VISIBLE_EXECUTION_NARRATION = /^(?:\u6211(?:\u6765|\u5148|\u4f1a|\u6b63\u5728)(?:\u770b\u770b|\u67e5\u770b|\u68c0\u67e5|\u641c\u4e00\u4e0b|\u641c\u7d22|\u8bfb\u53d6|\u6838\u5bf9|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u83b7\u53d6|\u5904\u7406|\u6574\u7406|\u6267\u884c)|\u8ba9\u6211(?:\u5148|\u518d|\u53bb)?(?:\u770b\u770b|\u67e5\u770b|\u68c0\u67e5|\u641c\u4e00\u4e0b|\u641c\u7d22|\u8bfb\u53d6|\u6838\u5bf9|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u83b7\u53d6|\u5904\u7406|\u6574\u7406|\u6267\u884c)|(?:\u63a5\u4e0b\u6765|\u4e0b\u4e00\u6b65|\u5148)(?:\u6211|\u4f1a|\u9700\u8981|\u5c1d\u8bd5|\u67e5\u770b|\u68c0\u67e5|\u641c\u7d22|\u8bfb\u53d6|\u5b9a\u4f4d|\u786e\u8ba4|\u6267\u884c)|(?:\u6b63\u5728|\u51c6\u5907)(?:\u67e5\u770b|\u68c0\u67e5|\u641c\u7d22|\u8bfb\u53d6|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u6267\u884c|\u5904\u7406)|\u62b1\u6b49[\u2014\u2013-]|\u627e\u5230\u539f\u56e0\u4e86|\u8fd9\u6b21\u6362\u6210)/
 const HERMES_REPLY_STYLE_INSTRUCTION = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
@@ -137,14 +149,48 @@ export function compactHermesHistoryContentForPrompt(role, content) {
   return `${visible.slice(0, HISTORY_ASSISTANT_MAX_CHARS).trim()}\n${HISTORY_ASSISTANT_OMITTED_MARKER}`
 }
 
+// Hermes sometimes exposes a user-visible work narration through message.delta
+// instead of a reasoning.available summary. It is not a final answer; keep it
+// in the execution trace so the transcript stays concise after completion.
+export function extractHermesVisibleExecutionNarration(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim()
+  if (!text || text.length > 900) return ''
+  if (/```|^\s*(?:#|>|[-*+]\s|\d+\.\s)|\|.*\|/m.test(text)) return ''
+  const compact = text.replace(/\s+/g, ' ')
+  if (!HERMES_VISIBLE_EXECUTION_NARRATION.test(compact)) return ''
+  return compact
+}
+
+export function stripHermesVisibleExecutionNarration(reply, executionTrace = []) {
+  let text = String(reply || '')
+  const narrations = (Array.isArray(executionTrace) ? executionTrace : [])
+    .filter(step => step?.kind === 'reasoning' && step?.source === 'stream-visible')
+    .map(step => String(step.summary || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+
+  for (const narration of narrations) {
+    // These are exact user-visible stream fragments previously stored in the
+    // execution trace. Do not use broad semantic removal on the final answer.
+    text = text.split(narration).join('')
+  }
+  return text.replace(/^\s*\n+|\n{3,}/g, match => match.includes('\n\n\n') ? '\n\n' : '').trim()
+}
+
+function hermesVisibleNarrationEventId(clientRequestId, narration) {
+  let hash = 0
+  for (const char of String(narration || '')) hash = ((hash * 31) + char.charCodeAt(0)) >>> 0
+  return `${clientRequestId}:reasoning:visible:${hash.toString(36)}`
+}
+
 function isHermesLongTaskRequest(text) {
   const value = String(text || '').trim()
   if (!value) return false
   if (/(?:\u53ea\u56de\u590d|\u53ea\u7b54|\u53ea\u8f93\u51fa|reply\s+only|only\s+reply|answer\s+only).{0,20}(?:\u4e24\u4e2a\u5b57|\u4e00\u53e5|OK|ok|\u6536\u5230)/i.test(value)) return false
   if (/(?:markdown|md\s*格式|\u6807\u9898|\u5217\u8868|\u5f15\u7528|\u4ee3\u7801\u5757|\u8868\u683c)/i.test(value)
     && /(?:\u56de\u590d|\u6e32\u67d3|\u683c\u5f0f|\u6837\u5f0f|\u663e\u793a|\u6d4b\u8bd5|reply|render|format)/i.test(value)) return false
-  const hasAction = /(?:\u8dd1|\u6267\u884c|\u751f\u6210|\u5199\u5165|\u521b\u5efa|\u5904\u7406|\u68c0\u6d4b|\u68c0\u67e5|\u5206\u6790|\u6574\u7406|\u5bfc\u51fa|\u8c03\u7528|\u53d1\u8d77|run|execute|generate|create|write|check|test|smoke|audit|export|dispatch)/i.test(value)
-  const hasLongTaskTarget = /(?:P0|P1|P2|P3|P4|P0\s*[-~\u5230\u81f3]\s*P4|check-p0-p4|release\s+gate|preflight|runtime\s+smoke|\u957f\u4efb\u52a1|\u6267\u884c\u4efb\u52a1|\u95e8\u7981|\u5b8c\u6574\u6027|\u811a\u672c|\u547d\u4ee4|\u7ec8\u7aef|\u5de5\u5177|\u534f\u4f5c|\u4ea7\u7269|\u6587\u4ef6|task_event|tool_run|agent_run|checkpoint|tool|command|terminal|script|artifact)/i.test(value)
+  const hasAction = /(?:\u8dd1|\u6267\u884c|\u751f\u6210|\u5199\u5165|\u521b\u5efa|\u5904\u7406|\u68c0\u6d4b|\u68c0\u67e5|\u67e5\u8be2|\u641c\u7d22|\u67e5\u770b|\u8bfb\u53d6|\u6253\u5f00|\u83b7\u53d6|\u4e0b\u8f7d|\u5b89\u88c5|\u4fee\u590d|\u89e3\u51b3|\u5206\u6790|\u6574\u7406|\u5bfc\u51fa|\u8c03\u7528|\u53d1\u8d77|\u7ee7\u7eed|run|execute|generate|create|write|check|test|smoke|audit|export|dispatch|search|fetch|read|open|install|fix|continue)/i.test(value)
+  const hasLongTaskTarget = /(?:P0|P1|P2|P3|P4|P0\s*[-~\u5230\u81f3]\s*P4|check-p0-p4|release\s+gate|preflight|runtime\s+smoke|\u957f\u4efb\u52a1|\u6267\u884c\u4efb\u52a1|\u95e8\u7981|\u5b8c\u6574\u6027|\u811a\u672c|\u547d\u4ee4|\u7ec8\u7aef|\u5de5\u5177|\u534f\u4f5c|\u4ea7\u7269|\u6587\u4ef6|\u6587\u6863|\u9875\u9762|\u7f51\u9875|\u6570\u636e|\u7ed3\u679c|\u4fe1\u606f|\u5929\u6c14|\u65b0\u95fb|task_event|tool_run|agent_run|checkpoint|tool|command|terminal|script|artifact)/i.test(value)
   return hasAction && hasLongTaskTarget
 }
 
@@ -210,7 +256,7 @@ function isHermesPromiseOnlyLongTaskReply(text) {
   const value = String(text || '').trim()
   if (!value || isHermesExecutionEvidenceText(value)) return false
   const promisesWork = /(?:\u6211\u6765|\u6211\u4f1a|\u597d\u7684|\u597d[，,]|\u5f00\u59cb|\u9a6c\u4e0a|\u7ed9\u4f60|\u5e2e\u4f60|\u5148|\u63a5\u4e0b\u6765|I'll|I will|let me|starting)/i.test(value)
-  const mentionsTask = /(?:\u5904\u7406|\u6267\u884c|\u8dd1|\u6d4b\u8bd5|\u68c0\u67e5|\u5206\u6790|\u751f\u6210|\u6574\u7406|P0|P1|P2|P3|P4|task|tool|command|script|artifact)/i.test(value)
+  const mentionsTask = /(?:\u5904\u7406|\u6267\u884c|\u8dd1|\u6d4b\u8bd5|\u68c0\u67e5|\u67e5\u8be2|\u641c\u7d22|\u67e5\u770b|\u8bfb\u53d6|\u6253\u5f00|\u83b7\u53d6|\u5206\u6790|\u751f\u6210|\u6574\u7406|\u7ee7\u7eed|P0|P1|P2|P3|P4|task|tool|command|script|artifact|search|fetch|read|open)/i.test(value)
   return promisesWork && mentionsTask
 }
 
@@ -235,6 +281,29 @@ function buildHermesLongTaskUnavailableReply(userText = '') {
     '\u8fd9\u6b21\u957f\u4efb\u52a1\u6ca1\u6709\u62ff\u5230 task_event\u3001tool_run\u3001agent_run \u6216 checkpoint \u7b49\u6267\u884c\u8bc1\u636e\uff0c\u6240\u4ee5\u6211\u4e0d\u4f1a\u628a\u201c\u6211\u6765\u505a\u201d\u8fd9\u7c7b\u53e3\u5934\u627f\u8bfa\u5f53\u6210\u4efb\u52a1\u5b8c\u6210\u3002',
     '\u53ef\u80fd\u539f\u56e0\uff1a\u5f53\u524d\u6253\u5305\u7248\u6267\u884c\u5668\u672a\u542f\u52a8\u3001\u957f\u4efb\u52a1\u672a\u521b\u5efa\u3001\u5de5\u5177\u94fe\u4e0d\u53ef\u7528\uff0c\u6216\u8fd0\u884c\u8d85\u65f6\u3002\u8bf7\u68c0\u67e5 Hermes \u6267\u884c\u5668\u3001\u5de5\u5177\u94fe\u548c\u534f\u4f5c\u4efb\u52a1\u72b6\u6001\u540e\u91cd\u8bd5\u3002',
   ].join('\n\n')
+}
+
+function applyHermesPromiseOnlyTaskGuard(message, userText, tools = [], clientRequestId = '') {
+  if (!message || !isHermesLongTaskRequest(userText)) return false
+  if (!isHermesPromiseOnlyLongTaskReply(message.content) || hasHermesExecutionEvidence(message, tools)) return false
+
+  message.content = sanitizeHermesVisibleReply(buildHermesLongTaskUnavailableReply(userText), userText)
+  message.error = message.content
+  message.task_events = [
+    ...(Array.isArray(message.task_events) ? message.task_events : []),
+    {
+      event_id: `evt-hermes-long-task-no-evidence-${clientRequestId || Date.now()}`,
+      task_id: clientRequestId || '',
+      event_type: 'task_failed',
+      actor: 'hermes',
+      source: 'hermes.chat_store.long_task_guard',
+      status: 'failed',
+      visible_text: message.content,
+      severity: 'error',
+      created_at: new Date().toISOString(),
+    },
+  ]
+  return true
 }
 
 export function buildHermesGenerationStatusMetadata(input = {}) {
@@ -306,6 +375,16 @@ function redactHermesSensitiveVisibleText(value) {
     .replace(/[A-Z]:\\Users\\[^"'\r\n]+?(?=(?:\\(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)|["'\r\n]|$))/gi, '[REDACTED_PATH]')
     .replace(/[A-Z]:\\[^"'\r\n]*(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)/gi, '[REDACTED_PATH]')
     .replace(/\/[^"'\r\n]*(?:config\.yaml|\.env|openclaw\.json|relay-config\.json)/gi, '[REDACTED_PATH]')
+}
+
+// `MEDIA:` is an internal desktop attachment envelope. Keep its path long
+// enough for the renderer to load the file, while still applying the normal
+// redactor to all user-visible prose. The chat renderer consumes the envelope
+// and never prints this path as message text.
+export function preserveHermesMediaProtocol(value, transform = (text) => text) {
+  const { mediaLines, visibleText } = splitHermesMediaLines(String(value ?? ''))
+  const visible = transform(visibleText)
+  return [...mediaLines, visible].filter(Boolean).join('\n')
 }
 
 function sanitizeToolRunText(value) {
@@ -649,6 +728,13 @@ function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = 
   ]
   if (historyCount) lines.push(`- conversationHistory items supplied: ${historyCount}. They are not new tasks.`)
   if (current) lines.push(`- Latest user input: ${current.slice(0, 500)}`)
+  if (isHermesLongTaskRequest(current)) {
+    lines.push(
+      '- Execution contract: this is an actionable task. Do not finalize with a plan, intent, or "I will check/do it" statement.',
+      '- Invoke the available tool now when a tool is needed; then return the observed result, artifact, or concrete blocker.',
+      '- A task is complete only after an execution result is available. If execution is unavailable, say exactly which tool, permission, or dependency blocked it; do not imply that work will continue in the background.',
+    )
+  }
   if (/(?:天气|气温|降雨|下雨|weather|forecast|temperature)/i.test(current)) {
     lines.push(
       '- Weather lookup rule: use at most one read-only public weather fetch and answer from that result.',
@@ -665,6 +751,25 @@ function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = 
     )
   }
   return lines.join('\n')
+}
+
+function isHermesCurrentChatMediaReturnRequest(text = '') {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return /(?:\u76f4\u63a5|\u4f5c\u4e3a|\u8fd4\u56de|\u53d1\u9001|\u56de\u4f20|\u663e\u793a).{0,28}(?:\u5f53\u524d)?(?:\u804a\u5929|\u5bf9\u8bdd|\u6c14\u6ce1|\u7a97\u53e3).{0,28}(?:\u56fe\u7247|\u622a\u56fe|\u622a\u5c4f|png|jpe?g|webp|gif)|(?:\u751f\u6210|\u521b\u5efa|\u7ed8\u5236|\u622a\u53d6).{0,48}(?:\u56fe\u7247|\u622a\u56fe|\u622a\u5c4f|png|jpe?g|webp|gif).{0,48}(?:\u5f53\u524d)?(?:\u804a\u5929|\u5bf9\u8bdd|\u8fd4\u56de|\u53d1\u9001|\u56de\u4f20|\u663e\u793a)|\b(?:generate|create|return|send|show).{0,64}(?:image|screenshot|png|jpe?g|webp|gif).{0,64}(?:chat|conversation|bubble|return|send|show)\b/i.test(value)
+}
+
+function isHermesEphemeralMediaSession(sessionOrId = '') {
+  const session = sessionOrId && typeof sessionOrId === 'object' ? sessionOrId : {}
+  const id = String(typeof sessionOrId === 'string' ? sessionOrId : (session.id || session.session_id || '')).trim()
+  const visibleText = [session.title, session.preview, session.content]
+    .map(value => String(value || ''))
+    .join('\n')
+  // These prefixes were only used by the prior media bridge probes. Keep the
+  // detector deliberately narrow: normal user sessions must never disappear
+  // merely because they happen to mention an image.
+  if (id.includes('--chat-media--') || /^(?:media-protocol|raw-media|media-e2e)-/i.test(id)) return true
+  return /\bsuperclaw_return_media\b|C:\\tmp\\hello_sandbox\.png|HELLO FROM SANDBOX/i.test(visibleText)
 }
 
 function loadJson(key) {
@@ -1009,9 +1114,9 @@ function trimHermesFinalAtPriorAssistantLeak(session, text = '', clientRequestId
   return result
 }
 
-function chooseHermesFinalOutput({ session, current = '', finalOutput = '', clientRequestId = '', prompt = '' } = {}) {
+function chooseHermesFinalOutput({ session, current = '', finalOutput = '', clientRequestId = '', prompt = '', executionTrace = [] } = {}) {
   const cur = String(current || '')
-  const fin = String(finalOutput || '')
+  const fin = stripHermesVisibleExecutionNarration(finalOutput, executionTrace)
   if (!fin.trim()) return cur
   if (getHermesExactShortReplyTarget(prompt)) return normalizeHermesExactShortReply(prompt, fin)
 
@@ -1183,7 +1288,8 @@ function mergeHermesMessages(localMessages = [], serverMessages = []) {
 // which crashes with "Cannot read properties of undefined (reading 'transformCallback')".
 //
 // To stay safe we short-circuit to a no-op unsubscriber when not running inside
-// Tauri. Streaming via SSE is a future Web-mode improvement (issue #260).
+// Tauri. Web/dev receives the same run events through hermesAgentRunStream;
+// only the native Tauri event subscription is intentionally skipped there.
 
 let _listenFn = null
 async function tauriListen(event, cb) {
@@ -1210,6 +1316,9 @@ function createStore() {
     pendingAssistantId: null,  // id of the currently streaming assistant message
     error: null,
     taskStatus: { status: 'idle', lastStep: '', summary: '', error: '', updatedAt: 0 },
+    // Native Hermes pauses a run for high-impact commands. Keep that request
+    // separate from chat text so approving it never creates a fake user turn.
+    pendingApproval: null,
     profiles: [],
     activeProfile: safeGet(STORAGE_PROFILE) || 'default',
     loadingProfiles: false,
@@ -1417,82 +1526,115 @@ function createStore() {
   function startHermesRunTimeoutGuard({ clientRequestId, sessionId, timeoutMs = HERMES_RUN_TIMEOUT_MS } = {}) {
     clearHermesRunTimeoutGuard()
     hermesRunTimeoutTimer = setTimeout(() => {
-      handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs })
+      void handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs })
     }, timeoutMs)
   }
 
-  function handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs = HERMES_RUN_TIMEOUT_MS } = {}) {
+  function touchHermesRunWatchdog({ clientRequestId = state.runningClientRequestId, sessionId = state.runningSessionId } = {}) {
+    if (!state.streaming || !clientRequestId) return
+    hermesRunRecoveryAttempts = 0
+    startHermesRunTimeoutGuard({ clientRequestId, sessionId })
+  }
+
+  async function handleHermesRunTimeout({ clientRequestId, sessionId, timeoutMs = HERMES_RUN_TIMEOUT_MS } = {}) {
     if (clientRequestId && state.runningClientRequestId && state.runningClientRequestId !== clientRequestId) return false
     if (!state.streaming && !state.runningClientRequestId) return false
-    const error = createHermesRunTimeoutError(timeoutMs)
+    if (hermesRunRecoveryInFlight) return false
+    hermesRunRecoveryInFlight = true
     const s = state.sessions.find(item => item.id === (sessionId || state.runningSessionId)) || taskSession() || activeSession()
     if (s) {
-      const msg = ensureAssistantMessage(s, clientRequestId || state.runningClientRequestId)
-      const visible = sanitizeHermesVisibleReply(mapHermesErrorToUserMessage(error), currentVisibleUserPrompt())
-      if (msg) {
-        delete msg.isStreaming
-        msg.error = visible
-        msg.content = visible
-        msg.task_events = [
-          ...(Array.isArray(msg.task_events) ? msg.task_events : []),
-          {
-            event_id: `evt-hermes-run-timeout-${clientRequestId || Date.now()}`,
-            task_id: clientRequestId || state.runningClientRequestId || '',
-            event_type: 'task_failed',
-            actor: 'hermes',
-            source: 'hermes.chat_store.timeout',
-            status: 'failed',
-            visible_text: visible,
-            severity: 'error',
-            created_at: new Date().toISOString(),
-          },
-        ]
+      rememberHermesTaskStatus(s, {
+        status: 'recovering',
+        lastStep: '暂时没有新输出，正在检查任务状态并继续等待',
+        summary: `已等待 ${Math.max(1, Math.round(timeoutMs / 1000))} 秒，未主动终止任务。`,
+      })
+      recordAssistantExecutionEvent(s, clientRequestId || state.runningClientRequestId, 'run.progress', {
+        message: '暂时没有新输出，正在检查 Gateway、工具执行和授权状态。',
+      })
+      notify()
+    }
+    const runId = String(activeHermesRunId || activeResponseAssembler?.runId || '').trim()
+    try {
+      await api.hermesHealthCheck().catch(() => null)
+      if (!runId) {
+        hermesRunRecoveryAttempts += 1
+        startHermesRunTimeoutGuard({ clientRequestId, sessionId, timeoutMs: HERMES_RUN_RECOVERY_DELAY_MS })
+        return true
       }
-      persistSessionMessages(s.id)
-      persistSessions()
+      const snapshot = await api.hermesApiProxy('GET', `/v1/runs/${encodeURIComponent(runId)}`)
+      if (state.runningClientRequestId !== clientRequestId) return false
+      const status = String(snapshot?.status || '').toLowerCase()
+      if (status === 'completed') {
+        completeStreamRun(sessionId || state.runningSessionId, String(snapshot?.output || ''), clientRequestId)
+        return true
+      }
+      if (status === 'failed' || status === 'cancelled') {
+        failStreamRun(sessionId || state.runningSessionId, snapshot?.error || `Hermes run ${status}`, clientRequestId)
+        return true
+      }
+      if (status === 'waiting_for_approval') {
+        setPendingHermesApproval({
+          run_id: runId,
+          description: '任务正在等待你的授权。选择授权范围后会从当前步骤继续。',
+          choices: ['once', 'session', 'always', 'deny'],
+        })
+        return true
+      }
+      hermesRunRecoveryAttempts += 1
+      if (s) {
+        rememberHermesTaskStatus(s, {
+          status: 'running',
+          lastStep: hermesRunRecoveryAttempts > 1 ? '任务仍在后台执行，继续等待新进展' : '任务仍在执行，已恢复等待',
+        })
+      }
+      startHermesRunTimeoutGuard({ clientRequestId, sessionId, timeoutMs: HERMES_RUN_TIMEOUT_MS })
+      return true
+    } catch {
+      hermesRunRecoveryAttempts += 1
+      if (s) {
+        rememberHermesTaskStatus(s, {
+          status: 'recovering',
+          lastStep: '暂时无法读取任务状态，正在保留现场并重试',
+          error: '',
+        })
+      }
+      startHermesRunTimeoutGuard({ clientRequestId, sessionId, timeoutMs: HERMES_RUN_RECOVERY_DELAY_MS })
+      return true
+    } finally {
+      hermesRunRecoveryInFlight = false
     }
-    if (streamAbortController) {
-      try { streamAbortController.abort() } catch {}
-    }
-    void stopActiveHermesServerRun('run-timeout')
-    finalizeHermesRequestState({
-      status: 'failed',
-      reason: 'run-timeout',
-      clientRequestId,
-      error,
-      summary: 'Hermes run timed out before producing a final result.',
-    })
-    inFlightSendByRequestId.delete(clientRequestId)
-    visibleUserPromptByRequestId.delete(clientRequestId)
-    return true
   }
 
   function sanitizeHermesVisibleReply(text, prompt = currentVisibleUserPrompt(), options = {}) {
     if (options.streaming === true) {
       const streamText = normalizeHermesStreamText(text)
-      const visibleStream = sanitizeVisibleReplyForChinese(streamText, prompt, { agent: 'hermes' })
-      const guardedStream = guardAgentIdentityReply({
+      return preserveHermesMediaProtocol(streamText, (mediaFreeText) => {
+        const visibleStream = sanitizeVisibleReplyForChinese(mediaFreeText, prompt, { agent: 'hermes' })
+        const guardedStream = guardAgentIdentityReply({
+          agentName: 'hermes',
+          userText: prompt,
+          assistantText: visibleStream,
+        })
+        return stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guardedStream))
+      })
+    }
+    return preserveHermesMediaProtocol(text, (mediaFreeText) => {
+      const visible = sanitizeVisibleReplyForChinese(mediaFreeText, prompt, { agent: 'hermes' })
+      const normalized = normalizeHermesVisibleReplyText(visible, {
+        prompt,
+        userText: prompt,
+        toolEvents: state.liveTools,
+      })
+      const guarded = guardAgentIdentityReply({
         agentName: 'hermes',
         userText: prompt,
-        assistantText: visibleStream,
+        assistantText: normalized,
       })
-      return stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guardedStream))
-    }
-    const visible = sanitizeVisibleReplyForChinese(text, prompt, { agent: 'hermes' })
-    const normalized = normalizeHermesVisibleReplyText(visible, {
-      prompt,
-      userText: prompt,
-      toolEvents: state.liveTools,
-    })
-    const guarded = guardAgentIdentityReply({
-      agentName: 'hermes',
-      userText: prompt,
-      assistantText: normalized,
-    })
-    const redacted = stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guarded))
-    return completeHermesReplyIfNeeded(redacted, {
-      userText: prompt,
-      toolEvents: state.liveTools,
+      const redacted = stripHermesGenericRetryFallback(redactHermesSensitiveVisibleText(guarded))
+      return completeHermesReplyIfNeeded(redacted, {
+        userText: prompt,
+        toolEvents: state.liveTools,
+      })
     })
   }
 
@@ -1642,11 +1784,15 @@ function createStore() {
   function loadSessionsCache() {
     const cached = loadJson(sessionsKey())
     if (Array.isArray(cached) && cached.length) {
-      state.sessions = cached
+      // Older builds persisted a separate backend session for each current-chat
+      // media return. Treat those rows as implementation artifacts everywhere
+      // we hydrate the sidebar, including the immediate localStorage paint.
+      const visibleCached = cached.filter(session => !isHermesEphemeralMediaSession(session))
+      state.sessions = visibleCached
       state.pendingAssistantId = null
       const savedActive = safeGet(activeKey())
       const target = selectStableActiveSession({
-        sessions: cached,
+        sessions: visibleCached,
         savedActiveId: savedActive,
         currentActiveId: state.activeSessionId,
       })
@@ -1737,7 +1883,11 @@ function createStore() {
       const list = await api.hermesSessionsSummaryList(null, 80, state.activeProfile)
       const fresh = (Array.isArray(list) ? list : [])
         .map(mapSessionSummary)
-        .filter(s => !isDeletedSessionId(s.id))
+        // Older builds created a distinct backend session for every current-
+        // chat media return. They are implementation artifacts, not user
+        // conversations, so keep them out of the sidebar without deleting
+        // backend history that may still be useful for diagnosis.
+        .filter(s => !isDeletedSessionId(s.id) && !isHermesEphemeralMediaSession(s))
       const freshIds = new Set(fresh.map(s => s.id))
 
       // Preserve local metadata for sessions still present on the server. The
@@ -1765,7 +1915,9 @@ function createStore() {
       // the first run; merge the temporary local row into the matching backend
       // row so the sidebar does not show duplicate conversations.
       const retained = []
-      for (const local of state.sessions.filter(s => !freshIds.has(s.id))) {
+      for (const local of state.sessions.filter(s => (
+        !freshIds.has(s.id) && !isHermesEphemeralMediaSession(s)
+      ))) {
         const isLocal = local.source === '__local__'
         const match = isLocal
           ? fresh.find(s => sessionLooksLikeBackendMatch(local, s, state.activeSessionId, state.runningSessionId))
@@ -2196,6 +2348,8 @@ function createStore() {
   let streamAbortController = null
   let activeResponseAssembler = null
   let hermesRunTimeoutTimer = null
+  let hermesRunRecoveryInFlight = false
+  let hermesRunRecoveryAttempts = 0
   let activeHermesRunId = ''
   let pendingHermesStopPromise = null
   const forceRemoteRefreshIds = new Set()
@@ -2220,7 +2374,17 @@ function createStore() {
     return promise
   }
 
-  function executionEventText(evt = {}) {
+  function executionEventText(evt = {}, eventType = '') {
+    // The runtime can include private chain-of-thought in reasoning.available.
+    // Keep the chat transparent through visible progress and tool records, but
+    // never persist or render hidden reasoning verbatim.
+    if (eventType === 'reasoning.available') {
+      const visible = evt.visible_text ?? evt.visibleText ?? evt.userVisibleText ?? evt.summary ?? evt.preview
+      if (typeof visible === 'string' && visible.trim()) {
+        return sanitizeFrontendObservabilityText(visible).slice(0, 500)
+      }
+      return '正在分析任务并准备下一步。'
+    }
     const value = evt.reasoning
       ?? evt.thinking
       ?? evt.preview
@@ -2234,6 +2398,91 @@ function createStore() {
     return typeof value === 'string' ? value.trim() : stringifyMaybe(value).trim()
   }
 
+  function normalizeExecutionArtifacts(evt = {}) {
+    const raw = [
+      ...(Array.isArray(evt.artifacts) ? evt.artifacts : []),
+      ...(Array.isArray(evt.files) ? evt.files : []),
+      ...(evt.artifact ? [evt.artifact] : []),
+      ...(evt.file ? [evt.file] : []),
+    ]
+    const seen = new Set()
+    return raw.map((item) => {
+      const value = typeof item === 'string' ? { path: item } : (item && typeof item === 'object' ? item : {})
+      const rawPath = String(value.relative_path || value.relativePath || value.path || value.file_path || value.filePath || '').trim()
+      // Conversation state can move from a dev tree to an EXE or USB drive.
+      // Keep relative paths intact, but reduce absolute host paths to a filename
+      // so a saved trace never suggests that a previous machine path is reusable.
+      const normalizedPath = rawPath.replace(/\\/g, '/')
+      const isAbsolutePath = /^[A-Za-z]:\//.test(normalizedPath) || normalizedPath.startsWith('/')
+      const path = isAbsolutePath
+        ? normalizedPath.split('/').filter(Boolean).pop() || ''
+        : normalizedPath.replace(/^\.\//, '')
+      const text = String(value.text || value.summary || value.description || '').trim().slice(0, 4000)
+      const type = String(value.type || value.kind || (path ? 'file' : 'result')).trim() || 'result'
+      if (!path && !text) return null
+      const key = `${type}:${path}:${text.slice(0, 120)}`
+      if (seen.has(key)) return null
+      seen.add(key)
+      return { type, path, text, created_at: stableIsoTime(value.created_at || value.createdAt) }
+    }).filter(Boolean).slice(-20)
+  }
+
+  function attachHermesReturnedMedia(session, clientRequestId, evt = {}) {
+    const toolName = String(evt.tool || evt.tool_name || evt.name || '').trim()
+    if (toolName !== 'superclaw_return_media') return ''
+    const raw = evt.output ?? evt.result ?? evt.content ?? evt.response ?? evt.data
+    let payload = raw
+    if (typeof raw === 'string') {
+      try { payload = JSON.parse(raw) } catch { return '' }
+    }
+    const media = payload?.media
+    const mediaPath = String(media?.path || '').trim()
+    const mimeType = String(media?.mime_type || media?.mimeType || '').trim().toLowerCase()
+    if (!payload?.ok || !mediaPath || !/^image\/(?:png|jpeg|webp|gif)$/.test(mimeType)) return ''
+    const message = ensureAssistantMessage(session, clientRequestId)
+    const attachments = Array.isArray(message.attachments) ? message.attachments : []
+    if (!attachments.some(item => String(item?.mediaPath || '') === mediaPath)) {
+      attachments.push({
+        category: 'image',
+        type: 'image',
+        mediaPath,
+        mimeType,
+        fileName: String(media?.file_name || media?.fileName || 'generated-image').trim(),
+        caption: String(media?.caption || '').trim(),
+      })
+      message.attachments = attachments
+    }
+    return mediaPath
+  }
+
+  function normalizeHermesToolEventName(eventName) {
+    const name = String(eventName || '').trim()
+    if (name === 'tool.start') return 'tool.started'
+    if (name === 'tool.complete') return 'tool.completed'
+    return name
+  }
+
+  async function hydrateHermesReturnedMedia(sessionId, clientRequestId, mediaPath) {
+    const path = String(mediaPath || '').trim()
+    if (!path) return
+    try {
+      const dataUrl = await api.loadHermesMediaImage(path)
+      if (!/^data:image\/(?:png|jpeg|webp|gif);base64,/i.test(String(dataUrl || ''))) return
+      const session = state.sessions.find(item => item.id === sessionId)
+      if (!session) return
+      const message = ensureAssistantMessage(session, clientRequestId)
+      const attachment = (message.attachments || []).find(item => String(item?.mediaPath || '') === path)
+      if (!attachment || attachment.dataUrl === dataUrl) return
+      attachment.dataUrl = dataUrl
+      persistSessionMessages(session.id)
+      notify()
+    } catch (error) {
+      // The rendered media-path loader remains available as a retry path. A
+      // failed preview must never make the assistant response itself fail.
+      console.warn('[Hermes] current-chat media preload failed', error)
+    }
+  }
+
   function recordAssistantExecutionEvent(session, clientRequestId, eventType, evt = {}) {
     if (!session || !clientRequestId) return
     const message = ensureAssistantMessage(session, clientRequestId)
@@ -2244,7 +2493,7 @@ function createStore() {
       : eventType === 'reasoning.available'
         ? 'reasoning'
         : 'progress'
-    const eventId = String(
+    const rawEventId = String(
       evt.toolCallId
       || evt.tool_call_id
       || evt.event_id
@@ -2258,8 +2507,21 @@ function createStore() {
         : eventType === 'tool.completed'
           ? 'completed'
           : 'progress'
-    const text = executionEventText(evt)
-    const existing = eventId ? trace.find(item => item.id === eventId) : null
+    const text = executionEventText(evt, eventType)
+    const isVisibleStreamNarration = kind === 'reasoning' && evt.source === 'stream-visible'
+    const isGenericReasoning = kind === 'reasoning' && text === HERMES_REASONING_PLACEHOLDER
+    const eventId = isGenericReasoning
+      ? `${clientRequestId}:reasoning:pending`
+      : (rawEventId || (kind === 'reasoning' ? `${clientRequestId}:reasoning:pending` : ''))
+    let existing = eventId ? trace.find(item => item.id === eventId) : null
+    // The runtime's reasoning event often arrives without a safe summary. When
+    // a later visible narration fragment arrives, replace that generic pending
+    // step instead of leaving several "preparing next step" placeholders.
+    if (isVisibleStreamNarration && !existing) {
+      const pendingId = `${clientRequestId}:reasoning:pending`
+      existing = trace.find(item => item.id === pendingId)
+      if (existing) existing.id = eventId
+    }
     const step = existing || {
       id: eventId || uid(),
       kind,
@@ -2272,13 +2534,92 @@ function createStore() {
     }
     step.status = status
     step.updatedAt = Date.now()
+    if (isVisibleStreamNarration) step.source = 'stream-visible'
     if (text) step.summary = text
     const input = evt.input ?? evt.args ?? evt.arguments ?? evt.parameters ?? evt.params
     const output = evt.output ?? evt.result ?? evt.content ?? evt.response
     if (input != null && input !== '') step.input = stringifyMaybe(input)
     if (output != null && output !== '' && typeof output !== 'boolean') step.output = stringifyMaybe(output)
+    const artifacts = normalizeExecutionArtifacts(evt)
+    if (artifacts.length) {
+      step.artifacts = artifacts
+      const existingArtifacts = Array.isArray(message.artifacts) ? message.artifacts : []
+      const byKey = new Map(existingArtifacts.map(item => [`${item.type || ''}:${item.path || ''}:${String(item.text || '').slice(0, 120)}`, item]))
+      for (const artifact of artifacts) {
+        byKey.set(`${artifact.type}:${artifact.path}:${String(artifact.text || '').slice(0, 120)}`, artifact)
+      }
+      message.artifacts = Array.from(byKey.values()).slice(-40)
+    }
     if (!existing) trace.push(step)
     message.executionTrace = trace.slice(-80)
+  }
+
+  function setPendingHermesApproval(payload = {}) {
+    const runId = String(payload.run_id || payload.runId || activeHermesRunId || activeResponseAssembler?.runId || '').trim()
+    if (!runId) return false
+    const choices = Array.isArray(payload.choices)
+      ? payload.choices.filter(choice => ['once', 'session', 'always', 'deny'].includes(String(choice || '').toLowerCase()))
+      : ['once', 'session', 'always', 'deny']
+    state.pendingApproval = {
+      runId,
+      command: String(payload.command || payload.code || payload.input || '').trim(),
+      description: String(payload.description || payload.reason || payload.message || '此操作需要你的授权后才能继续。').trim(),
+      choices: choices.length ? choices : ['once', 'session', 'always', 'deny'],
+      requestedAt: Date.now(),
+      resolving: false,
+      error: '',
+    }
+    const session = state.sessions.find(item => item.id === state.runningSessionId) || null
+    if (session) {
+      recordAssistantExecutionEvent(session, state.runningClientRequestId, 'approval.request', payload)
+      rememberHermesTaskStatus(session, {
+        status: 'waiting_human',
+        lastStep: '等待授权',
+        summary: state.pendingApproval.description,
+      })
+    }
+    clearHermesRunTimeoutGuard()
+    notify()
+    return true
+  }
+
+  function clearPendingHermesApproval(runId = '') {
+    if (!state.pendingApproval) return
+    if (runId && state.pendingApproval.runId && state.pendingApproval.runId !== runId) return
+    state.pendingApproval = null
+  }
+
+  async function resolvePendingHermesApproval(choice) {
+    const pending = state.pendingApproval
+    if (!pending?.runId || pending.resolving) return false
+    const normalizedChoice = String(choice || '').trim().toLowerCase()
+    if (!pending.choices.includes(normalizedChoice)) throw new Error('当前操作不支持该授权选项')
+    state.pendingApproval = { ...pending, resolving: true, error: '' }
+    notify()
+    try {
+      const result = await api.hermesAgentResolveApproval(pending.runId, normalizedChoice)
+      clearPendingHermesApproval(pending.runId)
+      const session = state.sessions.find(item => item.id === state.runningSessionId) || null
+      if (session) {
+        recordAssistantExecutionEvent(session, state.runningClientRequestId, 'approval.responded', { choice: normalizedChoice })
+        rememberHermesTaskStatus(session, {
+          status: 'running',
+          lastStep: normalizedChoice === 'deny' ? '已拒绝该操作，等待任务继续' : '已授权，任务继续执行',
+        })
+      }
+      startHermesRunTimeoutGuard({
+        clientRequestId: state.runningClientRequestId,
+        sessionId: state.runningSessionId,
+      })
+      notify()
+      return result
+    } catch (error) {
+      if (state.pendingApproval?.runId === pending.runId) {
+        state.pendingApproval = { ...pending, resolving: false, error: String(error?.message || error || '提交授权失败') }
+      }
+      notify()
+      throw error
+    }
   }
 
   function finalizeAssistantExecutionTrace(message, status = 'completed') {
@@ -2308,6 +2649,7 @@ function createStore() {
       if (!acceptRequestEvent(payload)) return
       activeHermesRunId = String(payload.run_id || payload.runId || activeResponseAssembler?.runId || '').trim()
       adoptEventSession(payload)
+      touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
     })
     const u1 = await tauriListen('hermes-run-delta', (e) => {
       const payload = e?.payload || {}
@@ -2321,12 +2663,13 @@ function createStore() {
       if (!s) return
       const msg = ensureAssistantMessage(s, clientRequestId)
       msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
+      touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
       notify()
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
       const evt = e?.payload || {}
       if (!acceptRequestEvent(evt)) return
-      const evtType = evt.event || ''
+      const evtType = normalizeHermesToolEventName(evt.event)
       const toolName = evt.tool || evt.tool_name || evt.name || 'tool'
       const preview = evt.preview || evt.detail || evt.message || ''
       const extract = (obj, keys) => {
@@ -2359,6 +2702,11 @@ function createStore() {
           if (!t.result && t.error) t.result = t.error
           if (!t.args) t.args = extract(evt, ['input', 'args', 'arguments', 'parameters', 'params'])
         }
+      const session = runSession()
+      const returnedMediaPath = attachHermesReturnedMedia(session, clientRequestId, evt)
+      if (returnedMediaPath) {
+        void hydrateHermesReturnedMedia(session?.id, clientRequestId, returnedMediaPath)
+      }
       } else if (evtType === 'tool.error') {
         const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
         if (t) {
@@ -2373,6 +2721,7 @@ function createStore() {
       }
       recordHermesToolProgress(evtType, toolName, preview, evt)
       recordAssistantExecutionEvent(runSession(), clientRequestId, evtType, evt)
+      touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
       notify()
     })
     const u3 = await tauriListen('hermes-run-done', (e) => {
@@ -2418,6 +2767,7 @@ function createStore() {
           finalOutput,
           clientRequestId,
           prompt: currentVisibleUserPrompt(),
+          executionTrace: msg.executionTrace,
         })
         msg.content = sanitizeHermesVisibleReply(msg.content)
         if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
@@ -2428,28 +2778,7 @@ function createStore() {
           toolEvents: runTools,
           toolResult: runTools.length > 0,
         })
-        if (
-          isHermesLongTaskRequest(currentVisibleUserPrompt()) &&
-          isHermesPromiseOnlyLongTaskReply(msg.content) &&
-          !hasHermesExecutionEvidence(msg, runTools)
-        ) {
-          msg.content = sanitizeHermesVisibleReply(buildHermesLongTaskUnavailableReply(currentVisibleUserPrompt()), currentVisibleUserPrompt())
-          msg.error = msg.content
-          msg.task_events = [
-            ...(Array.isArray(msg.task_events) ? msg.task_events : []),
-            {
-              event_id: `evt-hermes-long-task-no-evidence-${clientRequestId || Date.now()}`,
-              task_id: clientRequestId || '',
-              event_type: 'task_failed',
-              actor: 'hermes',
-              source: 'hermes.chat_store.long_task_guard',
-              status: 'failed',
-              visible_text: msg.content,
-              severity: 'error',
-              created_at: new Date().toISOString(),
-            },
-          ]
-        }
+        applyHermesPromiseOnlyTaskGuard(msg, currentVisibleUserPrompt(), runTools, clientRequestId)
       }
       const longTaskGuardFailed = !!(msg?.error && Array.isArray(msg.task_events) && msg.task_events.some(event => event?.source === 'hermes.chat_store.long_task_guard'))
       rememberHermesTaskStatus(s, {
@@ -2493,12 +2822,21 @@ function createStore() {
       const payload = e?.payload || {}
       if (!acceptRequestEvent(payload)) return
       recordAssistantExecutionEvent(runSession(), clientRequestId, 'reasoning.available', payload)
+      touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
       notify()
     })
     const u6 = await tauriListen('hermes-run-event', (e) => {
       const payload = e?.payload || {}
       if (!acceptRequestEvent(payload)) return
       const eventType = String(payload.event || '')
+      touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
+      if (eventType === 'approval.request') {
+        setPendingHermesApproval(payload)
+        return
+      }
+      if (eventType === 'approval.responded') {
+        clearPendingHermesApproval(payload.run_id || payload.runId || '')
+      }
       if (!eventType || eventType === 'message.delta' || eventType === 'message.final') return
       recordAssistantExecutionEvent(runSession(), clientRequestId, eventType, payload)
       notify()
@@ -2518,6 +2856,16 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, clientRequestId)
+    const narration = extractHermesVisibleExecutionNarration(delta)
+    if (narration && Array.isArray(msg.executionTrace) && msg.executionTrace.length) {
+      recordAssistantExecutionEvent(s, clientRequestId, 'reasoning.available', {
+        event_id: hermesVisibleNarrationEventId(clientRequestId, narration),
+        visible_text: narration,
+        source: 'stream-visible',
+      })
+      notify()
+      return
+    }
     msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
     notify()
   }
@@ -2536,9 +2884,10 @@ function createStore() {
 
   function applyStreamToolEvent(evt) {
     if (activeResponseAssembler && !activeResponseAssembler.matches(evt)) return
-    const evtType = evt.event || ''
+    const evtType = normalizeHermesToolEventName(evt.event)
     const toolName = evt.tool || evt.tool_name || evt.name || 'tool'
     const preview = evt.preview || evt.detail || evt.message || ''
+    const session = state.sessions.find(x => x.id === state.runningSessionId)
     if (evtType === 'tool.started') {
       const input = extractStreamValue(evt, ['input', 'args', 'arguments', 'parameters', 'params', 'data'])
       state.liveTools.push({
@@ -2563,6 +2912,10 @@ function createStore() {
         if (!t.result && t.error) t.result = t.error
         if (!t.args) t.args = extractStreamValue(evt, ['input', 'args', 'arguments', 'parameters', 'params'])
       }
+      const returnedMediaPath = attachHermesReturnedMedia(session, state.runningClientRequestId, evt)
+      if (returnedMediaPath) {
+        void hydrateHermesReturnedMedia(session?.id, state.runningClientRequestId, returnedMediaPath)
+      }
     } else if (evtType === 'tool.error') {
       const t = state.liveTools.find(x => x.name === toolName && x.status === 'running')
       if (t) {
@@ -2576,7 +2929,6 @@ function createStore() {
       if (t && preview) t.preview = preview
     }
     recordHermesToolProgress(evtType, toolName, preview, evt)
-    const session = state.sessions.find(x => x.id === state.runningSessionId)
     recordAssistantExecutionEvent(session, state.runningClientRequestId, evtType, evt)
     notify()
   }
@@ -2613,6 +2965,7 @@ function createStore() {
         finalOutput,
         clientRequestId,
         prompt: currentVisibleUserPrompt(),
+        executionTrace: msg.executionTrace,
       })
       msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
@@ -2623,19 +2976,20 @@ function createStore() {
         toolEvents: runTools,
         toolResult: runTools.length > 0,
       })
+      applyHermesPromiseOnlyTaskGuard(msg, currentVisibleUserPrompt(), runTools, clientRequestId)
     }
     rememberHermesTaskStatus(s, {
-      status: 'success',
+      status: msg?.error ? 'failed' : 'success',
       lastStep: '任务已完成',
       summary: msg?.content || summarizeToolOnlyReply(runTools) || '任务已完成。',
-      error: '',
+      error: msg?.error || '',
     })
     s.updatedAt = Date.now()
     s.lastActiveAt = Date.now()
     updateSessionTitleFromFirstUser(s)
     persistSessionMessages(s.id)
     persistSessions()
-    cleanupAfterRun({ status: 'success', reason: 'run-completed' })
+    cleanupAfterRun({ status: msg?.error ? 'failed' : 'success', reason: msg?.error ? 'long-task-no-evidence' : 'run-completed' })
   }
 
   function replaceStreamOutput(runSessionId, output = '', clientRequestId = state.runningClientRequestId) {
@@ -2650,6 +3004,7 @@ function createStore() {
       finalOutput,
       clientRequestId,
       prompt: currentVisibleUserPrompt(),
+      executionTrace: msg.executionTrace,
     }))
     notify()
   }
@@ -2683,6 +3038,8 @@ function createStore() {
     const activeRunSessionId = state.runningSessionId || runSessionId
     const effectiveSessionId = adoptBackendSessionId(activeRunSessionId, evt?.session_id || evt?.sessionId || '')
     if (eventType === 'run.started') {
+      activeHermesRunId = String(evt?.run_id || evt?.runId || activeResponseAssembler?.runId || '').trim()
+      touchHermesRunWatchdog({ sessionId: effectiveSessionId })
       return
     }
     if (!shouldAcceptStreamEvent(effectiveSessionId)) {
@@ -2692,7 +3049,13 @@ function createStore() {
       return
     }
     const eventRequestId = state.runningClientRequestId
-    if (eventType === 'message.delta') {
+    touchHermesRunWatchdog({ clientRequestId: eventRequestId, sessionId: effectiveSessionId })
+    if (eventType === 'approval.request') {
+      setPendingHermesApproval(evt)
+    } else if (eventType === 'approval.responded') {
+      clearPendingHermesApproval(evt.run_id || evt.runId || '')
+      notify()
+    } else if (eventType === 'message.delta') {
       const accepted = acceptActiveStreamEvent(evt)
       if (accepted?.text) appendStreamDelta(effectiveSessionId, accepted.text, eventRequestId)
     } else if (eventType === 'tool.started' || eventType === 'tool.completed' || eventType === 'tool.progress' || eventType === 'tool.error') {
@@ -2731,7 +3094,10 @@ function createStore() {
     state.runningSessionId = null
     state.runningClientRequestId = null
     state.pendingAssistantId = null
+    state.pendingApproval = null
     state.liveTools = []
+    hermesRunRecoveryAttempts = 0
+    hermesRunRecoveryInFlight = false
     streamAbortController = null
     activeResponseAssembler = null
     activeHermesRunId = ''
@@ -2974,6 +3340,7 @@ function createStore() {
     const displayText = (opts.displayContent || text).trim()
     if (!runText && !attachments.length) return
     const clientRequestId = String(opts.clientRequestId || uid())
+    const isolateNativeMediaRun = Boolean(opts.isolateNativeMediaRun || isHermesCurrentChatMediaReturnRequest(runText || displayText))
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)
     }
@@ -3160,6 +3527,11 @@ function createStore() {
     if (getHermesExactShortReplyTarget(displayText || runText)) {
       forceEmptyHistory = true
     }
+    // A previous native Hermes turn may have concluded that it cannot attach
+    // media. Do not let that stale conclusion become system-like context for
+    // an explicit current-chat image return. The current visible and native
+    // session stay the same; only this turn's supplied history is empty.
+    if (isolateNativeMediaRun) forceEmptyHistory = true
 
     const userMessage = {
       id: `user-${clientRequestId}`,
@@ -3217,28 +3589,35 @@ function createStore() {
     const runPromise = Promise.resolve().then(async () => {
     try {
       if (pendingHermesStopPromise) await pendingHermesStopPromise.promise
-      const conversationHistory = Array.isArray(opts.conversationHistory)
+      const requestedHistory = Array.isArray(opts.conversationHistory)
         ? sanitizeHermesConversationHistoryForRun(opts.conversationHistory, runText || displayText)
-        : null
-      // Native Hermes owns context, planning, tools, skills and memory. The
-      // App sends the current turn and only renders native execution events.
+        : buildDefaultConversationHistory(s, userMessage.id)
+      // The portable runtime does not reliably persist native Hermes sessions.
+      // Supply bounded, completed app turns by default; exact-short prompts
+      // remain isolated so old instructions cannot override the latest turn.
+      const conversationHistory = forceEmptyHistory ? null : requestedHistory
       const suppliedInstructions = typeof opts.instructions === 'string' ? opts.instructions.trim() : ''
       const currentTurnInstructions = buildHermesCurrentTurnBoundaryInstruction(
         runText || displayText,
         conversationHistory || [],
       )
       const runInstructions = withHermesReplyStyleInstruction(
-        [suppliedInstructions, currentTurnInstructions].filter(Boolean).join('\n\n'),
+        [
+          suppliedInstructions,
+          isolateNativeMediaRun ? HERMES_MEDIA_RETURN_HARD_INSTRUCTION : '',
+          currentTurnInstructions,
+        ].filter(Boolean).join('\n\n'),
       )
+      const nativeSessionId = s.id
 
       if (isTauriRuntime()) {
         await attachStreamListeners(s.id, clientRequestId)
-        await api.hermesAgentRun(runText, s.id, conversationHistory, runInstructions, attachments, { clientRequestId, agentName: 'hermes' })
+        await api.hermesAgentRun(runText, nativeSessionId, conversationHistory, runInstructions, attachments, { clientRequestId, agentName: 'hermes' })
       } else {
         streamAbortController = new AbortController()
         await api.hermesAgentRunStream(
           runText,
-          s.id,
+          nativeSessionId,
           conversationHistory,
           runInstructions,
           attachments,
@@ -3370,6 +3749,7 @@ function createStore() {
     toggleCollapsed,
     sendMessage,
     stopStreaming,
+    resolvePendingHermesApproval,
     pushLocalAssistant,
     pushLocalAssistantMessage,
     pushLocalUser,

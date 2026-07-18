@@ -618,8 +618,7 @@ pub fn primary_base_url_env(provider_id: &str) -> Option<&'static str> {
 /// when the user switches providers. This is the union of:
 ///   - all `api_key_env_vars` across providers
 ///   - all non-empty `base_url_env_var` values
-///   - the two ClawPanel-specific env vars (`GATEWAY_ALLOW_ALL_USERS`,
-///     `API_SERVER_KEY`)
+///   - ClawPanel-specific Gateway API settings
 pub fn all_managed_env_keys() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for p in ALL_PROVIDERS {
@@ -632,8 +631,13 @@ pub fn all_managed_env_keys() -> Vec<&'static str> {
             out.push(p.base_url_env_var);
         }
     }
-    // ClawPanel-specific keys
-    for extra in &["GATEWAY_ALLOW_ALL_USERS", "API_SERVER_KEY"] {
+    // ClawPanel-specific Gateway API settings
+    for extra in &[
+        "GATEWAY_ALLOW_ALL_USERS",
+        "API_SERVER_KEY",
+        "API_SERVER_ENABLED",
+        "API_SERVER_PORT",
+    ] {
         if !out.contains(extra) {
             out.push(extra);
         }
@@ -724,6 +728,8 @@ mod tests {
         assert!(keys.contains(&"GEMINI_BASE_URL"));
         assert!(keys.contains(&"GATEWAY_ALLOW_ALL_USERS"));
         assert!(keys.contains(&"API_SERVER_KEY"));
+        assert!(keys.contains(&"API_SERVER_ENABLED"));
+        assert!(keys.contains(&"API_SERVER_PORT"));
         // No duplicates
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
