@@ -46,9 +46,9 @@ test('OpenClaw native execution keeps workspace context and skills unrestricted'
   assert.match(modelPage, /config\.tools\.profile = 'coding'/)
   assert.doesNotMatch(modelPage, /profile = agent\.tools\.profile \|\| 'minimal'/)
   assert.match(buildDesktop, /contextInjection = "always"/)
-  assert.match(buildDesktop, /bootstrapMaxChars = 2000/)
+  assert.match(buildDesktop, /bootstrapMaxChars = 4000/)
   assert.match(buildDesktop, /bootstrapTotalMaxChars = 12000/)
-  assert.match(tauriCommands, /"bootstrapMaxChars"\.into\(\), serde_json::json!\(2000\)/)
+  assert.match(tauriCommands, /"bootstrapMaxChars"\.into\(\), serde_json::json!\(4000\)/)
   assert.match(tauriCommands, /"bootstrapTotalMaxChars"\.into\(\), serde_json::json!\(12000\)/)
 })
 

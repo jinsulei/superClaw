@@ -539,9 +539,9 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                 .get("bootstrapMaxChars")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                < 2000
+                < 4000
             {
-                defaults.insert("bootstrapMaxChars".into(), serde_json::json!(2000));
+                defaults.insert("bootstrapMaxChars".into(), serde_json::json!(4000));
                 changed = true;
             }
             if defaults

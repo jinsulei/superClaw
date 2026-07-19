@@ -1,11 +1,146 @@
+use base64::{engine::general_purpose, Engine as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::openclaw_dir;
 
 fn sessions_dir() -> std::path::PathBuf {
     openclaw_dir().join("agents").join("main").join("sessions")
+}
+
+fn canonical_openclaw_workspace_output(path: &str) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(path);
+    let workspace = openclaw_dir().join("workspace");
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("OpenClaw 工作区不可用: {error}"))?;
+    let target = requested
+        .canonicalize()
+        .map_err(|error| format!("输出文件不存在或不可访问: {error}"))?;
+    if !target.is_file() || !target.starts_with(&workspace) {
+        return Err("只能访问当前 OpenClaw 便携工作区内的输出文件".to_string());
+    }
+    Ok(target)
+}
+
+fn safe_output_filename(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "openclaw-output".to_string())
+}
+
+fn openclaw_gateway_media_request(path: &str) -> Result<(String, String), String> {
+    let route = path.trim();
+    if !route.starts_with("/api/chat/media/outgoing/")
+        || route.contains('?')
+        || route.contains('#')
+        || route.contains('\\')
+    {
+        return Err("不允许的 OpenClaw 图片地址".to_string());
+    }
+
+    let config = super::config::load_openclaw_json()?;
+    let port = config
+        .pointer("/gateway/port")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(18789);
+    let token = config
+        .pointer("/gateway/auth/token")
+        .or_else(|| config.pointer("/gateway/authToken"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        return Err("OpenClaw Gateway 未配置图片读取认证".to_string());
+    }
+    Ok((format!("http://127.0.0.1:{port}{route}"), token))
+}
+
+/// Loads an authenticated Gateway media response into a data URL without
+/// exposing the portable Gateway token to WebView image elements.
+#[tauri::command]
+pub async fn openclaw_load_gateway_media(path: String) -> Result<String, String> {
+    let (url, token) = openclaw_gateway_media_request(&path)?;
+    let client = super::build_http_client_no_proxy(Duration::from_secs(15), Some("SuperClaw/OpenClawMedia"))?;
+    let response = client
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|error| format!("读取 OpenClaw 图片失败: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("读取 OpenClaw 图片失败: HTTP {}", response.status()));
+    }
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !mime.starts_with("image/") {
+        return Err("OpenClaw 返回的媒体不是图片".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取 OpenClaw 图片内容失败: {error}"))?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("OpenClaw 图片超过 20MB 限制".to_string());
+    }
+    Ok(format!("data:{mime};base64,{}", general_purpose::STANDARD.encode(bytes)))
+}
+
+#[tauri::command]
+pub async fn openclaw_open_workspace_output(path: String) -> Result<String, String> {
+    let target = canonical_openclaw_workspace_output(&path)?;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("explorer.exe")
+            .arg(&target)
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|error| format!("打开输出文件失败: {error}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&target)
+        .spawn()
+        .map_err(|error| format!("打开输出文件失败: {error}"))?;
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    std::process::Command::new("xdg-open")
+        .arg(&target)
+        .spawn()
+        .map_err(|error| format!("打开输出文件失败: {error}"))?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn openclaw_download_workspace_output(path: String) -> Result<Value, String> {
+    let source = canonical_openclaw_workspace_output(&path)?;
+    let downloads = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("SuperClaw");
+    fs::create_dir_all(&downloads).map_err(|error| format!("创建下载目录失败: {error}"))?;
+    let destination = downloads.join(safe_output_filename(&source));
+    fs::copy(&source, &destination).map_err(|error| format!("导出输出文件失败: {error}"))?;
+    Ok(json!({
+        "path": destination.to_string_lossy(),
+        "fileName": safe_output_filename(&source),
+    }))
 }
 
 fn best_effort_registry_entries(source: &str) -> Vec<(String, Value)> {
@@ -82,6 +217,60 @@ fn text_content(message: &Value) -> String {
             .join("\n"),
         _ => String::new(),
     }
+}
+
+fn tool_calls(message: &Value) -> Vec<Value> {
+    message.get("content").and_then(Value::as_array)
+        .map(|blocks| blocks.iter().filter_map(|block| {
+            (block.get("type").and_then(Value::as_str) == Some("toolCall")).then(|| {
+                json!({
+                    "id": block.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "name": block.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                    "input": block.get("arguments").cloned().unwrap_or(Value::Null),
+                    "status": "running",
+                })
+            })
+        }).collect())
+        .unwrap_or_default()
+}
+
+/// Preserve native assistant media as ordinary chat attachments as well as in
+/// the original content array. The WebView can then restore media after a
+/// restart without depending on a particular Gateway message projection.
+fn image_attachments(message: &Value) -> Vec<Value> {
+    message.get("content").and_then(Value::as_array)
+        .map(|blocks| blocks.iter().filter_map(|block| {
+            (block.get("type").and_then(Value::as_str) == Some("image")).then(|| {
+                let url = block.get("url")
+                    .or_else(|| block.get("imageUrl"))
+                    .or_else(|| block.get("source").and_then(|source| source.get("url")))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let data = block.get("data")
+                    .or_else(|| block.get("source").and_then(|source| source.get("data")))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if url.is_empty() && data.is_empty() { return Value::Null; }
+                json!({
+                    "category": "image",
+                    "type": "image",
+                    "mimeType": block.get("mimeType").or_else(|| block.get("mediaType")).and_then(Value::as_str).unwrap_or("image/png"),
+                    "url": url,
+                    "imageUrl": url,
+                    "content": data,
+                    "fileName": block.get("fileName").or_else(|| block.get("name")).and_then(Value::as_str).unwrap_or_default(),
+                })
+            })
+        }).filter(|attachment| !attachment.is_null()).collect())
+        .unwrap_or_default()
+}
+
+fn tool_result_failed(message: &Value) -> bool {
+    message.get("isError").and_then(Value::as_bool) == Some(true)
+        || message.get("details").and_then(|details| details.get("exitCode"))
+            .and_then(Value::as_i64)
+            .map(|code| code != 0)
+            .unwrap_or(false)
 }
 
 fn trajectory_messages(source: &str) -> Vec<Value> {
@@ -172,6 +361,92 @@ fn trajectory_messages(source: &str) -> Vec<Value> {
     messages
 }
 
+fn compact_terminal_text(value: &str, limit: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= limit {
+        return normalized;
+    }
+    let prefix = normalized.chars().take(limit).collect::<String>();
+    format!("{prefix}...")
+}
+
+fn history_message_text(message: &Value) -> String {
+    message.get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| text_content(message))
+}
+
+/// Some OpenClaw provider responses finish immediately after a successful tool
+/// result, without emitting the final assistant frame.  The native session is
+/// still complete, but leaving the desktop UI waiting would be misleading.
+/// Build a narrowly-scoped terminal record only when the trajectory confirms a
+/// successful end and the latest user turn has no regular assistant final.
+fn successful_tool_only_terminal_messages(messages: &[Value], trajectory_source: &str) -> Vec<Value> {
+    let mut completed_runs = Vec::<(String, String)>::new();
+    for line in trajectory_source.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue; };
+        if entry.get("type").and_then(Value::as_str) != Some("session.ended") { continue; }
+        if entry.get("data").and_then(|data| data.get("status")).and_then(Value::as_str) != Some("success") {
+            continue;
+        }
+        let run_id = entry.get("runId").and_then(Value::as_str).unwrap_or_default().trim();
+        if run_id.is_empty() { continue; }
+        let timestamp = entry.get("ts").and_then(Value::as_str).unwrap_or_default().to_string();
+        completed_runs.push((run_id.to_string(), timestamp));
+    }
+    let Some((run_id, timestamp)) = completed_runs.last() else { return Vec::new(); };
+
+    let Some(last_user_index) = messages.iter().rposition(|message| {
+        message.get("role").and_then(Value::as_str) == Some("user")
+    }) else { return Vec::new(); };
+    let turn = &messages[last_user_index + 1..];
+    let has_regular_final = turn.iter().any(|message| {
+        message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("stopReason").and_then(Value::as_str) != Some("toolUse")
+            && !history_message_text(message).trim().is_empty()
+    });
+    if has_regular_final { return Vec::new(); }
+    let already_projected = messages.iter().any(|message| {
+        message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("runId").and_then(Value::as_str) == Some(run_id.as_str())
+            && message.get("trajectoryFinal").and_then(Value::as_bool) == Some(true)
+    });
+    if already_projected { return Vec::new(); }
+
+    let last_step = turn.iter().rev().find_map(|message| {
+        (message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("stopReason").and_then(Value::as_str) == Some("toolUse"))
+            .then(|| history_message_text(message))
+            .filter(|text| !text.trim().is_empty())
+    });
+    let last_result = turn.iter().rev().find_map(|message| {
+        (message.get("role").and_then(Value::as_str) == Some("toolResult"))
+            .then(|| history_message_text(message))
+            .filter(|text| !text.trim().is_empty())
+    });
+    if last_step.is_none() && last_result.is_none() { return Vec::new(); }
+
+    let mut lines = vec!["OpenClaw 原生任务已执行完成。".to_string()];
+    if let Some(step) = last_step {
+        lines.push(format!("最后处理步骤：{}", compact_terminal_text(&step, 500)));
+    }
+    if let Some(result) = last_result {
+        lines.push(format!("执行结果：{}", compact_terminal_text(&result, 900)));
+    }
+    vec![json!({
+        "id": format!("trajectory-tool-only-{run_id}"),
+        "role": "assistant",
+        "runId": run_id,
+        "text": lines.join("\n\n"),
+        "content": lines.join("\n\n"),
+        "timestamp": timestamp,
+        "trajectoryFinal": true,
+        "toolOnlyTerminal": true,
+    })]
+}
+
 /// Read the portable OpenClaw JSONL source of truth. Gateway chat.history can
 /// omit user turns after compaction, which makes a UI-only projection unsafe.
 #[tauri::command]
@@ -199,6 +474,7 @@ pub fn read_openclaw_raw_history(session_key: String, limit: Option<usize>) -> R
             "id": entry.get("id").and_then(Value::as_str).unwrap_or_default(),
             "parentId": entry.get("parentId").and_then(Value::as_str).unwrap_or_default(),
             "role": role,
+            "sessionKey": &session_key,
             "idempotencyKey": message.get("idempotencyKey").and_then(Value::as_str).unwrap_or_default(),
             "clientRequestId": message.get("clientRequestId").and_then(Value::as_str).unwrap_or_default(),
             "requestId": message.get("requestId").and_then(Value::as_str).unwrap_or_default(),
@@ -207,13 +483,20 @@ pub fn read_openclaw_raw_history(session_key: String, limit: Option<usize>) -> R
             "text": text_content(message),
             "toolName": message.get("toolName").and_then(Value::as_str).unwrap_or_default(),
             "toolCallId": message.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
+            "tools": tool_calls(message),
+            "isError": tool_result_failed(message),
+            "status": if tool_result_failed(message) { "error" } else { "completed" },
             "timestamp": entry.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
             "content": message.get("content").cloned().unwrap_or(Value::Null),
+            "attachments": image_attachments(message),
         }));
     }
     let trajectory_path = sessions_dir.join(format!("{session_id}.trajectory.jsonl"));
     if let Ok(trajectory_source) = fs::read_to_string(&trajectory_path) {
-        for candidate in trajectory_messages(&trajectory_source) {
+        for mut candidate in trajectory_messages(&trajectory_source) {
+            if let Some(object) = candidate.as_object_mut() {
+                object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+            }
             let candidate_run_id = candidate.get("runId").and_then(Value::as_str).unwrap_or_default();
             let candidate_text = text_content(&candidate);
             let already_present = messages.iter().any(|message| {
@@ -225,6 +508,12 @@ pub fn read_openclaw_raw_history(session_key: String, limit: Option<usize>) -> R
                 same_run || same_text
             });
             if !already_present { messages.push(candidate); }
+        }
+        for mut candidate in successful_tool_only_terminal_messages(&messages, &trajectory_source) {
+            if let Some(object) = candidate.as_object_mut() {
+                object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+            }
+            messages.push(candidate);
         }
     }
     messages.sort_by(|left, right| {
@@ -273,7 +562,8 @@ pub fn list_openclaw_raw_sessions(limit: Option<usize>) -> Result<Value, String>
 
 #[cfg(test)]
 mod tests {
-    use super::{best_effort_registry_entries, trajectory_messages};
+    use super::{best_effort_registry_entries, image_attachments, successful_tool_only_terminal_messages, trajectory_messages};
+    use serde_json::json;
 
     #[test]
     fn recovers_session_entries_when_registry_has_invalid_json_later() {
@@ -302,5 +592,45 @@ mod tests {
         let messages = trajectory_messages(source);
         assert_eq!(messages[0]["id"], "trajectory-run-2");
         assert_eq!(messages[0]["trajectoryFinal"], true);
+    }
+
+    #[test]
+    fn synthesizes_terminal_reply_when_successful_tool_run_has_no_final_text() {
+        let messages = vec![
+            json!({ "role": "user", "text": "edit the attached document" }),
+            json!({ "role": "assistant", "stopReason": "toolUse", "text": "Verify the output file" }),
+            json!({ "role": "toolResult", "text": "Saved -> edited.docx" }),
+        ];
+        let trajectory = r#"{"type":"session.ended","ts":"2026-07-19T03:12:22.844Z","runId":"run-tool-only","data":{"status":"success"}}"#;
+        let synthesized = successful_tool_only_terminal_messages(&messages, trajectory);
+        assert_eq!(synthesized.len(), 1);
+        assert_eq!(synthesized[0]["runId"], "run-tool-only");
+        assert!(synthesized[0]["text"].as_str().unwrap().contains("edited.docx"));
+    }
+
+    #[test]
+    fn does_not_synthesize_when_regular_final_exists() {
+        let messages = vec![
+            json!({ "role": "user", "text": "edit the attached document" }),
+            json!({ "role": "assistant", "stopReason": "toolUse", "text": "Verify the output file" }),
+            json!({ "role": "toolResult", "text": "Saved -> edited.docx" }),
+            json!({ "role": "assistant", "stopReason": "stop", "text": "Done." }),
+        ];
+        let trajectory = r#"{"type":"session.ended","ts":"2026-07-19T03:12:22.844Z","runId":"run-with-final","data":{"status":"success"}}"#;
+        assert!(successful_tool_only_terminal_messages(&messages, trajectory).is_empty());
+    }
+
+    #[test]
+    fn exposes_native_outgoing_images_as_chat_attachments() {
+        let message = json!({
+            "content": [
+                { "type": "text", "text": "Here is the image" },
+                { "type": "image", "url": "/api/chat/media/outgoing/run/image.png", "mimeType": "image/png" }
+            ]
+        });
+        let attachments = image_attachments(&message);
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0]["category"], "image");
+        assert_eq!(attachments[0]["imageUrl"], "/api/chat/media/outgoing/run/image.png");
     }
 }

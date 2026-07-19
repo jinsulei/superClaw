@@ -258,7 +258,10 @@ let _openClawTransientRecoveryTimer = null
 let _openClawToolFinalRecoveryTimer = null
 let _attachments = []
 const _openClawMediaDataUrlCache = new Map()
-const OPENCLAW_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+const OPENCLAW_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
+const OPENCLAW_DOCUMENT_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'md', 'json', 'ppt', 'pptx',
+])
 let _pasteHandler = null
 let _hasEverConnected = false
 let _openClawGatewayUiState = 'stopped'
@@ -418,8 +421,8 @@ export async function render() {
       <div class="chat-attachments-preview" id="chat-attachments-preview" style="display:none"></div>
       <div class="chat-input-area">
         <div class="openclaw-composer-row">
-        <input type="file" id="chat-file-input" accept="image/*" multiple style="display:none">
-        <button class="chat-attach-btn" id="chat-attach-btn" title="${t('chat.uploadImage')}">
+        <input type="file" id="chat-file-input" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.json,.ppt,.pptx" multiple style="display:none">
+        <button class="chat-attach-btn" id="chat-attach-btn" title="上传图片或文件">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
         </button>
         <button class="chat-voice-btn" id="chat-voice-btn" type="button" title="${t('chat.voiceInput')}" aria-label="${t('chat.voiceInput')}">
@@ -1987,7 +1990,7 @@ function bindConnectOverlay(page) {
 
 async function handleFileSelect(e) {
   const files = Array.from(e.target.files || [])
-  await handleOpenClawImageFiles(files)
+  await handleOpenClawAttachmentFiles(files)
   _fileInputEl.value = ''
 }
 
@@ -2007,7 +2010,7 @@ async function handleOpenClawImageFiles(files, options = {}) {
       toast(t('chat.imageOnly'), 'warning')
       continue
     }
-    if (file.size > OPENCLAW_IMAGE_MAX_BYTES) {
+    if (file.size > OPENCLAW_ATTACHMENT_MAX_BYTES) {
       toast(`${file.name || 'image'} > 20MB`, 'warning')
       continue
     }
@@ -2023,6 +2026,56 @@ async function handleOpenClawImageFiles(files, options = {}) {
   updateSendState()
 }
 
+function getOpenClawAttachmentExtension(file = {}) {
+  const name = String(file?.name || '')
+  const match = /\.([a-z0-9]+)$/i.exec(name)
+  return String(match?.[1] || '').toLowerCase()
+}
+
+function getOpenClawAttachmentCategory(file = {}) {
+  if (String(file?.type || '').startsWith('image/')) return 'image'
+  return OPENCLAW_DOCUMENT_EXTENSIONS.has(getOpenClawAttachmentExtension(file)) ? 'document' : ''
+}
+
+async function createOpenClawDocumentAttachmentFromFile(file) {
+  const content = await fileToBase64(file)
+  return normalizeOpenClawAttachment({
+    category: 'document',
+    type: 'document',
+    mimeType: file?.type || 'application/octet-stream',
+    fileName: file?.name || `document-${Date.now()}`,
+    size: file?.size || 0,
+    content,
+  })
+}
+
+async function handleOpenClawAttachmentFiles(files, options = {}) {
+  const candidates = Array.from(files || [])
+  if (!candidates.length) return
+  for (const file of candidates) {
+    const category = getOpenClawAttachmentCategory(file)
+    if (!category) {
+      toast(`暂不支持附件：${file?.name || '未知文件'}`, 'warning')
+      continue
+    }
+    if (file.size > OPENCLAW_ATTACHMENT_MAX_BYTES) {
+      toast(`${file.name || 'file'} > 20MB`, 'warning')
+      continue
+    }
+    try {
+      const attachment = category === 'image'
+        ? await createOpenClawImageAttachmentFromFile(file, options)
+        : await createOpenClawDocumentAttachmentFromFile(file)
+      _attachments.push(attachment)
+      renderAttachments()
+    } catch (error) {
+      console.warn('[OpenClaw] read attachment failed', error)
+      toast(`${t('chat.readFileFailed')} ${file?.name || ''}`.trim(), 'error')
+    }
+  }
+  updateSendState()
+}
+
 function bindImagePasteHandlers() {
   if (_pasteHandler) document.removeEventListener('paste', _pasteHandler, true)
   _pasteHandler = (e) => {
@@ -2033,10 +2086,10 @@ function bindImagePasteHandlers() {
   document.addEventListener('paste', _pasteHandler, true)
 }
 
-function hasOpenClawImageTransfer(event) {
+function hasOpenClawAttachmentTransfer(event) {
   const items = Array.from(event?.dataTransfer?.items || [])
-  if (items.some(item => item.kind === 'file' && String(item.type || '').startsWith('image/'))) return true
-  return Array.from(event?.dataTransfer?.files || []).some(file => String(file.type || '').startsWith('image/'))
+  if (items.some(item => item.kind === 'file')) return true
+  return Array.from(event?.dataTransfer?.files || []).some(file => getOpenClawAttachmentCategory(file))
 }
 
 function setOpenClawDragState(active) {
@@ -2046,7 +2099,7 @@ function setOpenClawDragState(active) {
 function bindOpenClawImageDropHandlers(page) {
   if (!page) return
   const onDrag = (event) => {
-    if (!hasOpenClawImageTransfer(event)) return
+    if (!hasOpenClawAttachmentTransfer(event)) return
     event.preventDefault()
     event.stopPropagation()
     setOpenClawDragState(true)
@@ -2056,12 +2109,12 @@ function bindOpenClawImageDropHandlers(page) {
     setOpenClawDragState(false)
   }
   const onDrop = async (event) => {
-    if (!hasOpenClawImageTransfer(event)) return
+    if (!hasOpenClawAttachmentTransfer(event)) return
     event.preventDefault()
     event.stopPropagation()
     setOpenClawDragState(false)
-    const files = Array.from(event.dataTransfer?.files || []).filter(file => String(file.type || '').startsWith('image/'))
-    await handleOpenClawImageFiles(files, { defaultNamePrefix: 'drop' })
+    const files = Array.from(event.dataTransfer?.files || []).filter(file => getOpenClawAttachmentCategory(file))
+    await handleOpenClawAttachmentFiles(files, { defaultNamePrefix: 'drop' })
   }
   page.addEventListener('dragenter', onDrag)
   page.addEventListener('dragover', onDrag)
@@ -2106,6 +2159,10 @@ function isOpenClawFileImageUrl(value = '') {
   return /^file:\/\//i.test(String(value || '').trim())
 }
 
+function isOpenClawGatewayMediaRoute(value = '') {
+  return /^\/api\/chat\/media\/outgoing\//i.test(String(value || '').trim())
+}
+
 function isOpenClawSafeImageSrc(value = '') {
   const src = String(value || '').trim()
   if (!src) return false
@@ -2128,7 +2185,9 @@ function openClawAttachmentMediaPath(att = {}) {
   ]
   for (const candidate of candidates) {
     const value = String(candidate || '').trim()
-    if (!value || isOpenClawSafeImageSrc(value)) continue
+    if (!value) continue
+    if (isOpenClawGatewayMediaRoute(value)) return value
+    if (isOpenClawSafeImageSrc(value)) continue
     if (isOpenClawWindowsImagePath(value) || isOpenClawFileImageUrl(value) || /[\\/][^\\/]+\.(png|jpe?g|webp|gif)$/i.test(value)) {
       return value
     }
@@ -2138,6 +2197,7 @@ function openClawAttachmentMediaPath(att = {}) {
 
 function openClawAttachmentImageSrc(att = {}) {
   const direct = att.imageUrl || att.previewUrl || att.url || att.image_url?.url || att.source?.url || ''
+  if (isOpenClawGatewayMediaRoute(direct)) return ''
   if (isOpenClawSafeImageSrc(direct)) return direct
   const data = att.data || att.content || att.source?.data || ''
   if (data) return `data:${att.mimeType || att.mediaType || att.media_type || att.mime || 'image/png'};base64,${data}`
@@ -2162,6 +2222,7 @@ function normalizeOpenClawAttachment(att = {}) {
     localPath: att.localPath || '',
     filePath: att.filePath || '',
     path: att.path || '',
+    workspaceOutputPath: att.workspaceOutputPath || '',
     createdAt: att.createdAt || new Date().toISOString(),
   }
 }
@@ -2226,7 +2287,9 @@ function createOpenClawImageElement(att = {}) {
     try {
       let dataUrl = _openClawMediaDataUrlCache.get(mediaPath)
       if (!dataUrl) {
-        dataUrl = await api.loadHermesMediaImage(mediaPath)
+        dataUrl = isOpenClawGatewayMediaRoute(mediaPath)
+          ? await api.loadOpenclawGatewayMedia(mediaPath)
+          : await api.loadHermesMediaImage(mediaPath)
         _openClawMediaDataUrlCache.set(mediaPath, dataUrl)
       }
       img.src = dataUrl
@@ -2239,6 +2302,155 @@ function createOpenClawImageElement(att = {}) {
     }
   })()
   return wrap
+}
+
+function getOpenClawAttachmentDataUrl(att = {}) {
+  const normalized = normalizeOpenClawAttachment(att)
+  const content = String(normalized.content || '').trim()
+  if (!content) return ''
+  if (!isOpenClawPdfAttachment(normalized)) return ''
+  return `data:application/pdf;base64,${content}`
+}
+
+function isOpenClawPdfAttachment(att = {}) {
+  const mime = String(att?.mimeType || att?.mime || '').toLowerCase()
+  return mime === 'application/pdf' || getOpenClawAttachmentExtension({ name: att?.fileName || att?.name || '' }) === 'pdf'
+}
+
+function extractOpenClawWorkspaceOutputFiles(text = '') {
+  const files = []
+  const seen = new Set()
+  const outputPathPattern = /(?:[a-zA-Z]:\\[^\r\n`"<>|]+?\.(?:pdf|docx?|xlsx?|csv|txt|md|json|pptx?))/g
+  for (const match of String(text || '').matchAll(outputPathPattern)) {
+    const path = String(match[0] || '').trim()
+    if (!path || !/\\workspace\\/i.test(path) || seen.has(path.toLowerCase())) continue
+    seen.add(path.toLowerCase())
+    const parts = path.split('\\')
+    files.push({
+      name: parts[parts.length - 1] || 'OpenClaw 输出文件',
+      fileName: parts[parts.length - 1] || 'OpenClaw 输出文件',
+      workspaceOutputPath: path,
+      mimeType: 'application/octet-stream',
+    })
+  }
+  return files
+}
+
+// History snapshots and final stream frames do not always carry the same
+// attachment metadata. The final text remains the portable source of truth
+// for workspace outputs, so derive those cards at every assistant render path.
+function appendOpenClawOutputFiles(el, files = [], text = '') {
+  const provided = Array.isArray(files) ? files : []
+  appendFilesToEl(el, [...provided, ...extractOpenClawWorkspaceOutputFiles(text)])
+}
+
+function openOpenClawPdfPreview(att = {}) {
+  const dataUrl = getOpenClawAttachmentDataUrl(att)
+  if (!dataUrl) {
+    toast('该 PDF 暂不可预览，但已随本轮任务发送给 OpenClaw。', 'warning')
+    return
+  }
+  document.querySelector('.openclaw-file-preview')?.remove()
+  const overlay = document.createElement('div')
+  overlay.className = 'openclaw-file-preview'
+  overlay.setAttribute('role', 'dialog')
+  overlay.setAttribute('aria-modal', 'true')
+  const panel = document.createElement('div')
+  panel.className = 'openclaw-file-preview__panel'
+  const title = document.createElement('strong')
+  title.textContent = att.fileName || att.name || 'PDF 预览'
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'openclaw-file-preview__close'
+  close.setAttribute('aria-label', '关闭 PDF 预览')
+  close.textContent = '×'
+  const frame = document.createElement('iframe')
+  frame.className = 'openclaw-file-preview__frame'
+  frame.title = title.textContent
+  frame.src = dataUrl
+  const dismiss = () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = event => { if (event.key === 'Escape') dismiss() }
+  close.addEventListener('click', dismiss)
+  overlay.addEventListener('click', event => { if (event.target === overlay) dismiss() })
+  document.addEventListener('keydown', onKey)
+  panel.append(title, close, frame)
+  overlay.appendChild(panel)
+  document.body.appendChild(overlay)
+}
+
+function createOpenClawFileCard(att = {}, options = {}) {
+  const normalized = normalizeOpenClawAttachment(att)
+  const card = document.createElement('div')
+  card.className = 'msg-file-card'
+  const extension = getOpenClawAttachmentExtension({ name: normalized.fileName })
+  const iconName = ({ pdf: 'file', doc: 'file-text', docx: 'file-text', xls: 'bar-chart', xlsx: 'bar-chart', csv: 'bar-chart', txt: 'file-plain', md: 'file-plain', json: 'clipboard' })[extension] || 'paperclip'
+  const icon = document.createElement('span')
+  icon.className = 'msg-file-icon'
+  icon.innerHTML = svgIcon(iconName, 16)
+  const info = document.createElement('div')
+  info.className = 'msg-file-info'
+  const name = document.createElement('span')
+  name.className = 'msg-file-name'
+  name.textContent = normalized.fileName || '附件'
+  info.appendChild(name)
+  if (normalized.size) {
+    const size = document.createElement('span')
+    size.className = 'msg-file-size'
+    size.textContent = formatFileSize(normalized.size)
+    info.appendChild(size)
+  }
+  card.append(icon, info)
+  if (normalized.workspaceOutputPath) {
+    const open = document.createElement('button')
+    open.type = 'button'
+    open.className = 'msg-file-preview-btn'
+    open.textContent = '打开'
+    open.addEventListener('click', async event => {
+      event.stopPropagation()
+      if (!isTauriRuntime()) {
+        toast('请在桌面客户端中打开本地输出文件。', 'warning')
+        return
+      }
+      try {
+        await api.openclawOpenWorkspaceOutput(normalized.workspaceOutputPath)
+      } catch (error) {
+        toast(`打开文件失败：${error?.message || error}`, 'error')
+      }
+    })
+    const download = document.createElement('button')
+    download.type = 'button'
+    download.className = 'msg-file-preview-btn'
+    download.textContent = '下载'
+    download.addEventListener('click', async event => {
+      event.stopPropagation()
+      if (!isTauriRuntime()) {
+        toast('请在桌面客户端中导出本地输出文件。', 'warning')
+        return
+      }
+      try {
+        const result = await api.openclawDownloadWorkspaceOutput(normalized.workspaceOutputPath)
+        toast(`已保存到下载目录：${result?.fileName || normalized.fileName}`, 'success')
+      } catch (error) {
+        toast(`下载文件失败：${error?.message || error}`, 'error')
+      }
+    })
+    card.append(open, download)
+  }
+  if (options.preview !== false && isOpenClawPdfAttachment(normalized)) {
+    const preview = document.createElement('button')
+    preview.type = 'button'
+    preview.className = 'msg-file-preview-btn'
+    preview.textContent = '预览 PDF'
+    preview.addEventListener('click', event => {
+      event.stopPropagation()
+      openOpenClawPdfPreview(normalized)
+    })
+    card.appendChild(preview)
+  }
+  return card
 }
 
 function renderAttachments() {
@@ -2254,14 +2466,12 @@ function renderAttachments() {
     const item = document.createElement('div')
     item.className = 'chat-attachment-item'
     item.title = att.fileName || 'image'
-    const imageEl = createOpenClawImageElement(att)
+    const imageEl = String(att.category || att.type || '').toLowerCase() === 'image' ? createOpenClawImageElement(att) : null
     if (imageEl) {
       item.appendChild(imageEl)
     } else {
-      const placeholder = document.createElement('div')
-      placeholder.className = 'chat-attachment-placeholder'
-      placeholder.textContent = att.fileName || '图片'
-      item.appendChild(placeholder)
+      item.classList.add('is-file')
+      item.appendChild(createOpenClawFileCard(att, { preview: false }))
     }
     const del = document.createElement('button')
     del.className = 'chat-attachment-del'
@@ -3650,13 +3860,17 @@ function stripOpenClawRuntimePromptBlocks(text) {
     'NATIVE_INSPECTION_REQUIRED',
     'CAPABILITY_AUDIT_TRIGGER',
     'OPENCLAW_IDENTITY_CONTEXT',
+    // These are transport-only attachment instructions appended before the
+    // native Gateway run. They must never affect the visible prompt or the
+    // active-turn fingerprint used to attach live tool frames to the UI.
+    'DOCUMENT_ATTACHMENT_CONTEXT',
   ]
   for (const name of blockNames) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     next = next.replace(new RegExp(`\\s*\\[${escaped}\\][\\s\\S]*?\\[/${escaped}\\]\\s*`, 'gi'), ' ')
   }
   return next
-    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|NATIVE_INSPECTION_REQUIRED|CAPABILITY_AUDIT_TRIGGER|OPENCLAW_IDENTITY_CONTEXT)\][\s\S]*$/i, '')
+    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|NATIVE_INSPECTION_REQUIRED|CAPABILITY_AUDIT_TRIGGER|OPENCLAW_IDENTITY_CONTEXT|DOCUMENT_ATTACHMENT_CONTEXT)\][\s\S]*$/i, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -5020,12 +5234,29 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
 
 function buildAttachmentTriggeredPrompt(text, attachments = []) {
   const base = String(text || '').trim() || '请分析我刚才粘贴或上传的图片。'
-  const toolPrompt = buildIntentTriggeredToolPrompt(base)
+  let toolPrompt = buildIntentTriggeredToolPrompt(base)
   const hasImage = attachments.some(item => {
     const category = String(item?.category || item?.type || '').toLowerCase()
     const mime = String(item?.mimeType || item?.mime || '').toLowerCase()
     return category === 'image' || mime.startsWith('image/')
   })
+  const documents = attachments.filter(item => {
+    const category = String(item?.category || item?.type || '').toLowerCase()
+    const mime = String(item?.mimeType || item?.mime || '').toLowerCase()
+    return category === 'document' || (!mime.startsWith('image/') && Boolean(item?.content || item?.data))
+  })
+  if (documents.length) {
+    const names = documents.map(item => String(item?.fileName || item?.name || 'attachment')).join(', ')
+    toolPrompt = [
+      toolPrompt,
+      '',
+      '[DOCUMENT_ATTACHMENT_CONTEXT]',
+      `The user attached portable document files: ${names}. The Gateway staged them for this exact native run and exposes their paths through MediaPath/MediaPaths.`,
+      'Inspect these files with native tools before answering. For an edit request, preserve the original, write a new output file in the workspace or attachment output directory, verify the result, and report the output path and what changed.',
+      'Do not say a file is unavailable until you have checked MediaPath/MediaPaths. Do not ask the user to upload again when this turn already includes the attachment.',
+      '[/DOCUMENT_ATTACHMENT_CONTEXT]',
+    ].join('\n')
+  }
   if (!hasImage) return toolPrompt
   const ocrPath = attachments
     .map(item => openClawAttachmentMediaPath(item))
@@ -5421,16 +5652,24 @@ function getOpenClawToolResultInfo(tools = [], fallbackText = '') {
   }
 }
 
-function recordOpenClawRunStep(kind, label, status = 'running', stepId = '') {
+function recordOpenClawRunStep(kind, label, status = 'running', stepId = '', extra = {}) {
   const text = String(label || '').trim()
   if (!text) return
   const key = `${kind}:${stepId || text}`
   const current = _currentAiTimeline.find(step => step.key === key)
   if (current) {
     current.status = status || current.status
+    if (extra.detail) current.detail = String(extra.detail).trim()
     return
   }
-  _currentAiTimeline.push({ key, kind, label: text, status, time: Date.now() })
+  _currentAiTimeline.push({
+    key,
+    kind,
+    label: text,
+    status,
+    detail: String(extra.detail || '').trim(),
+    time: Date.now(),
+  })
 }
 
 function mergeOpenClawExecutionTimelines(...sources) {
@@ -5469,6 +5708,17 @@ function getOpenClawProgressNarrativeLabel(text = '') {
     .trim()
 }
 
+function getOpenClawVisibleProgressFromEvent(data = {}) {
+  const candidates = [data.summary, data.title, data.message, data.content, data.text, data.delta]
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const label = getOpenClawProgressNarrativeLabel(candidate)
+    if (!label || isOpenClawVisibleTextInternalAuditOnly(label)) continue
+    return label.slice(0, 600)
+  }
+  return ''
+}
+
 // While a native task is running, JSONL contains tool-use frames before the
 // terminal assistant reply exists. Do not pass this live source through the
 // history compactor first: that compactor intentionally folds tool frames into
@@ -5505,14 +5755,18 @@ function hydrateOpenClawLiveHistoryProgress(historyMessages = []) {
   const timelineBefore = JSON.stringify((_currentAiTimeline || []).map(step => [step?.key, step?.status, step?.label]))
   let changed = false
   for (const message of messages.slice(latestUserIndex + 1)) {
-    if (message?.role !== 'assistant') continue
-    if (isOpenClawToolUseMessage(message)) {
+    if (message?.role === 'assistant' && isOpenClawToolUseMessage(message)) {
       recordOpenClawProgressNarrative(message.text || '', message.id || message.messageId)
       if (message.tools?.length) hydrateOpenClawRunTimelineFromTools(message.tools)
       changed = true
       continue
     }
-    if (message.tools?.length) {
+    if (message?.role === 'tool' || message?.role === 'toolResult') {
+      hydrateOpenClawRunTimelineFromToolResult(message)
+      changed = true
+      continue
+    }
+    if (message?.tools?.length) {
       hydrateOpenClawRunTimelineFromTools(message.tools)
       changed = true
     }
@@ -5591,7 +5845,7 @@ function attachOpenClawExecutionTimeline(messages = []) {
 function hydrateOpenClawRunTimelineFromTools(tools = []) {
   for (const [index, tool] of (tools || []).entries()) {
     const id = tool?.id || tool?.tool_call_id || `history-${index}`
-    const status = tool?.status === 'error' || tool?.isError ? 'error' : 'completed'
+    const status = tool?.status || (tool?.isError ? 'error' : 'running')
     const name = getOpenClawToolDisplayName(tool) || '工具调用'
     upsertTool(_currentAiTools, {
       ...tool,
@@ -5602,6 +5856,25 @@ function hydrateOpenClawRunTimelineFromTools(tools = []) {
     if (_activeOpenClawRun) _activeOpenClawRun.sawToolCall = true
     recordOpenClawRunStep('tool', name, status, id)
   }
+}
+
+function hydrateOpenClawRunTimelineFromToolResult(message = {}) {
+  const id = String(message.toolCallId || message.tool_call_id || message.id || '')
+  const status = message.isError || message.status === 'error' ? 'error' : 'completed'
+  const name = getOpenClawToolDisplayName({
+    name: message.toolName || message.tool_name || message.name || '',
+    toolName: message.toolName || message.tool_name || message.name || '',
+  }) || 'tool'
+  const output = String(message.text || message.output || message.result || '').trim()
+  const stepId = id || `history-result-${_currentAiTools.length}`
+  upsertTool(_currentAiTools, {
+    id: stepId,
+    name,
+    output: output.slice(0, 2400),
+    status,
+  })
+  if (_activeOpenClawRun) _activeOpenClawRun.sawToolCall = true
+  recordOpenClawRunStep('tool', name, status, stepId)
 }
 
 function collapseOpenClawRunTimeline(container) {
@@ -6815,7 +7088,8 @@ function handleEvent(msg) {
     // thinking 事件（推理/思考）
     if (stream === 'thinking' && !_isStreaming) {
       showTyping(true, t('chat.aiThinking'))
-      recordOpenClawRunStep('analysis', '正在分析任务', 'running')
+      const thought = getOpenClawVisibleProgressFromEvent(data)
+      recordOpenClawRunStep('analysis', thought ? `思考：${thought}` : '正在分析任务', 'running', data.id || data.stepId || '')
       renderOpenClawLiveTimeline()
     }
 
@@ -7219,7 +7493,7 @@ function handleChatEvent(payload, eventId = '') {
       appendImagesToEl(_currentAiBubble, _currentAiImages)
       appendVideosToEl(_currentAiBubble, _currentAiVideos)
       appendAudiosToEl(_currentAiBubble, _currentAiAudios)
-      appendFilesToEl(_currentAiBubble, _currentAiFiles)
+      appendOpenClawOutputFiles(_currentAiBubble, _currentAiFiles, _currentAiText)
       appendToolsToEl(_currentAiBubble, finalTools.length ? finalTools : _currentAiTools)
       collapseOpenClawRunTimeline(_currentAiBubble)
       appendLifeAssistantCardsToEl(_currentAiBubble, finalScreenshotCards, finalConfirmations)
@@ -8074,7 +8348,6 @@ function startOpenClawProgressHistoryPolling() {
       return
     }
     if (_openClawProgressHistoryInFlight || _isLoadingHistory) return
-    if (!wsClient.gatewayReady) return
     _openClawProgressHistoryInFlight = true
     try {
       // In packaged Tauri, JSONL plus the portable session registry is the
@@ -8100,6 +8373,11 @@ function startOpenClawProgressHistoryPolling() {
           console.debug('[chat] OpenClaw portable raw completion check skipped:', error?.message || error)
         }
       }
+      // Tauri reads the authoritative local JSONL above and must not depend
+      // on a transient WebSocket-ready flag. The Gateway can finish a native
+      // task while its UI socket is reconnecting; skipping the raw read here
+      // leaves a completed terminal reply stuck in "thinking" until timeout.
+      if (!wsClient.gatewayReady) return
       const history = await wsClient.chatHistory(_sessionKey, 200)
       const messages = history?.messages || []
       if (hydrateOpenClawLiveHistoryProgress(messages)) _resetWatchdogOnActivity()
@@ -8215,7 +8493,7 @@ function resetStreamState() {
     appendImagesToEl(_currentAiBubble, _currentAiImages)
     appendVideosToEl(_currentAiBubble, _currentAiVideos)
     appendAudiosToEl(_currentAiBubble, _currentAiAudios)
-  appendFilesToEl(_currentAiBubble, _currentAiFiles)
+    appendOpenClawOutputFiles(_currentAiBubble, _currentAiFiles, _currentAiText)
   appendToolsToEl(_currentAiBubble, _currentAiTools)
     collapseOpenClawRunTimeline(_currentAiBubble)
   }
@@ -8703,7 +8981,7 @@ function replaceOpenClawPartialAssistantAfterLastUser(msg = {}) {
     appendImagesToEl(bubble, msg.images || [])
     appendVideosToEl(bubble, msg.videos || [])
     appendAudiosToEl(bubble, msg.audios || [])
-    appendFilesToEl(bubble, msg.files || [])
+    appendOpenClawOutputFiles(bubble, msg.files || [], finalText)
     appendLifeAssistantCardsToEl(bubble, msg.screenshotCards || [], msg.confirmations || [])
     markRenderedOpenClawMessage(row, msg.sessionKey || _sessionKey, msg.displayDedupeKey || msg.dedupeKey)
     return true
@@ -8763,7 +9041,7 @@ function mergeOpenClawAssistantIntoVisibleRow(row, msg = {}) {
   appendImagesToEl(bubble, msg.images || [])
   appendVideosToEl(bubble, msg.videos || [])
   appendAudiosToEl(bubble, msg.audios || [])
-  appendFilesToEl(bubble, msg.files || [])
+  appendOpenClawOutputFiles(bubble, msg.files || [], finalText)
   appendLifeAssistantCardsToEl(bubble, msg.screenshotCards || [], msg.confirmations || [])
   markRenderedOpenClawMessage(row, msg.sessionKey || _sessionKey, msg.displayDedupeKey || msg.dedupeKey)
   return true
@@ -8843,7 +9121,7 @@ function completeStreamingDraftFromHistory(msg) {
   appendImagesToEl(_currentAiBubble, msg.images || [])
   appendVideosToEl(_currentAiBubble, msg.videos || [])
   appendAudiosToEl(_currentAiBubble, msg.audios || [])
-  appendFilesToEl(_currentAiBubble, msg.files || [])
+  appendOpenClawOutputFiles(_currentAiBubble, msg.files || [], visibleDraftText)
   _currentAiTimeline = mergeOpenClawExecutionTimelines(_currentAiTimeline, msg.executionTimeline)
   const completedTools = msg.tools?.length ? msg.tools : _currentAiTools
   appendToolsToEl(_currentAiBubble, completedTools || [], _currentAiTimeline)
@@ -9099,7 +9377,7 @@ function renderOpenClawRecoveredHistory(rawMessages, requestedSessionKey, localM
     }
   })
   _lastHistoryHash = deduped.map(msg => `${msg.dedupeKey || msg.id || msg.timestamp || ''}:${msg.role}:${(msg.text || '').length}`).join('|')
-  saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+  saveMessages(authoritativeMessages.map(message => cachedHistoryMessage(message, requestedSessionKey)))
   scrollToBottom()
   return true
 }
@@ -9111,13 +9389,28 @@ async function loadHistory(sessionKey = _sessionKey) {
   _isLoadingHistory = true
   let hasExisting = _messagesEl.querySelector('.msg-user, .msg-ai')
   let localDedupedForSession = []
+
+  // The portable session JSONL is authoritative. Read it before IndexedDB so
+  // a stale WebView snapshot cannot paint a different session over this one.
+  let rawHistory = null
+  if (isTauriRuntime()) {
+    try {
+      const raw = await api.readOpenclawRawHistory(requestedSessionKey, 500)
+      if (Array.isArray(raw?.messages) && raw.messages.length) rawHistory = raw.messages
+    } catch (error) {
+      console.debug('[chat] raw OpenClaw history unavailable:', error?.message || error)
+    }
+  }
+
   if (isStorageAvailable()) {
     const local = await getLocalMessages(requestedSessionKey, 200)
     if (!_messagesEl || !isLoadHistoryForCurrentSession()) {
       _isLoadingHistory = false
       return
     }
-    if (local.length) {
+    // IndexedDB is only an offline fallback. Native history includes gateway
+    // media records that older cached rows did not preserve.
+    if (local.length && !rawHistory?.length) {
       const localDeduped = dedupeHistoryStable(local)
       localDedupedForSession = localDeduped
       if (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) {
@@ -9157,19 +9450,8 @@ async function loadHistory(sessionKey = _sessionKey) {
       }
     }
   }
-  // The Gateway can report ready before its session projection is rebuilt.
-  // In Tauri, the local JSONL is the durable source and must be attempted
-  // before returning for a temporarily unavailable WebSocket projection.
-  let rawHistory = null
-  if (isTauriRuntime()) {
-    try {
-      const raw = await api.readOpenclawRawHistory(requestedSessionKey, 500)
-      if (Array.isArray(raw?.messages) && raw.messages.length) rawHistory = raw.messages
-    } catch (error) {
-      console.debug('[chat] raw OpenClaw history unavailable:', error?.message || error)
-    }
-  }
-
+  // The Gateway can report ready before its session projection is rebuilt;
+  // rawHistory above remains the durable source in that interval.
   if (!wsClient.gatewayReady) {
     if (rawHistory?.length && isLoadHistoryForCurrentSession()) {
       renderOpenClawRecoveredHistory(rawHistory, requestedSessionKey, localDedupedForSession)
@@ -9204,7 +9486,7 @@ async function loadHistory(sessionKey = _sessionKey) {
         historyCount: deduped.length,
       })
       mergeHistoryIntoCurrentMessages(deduped)
-      saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+      saveMessages(authoritativeMessages.map(message => cachedHistoryMessage(message, requestedSessionKey)))
       return
     }
     const hash = deduped
@@ -9219,7 +9501,7 @@ async function loadHistory(sessionKey = _sessionKey) {
     // the UI in the executing state after the real result already exists.
     if ((_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) &&
       completeOpenClawCurrentDraftFromLatestHistory(remoteDeduped)) {
-      saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+      saveMessages(authoritativeMessages.map(message => cachedHistoryMessage(message, requestedSessionKey)))
       return
     }
 
@@ -9228,7 +9510,7 @@ async function loadHistory(sessionKey = _sessionKey) {
     // from it so stale snapshots cannot hide or reorder real conversations.
     if (hasActiveOpenClawGeneration || shouldProtectCurrentMessagesFromHistory(deduped)) {
       mergeHistoryIntoCurrentMessages(deduped)
-      saveMessages(result.messages.map(cachedHistoryMessage))
+      saveMessages(authoritativeMessages.map(message => cachedHistoryMessage(message, requestedSessionKey)))
       _isLoadingHistory = false
       return
     }
@@ -9272,7 +9554,7 @@ async function loadHistory(sessionKey = _sessionKey) {
     if (hasOmittedImages) {
       appendSystemMessage(t('chat.imageHistoryHint'))
     }
-    saveMessages(authoritativeMessages.map(cachedHistoryMessage))
+    saveMessages(authoritativeMessages.map(message => cachedHistoryMessage(message, requestedSessionKey)))
     scrollToBottom()
   } catch (e) {
     console.error('[chat] loadHistory error:', e)
@@ -9543,7 +9825,7 @@ function mergeOpenClawHistoryMessage(prev, next) {
   }
 }
 
-function cachedHistoryMessage(m) {
+function cachedHistoryMessage(m, sessionKey = _sessionKey) {
   m = normalizeOpenClawHistoryRecord(m)
   const c = extractContent(m)
   const role = (m.role === 'tool' || m.role === 'toolResult') ? 'assistant' : m.role
@@ -9563,7 +9845,9 @@ function cachedHistoryMessage(m) {
   ].filter(item => item.content || item.imageUrl || openClawAttachmentMediaPath(item))
   return {
     id: m.id || uuid(),
-    sessionKey: _sessionKey,
+    // An async request can finish after the user switches sessions. Preserve
+    // the request's session rather than using the mutable global at save time.
+    sessionKey: normalizeOpenClawSessionKey(m.sessionKey || sessionKey),
     role,
     content: c?.text || '',
     timestamp: m.timestamp || Date.now(),
@@ -9591,6 +9875,35 @@ function openClawAttachmentToImage(att = {}) {
     path: normalized.path || '',
     fileName: normalized.fileName || '',
   }
+}
+
+function collectOpenClawContentImages(content, initial = []) {
+  const images = [...(initial || [])]
+  if (!Array.isArray(content)) return images
+  for (const block of content) {
+    if (block?.type === 'image' && !block.omitted) {
+      if (block.data) images.push({ mediaType: block.mimeType || 'image/png', data: block.data })
+      else if (block.source?.type === 'base64' && block.source.data) images.push({ mediaType: block.source.media_type || 'image/png', data: block.source.data })
+      else if (block.url || block.source?.url || block.imageUrl || block.savedPath || block.mediaPath || block.localPath) {
+        images.push({
+          url: block.url || block.source?.url || block.imageUrl || '',
+          imageUrl: block.imageUrl || block.url || block.source?.url || '',
+          mediaType: block.mimeType || block.mediaType || 'image/png',
+          savedPath: block.savedPath || '',
+          mediaPath: block.mediaPath || '',
+          localPath: block.localPath || '',
+          filePath: block.filePath || '',
+          path: block.path || '',
+          fileName: block.fileName || block.filename || block.name || '',
+        })
+      }
+    } else if (block?.type === 'image_url' && block.image_url?.url) {
+      images.push({ url: block.image_url.url, mediaType: 'image/png' })
+    }
+  }
+  // Native history exposes images both in content and in attachments. Keep one
+  // rendering target per actual image while retaining either representation.
+  return mergeOpenClawUniqueMedia([], images)
 }
 
 function collectOpenClawAttachmentImages(msg = {}) {
@@ -9628,7 +9941,16 @@ function extractContent(msg) {
     } else if (output && !tools[0].output) {
       tools[0].output = output
     }
-    return { text: '', images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+    return {
+      text: '',
+      images: collectOpenClawContentImages(msg.content, attachmentImages),
+      videos: [],
+      audios: [],
+      files: [],
+      tools,
+      screenshotCards,
+      confirmations,
+    }
   }
   if (msg.role === 'assistant') {
     const artifactText = extractOpenClawAssistantText({
@@ -9643,7 +9965,17 @@ function extractContent(msg) {
       },
     })
     if (artifactText) {
-      return { text: stripThinkingTags(artifactText), images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+      const visibleArtifactText = stripThinkingTags(artifactText)
+      return {
+        text: visibleArtifactText,
+        images: collectOpenClawContentImages(msg.content, attachmentImages),
+        videos: [],
+        audios: [],
+        files: extractOpenClawWorkspaceOutputFiles(visibleArtifactText),
+        tools,
+        screenshotCards,
+        confirmations,
+      }
     }
   }
   if (Array.isArray(msg.content)) {
@@ -9724,11 +10056,31 @@ function extractContent(msg) {
       else files.push({ url, name: url.split('/').pop().split('?')[0] || 'file', mimeType: '' })
     }
     const text = stripThinkingTags(texts.join('\n'))
-    return { text: isOpenClawAssistantFailurePlaceholderText(text) ? '' : text, images, videos, audios, files, tools, screenshotCards, confirmations }
+    const visibleText = isOpenClawAssistantFailurePlaceholderText(text) ? '' : text
+    return {
+      text: visibleText,
+      images,
+      videos,
+      audios,
+      files: [...files, ...extractOpenClawWorkspaceOutputFiles(visibleText)],
+      tools,
+      screenshotCards,
+      confirmations,
+    }
   }
   const text = typeof msg.text === 'string' ? msg.text : (typeof msg.content === 'string' ? msg.content : '')
   const visibleText = stripThinkingTags(text)
-  return { text: isOpenClawAssistantFailurePlaceholderText(visibleText) ? '' : visibleText, images: attachmentImages, videos: [], audios: [], files: [], tools, screenshotCards, confirmations }
+  const safeVisibleText = isOpenClawAssistantFailurePlaceholderText(visibleText) ? '' : visibleText
+  return {
+    text: safeVisibleText,
+    images: attachmentImages,
+    videos: [],
+    audios: [],
+    files: extractOpenClawWorkspaceOutputFiles(safeVisibleText),
+    tools,
+    screenshotCards,
+    confirmations,
+  }
 }
 
 // ── DOM 操作 ──
@@ -9793,10 +10145,7 @@ function appendUserMessage(text, attachments = [], msgTime, renderMeta = {}) {
         audio.preload = 'metadata'
         mediaContainer.appendChild(audio)
       } else if (att.fileName || att.name) {
-        const card = document.createElement('div')
-        card.className = 'msg-file-card'
-        card.innerHTML = `<span class="msg-file-icon">${svgIcon('paperclip', 16)}</span><span class="msg-file-name">${att.fileName || att.name}</span>`
-        mediaContainer.appendChild(card)
+        mediaContainer.appendChild(createOpenClawFileCard(att))
       }
     })
     if (mediaContainer.children.length) bubble.appendChild(mediaContainer)
@@ -9911,7 +10260,7 @@ function appendAiMessage(text, msgTime, images, videos, audios, files, tools, sc
   appendImagesToEl(bubble, images)
   appendVideosToEl(bubble, videos)
   appendAudiosToEl(bubble, audios)
-  appendFilesToEl(bubble, files)
+  appendOpenClawOutputFiles(bubble, files, text)
   // 图片点击灯箱
   bubble.querySelectorAll('img').forEach(img => { if (!img.onclick) img.onclick = () => showLightbox(img.src) })
 
@@ -9990,17 +10339,19 @@ function appendAudiosToEl(el, audios) {
 function appendFilesToEl(el, files) {
   if (!files?.length) return
   files.forEach(f => {
-    const card = document.createElement('div')
-    card.className = 'msg-file-card'
-    const ext = (f.name || '').split('.').pop().toLowerCase()
-    const fileIconMap = { pdf: 'file', doc: 'file-text', docx: 'file-text', txt: 'file-plain', md: 'file-plain', json: 'clipboard', csv: 'bar-chart', zip: 'package', rar: 'package' }
-    const fileIcon = svgIcon(fileIconMap[ext] || 'paperclip', 16)
-    const size = f.size ? formatFileSize(f.size) : ''
-    card.innerHTML = `<span class="msg-file-icon">${fileIcon}</span><div class="msg-file-info"><span class="msg-file-name">${f.name || 'file'}</span>${size ? `<span class="msg-file-size">${size}</span>` : ''}</div>`
+    const workspaceOutputPath = String(f.workspaceOutputPath || '')
+    if (workspaceOutputPath && Array.from(el.querySelectorAll?.('[data-openclaw-output-path]') || []).some(card => card.dataset.openclawOutputPath === workspaceOutputPath)) return
+    const card = createOpenClawFileCard({
+      ...f,
+      fileName: f.fileName || f.name || 'file',
+      mimeType: f.mimeType || f.mediaType || 'application/octet-stream',
+      content: f.content || f.data || '',
+    })
+    if (workspaceOutputPath) card.dataset.openclawOutputPath = workspaceOutputPath
     if (f.url) {
       card.style.cursor = 'pointer'
       card.onclick = () => window.open(f.url, '_blank')
-    } else if (f.data) {
+    } else if (f.data && !isOpenClawPdfAttachment(f)) {
       card.style.cursor = 'pointer'
       card.onclick = () => {
         const a = document.createElement('a')
@@ -10125,11 +10476,44 @@ function showLightbox(src) {
   if (existing) existing.remove()
   const lb = document.createElement('div')
   lb.className = 'chat-lightbox'
-  lb.innerHTML = `<img src="${src}" class="chat-lightbox-img" />`
-  lb.onclick = (e) => { if (e.target === lb || e.target.tagName !== 'IMG') lb.remove() }
+  lb.setAttribute('role', 'dialog')
+  lb.setAttribute('aria-modal', 'true')
+  const image = document.createElement('img')
+  image.className = 'chat-lightbox-img'
+  image.src = src
+  image.alt = '图片预览'
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'chat-lightbox-close'
+  close.setAttribute('aria-label', '关闭图片预览')
+  close.textContent = '×'
+  let zoom = 1
+  const updateZoom = () => { image.style.transform = `scale(${zoom})` }
+  const dismiss = () => {
+    lb.remove()
+    document.removeEventListener('keydown', onKey)
+  }
+  const onKey = (e) => { if (e.key === 'Escape') dismiss() }
+  close.addEventListener('click', dismiss)
+  lb.addEventListener('click', event => { if (event.target === lb) dismiss() })
+  lb.addEventListener('wheel', event => {
+    if (event.target !== image) return
+    event.preventDefault()
+    const rect = image.getBoundingClientRect()
+    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
+    image.style.transformOrigin = `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
+    zoom = Math.max(0.5, Math.min(4, zoom + (event.deltaY < 0 ? 0.15 : -0.15)))
+    updateZoom()
+  }, { passive: false })
+  image.addEventListener('dblclick', () => {
+    zoom = 1
+    image.style.transformOrigin = '50% 50%'
+    updateZoom()
+  })
+  lb.append(image, close)
   document.body.appendChild(lb)
   // ESC 关闭
-  const onKey = (e) => { if (e.key === 'Escape') { lb.remove(); document.removeEventListener('keydown', onKey) } }
   document.addEventListener('keydown', onKey)
 }
 

@@ -11,6 +11,7 @@ const financeSkill = read('src-tauri/resources/templates/openclaw-workspace/skil
 const ocrSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-ocr/SKILL.md')
 const videoSkill = read('src-tauri/resources/templates/openclaw-workspace/skills/superclaw-video-analysis/SKILL.md')
 const chat = read('src/pages/chat.js')
+const tauriApi = read('src/lib/tauri-api.js')
 const wsClientSource = read('src/lib/ws-client.js')
 const messageDb = read('src/lib/message-db.js')
 const openclawHistorySource = read('src-tauri/src/commands/openclaw_history.rs')
@@ -239,6 +240,32 @@ test('OpenClaw portable history only renews the idle watchdog for real execution
   assert.match(poller, /if \(hydrateOpenClawLiveHistoryProgress\(messages\)\) _resetWatchdogOnActivity\(\)/)
 })
 
+test('OpenClaw portable JSONL publishes running tool calls and completed tool results during a live run', () => {
+  const hydration = chat.match(/function hydrateOpenClawLiveHistoryProgress[\s\S]*?function attachOpenClawExecutionTimeline/)?.[0] || ''
+  const toolHydration = chat.match(/function hydrateOpenClawRunTimelineFromTools[\s\S]*?function collapseOpenClawRunTimeline/)?.[0] || ''
+
+  assert.match(openclawHistorySource, /fn tool_calls\(message: &Value\) -> Vec<Value>/)
+  assert.match(openclawHistorySource, /"status": "running"/)
+  assert.match(openclawHistorySource, /fn tool_result_failed\(message: &Value\) -> bool/)
+  assert.match(openclawHistorySource, /"tools": tool_calls\(message\)/)
+  assert.match(openclawHistorySource, /"isError": tool_result_failed\(message\)/)
+  assert.match(hydration, /message\?\.role === 'tool' \|\| message\?\.role === 'toolResult'/)
+  assert.match(hydration, /recordOpenClawProgressNarrative\(message\.text \|\| '', message\.id \|\| message\.messageId\)/)
+  assert.match(hydration, /hydrateOpenClawRunTimelineFromTools\(message\.tools\)/)
+  assert.match(hydration, /hydrateOpenClawRunTimelineFromToolResult\(message\)/)
+  assert.match(toolHydration, /tool\?\.status \|\| \(tool\?\.isError \? 'error' : 'running'\)/)
+  assert.match(chat, /function hydrateOpenClawRunTimelineFromToolResult\(message = \{\}\)/)
+})
+
+test('OpenClaw keeps user-visible tool-use narration as a separate execution step', () => {
+  const restore = chat.match(/function attachOpenClawExecutionTimeline[\s\S]*?function hydrateOpenClawRunTimelineFromTools/)?.[0] || ''
+
+  assert.match(restore, /if \(narrative && !isOpenClawVisibleTextInternalAuditOnly\(narrative\)\)/)
+  assert.match(restore, /key: `progress:\$\{message\.id \|\| message\.messageId \|\| steps\.length\}`/)
+  assert.match(restore, /key: `tool:\$\{id\}`/)
+  assert.match(chat, /function hydrateOpenClawRunTimelineFromTools\(tools = \[\]\)/)
+})
+
 test('OpenClaw watchdog expires on inactivity rather than total run duration', () => {
   const helperSource = chat.match(/function isOpenClawResponseIdleTimedOut[\s\S]*?\n\}/)?.[0] || ''
   const sandbox = { result: null }
@@ -334,6 +361,7 @@ test('OpenClaw history fingerprints strip injected execution instructions before
   const stripRuntimeBlocks = chat.match(/function stripOpenClawRuntimePromptBlocks[\s\S]*?\n\}/)?.[0] || ''
   assert.match(stripRuntimeBlocks, /NATIVE_INSPECTION_REQUIRED/)
   assert.match(stripRuntimeBlocks, /CAPABILITY_AUDIT_TRIGGER/)
+  assert.match(stripRuntimeBlocks, /DOCUMENT_ATTACHMENT_CONTEXT/)
   assert.match(chat, /function openClawVisibleUserText\(text\) \{\s*return stripOpenClawHistoryUserTimestamp\(stripOpenClawRuntimePromptBlocks\(text\)\)/)
 })
 
@@ -363,7 +391,7 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   assert.match(chat, /if \(retainedExecutionTimeline\) container\.insertBefore\(retainedExecutionTimeline, wrapper\)/)
   assert.match(renderCard, /if \(active\) card\.open = true/)
   assert.match(renderCard, /const displayedToolCount = Math\.max\(info\.toolCount, timelineToolCount\)/)
-  assert.match(chat, /recordOpenClawRunStep\('analysis', '正在分析任务'/)
+  assert.match(chat, /recordOpenClawRunStep\('analysis', thought \? `思考：\$\{thought\}` : '正在分析任务'/)
   assert.match(chat, /recordOpenClawRunStep\('plan', '正在规划执行步骤'/)
   assert.match(chat, /recordOpenClawRunStep\('start', '\\u5df2\\u63d0\\u4ea4\\u4efb\\u52a1\\uff0c\\u6b63\\u5728\\u8fde\\u63a5\\u6267\\u884c\\u73af\\u5883'/)
   assert.match(chat, /if \(_currentAiTimeline\.length \|\| hasTimelineOverride\) \{\s*if \(existing\) existing\.remove\(\)\s*renderOpenClawToolResultCard\(el, \[\], '', timelineOverride\)/)
@@ -443,6 +471,10 @@ test('OpenClaw finishes a packaged native tool-only run once the portable sessio
   const terminalFallback = chat.match(/function completeOpenClawTerminalToolOnlyRun\([\s\S]*?function _cancelResponseWatchdog/)?.[0] || ''
 
   assert.match(poller, /api\.readOpenclawRawHistory\(_sessionKey, 300\)/)
+  assert.ok(
+    poller.indexOf('api.readOpenclawRawHistory(_sessionKey, 300)') < poller.indexOf('if (!wsClient.gatewayReady) return'),
+    'portable JSONL recovery must continue while the Gateway WebSocket reconnects',
+  )
   assert.match(poller, /completeOpenClawTerminalToolOnlyRun\(raw\)/)
   assert.match(chat, /function isOpenClawNativeSessionTerminal\(status\)/)
   assert.match(terminalFallback, /rawHistory\?\.sessionStatus/)
@@ -476,6 +508,116 @@ test('OpenClaw OCR uses the shared portable runtime through a native plugin', ()
   assert.match(ocrPlugin, /TESSDATA_PREFIX/)
   assert.match(ocrPlugin, /Do not call it automatically for every attachment/)
   assert.doesNotMatch(ocrPlugin, /C:\\\\Users|C:\\/)
+})
+
+test('OpenClaw accepts portable Office and PDF attachments through the native Gateway', () => {
+  const inputMarkup = chat.match(/<input type="file" id="chat-file-input"[\s\S]*?>/)?.[0] || ''
+  const attachmentHandler = chat.match(/async function handleOpenClawAttachmentFiles[\s\S]*?function bindImagePasteHandlers/)?.[0] || ''
+  const promptBuilder = chat.match(/function buildAttachmentTriggeredPrompt[\s\S]*?function buildIntentTriggeredToolPrompt/)?.[0] || ''
+
+  assert.match(inputMarkup, /\.pdf,\.doc,\.docx,\.xls,\.xlsx,\.csv/)
+  assert.match(chat, /const OPENCLAW_DOCUMENT_EXTENSIONS = new Set/)
+  assert.match(attachmentHandler, /createOpenClawDocumentAttachmentFromFile/)
+  assert.match(chat, /async function createOpenClawDocumentAttachmentFromFile\(file\)[\s\S]*?fileToBase64\(file\)/)
+  assert.match(attachmentHandler, /OPENCLAW_ATTACHMENT_MAX_BYTES/)
+  assert.match(chat, /wsClient\.chatSend\(_sessionKey, sendText, attachments\.length \? attachments : undefined/)
+  assert.match(promptBuilder, /\[DOCUMENT_ATTACHMENT_CONTEXT\]/)
+  assert.match(promptBuilder, /MediaPath\/MediaPaths/)
+  assert.match(promptBuilder, /preserve the original, write a new output file/i)
+})
+
+test('OpenClaw final replies turn portable workspace outputs into safe file cards', () => {
+  const outputParser = chat.match(/function extractOpenClawWorkspaceOutputFiles[\s\S]*?(?=function openOpenClawPdfPreview)/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${outputParser}; result = extractOpenClawWorkspaceOutputFiles('已生成 C:\\\\portable\\\\data\\\\.openclaw\\\\workspace\\\\outbox\\\\report.docx');`, sandbox)
+  assert.equal(sandbox.result.length, 1)
+  assert.equal(sandbox.result[0].fileName, 'report.docx')
+  assert.equal(sandbox.result[0].workspaceOutputPath.endsWith('report.docx'), true)
+  const extractContent = chat.match(/function extractContent\(msg\)[\s\S]*?if \(Array\.isArray\(msg\.content\)\)/)?.[0] || ''
+  assert.match(extractContent, /const visibleArtifactText = stripThinkingTags\(artifactText\)/)
+  assert.match(extractContent, /files: extractOpenClawWorkspaceOutputFiles\(visibleArtifactText\)/)
+  assert.match(chat, /function appendOpenClawOutputFiles\(el, files = \[\], text = ''\)/)
+  assert.match(chat, /appendOpenClawOutputFiles\(bubble, files, text\)/)
+  assert.match(chat, /appendOpenClawOutputFiles\(bubble, msg\.files \|\| \[\], finalText\)/)
+  assert.match(chat, /appendOpenClawOutputFiles\(_currentAiBubble, msg\.files \|\| \[\], visibleDraftText\)/)
+  assert.match(chat, /openclawOpenWorkspaceOutput/)
+  assert.match(chat, /openclawDownloadWorkspaceOutput/)
+  assert.match(openclawHistorySource, /pub async fn openclaw_open_workspace_output/)
+  assert.match(openclawHistorySource, /pub async fn openclaw_download_workspace_output/)
+  assert.match(openclawHistorySource, /target\.starts_with\(&workspace\)/)
+})
+
+test('OpenClaw renders safe image and PDF previews without bypassing the current chat', () => {
+  const dataUrl = chat.match(/function getOpenClawAttachmentDataUrl[\s\S]*?function isOpenClawPdfAttachment/)?.[0] || ''
+  const preview = chat.match(/function openOpenClawPdfPreview[\s\S]*?function createOpenClawFileCard/)?.[0] || ''
+  const lightbox = chat.match(/function showLightbox[\s\S]*?function appendSystemMessage/)?.[0] || ''
+
+  assert.match(dataUrl, /data:application\/pdf;base64/)
+  assert.match(preview, /document\.createElement\('iframe'\)/)
+  assert.match(preview, /event\.key === 'Escape'/)
+  assert.match(chat, /function createOpenClawImageElement/)
+  assert.match(chat, /showLightbox\(img\.src\)/)
+  assert.match(lightbox, /document\.createElement\('img'\)/)
+  assert.match(lightbox, /event\.deltaY/)
+  assert.match(lightbox, /if \(event\.target !== image\) return/)
+  assert.match(lightbox, /image\.style\.transformOrigin = `\$\{\(x \* 100\)\.toFixed\(2\)\}% \$\{\(y \* 100\)\.toFixed\(2\)\}%`/)
+  assert.match(lightbox, /Math\.min\(4, zoom/)
+  assert.doesNotMatch(lightbox, /innerHTML\s*=/)
+})
+
+test('OpenClaw authenticated Gateway images use the portable Tauri media bridge', () => {
+  const imageElement = chat.match(/function createOpenClawImageElement[\s\S]*?function getOpenClawAttachmentDataUrl/)?.[0] || ''
+
+  assert.match(chat, /function isOpenClawGatewayMediaRoute\(value = ''\)/)
+  assert.match(chat, /if \(isOpenClawGatewayMediaRoute\(direct\)\) return ''/)
+  assert.match(imageElement, /isOpenClawGatewayMediaRoute\(mediaPath\)\s*\? await api\.loadOpenclawGatewayMedia\(mediaPath\)/)
+  assert.match(tauriApi, /loadOpenclawGatewayMedia: \(path\) => invoke\('openclaw_load_gateway_media'/)
+  assert.match(openclawHistorySource, /pub async fn openclaw_load_gateway_media\(path: String\)/)
+  assert.match(openclawHistorySource, /route\.starts_with\("\/api\/chat\/media\/outgoing\/"\)/)
+  assert.match(openclawHistorySource, /\.header\("Authorization", format!\("Bearer \{token\}"\)\)/)
+  assert.match(openclawHistorySource, /!mime\.starts_with\("image\/"\)/)
+  assert.doesNotMatch(openclawHistorySource, /C:\\\\Users|C:\\tmp/)
+})
+
+test('OpenClaw history preserves image blocks when assistant artifact text is selected first', () => {
+  const extractContent = chat.match(/function extractContent\(msg\)[\s\S]*?if \(Array\.isArray\(msg\.content\)\)/)?.[0] || ''
+
+  assert.match(chat, /function collectOpenClawContentImages\(content, initial = \[\]\)/)
+  assert.match(extractContent, /images: collectOpenClawContentImages\(msg\.content, attachmentImages\)/)
+})
+
+test('OpenClaw history preserves images returned by native read tools', () => {
+  const extractContent = chat.match(/function extractContent\(msg\)[\s\S]*?if \(msg\.role === 'assistant'\)/)?.[0] || ''
+
+  assert.match(extractContent, /msg\.role === 'tool' \|\| msg\.role === 'toolResult'/)
+  assert.match(extractContent, /images: collectOpenClawContentImages\(msg\.content, attachmentImages\)/)
+})
+
+test('OpenClaw restores native history before cache so stale sessions cannot hide media', () => {
+  assert.match(chat, /const raw = await api\.readOpenclawRawHistory\(requestedSessionKey, 500\)/)
+  assert.match(chat, /if \(local\.length && !rawHistory\?\.length\)/)
+  assert.match(chat, /cachedHistoryMessage\(message, requestedSessionKey\)/)
+  assert.match(chat, /function cachedHistoryMessage\(m, sessionKey = _sessionKey\)/)
+  assert.match(chat, /sessionKey: normalizeOpenClawSessionKey\(m\.sessionKey \|\| sessionKey\)/)
+})
+
+test('OpenClaw native media history keeps the owning session and a renderable attachment fallback', () => {
+  assert.match(openclawHistorySource, /"sessionKey": &session_key/)
+  assert.match(openclawHistorySource, /"attachments": image_attachments\(message\)/)
+  assert.match(openclawHistorySource, /fn image_attachments\(message: &Value\)/)
+  assert.match(chat, /return mergeOpenClawUniqueMedia\(\[\], images\)/)
+})
+
+test('OpenClaw execution cards retain user-visible thinking progress without exposing raw reasoning', () => {
+  const visibleProgress = chat.match(/function getOpenClawVisibleProgressFromEvent[\s\S]*?function hydrateOpenClawLiveHistoryProgress/)?.[0] || ''
+  const eventHandler = chat.match(/function handleEvent[\s\S]*?function handleChatEvent/)?.[0] || ''
+
+  assert.match(visibleProgress, /\[data\.summary, data\.title, data\.message, data\.content, data\.text, data\.delta\]/)
+  assert.match(visibleProgress, /isOpenClawVisibleTextInternalAuditOnly/)
+  assert.doesNotMatch(visibleProgress, /data\.reasoning/)
+  assert.match(eventHandler, /const thought = getOpenClawVisibleProgressFromEvent\(data\)/)
+  assert.match(eventHandler, /thought \? `思考：\$\{thought\}` : '正在分析任务'/)
 })
 
 test('product workflows stay in portable native skills with explicit confirmation boundaries', () => {
