@@ -224,7 +224,7 @@ function Write-PortableHermesLauncher([string]$PackagedResources) {
   New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
   Write-Utf8NoBom (Join-Path $RuntimeDir "hermes.cmd") (@"
 @echo off
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 set "SUPERCLAW_RUNTIME_DIR=%~dp0"
 set "HERMES_HOME=%SUPERCLAW_RUNTIME_DIR%..\data\hermes"
 set "PYTHONPATH=%SUPERCLAW_RUNTIME_DIR%hermes-agent\Lib\site-packages"
@@ -234,12 +234,21 @@ set "HERMES_PORTABLE_GIT_BASH=%SUPERCLAW_RUNTIME_DIR%git\bin\bash.exe"
 if exist "%HERMES_PORTABLE_GIT_BASH%" set "HERMES_GIT_BASH_PATH=%HERMES_PORTABLE_GIT_BASH%"
 if not defined HERMES_GIT_BASH_PATH if exist "%ProgramFiles%\Git\bin\bash.exe" set "HERMES_GIT_BASH_PATH=%ProgramFiles%\Git\bin\bash.exe"
 if not defined HERMES_GIT_BASH_PATH if exist "%ProgramFiles(x86)%\Git\bin\bash.exe" set "HERMES_GIT_BASH_PATH=%ProgramFiles(x86)%\Git\bin\bash.exe"
+rem uv may package Python either in python\python.exe or a versioned
+rem cpython-*-windows-* directory. Resolve both layouts without using a
+rem machine-wide Python installation.
 set "PYTHON_EXE=%SUPERCLAW_RUNTIME_DIR%uv-python\python\python.exe"
-if not exist "%PYTHON_EXE%" (
-  echo Hermes portable Python not found: %PYTHON_EXE% 1>&2
+if not exist "!PYTHON_EXE!" (
+  for /d %%D in ("%SUPERCLAW_RUNTIME_DIR%uv-python\*") do (
+    if not defined PYTHON_EXE_VERSIONED if exist "%%~fD\python.exe" set "PYTHON_EXE_VERSIONED=%%~fD\python.exe"
+  )
+  if defined PYTHON_EXE_VERSIONED set "PYTHON_EXE=!PYTHON_EXE_VERSIONED!"
+)
+if not exist "!PYTHON_EXE!" (
+  echo Hermes portable Python not found: !PYTHON_EXE! 1>&2
   exit /b 2
 )
-"%PYTHON_EXE%" -m hermes_cli.main %*
+"!PYTHON_EXE!" -m hermes_cli.main %*
 exit /b %ERRORLEVEL%
 "@)
 }
@@ -644,7 +653,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         }
         models = $defaultModels
         contextInjection = "always"
-        bootstrapMaxChars = 2000
+        bootstrapMaxChars = 4000
         bootstrapTotalMaxChars = 12000
         thinkingDefault = "off"
         verboseDefault = "off"

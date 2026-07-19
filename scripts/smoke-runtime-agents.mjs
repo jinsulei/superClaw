@@ -26,7 +26,8 @@ export function redactRuntimeSmokePayload(value) {
 export function parseGatewayStatus(text = '') {
   const value = String(text)
   const tokenMismatch = /token mismatch|令牌不匹配|未授权|unauthorized/i.test(value)
-  const connectivityOk = /Connectivity probe:\s*ok/i.test(value)
+  const foregroundGatewayListening = /gateway\s+run/i.test(value) && /Listening:\s*127\.0\.0\.1:18789/i.test(value)
+  const connectivityOk = /Connectivity probe:\s*ok/i.test(value) || foregroundGatewayListening
   const runtimeRunning = /Runtime:\s*running/i.test(value) || connectivityOk
   const failures = []
   const warnings = []
@@ -80,8 +81,8 @@ export function parseDoctorOutput(text = '') {
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
-      cwd: repoRoot,
-      env: process.env,
+      cwd: options.cwd || repoRoot,
+      env: options.env || process.env,
       windowsHide: true,
       shell: options.shell === true,
     })
@@ -100,6 +101,22 @@ function runCommand(command, args, options = {}) {
       resolve({ code: code ?? 1, stdout, stderr })
     })
   })
+}
+
+function openclawPortableSmokeEnv() {
+  const openclawDir = path.join(repoRoot, 'src-tauri', 'resources', 'data', '.openclaw')
+  const home = path.dirname(openclawDir)
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: path.join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    OPENCLAW_HOME: openclawDir,
+    OPENCLAW_STATE_DIR: openclawDir,
+    OPENCLAW_CONFIG_PATH: path.join(openclawDir, 'openclaw.json'),
+    OPENCLAW_LOG_DIR: path.join(openclawDir, 'logs'),
+  }
 }
 
 function testTcp(host, port, timeoutMs = 3000) {
@@ -127,6 +144,7 @@ function summarizeCommandResult(result) {
 
 async function runRuntimeAgentsSmoke() {
   const openclawCmd = path.join(repoRoot, 'src-tauri', 'resources', 'runtime', 'openclaw', 'openclaw.cmd')
+  const openclawEnv = openclawPortableSmokeEnv()
   const checks = []
   const warnings = []
   const failures = []
@@ -135,19 +153,25 @@ async function runRuntimeAgentsSmoke() {
   checks.push({ name: '18789 reachable', passed: portReachable })
   if (!portReachable) failures.push({ code: 'port_18789_unreachable', message: '127.0.0.1:18789 is not reachable.' })
 
-  const gatewayStatusResult = await runCommand(openclawCmd, ['gateway', 'status'], { shell: true })
+  const openclawCommandOptions = {
+    shell: true,
+    env: openclawEnv,
+    cwd: path.join(repoRoot, 'src-tauri', 'resources', 'data', '.openclaw'),
+  }
+
+  const gatewayStatusResult = await runCommand(openclawCmd, ['gateway', 'status'], openclawCommandOptions)
   const gatewayParsed = parseGatewayStatus(`${gatewayStatusResult.stdout}\n${gatewayStatusResult.stderr}`)
   checks.push({ name: 'OpenClaw gateway status ok', passed: gatewayParsed.ok, detail: summarizeCommandResult(gatewayStatusResult) })
   warnings.push(...gatewayParsed.warnings)
   failures.push(...gatewayParsed.failures)
 
-  const profileResult = await runCommand(openclawCmd, ['config', 'get', 'tools.profile'], { shell: true })
+  const profileResult = await runCommand(openclawCmd, ['config', 'get', 'tools.profile'], openclawCommandOptions)
   const profile = profileResult.stdout.trim()
   const profileOk = profile === 'coding'
   checks.push({ name: 'tools.profile is coding', passed: profileOk, detail: { value: profile || null } })
   if (!profileOk) failures.push({ code: 'tools_profile_not_coding', message: 'tools.profile is not coding.' })
 
-  const doctorResult = await runCommand(openclawCmd, ['doctor', '--lint'], { shell: true })
+  const doctorResult = await runCommand(openclawCmd, ['doctor', '--lint'], openclawCommandOptions)
   const doctorParsed = parseDoctorOutput(`${doctorResult.stdout}\n${doctorResult.stderr}`)
   checks.push({ name: 'OpenClaw doctor has no bootstrap truncation or token mismatch', passed: doctorParsed.ok, detail: summarizeCommandResult(doctorResult) })
   warnings.push(...doctorParsed.warnings)

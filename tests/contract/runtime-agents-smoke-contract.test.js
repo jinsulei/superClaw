@@ -38,6 +38,18 @@ test('gateway status parser rejects token mismatch', () => {
   assert.ok(parsed.failures.some((failure) => failure.code === 'gateway_token_mismatch'))
 })
 
+test('gateway status parser accepts a portable foreground gateway without a scheduled service', () => {
+  const parsed = parseGatewayStatus([
+    'Service: Scheduled Task (missing)',
+    'Runtime: stopped (ERROR: The system cannot find the file specified.)',
+    '- pid 43288: openclaw.mjs gateway run',
+    'Listening: 127.0.0.1:18789',
+  ].join('\n'))
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.connectivity_ok, true)
+  assert.equal(parsed.runtime_running, true)
+})
+
 test('doctor parser fails bootstrap truncation but defers plaintext secret warnings', () => {
   const bootstrap = parseDoctorOutput(doctorWithBootstrapTruncation)
   assert.equal(bootstrap.ok, false)
@@ -57,6 +69,22 @@ test('runtime smoke redaction never exposes token, apiKey, secret, or cookie val
   assert.ok(!redacted.includes('fake-secret-should-be-redacted'))
   assert.ok(!redacted.includes('fake-cookie-should-be-redacted'))
   assert.match(redacted, /\[REDACTED\]/)
+})
+
+test('runtime smoke uses the same portable OpenClaw environment as the desktop runtime', () => {
+  const source = readText('scripts/smoke-runtime-agents.mjs')
+  for (const marker of [
+    'openclawPortableSmokeEnv',
+    'OPENCLAW_HOME',
+    'OPENCLAW_STATE_DIR',
+    'OPENCLAW_CONFIG_PATH',
+    'OPENCLAW_LOG_DIR',
+    'USERPROFILE',
+  ]) {
+    assert.match(source, new RegExp(marker), `runtime smoke must use portable ${marker}`)
+  }
+  assert.match(source, /env: openclawEnv/, 'OpenClaw CLI probes must use the portable environment')
+  assert.match(source, /cwd: path\.join\(repoRoot, 'src-tauri', 'resources', 'data', '\.openclaw'\)/, 'OpenClaw CLI probes must run inside portable data')
 })
 
 test('release gate includes only the contract test and not the local runtime smoke', () => {
