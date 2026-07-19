@@ -549,10 +549,13 @@ fn app_root_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_default()
 }
 
-/// ClawPanel 管理的 uv 二进制存放路径
-/// - 新结构: <app_root>/resources/bin/
-/// - 旧结构: <app_root>/bin/（Dev 模式或旧 MSI 部署）
+/// Canonical bundled uv binary. New portable builds keep it beside the tool
+/// state so a second `resources/bin/uv.exe` is not required.
 fn uv_bin_dir() -> PathBuf {
+    let runtime_path = uv_tool_dir();
+    if runtime_path.join("uv.exe").is_file() {
+        return runtime_path;
+    }
     let new_path = app_root_dir().join("resources").join("bin");
     if new_path.exists() {
         return new_path;
@@ -1299,10 +1302,10 @@ fn uv_download_url(version: &str) -> String {
     )
 }
 
-/// 便携模式资源路径：<app_resources>/portable/
-/// 开发模式下 src-tauri/resources/portable/，打包后 exe_dir/resources/portable/
-fn portable_resources_dir() -> Option<PathBuf> {
-    super::app_resources_dir().map(|r| r.join("portable"))
+/// Shared Git runtime path. Packaged builds ship one Git for Windows copy at
+/// `<resources>/runtime/git`; development follows the same source layout.
+fn portable_git_dir() -> Option<PathBuf> {
+    super::app_resources_dir().map(|r| r.join("runtime").join("git"))
 }
 
 /// 构建增强 PATH，确保能找到 uv、hermes、python 等
@@ -1343,19 +1346,15 @@ pub fn hermes_enhanced_path() -> String {
         extra.push(format!(r"{}\.local\bin", home.display()));
         extra.push(format!(r"{}\.cargo\bin", home.display()));
 
-        // 便携模式：内置的 Git Bash / ripgrep
-        if let Some(portable_root) = portable_resources_dir() {
-            let git_bin = portable_root.join("git").join("bin");
+        // 便携模式：内置 Git Bash
+        if let Some(git_root) = portable_git_dir() {
+            let git_bin = git_root.join("bin");
             if git_bin.is_dir() {
                 extra.push(git_bin.to_string_lossy().to_string());
             }
-            let git_usrbin = portable_root.join("git").join("usr").join("bin");
+            let git_usrbin = git_root.join("usr").join("bin");
             if git_usrbin.is_dir() {
                 extra.push(git_usrbin.to_string_lossy().to_string());
-            }
-            let rg_dir = portable_root.join("rg");
-            if rg_dir.is_dir() {
-                extra.push(rg_dir.to_string_lossy().to_string());
             }
         }
     }
@@ -4064,9 +4063,8 @@ pub async fn hermes_gateway_action(
                 // Hermes Agent 的 _find_bash() 会优先使用这个路径，无需系统安装 Git
                 // 注意：bin/bash.exe 是 45KB 的 MSYS2 桩，需要完整目录结构才能找到 top-level，
                 // 而 usr/bin/bash.exe 是真身（2.4MB），可以直接运行
-                if let Some(portable_root) = portable_resources_dir() {
-                    let portable_bash = portable_root
-                        .join("git")
+                if let Some(git_root) = portable_git_dir() {
+                    let portable_bash = git_root
                         .join("usr")
                         .join("bin")
                         .join("bash.exe");
@@ -4548,22 +4546,18 @@ pub async fn hermes_detect_environments() -> Result<Value, String> {
     // --- 便携模式检测（Windows，内置 Git Bash / ripgrep）---
     {
         let mut p = serde_json::Map::new();
-        let pv = portable_resources_dir();
+        let pv = portable_git_dir();
         let has_bash = pv
             .as_ref()
             .map(|r| {
-                r.join("git")
-                    .join("usr")
+                r.join("usr")
                     .join("bin")
                     .join("bash.exe")
                     .is_file()
             })
             .unwrap_or(false);
-        let has_rg = pv
-            .as_ref()
-            .map(|r| r.join("rg").join("rg.exe").is_file())
-            .unwrap_or(false);
-        let available = has_bash || has_rg;
+        let has_rg = false;
+        let available = has_bash;
 
         // 使用 usr/bin/bash.exe（真身），bin/bash.exe 是 45KB 桩，无法在 trimmed 环境下找到 top-level
         p.insert("available".into(), serde_json::json!(available));

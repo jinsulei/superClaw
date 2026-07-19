@@ -457,7 +457,7 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
     return
   }
 
-  $UvExe = Join-Path $PackagedResources "bin\uv.exe"
+  $UvExe = Join-Path $PackagedResources "runtime\uv-tools\uv.exe"
   $HermesZip = Join-Path $PackagedResources "hermes-agent-main.zip"
   Assert-File $UvExe "Packaged uv.exe"
   Assert-File $HermesZip "Packaged Hermes source archive"
@@ -574,7 +574,9 @@ function Copy-PackagedResourcesAllowlist([string]$SourceResources, [string]$Dest
   }
 
   New-Item -ItemType Directory -Path $DestinationResources -Force | Out-Null
-  foreach ($relative in @("runtime", "bin", "templates", "portable")) {
+  # `portable` used to contain a second full Git for Windows runtime.
+  # Packaged launchers now use the single `runtime\git` copy.
+  foreach ($relative in @("runtime", "bin", "templates")) {
     $source = Join-Path $SourceResources $relative
     if (Test-Path $source -PathType Container) {
       Copy-Directory $source (Join-Path $DestinationResources $relative)
@@ -606,6 +608,30 @@ function Copy-PackagedResourcesAllowlist([string]$SourceResources, [string]$Dest
       Remove-IfExists $blockedPath
     }
   }
+}
+
+function Prune-PackagedOpenClawDevDependencies([string]$PackagedResources) {
+  $openClawRuntime = Join-Path $PackagedResources "runtime\openclaw"
+  $packageJson = Join-Path $openClawRuntime "package.json"
+  if (-not (Test-Path $packageJson -PathType Leaf)) {
+    Fail "Packaged OpenClaw package.json is missing: $packageJson"
+  }
+
+  # Keep the source runtime intact for local development. This only removes
+  # package.json devDependencies from the copied portable runtime. `--ignore-scripts`
+  # avoids rerunning OpenClaw lifecycle scripts while staging a release.
+  Push-Location $openClawRuntime
+  try {
+    Invoke-Checked -File "npm" -Arguments @("prune", "--omit=dev", "--ignore-scripts") -Title "Pruning packaged OpenClaw development dependencies"
+  } finally {
+    Pop-Location
+  }
+
+  $typescript = Join-Path $openClawRuntime "node_modules\typescript"
+  if (Test-Path $typescript -PathType Container) {
+    Fail "Packaged OpenClaw dev dependency remains after prune: node_modules\\typescript"
+  }
+  Ok "Packaged OpenClaw development dependencies pruned"
 }
 
 function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
@@ -1462,12 +1488,16 @@ Ok "Copied superclaw.exe and allowlisted resources/"
 
 Step "Cleaning packaged runtime state"
 $PackagedResources = Join-Path $OutDir "resources"
+# `runtime\uv-tools\uv.exe` is the canonical bundled uv. The source `bin`
+# copy remains only for legacy development fallback and must not be delivered.
+Remove-IfExists (Join-Path $PackagedResources "bin\uv.exe")
 Invoke-Checked -File "node" -Arguments @(
   "scripts/patch-openclaw-upload-runtime.mjs",
   "--runtime-root",
   (Join-Path $PackagedResources "runtime\openclaw")
 ) -Title "Applying portable OpenClaw upload patch"
 Sync-SuperClawOpenClawPlugins $PackagedResources
+Prune-PackagedOpenClawDevDependencies $PackagedResources
 Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 if ($SanitizedTest) {

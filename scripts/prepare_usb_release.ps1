@@ -589,7 +589,7 @@ function Test-Launchers([string]$OutRoot) {
 
 function Test-PortableGit([string]$OutRoot) {
     $resources = Join-Path $OutRoot "resources"
-    $gitRoot = Join-Path $resources "portable\git"
+    $gitRoot = Join-Path $resources "runtime\git"
     $bash = Join-Path $gitRoot "usr\bin\bash.exe"
     $gitExe = Join-Path $gitRoot "cmd\git.exe"
     $required = @(
