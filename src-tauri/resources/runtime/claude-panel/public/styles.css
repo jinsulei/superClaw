@@ -7717,6 +7717,30 @@ body.dark .conversation-mode .transcript .message.user {
   color: #64748b;
 }
 
+.assistant-thinking-block__item + .assistant-thinking-block__item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(123, 153, 188, 0.16);
+}
+
+.assistant-thinking-block__item-title {
+  display: block;
+  color: var(--ink, #20304d);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.assistant-thinking-block__item-detail {
+  margin: 5px 0 0;
+  color: var(--muted, #61718b);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @keyframes thinking-dot {
   0%,
   80%,

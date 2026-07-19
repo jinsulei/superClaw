@@ -4464,6 +4464,9 @@ async function handleRun(req, res) {
   let assistantTextSeen = false;
   let pendingAssistantText = "";
   let partialTextSeenForAssistant = false;
+  // Hold partial prose until the matching assistant envelope determines
+  // whether it belongs to a tool-execution narrative or the final answer.
+  let bufferedAssistantDeltas = "";
 
   writeEvent(res, "meta", {
     runtimeMode: "NATIVE_CLAUDE_CODE",
@@ -4542,9 +4545,7 @@ async function handleRun(req, res) {
       if (streamEvent.type === "content_block_delta" && delta.type === "text_delta" && delta.text) {
         const safeDelta = redact(String(delta.text));
         if (safeDelta) {
-          assistantTextSeen = true;
-          partialTextSeenForAssistant = true;
-          writeEvent(res, "text", { text: safeDelta });
+          bufferedAssistantDeltas += safeDelta;
         }
       }
       return;
@@ -4558,6 +4559,43 @@ async function handleRun(req, res) {
         .map((item) => item.text || "")
         .filter(Boolean)
         .join("\n");
+
+      const streamedText = bufferedAssistantDeltas;
+      bufferedAssistantDeltas = "";
+      const turnText = text || streamedText;
+
+      // A native assistant envelope that contains tool_use is planning and
+      // execution narration. Keep every word in the process card instead of
+      // briefly rendering it as a final answer below that card.
+      if (toolBlocks.length) {
+        if (turnText) {
+          writeClaudeProcessEvent(res, {
+            kind: "reasoning",
+            title: "Claude 正在分析",
+            text: sanitizeModelOutput(turnText, { prompt }),
+          });
+        }
+        for (const block of toolBlocks) {
+          writeClaudeProcessEvent(res, {
+            kind: "tool_use",
+            title: `调用工具：${block.name || "tool"}`,
+            text: block.input,
+            tool: block.name,
+            toolUseId: block.id,
+          });
+        }
+        pendingAssistantText = "";
+        partialTextSeenForAssistant = false;
+        return;
+      }
+
+      if (turnText) {
+        assistantTextSeen = true;
+        writeEvent(res, "text", { text: sanitizeModelOutput(turnText, { prompt }) });
+        pendingAssistantText = "";
+        partialTextSeenForAssistant = false;
+        return;
+      }
 
       if (partialTextSeenForAssistant && toolBlocks.length) {
         // Claude emits planning text before the enclosing tool_use block. It
@@ -4621,7 +4659,11 @@ async function handleRun(req, res) {
     }
 
     if (parsed.type === "result") {
-      if (pendingAssistantText) {
+      if (bufferedAssistantDeltas) {
+        assistantTextSeen = true;
+        writeEvent(res, "text", { text: sanitizeModelOutput(bufferedAssistantDeltas, { prompt }) });
+        bufferedAssistantDeltas = "";
+      } else if (pendingAssistantText) {
         assistantTextSeen = true;
         writeEvent(res, "text", { text: pendingAssistantText });
         pendingAssistantText = "";

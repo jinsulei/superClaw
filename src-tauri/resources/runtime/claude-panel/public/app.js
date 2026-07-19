@@ -1936,7 +1936,25 @@ function renderThinkingBlocks(thoughts, wrapper, options = {}) {
     : "<span>执行过程</span><em>已折叠</em>";
   const content = document.createElement("div");
   content.className = "assistant-thinking-block__content";
-  content.textContent = thoughts.join("\n\n");
+  thoughts.forEach((thought, index) => {
+    const text = String(thought || "").trim();
+    if (!text) return;
+    const item = document.createElement("div");
+    item.className = "assistant-thinking-block__item";
+    const [title, ...detailLines] = text.split("\n");
+    const heading = document.createElement("strong");
+    heading.className = "assistant-thinking-block__item-title";
+    heading.textContent = title || `执行步骤 ${index + 1}`;
+    item.appendChild(heading);
+    const detail = detailLines.join("\n").trim();
+    if (detail) {
+      const pre = document.createElement("pre");
+      pre.className = "assistant-thinking-block__item-detail";
+      pre.textContent = detail;
+      item.appendChild(pre);
+    }
+    content.appendChild(item);
+  });
   details.append(summary, content);
   details.open = Boolean(options.streaming);
   wrapper.appendChild(details);
