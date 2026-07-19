@@ -80,7 +80,11 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             });
         }
         "quit" => {
-            app.exit(0);
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::shutdown_current_instance(app.clone()).await;
+                app.exit(0);
+            });
         }
         _ => {}
     }

@@ -1,5 +1,6 @@
 ﻿mod agent_lifecycle;
 mod commands;
+mod instance_guard;
 mod models;
 mod tray;
 mod utils;
@@ -19,6 +20,29 @@ async fn stop_agent(agent: String) -> Result<(), String> {
 #[tauri::command]
 async fn stop_all_agents() -> Result<(), String> {
     agent_lifecycle::stop_all_managed_agents()
+}
+
+/// Explicit quit path. Closing the window only hides to the tray; selecting
+/// "退出 SuperClaw" must release services owned by this instance.
+pub async fn shutdown_current_instance(app: tauri::AppHandle) {
+    // Individual runtimes can be unhealthy or already gone. A desktop quit
+    // must not leave the UI process stranded forever while waiting for one.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let _ = claude_code::claude_code_stop().await;
+        let _ = hermes::hermes_gateway_action(app.clone(), "stop".to_string()).await;
+        let _ = service::stop_service("ai.openclaw.gateway".to_string()).await;
+    })
+    .await;
+    let _ = agent_lifecycle::stop_all_managed_agents();
+}
+
+/// Restart only this SuperClaw instance. The shutdown sequence keeps ownership
+/// checks in the individual service controllers, so unrelated local agents are
+/// never terminated just because this desktop app is restarting.
+#[tauri::command]
+async fn restart_current_instance(app: tauri::AppHandle) -> Result<(), String> {
+    shutdown_current_instance(app.clone()).await;
+    app.restart();
 }
 
 #[cfg(windows)]
@@ -80,6 +104,10 @@ pub fn run() {
     // 启动时先比对版本，落后于当前 app 就直接清掉，让 protocol handler 回退到内嵌 bundle。
     cleanup_stale_hot_update(&hot_update_dir);
 
+    if !instance_guard::prepare_instance() {
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
@@ -127,6 +155,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            instance_guard::register_primary_instance(app.handle().clone());
             agent_lifecycle::cleanup_stale_managed_agents_on_startup();
             service::start_backend_guardian(app.handle().clone());
             tauri::async_runtime::spawn(async {
@@ -206,6 +235,9 @@ pub fn run() {
             service::guardian_status,
             openclaw_history::read_openclaw_raw_history,
             openclaw_history::list_openclaw_raw_sessions,
+            openclaw_history::openclaw_load_gateway_media,
+            openclaw_history::openclaw_open_workspace_output,
+            openclaw_history::openclaw_download_workspace_output,
             // 诊断
             diagnose::diagnose_gateway_connection,
             diagnose::check_ciao_windowshide_bug,
@@ -379,11 +411,11 @@ pub fn run() {
             claude_code::configure_claude_code_relay,
             stop_agent,
             stop_all_agents,
+            restart_current_instance,
         ])
         .on_window_event(|window, event| {
             // 关闭窗口时最小化到托盘，不退出应用
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = agent_lifecycle::stop_all_managed_agents();
                 api.prevent_close();
                 let _ = window.hide();
             }
