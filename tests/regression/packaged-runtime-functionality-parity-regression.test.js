@@ -50,6 +50,8 @@ const routerSource = readFileSync('src/router.js', 'utf8')
 const mainSource = readFileSync('src/main.js', 'utf8')
 const openclawEngineSource = readFileSync('src/engines/openclaw/index.js', 'utf8')
 const hermesEngineSource = readFileSync('src/engines/hermes/index.js', 'utf8')
+const markdownSource = readFileSync('src/lib/markdown.js', 'utf8')
+const openclawChatStyleSource = readFileSync('src/style/chat.css', 'utf8')
 
 test('packaged first run opens a console while bundled gateway startup continues in the background', () => {
   assert.match(openclawEngineSource, /void ensureGatewayReadyOnBoot\(\)/)
@@ -63,6 +65,22 @@ test('cached console routes retain a loading placeholder instead of rendering a 
   assert.match(routerSource, /function showRouteLoading\(container\)/)
   assert.match(routerSource, /showRouteLoading\(_contentEl\)/)
   assert.doesNotMatch(routerSource, /\} else \{\s*_contentEl\.innerHTML = ''\s*\}/)
+})
+
+test('OpenClaw code copy supports Tauri clipboard fallback instead of silently reporting success', () => {
+  assert.match(markdownSource, /async function copyCodeText\(text\)/)
+  assert.match(markdownSource, /navigator\.clipboard\?\.writeText/)
+  assert.match(markdownSource, /document\.execCommand\('copy'\)/)
+  assert.match(markdownSource, /code\?\.textContent \|\| ''/)
+  assert.match(markdownSource, /btn\.textContent = copied \? 'Copied' : 'Failed'/)
+  assert.match(openclawChatSource, /e\.target\.closest\('\.agent-message-code-copy'\)/)
+  assert.match(openclawChatSource, /codeCopyBtn\.closest\('\.agent-message-code-block'\)\?\.querySelector\('code'\)/)
+  assert.match(openclawChatSource, /const copied = await copyText\(code\?\.textContent \|\| ''\)/)
+})
+
+test('OpenClaw shared markdown code blocks stay scrollable instead of clipping long code', () => {
+  assert.match(openclawChatStyleSource, /pre\.agent-message-code-block\s*\{[\s\S]*?max-height:\s*360px;[\s\S]*?overflow:\s*auto;/)
+  assert.match(openclawChatStyleSource, /pre\.agent-message-code-block code\s*\{[\s\S]*?white-space:\s*pre;[\s\S]*?word-break:\s*normal;/)
 })
 
 test('OpenClaw dev runtime state is isolated from watched packaged resources', () => {

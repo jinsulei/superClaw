@@ -253,14 +253,41 @@ function inlineFormat(text) {
     })
 }
 
-window.__copyCode = function(btn) {
-  const pre = btn.closest('pre')
-  const code = pre.querySelector('code')
-  navigator.clipboard.writeText(code.innerText).then(() => {
-    btn.textContent = '✓'
-    setTimeout(() => { btn.textContent = 'Copy' }, 1500)
-  }).catch(() => {
-    btn.textContent = '✗'
-    setTimeout(() => { btn.textContent = 'Copy' }, 1500)
-  })
+async function copyCodeText(text) {
+  const value = String(text || '')
+  if (!value) return false
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {}
+
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', '')
+    textarea.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+    const copied = document.execCommand('copy')
+    textarea.remove()
+    return copied
+  } catch {
+    return false
+  }
+}
+
+window.__copyCode = async function(btn) {
+  const pre = btn?.closest('pre')
+  const code = pre?.querySelector('code')
+  const copied = await copyCodeText(code?.textContent || '')
+  btn.textContent = copied ? 'Copied' : 'Failed'
+  btn.dataset.copyState = copied ? 'success' : 'error'
+  setTimeout(() => {
+    btn.textContent = 'Copy'
+    delete btn.dataset.copyState
+  }, 1500)
 }

@@ -873,6 +873,21 @@ function bindEvents(page) {
       persistOpenClawVoiceRate(rateSelect.value)
       return
     }
+    const codeCopyBtn = e.target.closest('.agent-message-code-copy')
+    if (codeCopyBtn) {
+      e.preventDefault()
+      e.stopPropagation()
+      const code = codeCopyBtn.closest('.agent-message-code-block')?.querySelector('code')
+      const copied = await copyText(code?.textContent || '')
+      const label = codeCopyBtn.querySelector('.hm-chat-code-copy-label')
+      codeCopyBtn.dataset.copyState = copied ? 'success' : 'error'
+      if (label) label.textContent = copied ? 'Copied' : 'Failed'
+      setTimeout(() => {
+        delete codeCopyBtn.dataset.copyState
+        if (label) label.textContent = 'Copy'
+      }, 1500)
+      return
+    }
     const copyBtn = e.target.closest('.msg-copy-btn')
     if (copyBtn) {
       e.stopPropagation()

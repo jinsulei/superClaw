@@ -741,6 +741,22 @@
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
+/* Shared agent markdown code blocks keep their own scroll area. */
+.msg-ai .msg-bubble pre.agent-message-code-block {
+  box-sizing: border-box;
+  max-height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.msg-ai .msg-bubble pre.agent-message-code-block code {
+  min-width: max-content;
+  padding: 0;
+  overflow: visible;
+  white-space: pre;
+  word-break: normal;
+}
+
 .msg-ai .msg-bubble pre .code-lang {
   position: absolute;
   top: 6px;
