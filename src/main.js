@@ -555,7 +555,10 @@ async function boot() {
     // 自动隔离系统 PATH 中的外部 OpenClaw（非阻塞）
     autoIsolateConflictingOpenclaw()
 
-    if (!engine.isReady() && getActiveEngineId() !== 'hermes') {
+    // A packaged desktop build already contains its runtimes. Do not send the
+    // user to Setup only because the first background probe is still running.
+    const shouldShowSetup = !engine.isReady() && getActiveEngineId() !== 'hermes' && !isTauri
+    if (shouldShowSetup) {
       // 引擎未就绪时，直接跳转设置页（由设置页负责自动初始化）
       setDefaultRoute(engine.getSetupRoute())
       navigate(engine.getSetupRoute())

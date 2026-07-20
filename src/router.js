@@ -36,6 +36,16 @@ export function initRouter(contentEl) {
   loadRoute()
 }
 
+function showRouteLoading(container) {
+  if (!container) return
+  container.innerHTML = `
+    <div class="page-loader" role="status" aria-live="polite">
+      <div class="page-loader-spinner"></div>
+      <div class="page-loader-text">加载中...</div>
+    </div>
+  `
+}
+
 async function loadRoute() {
   const hash = window.location.hash.slice(1) || _defaultRoute
   const routePath = hash.split('?')[0]
@@ -57,12 +67,11 @@ async function loadRoute() {
   }
 
   // 立即移除旧页面（不等退出动画，消除切换卡顿）
-  _contentEl.innerHTML = ''
+  showRouteLoading(_contentEl)
 
   // 已缓存的模块：跳过 spinner，直接渲染
   let mod = _moduleCache[routePath]
   if (!mod) {
-    _contentEl.innerHTML = ''
     // 仅首次加载显示 spinner
     const spinnerEl = document.createElement('div')
     spinnerEl.className = 'page-loader'
@@ -80,8 +89,6 @@ async function loadRoute() {
       return
     }
     _moduleCache[routePath] = mod
-  } else {
-    _contentEl.innerHTML = ''
   }
 
   // 如果加载期间路由又变了，丢弃本次结果

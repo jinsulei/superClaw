@@ -90,7 +90,8 @@ export default {
   async boot() {
     await detectHermesStatus()
     if (_ready && !_running) {
-      await tryAutoInit()
+      // The bundled runtime can start in the background after the console opens.
+      void tryAutoInit()
     }
     startPoll()
   },
@@ -177,7 +178,7 @@ export default {
   },
 
   getSetupRoute() { return '/h/setup' },
-  getDefaultRoute() { return '/h/chat' },
+  getDefaultRoute() { return '/h/dashboard' },
 
   isReady() { return _ready },
   isGatewayRunning() { return _running },

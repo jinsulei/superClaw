@@ -69,7 +69,8 @@ export default {
     await detectOpenclawStatus()
     await initFeatureGates().catch(() => {})
     startGatewayPoll()
-    await ensureGatewayReadyOnBoot()
+    // Keep the dashboard responsive while the bundled Gateway starts.
+    void ensureGatewayReadyOnBoot()
   },
 
   /** 清理（停止轮询等） */
@@ -171,7 +172,7 @@ export default {
   },
 
   getSetupRoute() { return '/setup' },
-  getDefaultRoute() { return '/chat' },
+  getDefaultRoute() { return '/dashboard' },
 
   isReady() { return isOpenclawReady() },
   isGatewayRunning() { return isGatewayRunning() },

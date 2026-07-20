@@ -46,6 +46,24 @@ const tauriConfigSource = readFileSync('src-tauri/tauri.conf.json', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 const modelPageSource = readFileSync('src/pages/models.js', 'utf8')
 const testBuildModeSource = readFileSync('src/lib/test-build-mode.js', 'utf8')
+const routerSource = readFileSync('src/router.js', 'utf8')
+const mainSource = readFileSync('src/main.js', 'utf8')
+const openclawEngineSource = readFileSync('src/engines/openclaw/index.js', 'utf8')
+const hermesEngineSource = readFileSync('src/engines/hermes/index.js', 'utf8')
+
+test('packaged first run opens a console while bundled gateway startup continues in the background', () => {
+  assert.match(openclawEngineSource, /void ensureGatewayReadyOnBoot\(\)/)
+  assert.match(openclawEngineSource, /getDefaultRoute\(\) \{ return '\/dashboard' \}/)
+  assert.match(hermesEngineSource, /void tryAutoInit\(\)/)
+  assert.match(hermesEngineSource, /getDefaultRoute\(\) \{ return '\/h\/dashboard' \}/)
+  assert.match(mainSource, /const shouldShowSetup = !engine\.isReady\(\) && getActiveEngineId\(\) !== 'hermes' && !isTauri/)
+})
+
+test('cached console routes retain a loading placeholder instead of rendering a blank page', () => {
+  assert.match(routerSource, /function showRouteLoading\(container\)/)
+  assert.match(routerSource, /showRouteLoading\(_contentEl\)/)
+  assert.doesNotMatch(routerSource, /\} else \{\s*_contentEl\.innerHTML = ''\s*\}/)
+})
 
 test('OpenClaw dev runtime state is isolated from watched packaged resources', () => {
   assert.match(openclawCommandsSource, /cfg\(debug_assertions\)[\s\S]*?\.join\("\.dev-data"\)\.join\("\.openclaw"\)/)
