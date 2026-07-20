@@ -1,5 +1,6 @@
 import { api, invoke } from './tauri-api.js'
 import { getMiniMaxDefaultConfig } from './test-build-mode.js'
+import { applyUnifiedModelSelection } from './unified-model-routing.js'
 
 const PROVIDER_ID = 'minimax'
 const PROVIDER_NAME = 'MiniMax'
@@ -270,15 +271,20 @@ export async function applyMiniMaxTestConfig(input = {}) {
   const current = await api.readOpenclawConfig().catch(() => ({}))
   const existingKey = clean(current?.models?.providers?.[PROVIDER_ID]?.apiKey)
   const apiKey = config.apiKey || existingKey
-  const next = ensureMiniMaxProvider(current, config, apiKey)
-  await api.writeOpenclawConfig(next)
-  const hermes = await configureHermesMiniMax(config, apiKey)
-  const claudePanel = await configureClaudePanelMiniMax(config, apiKey)
+  const applied = await applyUnifiedModelSelection({
+    providerId: PROVIDER_ID,
+    name: PROVIDER_NAME,
+    baseUrl: config.baseUrl,
+    apiKey,
+    api: 'openai-completions',
+    model: MODEL_ID,
+    models: [openClawModelDefinition()],
+  }, { target: 'default', forceClaudeRelay: true })
   return statusFromParts(config, apiKey, {
-    openclaw: true,
-    openclawAgent: true,
-    hermes,
-    claudePanel,
+    openclaw: applied.applied.includes('openclaw'),
+    openclawAgent: applied.applied.includes('openclaw'),
+    hermes: applied.applied.includes('hermes'),
+    claudePanel: applied.applied.includes('claude_code'),
   })
 }
 

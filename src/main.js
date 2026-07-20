@@ -22,7 +22,6 @@ import { initFeatureGates } from './lib/feature-gates.js'
 import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
-import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
 // import xintianEngine from './engines/xintian/index.js'
@@ -185,69 +184,6 @@ async function renderLocalAccessPage(app) {
   navigate('/dashboard')
 }
 
-// OpenClaw portable defaults
-const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
-const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'superclaw_ocr', 'exec']
-const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
-
-function ensurePortableOpenClawSkills(config) {
-  if (!config.agents) config.agents = {}
-  if (!config.agents.defaults) config.agents.defaults = {}
-  delete config.agents.defaults.skills
-
-  if (Array.isArray(config.agents.list)) {
-    for (const agent of config.agents.list) {
-      if (!agent || typeof agent !== 'object') continue
-      delete agent.skills
-      if (!agent.skillsLimits || typeof agent.skillsLimits !== 'object' || Array.isArray(agent.skillsLimits)) {
-        agent.skillsLimits = {}
-      }
-      if (!Number(agent.skillsLimits.maxSkillsPromptChars)) {
-        agent.skillsLimits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
-      }
-      if (!agent.tools || typeof agent.tools !== 'object' || Array.isArray(agent.tools)) agent.tools = {}
-      agent.tools.profile = agent.tools.profile || 'minimal'
-      const allow = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow.filter(Boolean).map(String) : []
-      for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
-        if (!allow.includes(tool)) allow.push(tool)
-      }
-      agent.tools.alsoAllow = allow
-      agent.tools.exec = { ...(agent.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
-    }
-  }
-
-  if (!config.plugins || typeof config.plugins !== 'object' || Array.isArray(config.plugins)) config.plugins = {}
-  if (!config.plugins.entries || typeof config.plugins.entries !== 'object' || Array.isArray(config.plugins.entries)) {
-    config.plugins.entries = {}
-  }
-  if (!Array.isArray(config.plugins.allow)) config.plugins.allow = []
-  config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
-  config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
-  config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
-  config.plugins.entries['superclaw-ocr'] = { ...(config.plugins.entries['superclaw-ocr'] || {}), enabled: true }
-  for (const pluginId of ['browser', 'desktop-control', 'skill-manager', 'superclaw-ocr']) {
-    if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
-  }
-
-  if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
-  config.tools.profile = config.tools.profile || 'minimal'
-  const allow = Array.isArray(config.tools.alsoAllow) ? config.tools.alsoAllow.filter(Boolean).map(String) : []
-  for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
-    if (!allow.includes(tool)) allow.push(tool)
-  }
-  config.tools.alsoAllow = allow
-  config.tools.exec = { ...(config.tools.exec || {}), ...OPENCLAW_DIRECT_EXEC_CONFIG }
-
-  if (!config.skills || typeof config.skills !== 'object' || Array.isArray(config.skills)) config.skills = {}
-  if (!config.skills.entries || typeof config.skills.entries !== 'object' || Array.isArray(config.skills.entries)) config.skills.entries = {}
-  if (!config.skills.limits || typeof config.skills.limits !== 'object' || Array.isArray(config.skills.limits)) {
-    config.skills.limits = {}
-  }
-  if (!Number(config.skills.limits.maxSkillsPromptChars)) {
-    config.skills.limits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
-  }
-}
-
 async function syncHermesModel() {
   try {
     const config = await api.hermesReadConfig()
@@ -287,76 +223,11 @@ async function syncHermesModel() {
   }
 }
 
-async function syncMiniMaxTestModelSettings() {
-  const minimax = getMiniMaxDefaultConfig()
-  const primaryRef = `${minimax.provider}/${minimax.model}`
-
-  try {
-    const config = await api.readOpenclawConfig()
-    if (!config.models) config.models = {}
-    if (!config.models.providers) config.models.providers = {}
-
-    const previous = config.models.providers[minimax.provider] || {}
-    config.models.providers[minimax.provider] = {
-      ...previous,
-      baseUrl: minimax.baseUrl,
-      apiKey: previous.apiKey || '',
-      api: previous.api || 'openai-completions',
-      models: [
-        { id: minimax.model, name: minimax.model, input: ['text', 'image'] },
-      ],
-      managed: false,
-    }
-
-    if (!config.agents) config.agents = {}
-    if (!config.agents.defaults) config.agents.defaults = {}
-    if (!config.agents.defaults.model) config.agents.defaults.model = {}
-    config.agents.defaults.model.primary = primaryRef
-    config.agents.defaults.model.fallbacks = []
-    if (!config.agents.defaults.models || typeof config.agents.defaults.models !== 'object') {
-      config.agents.defaults.models = {}
-    }
-    config.agents.defaults.models[primaryRef] = config.agents.defaults.models[primaryRef] || {}
-
-    for (const agent of (config.agents.list || [])) {
-      if (!agent.model || typeof agent.model !== 'object') agent.model = {}
-      agent.model.primary = primaryRef
-      agent.model.fallbacks = []
-    }
-
-    ensurePortableOpenClawSkills(config)
-    await api.writeOpenclawConfig(config)
-    try { localStorage.setItem('superclaw-primary-model', primaryRef) } catch {}
-  } catch (err) {
-    console.warn('[test-build] MiniMax OpenClaw sync failed:', err.message)
-  }
-
-  try {
-    const hermesConfig = await api.hermesReadConfig().catch(() => null)
-    const existingKey = hermesConfig?.api_key || ''
-    await api.configureHermes('minimax', existingKey, minimax.model, minimax.baseUrl)
-    saveHermesPrimary(minimax.model)
-    if (existingKey && typeof api.configureClaudeCodeRelay === 'function') {
-      await api.configureClaudeCodeRelay({
-        baseUrl: minimax.baseUrl,
-        apiKey: existingKey,
-        model: minimax.model,
-        models: [minimax.model],
-        force: false,
-      }).catch(err => console.warn('[test-build] Claude Code relay MiniMax sync failed:', err.message))
-    }
-  } catch (err) {
-    console.warn('[test-build] MiniMax Hermes sync failed:', err.message)
-  }
-}
-
 async function syncDefaultModelSettings() {
   try {
-    if (isMiniMaxOnlyMode()) {
-      await syncMiniMaxTestModelSettings()
-    } else {
-      await syncHermesModel()
-    }
+    // Provider selection is user-controlled. Never let a test preset rewrite
+    // the OpenClaw Gateway, Hermes, and Claude relay during application boot.
+    await syncHermesModel()
   } catch (err) {
     console.warn('[model-sync] runtime model sync failed:', err.message)
     await syncHermesModel()

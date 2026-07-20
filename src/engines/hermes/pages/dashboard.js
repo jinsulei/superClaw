@@ -11,6 +11,7 @@ import {
   inferProviderByBaseUrl,
 } from '../lib/providers.js'
 import { openHermesTerminalLauncher } from '../lib/hermes-terminal-launcher.js'
+import { applyUnifiedModelSelection } from '../../../lib/unified-model-routing.js'
 
 const ICONS = {
   running: `<svg viewBox="0 0 24 24" fill="none" stroke="var(--success, #22c55e)" stroke-width="2.5" width="20" height="20"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`,
@@ -1088,14 +1089,31 @@ export function render() {
     if (!formModel) { cfgMsg = `<span style="color:var(--warning)">${t('engine.configModelRequired')}</span>`; draw(); return }
 
     const matched = inferProviderByBaseUrl(hermesProviders, formBaseUrl)
-    const provider = matched?.id || 'custom'
+    const hermesProvider = matched?.id || 'custom'
+    const providerId = hermesProvider === 'custom'
+      ? 'openai_compatible'
+      : hermesProvider.replace(/-/g, '_')
+    const api = matched?.transport === 'anthropic_messages'
+      ? 'anthropic-messages'
+      : matched?.transport === 'google_gemini'
+        ? 'google-generative-ai'
+        : 'openai-completions'
 
     modelBusy = true; cfgMsg = ''; draw()
     try {
-      await api.configureHermes(provider, formApiKey, formModel, formBaseUrl || null)
-      // 持久化主模型到 localStorage（跨引擎独立，与 OpenClaw 分离）
+      await applyUnifiedModelSelection({
+        providerId,
+        hermesProvider,
+        name: matched?.name || providerId,
+        baseUrl: formBaseUrl,
+        apiKey: formApiKey,
+        api,
+        model: formModel,
+        models: models.map(model => typeof model === 'string' ? { id: model, name: model } : model),
+      }, { target: 'default' })
+      // Hermes 保存入口用于明确设置三引擎默认模型。
       saveHermesPrimary(formModel)
-      cfgMsg = `<span style="color:var(--success)">✓ ${t('engine.configSaved')}</span>`
+      cfgMsg = `<span style="color:var(--success)">✓ 已同步 Hermes、OpenClaw 和 Claude Code 默认模型</span>`
       // 刷新后端状态（不覆盖 form）
       try { hermesConfig = await api.hermesReadConfig() } catch (_) {}
     } catch (e) {
