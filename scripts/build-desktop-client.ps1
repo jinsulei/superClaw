@@ -851,6 +851,16 @@ function Prepare-PortableDataState([string]$DataRoot, [bool]$SanitizedTestMode =
 }
 "@)
 
+  $MediaData = Join-Path $DataRoot "media"
+  Remove-IfExists $MediaData
+  New-Item -ItemType Directory -Path $MediaData -Force | Out-Null
+  Write-Utf8NoBom (Join-Path $MediaData "media-routes.json") (@"
+{
+  "version": 1,
+  "routes": {}
+}
+"@)
+
   $HermesData = Join-Path $DataRoot "hermes"
   New-Item -ItemType Directory -Path $HermesData -Force | Out-Null
   foreach ($name in @("sessions", "logs", "audio_cache", "image_cache", "memories", "pairing", "cron", "hooks", "workspace")) {

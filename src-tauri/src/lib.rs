@@ -7,7 +7,7 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
-    hermes_providers, logs, memory, messaging, ocr, openclaw_history, pairing, service, shared_memory, skills, update,
+    hermes_providers, logs, media, memory, messaging, ocr, openclaw_history, pairing, service, shared_memory, skills, update,
 };
 use tauri::Manager;
 
@@ -260,6 +260,9 @@ pub fn run() {
             shared_memory::shared_memory_read,
             shared_memory::shared_memory_write,
             shared_memory::shared_memory_write_file,
+            // Portable media provider routes. These never alter Gateway chat routing.
+            media::media_config_read,
+            media::media_config_write,
             // 扩展工具
             extensions::get_cftunnel_status,
             extensions::cftunnel_action,

@@ -29,6 +29,7 @@ pub mod hermes;
 pub mod hermes_providers;
 pub mod logs;
 pub mod memory;
+pub mod media;
 pub mod messaging;
 pub mod ocr;
 pub mod openclaw_history;

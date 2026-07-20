@@ -52,6 +52,8 @@ const openclawEngineSource = readFileSync('src/engines/openclaw/index.js', 'utf8
 const hermesEngineSource = readFileSync('src/engines/hermes/index.js', 'utf8')
 const markdownSource = readFileSync('src/lib/markdown.js', 'utf8')
 const openclawChatStyleSource = readFileSync('src/style/chat.css', 'utf8')
+const mediaProviderRoutingSource = readFileSync('src/lib/media-provider-routing.js', 'utf8')
+const mediaCommandSource = readFileSync('src-tauri/src/commands/media.rs', 'utf8')
 
 test('packaged first run opens a console while bundled gateway startup continues in the background', () => {
   assert.match(openclawEngineSource, /void ensureGatewayReadyOnBoot\(\)/)
@@ -119,6 +121,20 @@ test('OpenClaw uses one provider registry instead of a MiniMax-only test panel',
   assert.doesNotMatch(modelPageSource, /minimax-test-panel/)
   assert.doesNotMatch(modelPageSource, /saveMiniMaxTestConfig/)
   assert.doesNotMatch(modelPresetsSource, /isMiniMaxOnlyMode/)
+})
+
+test('media task routes stay isolated from chat Gateway settings across dev and packaged runtimes', () => {
+  assert.match(modelPageSource, /id="media-route-panel"/)
+  assert.match(modelPageSource, /api\.mediaConfigRead\(\)/)
+  assert.match(modelPageSource, /api\.mediaConfigWrite\(/)
+  assert.match(tauriApiSource, /mediaConfigRead: \(\) => invoke\('media_config_read'\)/)
+  assert.match(devApiSource, /media_config_read\(\)/)
+  assert.match(devApiSource, /media_config_write\(\{ config \} = \{\}\)/)
+  assert.match(mediaProviderRoutingSource, /must not contain credentials or Base URL/)
+  assert.doesNotMatch(mediaProviderRoutingSource, /writeOpenclawConfig|reloadGateway/)
+  assert.match(mediaCommandSource, /join\("data"\)[\s\S]*?join\("media"\)[\s\S]*?join\("media-routes\.json"\)/)
+  assert.match(buildDesktopSource, /\$MediaData = Join-Path \$DataRoot "media"/)
+  assert.match(buildDesktopSource, /media-routes\.json/)
 })
 
 test('Claude opens user-approved local files through a portable scoped desktop bridge', () => {

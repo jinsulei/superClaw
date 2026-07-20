@@ -854,6 +854,59 @@ function portableOpenclawDataDir() {
   return null
 }
 
+const MEDIA_ROUTE_KINDS = new Set(['text_to_image', 'image_to_image', 'text_to_video', 'image_to_video'])
+const MEDIA_ROUTE_PROTOCOLS = new Set(['openai-images', 'openai-video', 'custom'])
+const MEDIA_ROUTE_FORBIDDEN_FIELDS = new Set(['apiKey', 'api_key', 'token', 'authorization', 'baseUrl', 'base_url'])
+
+function mediaRouteConfigPath() {
+  const resources = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+  return assertPathInside(resources, path.join(resources, 'data', 'media', 'media-routes.json'))
+}
+
+function normalizeMediaRouteConfig(config = {}) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Media route config must be an object')
+  }
+  const version = Number(config.version || 1)
+  if (version !== 1) throw new Error(`Unsupported media route config version: ${version}`)
+  const rawRoutes = config.routes
+  if (!rawRoutes || typeof rawRoutes !== 'object' || Array.isArray(rawRoutes)) {
+    throw new Error('Media route config requires a routes object')
+  }
+
+  const routes = {}
+  for (const [kind, rawRoute] of Object.entries(rawRoutes)) {
+    if (!MEDIA_ROUTE_KINDS.has(kind)) throw new Error(`Unsupported media route kind: ${kind}`)
+    if (!rawRoute || typeof rawRoute !== 'object' || Array.isArray(rawRoute)) {
+      throw new Error(`Media route '${kind}' must be an object`)
+    }
+    if (Object.keys(rawRoute).some(key => MEDIA_ROUTE_FORBIDDEN_FIELDS.has(key))) {
+      throw new Error(`Media route '${kind}' must reference an existing provider and must not contain credentials or Base URL`)
+    }
+    const providerId = String(rawRoute.providerId || '').trim()
+    const model = String(rawRoute.model || '').trim()
+    const protocol = String(rawRoute.protocol || '').trim()
+    if (!providerId || !model || !protocol) throw new Error(`Media route '${kind}' is incomplete`)
+    if (!MEDIA_ROUTE_PROTOCOLS.has(protocol)) throw new Error(`Unsupported media route protocol: ${protocol}`)
+    routes[kind] = { providerId, model, protocol, enabled: rawRoute.enabled !== false }
+  }
+  return { version: 1, routes }
+}
+
+function readMediaRouteConfig() {
+  const target = mediaRouteConfigPath()
+  if (!fs.existsSync(target)) return { version: 1, routes: {} }
+  return normalizeMediaRouteConfig(JSON.parse(fs.readFileSync(target, 'utf8')))
+}
+
+function writeMediaRouteConfig(config) {
+  const normalized = normalizeMediaRouteConfig(config)
+  const target = mediaRouteConfigPath()
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, JSON.stringify(normalized, null, 2), 'utf8')
+  return { ok: true, path: 'data/media/media-routes.json', config: normalized }
+}
+
 function ensureOpenClawWorkspaceIdentity(resourcesRoot, dataRoot) {
   const templateDir = path.join(resourcesRoot, 'templates', 'openclaw-workspace')
   const workspaceDir = path.join(dataRoot, '.openclaw', 'workspace')
@@ -7630,6 +7683,14 @@ const handlers = {
   write_openclaw_config({ config }) {
     writeOpenclawConfigFile(config)
     return true
+  },
+
+  media_config_read() {
+    return readMediaRouteConfig()
+  },
+
+  media_config_write({ config } = {}) {
+    return writeMediaRouteConfig(config)
   },
 
   read_minimax_test_config() {

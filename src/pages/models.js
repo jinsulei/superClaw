@@ -7,6 +7,7 @@ import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
+import { emptyMediaRouteConfig, normalizeMediaRouteConfig } from '../lib/media-provider-routing.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 
@@ -113,6 +114,7 @@ export async function render() {
       ${t('models.providerHint')}
     </div>
     <div id="default-model-bar"></div>
+    <div id="media-route-panel"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
     </div>
@@ -139,7 +141,12 @@ export async function render() {
 async function loadConfig(page, state) {
   const listEl = page.querySelector('#providers-list')
   try {
-    state.config = await api.readOpenclawConfig()
+    const [config, mediaConfig] = await Promise.all([
+      api.readOpenclawConfig(),
+      api.mediaConfigRead().catch(() => emptyMediaRouteConfig()),
+    ])
+    state.config = config
+    state.mediaConfig = normalizeMediaRouteConfig(mediaConfig)
     // 自动修复现有配置中的 baseUrl(如 Ollama 缺少 /v1),一次性迁移
     const before = JSON.stringify(state.config?.models?.providers || {})
     normalizeProviderUrls(state.config)
@@ -157,6 +164,7 @@ async function loadConfig(page, state) {
     ensureValidPrimary(state)
 
     renderDefaultBar(page, state)
+    renderMediaRoutePanel(page, state)
     renderProviders(page, state)
   } catch (e) {
     console.error('[models] loadConfig failed:', e)
@@ -183,6 +191,94 @@ async function loadConfig(page, state) {
     listEl.querySelector('#models-retry-load')?.addEventListener('click', () => loadConfig(page, state))
     toast(`${t('models.configLoadFailed')}: ${shortMsg}`, 'error')
   }
+}
+
+const MEDIA_ROUTE_DEFINITIONS = [
+  { kind: 'text_to_image', label: '文生图', protocol: 'openai-images', hint: '使用已配置服务商的标准图片生成接口' },
+  { kind: 'image_to_image', label: '图生图', protocol: 'openai-images', hint: '使用已配置服务商的图片编辑/变体接口' },
+  { kind: 'text_to_video', label: '文生视频', protocol: 'openai-video', hint: '使用已配置服务商的视频生成接口' },
+  { kind: 'image_to_video', label: '图生视频', protocol: 'openai-video', hint: '使用已配置服务商的图生视频接口' },
+]
+
+function mediaRouteModelChoices(config) {
+  const choices = []
+  for (const [providerId, provider] of Object.entries(config?.models?.providers || {})) {
+    if (!provider?.baseUrl || !provider?.apiKey) continue
+    for (const entry of Array.isArray(provider.models) ? provider.models : []) {
+      const model = String(typeof entry === 'string' ? entry : (entry?.id || entry?.model || '')).trim()
+      if (model) choices.push({ providerId, model })
+    }
+  }
+  return choices
+}
+
+function mediaRouteValue(route = {}) {
+  return route?.providerId && route?.model ? `${route.providerId}::${route.model}` : ''
+}
+
+function renderMediaRoutePanel(page, state) {
+  const panel = page.querySelector('#media-route-panel')
+  if (!panel) return
+  const routes = state.mediaConfig?.routes || {}
+  const choices = mediaRouteModelChoices(state.config)
+  const optionHtml = (route) => {
+    const current = mediaRouteValue(route)
+    const known = new Set(choices.map(choice => `${choice.providerId}::${choice.model}`))
+    const selectedOption = current && !known.has(current)
+      ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(`${route.providerId} / ${route.model}`)}（当前不可用）</option>`
+      : ''
+    return `<option value="">未配置</option>${selectedOption}${choices.map(choice => {
+      const value = `${choice.providerId}::${choice.model}`
+      return `<option value="${escapeHtml(value)}" ${value === current ? 'selected' : ''}>${escapeHtml(`${choice.providerId} / ${choice.model}`)}</option>`
+    }).join('')}`
+  }
+
+  panel.innerHTML = `
+    <div class="config-section" style="margin-bottom:var(--space-lg)">
+      <div class="config-section-title">媒体任务模型</div>
+      <div class="form-hint" style="margin-bottom:12px">媒体任务与日常聊天模型分离。这里仅引用已配置服务商，不保存 API Key，不修改 OpenClaw 主模型或 fallback，也不会重启 Gateway。</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+        ${MEDIA_ROUTE_DEFINITIONS.map(definition => {
+          const route = routes[definition.kind] || {}
+          return `<div class="form-group" style="margin:0">
+            <label class="form-label">${definition.label}</label>
+            <select class="form-input" data-media-route="${definition.kind}" data-media-protocol="${definition.protocol}">${optionHtml(route)}</select>
+            <div class="form-hint" style="margin-top:5px;font-size:12px">${definition.hint}</div>
+          </div>`
+        }).join('')}
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+        <button class="btn btn-secondary btn-sm" id="btn-save-media-routes">保存媒体任务模型</button>
+        <span id="media-route-status" class="form-hint"></span>
+      </div>
+    </div>
+  `
+
+  panel.querySelector('#btn-save-media-routes')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget
+    const nextRoutes = {}
+    for (const definition of MEDIA_ROUTE_DEFINITIONS) {
+      const select = panel.querySelector(`[data-media-route="${definition.kind}"]`)
+      const value = String(select?.value || '')
+      if (!value) continue
+      const [providerId, ...modelParts] = value.split('::')
+      const model = modelParts.join('::').trim()
+      if (!providerId || !model) continue
+      nextRoutes[definition.kind] = { providerId, model, protocol: definition.protocol, enabled: true }
+    }
+    button.disabled = true
+    try {
+      const saved = await api.mediaConfigWrite({ version: 1, routes: nextRoutes })
+      state.mediaConfig = normalizeMediaRouteConfig(saved?.config || { version: 1, routes: nextRoutes })
+      const status = panel.querySelector('#media-route-status')
+      if (status) status.textContent = '已保存；聊天模型和 Gateway 未发生改动。'
+      toast('媒体任务模型已保存', 'success')
+    } catch (error) {
+      toast(`媒体任务模型保存失败: ${error?.message || error}`, 'error')
+    } finally {
+      button.disabled = false
+    }
+  })
 }
 
 function getCurrentPrimary(config) {
