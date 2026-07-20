@@ -54,6 +54,7 @@ const markdownSource = readFileSync('src/lib/markdown.js', 'utf8')
 const openclawChatStyleSource = readFileSync('src/style/chat.css', 'utf8')
 const mediaProviderRoutingSource = readFileSync('src/lib/media-provider-routing.js', 'utf8')
 const mediaCommandSource = readFileSync('src-tauri/src/commands/media.rs', 'utf8')
+const openclawMediaPluginSource = readFileSync('src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js', 'utf8')
 
 test('packaged first run opens a console while bundled gateway startup continues in the background', () => {
   assert.match(openclawEngineSource, /void ensureGatewayReadyOnBoot\(\)/)
@@ -135,6 +136,10 @@ test('media task routes stay isolated from chat Gateway settings across dev and 
   assert.match(mediaCommandSource, /join\("data"\)[\s\S]*?join\("media"\)[\s\S]*?join\("media-routes\.json"\)/)
   assert.match(buildDesktopSource, /\$MediaData = Join-Path \$DataRoot "media"/)
   assert.match(buildDesktopSource, /media-routes\.json/)
+  assert.match(openclawMediaPluginSource, /superclaw_generate_image/)
+  assert.match(openclawMediaPluginSource, /media-routes\.json/)
+  assert.match(openclawMediaPluginSource, /images\/generations/)
+  assert.match(buildDesktopSource, /superclaw-media/)
 })
 
 test('Claude opens user-approved local files through a portable scoped desktop bridge', () => {

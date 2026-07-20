@@ -371,6 +371,7 @@ export const api = {
   sharedMemoryWriteFile: (path, content) => invoke('shared_memory_write_file', { path, content }),
   mediaConfigRead: () => invoke('media_config_read'),
   mediaConfigWrite: (config) => invoke('media_config_write', { config }),
+  mediaGenerateTextImage: (prompt, size) => invoke('media_generate_text_image', { prompt, size }),
 
   // 消息渠道管理
   readPlatformConfig: (platform, accountId) => invoke('read_platform_config', { platform, accountId: accountId || null }),

@@ -329,8 +329,10 @@ fn ensure_superclaw_openclaw_plugins() {
         .join("openclaw-zh")
         .join("dist")
         .join("extensions");
-    for plugin in ["desktop-control", "skill-manager", "superclaw-ocr"] {
-        let source = source_extensions.join(plugin);
+    for plugin in ["desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
+        let source = if plugin == "superclaw-media" {
+            app_resources_dir().map(|dir| dir.join("templates").join("openclaw-plugins").join(plugin)).unwrap_or_else(|| source_extensions.join(plugin))
+        } else { source_extensions.join(plugin) };
         let target = runtime_extensions.join(plugin);
         if source.join("openclaw.plugin.json").is_file() {
             copy_dir_overwrite(&source, &target);
@@ -638,7 +640,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("allow")
             .or_insert_with(|| serde_json::json!([]));
         if let Some(allow_arr) = allow.as_array_mut() {
-            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr"] {
+            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
                 if !allow_arr.iter().any(|v| v.as_str() == Some(key)) {
                     allow_arr.push(serde_json::json!(key));
                     changed = true;
@@ -649,7 +651,7 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr"] {
+            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
                 let enabled = entries_obj
                     .get(key)
                     .and_then(|v| v.get("enabled"))

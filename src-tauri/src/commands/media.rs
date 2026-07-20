@@ -1,6 +1,7 @@
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::PathBuf;
+use base64::{engine::general_purpose, Engine as _};
 
 const ROUTE_KINDS: &[&str] = &[
     "text_to_image",
@@ -131,6 +132,60 @@ pub fn media_config_write(config: Value) -> Result<Value, String> {
         "path": "data/media/media-routes.json",
         "config": normalized
     }))
+}
+
+fn text_image_endpoint(base_url: &str) -> String {
+    let root = base_url.trim_end_matches('/');
+    if root.ends_with("/v1") { format!("{root}/images/generations") }
+    else { format!("{root}/v1/images/generations") }
+}
+
+fn media_output_dir() -> Result<PathBuf, String> {
+    let resources = super::app_resources_dir()
+        .ok_or_else(|| "SuperClaw resources directory was not found".to_string())?;
+    Ok(resources.join("data").join("generated").join("media"))
+}
+
+fn media_provider(route: &Value) -> Result<(String, String, String), String> {
+    let provider_id = route["providerId"].as_str().unwrap_or("");
+    let config = super::config::read_openclaw_config()?;
+    let provider = config["models"]["providers"][provider_id]
+        .as_object()
+        .ok_or_else(|| "Configured media provider was not found".to_string())?;
+    let base_url = provider.get("baseUrl").or_else(|| provider.get("base_url"))
+        .and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let api_key = provider.get("apiKey").or_else(|| provider.get("api_key")).or_else(|| provider.get("key"))
+        .and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if base_url.is_empty() || api_key.is_empty() { return Err("Configured media provider is missing Base URL or API Key".to_string()); }
+    Ok((base_url, api_key, route["model"].as_str().unwrap_or("").to_string()))
+}
+
+/// Executes only the standard OpenAI Images text-to-image contract. The route
+/// references an existing provider; credentials never cross the UI boundary.
+#[tauri::command]
+pub async fn media_generate_text_image(prompt: String, size: Option<String>) -> Result<Value, String> {
+    let config = media_config_read()?;
+    let route = config["routes"]["text_to_image"].clone();
+    if route.is_null() || route["enabled"] == false { return Err("Text-to-image is not configured".to_string()); }
+    if route["protocol"].as_str() != Some("openai-images") { return Err("Text-to-image route does not use the OpenAI Images protocol".to_string()); }
+    let prompt = prompt.trim();
+    if prompt.is_empty() || prompt.len() > 8000 { return Err("Image prompt must be between 1 and 8000 characters".to_string()); }
+    let (base_url, api_key, model) = media_provider(&route)?;
+    let payload = json!({ "model": model, "prompt": prompt, "size": size.unwrap_or_else(|| "1024x1024".to_string()), "response_format": "b64_json" });
+    let response = reqwest::Client::builder().timeout(std::time::Duration::from_secs(120)).build()
+        .map_err(|e| format!("Failed to create media client: {e}"))?
+        .post(text_image_endpoint(&base_url)).bearer_auth(api_key).json(&payload).send().await
+        .map_err(|e| format!("Media generation request failed: {e}"))?;
+    let status = response.status();
+    let body: Value = response.json().await.map_err(|e| format!("Media provider returned invalid JSON: {e}"))?;
+    if !status.is_success() { return Err(body["error"]["message"].as_str().unwrap_or("Media provider rejected the request").to_string()); }
+    let encoded = body["data"][0]["b64_json"].as_str().ok_or_else(|| "Media provider did not return image bytes".to_string())?;
+    let bytes = general_purpose::STANDARD.decode(encoded).map_err(|e| format!("Media provider returned invalid image data: {e}"))?;
+    if bytes.len() > 25 * 1024 * 1024 { return Err("Generated image is larger than 25MB".to_string()); }
+    let dir = media_output_dir()?; fs::create_dir_all(&dir).map_err(|e| format!("Failed to create media output directory: {e}"))?;
+    let name = format!("image-{}-{}.png", chrono::Utc::now().timestamp_millis(), rand::random::<u32>());
+    let path = dir.join(name); fs::write(&path, bytes).map_err(|e| format!("Failed to save generated image: {e}"))?;
+    Ok(json!({"ok":true,"kind":"image","path":path.to_string_lossy(),"relativePath":format!("data/generated/media/{}", path.file_name().unwrap().to_string_lossy())}))
 }
 
 #[cfg(test)]

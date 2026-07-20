@@ -4724,7 +4724,7 @@ const OPENCLAW_STATUS_ENABLED_PLUGINS = [
 ]
 const OPENCLAW_WEB_SEARCH_PLUGIN_IDS = ['duckduckgo', 'exa', 'firecrawl', 'perplexity', 'searxng', 'tavily']
 const OPENCLAW_MEMORY_PLUGIN_IDS = ['memory-core', 'active-memory', 'memory-wiki']
-const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager', 'superclaw-ocr']
+const OPENCLAW_PORTABLE_TOOL_PLUGINS = ['desktop-control', 'skill-manager', 'superclaw-ocr', 'superclaw-media']
 const OPENCLAW_REQUIRED_BUNDLED_PLUGINS = ['browser']
 
 function sha256File(filePath) {
@@ -4766,7 +4766,9 @@ function ensurePortableOpenClawTools() {
     installed.push(pluginId)
   }
   for (const pluginId of OPENCLAW_PORTABLE_TOOL_PLUGINS) {
-    const source = path.join(sourceExtensions, pluginId)
+    const source = pluginId === 'superclaw-media'
+      ? path.join(resourcesDir, 'templates', 'openclaw-plugins', pluginId)
+      : path.join(sourceExtensions, pluginId)
     const destination = path.join(runtimeExtensions, pluginId)
     const sourceManifest = path.join(source, 'openclaw.plugin.json')
     const sourceEntry = path.join(source, 'index.js')

@@ -533,8 +533,8 @@ function Assert-SuperClawOpenClawPluginSources {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
   $BundledExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
-  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr")) {
-    $source = Join-Path $SourceExtensions $plugin
+  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr", "superclaw-media")) {
+    $source = if ($plugin -eq "superclaw-media") { Join-Path $ResourcesDir "templates\openclaw-plugins\$plugin" } else { Join-Path $SourceExtensions $plugin }
     Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
     Assert-File (Join-Path $source "index.js") "OpenClaw plugin source entry: $plugin"
   }
@@ -550,8 +550,8 @@ function Sync-SuperClawOpenClawPlugins([string]$TargetResourcesDir) {
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
   New-Item -ItemType Directory -Path $RuntimeExtensions -Force | Out-Null
 
-  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr")) {
-    $source = Join-Path $SourceExtensions $plugin
+  foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr", "superclaw-media")) {
+    $source = if ($plugin -eq "superclaw-media") { Join-Path $ResourcesDir "templates\openclaw-plugins\$plugin" } else { Join-Path $SourceExtensions $plugin }
     $destination = Join-Path $RuntimeExtensions $plugin
     Copy-Directory $source $destination
     Assert-File (Join-Path $destination "openclaw.plugin.json") "OpenClaw plugin manifest: $plugin"
@@ -721,6 +721,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
         "desktop-control" = [ordered]@{ enabled = $true }
         "skill-manager" = [ordered]@{ enabled = $true }
         "superclaw-ocr" = [ordered]@{ enabled = $true }
+        "superclaw-media" = [ordered]@{ enabled = $true }
       }
     }
     session = [ordered]@{ dmScope = "per-channel-peer" }
@@ -1586,6 +1587,7 @@ foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\skill-manager\openclaw.plugin.json") "Packaged OpenClaw skill-manager plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\superclaw-ocr\openclaw.plugin.json") "Packaged OpenClaw shared OCR plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\superclaw-media\openclaw.plugin.json") "Packaged OpenClaw media plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\browser\openclaw.plugin.json") "Packaged OpenClaw browser plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"

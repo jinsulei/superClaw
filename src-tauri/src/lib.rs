@@ -263,6 +263,7 @@ pub fn run() {
             // Portable media provider routes. These never alter Gateway chat routing.
             media::media_config_read,
             media::media_config_write,
+            media::media_generate_text_image,
             // 扩展工具
             extensions::get_cftunnel_status,
             extensions::cftunnel_action,
