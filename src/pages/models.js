@@ -9,12 +9,6 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
-import { isDevelopmentMode, isMiniMaxOnlyMode, isTestBuildMode } from '../lib/test-build-mode.js'
-import {
-  getMiniMaxTestDefaults,
-  readMiniMaxTestConfig,
-  saveMiniMaxTestConfig,
-} from '../lib/minimax-test-config.js'
 
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
 const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'superclaw_ocr', 'exec']
@@ -118,7 +112,6 @@ export async function render() {
     <div class="form-hint" style="margin-bottom:var(--space-md)">
       ${t('models.providerHint')}
     </div>
-    <div id="minimax-test-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
     <div id="default-model-bar"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
@@ -165,7 +158,6 @@ async function loadConfig(page, state) {
 
     renderDefaultBar(page, state)
     renderProviders(page, state)
-    renderMiniMaxTestPanel(page).catch(err => console.warn('[models] MiniMax test panel failed:', err?.message || err))
   } catch (e) {
     console.error('[models] loadConfig failed:', e)
     const detail = escapeHtml(e?.stack || e?.message || String(e))
@@ -228,150 +220,6 @@ function maskApiKey(key = '') {
   if (!value) return ''
   if (value.length <= 10) return `${value.slice(0, 2)}****`
   return `${value.slice(0, 6)}****${value.slice(-4)}`
-}
-
-function shouldShowMiniMaxTestPanel(status = null) {
-  if (isDevelopmentMode() || isMiniMaxOnlyMode() || isTestBuildMode()) return true
-  return status?.providerId === 'minimax' && status?.model === 'MiniMax-M3' && status?.hasApiKey === false
-}
-
-function miniMaxSyncBadge(label, ok) {
-  const color = ok ? 'var(--success)' : 'var(--text-tertiary)'
-  const bg = ok ? 'var(--success-muted)' : 'var(--bg-tertiary)'
-  return `<span style="display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:2px 8px;background:${bg};color:${color};font-size:12px">${escapeHtml(label)} ${ok ? 'OK' : '待同步'}</span>`
-}
-
-async function renderMiniMaxTestPanel(page) {
-  const panel = page.querySelector('#minimax-test-panel')
-  if (!panel) return
-  const status = await readMiniMaxTestConfig()
-  if (!shouldShowMiniMaxTestPanel(status)) {
-    panel.style.display = 'none'
-    panel.innerHTML = ''
-    return
-  }
-
-  const defaults = getMiniMaxTestDefaults()
-  const baseUrl = status.baseUrl || defaults.baseUrl
-  const masked = status.maskedKey || ''
-  const configuredText = status.hasApiKey
-    ? `已配置 API Key：${escapeHtml(masked)}`
-    : '未配置 API Key'
-  const sync = status.synced || {}
-  panel.style.display = ''
-  panel.innerHTML = `
-    <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-      <span>测试版 MiniMax 配置</span>
-      <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">免登录测试模式</span>
-    </div>
-    <div class="form-hint" style="margin-bottom:var(--space-sm)">
-      所有 Agent 默认使用 MiniMax，本页只写入本地运行配置，不写源码、不联网上报。
-    </div>
-    <div style="display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(180px,1fr) minmax(140px,.7fr);gap:10px;align-items:end">
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">API Key</label>
-        <input class="form-input" id="minimax-test-api-key" type="password" autocomplete="off" placeholder="${status.hasApiKey ? `已保存：${escapeHtml(masked)}，留空则保留` : '粘贴 MiniMax API Key'}">
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Base URL</label>
-        <select class="form-input" id="minimax-test-base-url">
-          <option value="${escapeHtml(defaults.baseUrl)}" ${baseUrl === defaults.baseUrl ? 'selected' : ''}>国际 ${escapeHtml(defaults.baseUrl)}</option>
-          <option value="${escapeHtml(defaults.cnBaseUrl)}" ${baseUrl === defaults.cnBaseUrl ? 'selected' : ''}>国内 ${escapeHtml(defaults.cnBaseUrl)}</option>
-        </select>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Model</label>
-        <input class="form-input" id="minimax-test-model" value="${escapeHtml(defaults.model)}" readonly>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
-      <button class="btn btn-primary btn-sm" id="btn-save-minimax-test">保存 MiniMax 配置</button>
-      <button class="btn btn-secondary btn-sm" id="btn-test-minimax-test">测试模型连接</button>
-      <button class="btn btn-secondary btn-sm" id="btn-reload-minimax-test">重新读取配置</button>
-      <span style="font-size:12px;color:var(--text-secondary)">${configuredText}</span>
-    </div>
-    <div id="minimax-test-result" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
-    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
-      ${miniMaxSyncBadge('OpenClaw', sync.openclaw)}
-      ${miniMaxSyncBadge('OpenClaw Agent', sync.openclawAgent)}
-      ${miniMaxSyncBadge('Hermes', sync.hermes)}
-      ${miniMaxSyncBadge('Claude Panel', sync.claudePanel)}
-    </div>
-  `
-
-  panel.querySelector('#btn-reload-minimax-test')?.addEventListener('click', () => {
-    renderMiniMaxTestPanel(page).catch(err => toast(`MiniMax 配置读取失败: ${err?.message || err}`, 'error'))
-  })
-  panel.querySelector('#btn-test-minimax-test')?.addEventListener('click', async () => {
-    const btn = panel.querySelector('#btn-test-minimax-test')
-    const input = panel.querySelector('#minimax-test-api-key')
-    const select = panel.querySelector('#minimax-test-base-url')
-    const result = panel.querySelector('#minimax-test-result')
-    const oldText = btn?.textContent || '测试模型连接'
-    const setResult = (message, ok = false) => {
-      if (!result) return
-      result.textContent = message
-      result.style.color = ok ? 'var(--success)' : 'var(--text-secondary)'
-    }
-    if (btn) {
-      btn.disabled = true
-      btn.textContent = '测试中...'
-    }
-    try {
-      const latest = await api.readOpenclawConfig().catch(() => ({}))
-      const savedProvider = latest?.models?.providers?.[defaults.providerId] || {}
-      const apiKey = String(input?.value || savedProvider.apiKey || '').trim()
-      const baseUrlForTest = select?.value || savedProvider.baseUrl || defaults.baseUrl
-      if (!apiKey) {
-        setResult('尚未配置 MiniMax API Key，请先填写或保存后再测试。')
-        return
-      }
-      const started = Date.now()
-      await api.testModel(baseUrlForTest, apiKey, defaults.model, 'openai-completions')
-      const elapsed = ((Date.now() - started) / 1000).toFixed(1)
-      setResult(`MiniMax 模型连接测试成功：${defaults.model}（${elapsed}s）`, true)
-      toast(`MiniMax 模型连接测试成功：${defaults.model}`, 'success')
-    } catch (err) {
-      const message = String(err?.message || err || '').replace(/sk-[A-Za-z0-9_-]{12,}/g, '[REDACTED_KEY]')
-      const summary = /401|2049|unauthorized|invalid/i.test(message)
-        ? 'MiniMax API Key 验证失败，请检查 Key 是否有效。'
-        : `MiniMax 模型连接失败：${message.slice(0, 180)}`
-      setResult(summary)
-      toast(summary, 'error', { duration: 8000 })
-    } finally {
-      if (btn) {
-        btn.disabled = false
-        btn.textContent = oldText
-      }
-    }
-  })
-  panel.querySelector('#btn-save-minimax-test')?.addEventListener('click', async () => {
-    const btn = panel.querySelector('#btn-save-minimax-test')
-    const input = panel.querySelector('#minimax-test-api-key')
-    const select = panel.querySelector('#minimax-test-base-url')
-    const oldText = btn?.textContent || '保存 MiniMax 配置'
-    if (btn) {
-      btn.disabled = true
-      btn.textContent = '保存中...'
-    }
-    try {
-      await saveMiniMaxTestConfig({
-        apiKey: input?.value || '',
-        baseUrl: select?.value || defaults.baseUrl,
-        model: defaults.model,
-      })
-      if (input) input.value = ''
-      await renderMiniMaxTestPanel(page)
-      toast('MiniMax 本地配置已保存并同步', 'success')
-    } catch (err) {
-      toast(`MiniMax 配置保存失败: ${err?.message || err}`, 'error')
-    } finally {
-      if (btn) {
-        btn.disabled = false
-        btn.textContent = oldText
-      }
-    }
-  })
 }
 
 // 渲染当前主模型状态栏

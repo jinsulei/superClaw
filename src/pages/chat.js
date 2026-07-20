@@ -1795,7 +1795,7 @@ function updateOpenClawGatewayUi() {
   if (hint) {
     if (_openClawGatewayUiState === 'stopped') hint.textContent = '点击“启动 Gateway”后，系统会自动检查服务是否真正可用。'
     else if (_openClawGatewayUiState === 'starting' || _openClawGatewayUiState === 'checking') hint.textContent = '正在确认 Gateway 状态，请稍候。'
-    else if (_openClawGatewayUiState === 'needs_setup') hint.textContent = '无需登录或激活；请先填写 MiniMax API Key。'
+    else if (_openClawGatewayUiState === 'needs_setup') hint.textContent = '无需登录或激活；请先配置模型服务商和 API Key。'
     else if (_openClawGatewayUiState === 'error') hint.textContent = '请重新启动 Gateway，系统会重新执行可用性检查。'
     else hint.textContent = ''
   }
@@ -2768,7 +2768,7 @@ async function ensureOpenClawGatewayReadyForSend() {
       probe: statusProbe,
       error: statusProbe?.message || statusProbe?.error || '',
     })
-    toast('OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。', 'warning')
+    toast('OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。', 'warning')
     return false
   }
   const healthProbe = hasOpenClawGatewayReadySignal(statusProbe)
@@ -2790,7 +2790,7 @@ async function ensureOpenClawGatewayReadyForSend() {
     })
   }
   if (isOpenClawModelConfigRequired(readyCheck.state)) {
-    toast(readyCheck.message || 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。', 'warning')
+    toast(readyCheck.message || 'OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。', 'warning')
     return false
   }
   if (!readyCheck.ok && !readyProbe && !hasOpenClawGatewayReadySignal(readyCheck.state)) {

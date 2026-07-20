@@ -45,7 +45,7 @@ const openclawUploadPatchSource = readFileSync('scripts/patch-openclaw-upload-ru
 const tauriConfigSource = readFileSync('src-tauri/tauri.conf.json', 'utf8')
 const releaseGateSource = readFileSync('scripts/check-release-gates.mjs', 'utf8')
 const modelPageSource = readFileSync('src/pages/models.js', 'utf8')
-const testBuildModeSource = readFileSync('src/lib/test-build-mode.js', 'utf8')
+const modelPresetsSource = readFileSync('src/lib/model-presets.js', 'utf8')
 const routerSource = readFileSync('src/router.js', 'utf8')
 const mainSource = readFileSync('src/main.js', 'utf8')
 const openclawEngineSource = readFileSync('src/engines/openclaw/index.js', 'utf8')
@@ -112,12 +112,13 @@ test('OpenClaw packaged chat keeps portable document attachments, media previews
   assert.match(buildDesktopSource, /data\\\.openclaw/)
 })
 
-test('OpenClaw MiniMax test configuration is available in Tauri development mode', () => {
-  assert.match(testBuildModeSource, /export function isDevelopmentMode\(\)[\s\S]*?import\.meta\.env\?\.DEV === true/)
-  const panelVisibility = modelPageSource.match(/function shouldShowMiniMaxTestPanel[\s\S]*?\n\}/)?.[0] || ''
-  assert.match(panelVisibility, /isDevelopmentMode\(\) \|\| isMiniMaxOnlyMode\(\) \|\| isTestBuildMode\(\)/)
-  assert.match(modelPageSource, /免登录测试模式/)
-  assert.match(modelPageSource, /id="minimax-test-api-key"/)
+test('OpenClaw uses one provider registry instead of a MiniMax-only test panel', () => {
+  assert.match(modelPageSource, /PROVIDER_PRESETS/)
+  assert.match(modelPresetsSource, /key: 'minimax'/)
+  assert.match(modelPresetsSource, /key: 'minimax_cn'/)
+  assert.doesNotMatch(modelPageSource, /minimax-test-panel/)
+  assert.doesNotMatch(modelPageSource, /saveMiniMaxTestConfig/)
+  assert.doesNotMatch(modelPresetsSource, /isMiniMaxOnlyMode/)
 })
 
 test('Claude opens user-approved local files through a portable scoped desktop bridge', () => {

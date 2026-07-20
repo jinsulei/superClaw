@@ -356,7 +356,7 @@ export function getOpenClawGatewayCopy(state, errorText = '') {
     case OPENCLAW_GATEWAY_STATES.NEEDS_SETUP:
       return {
         title: 'OpenClaw 模型配置未完成',
-        desc: '请先到模型设置中填写 MiniMax API Key，保存并测试连接后再开始聊天。',
+        desc: '请先到模型设置中配置服务商、API Key 和主模型，保存并测试连接后再开始聊天。',
         action: '去模型设置',
         canSend: false,
         showStartButton: false,
@@ -387,7 +387,7 @@ export function getOpenClawGatewayCopy(state, errorText = '') {
 
 export function getAgentGatewayUserMessage(state) {
   if (!state) return '正在检查网关状态...'
-  if (isOpenClawModelConfigRequired(state)) return 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。'
+  if (isOpenClawModelConfigRequired(state)) return 'OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。'
   if (state.status === OPENCLAW_GATEWAY_STATES.STOPPED) return '网关未启动。'
   if (state.status === OPENCLAW_GATEWAY_STATES.STARTING) return '网关正在启动...'
   if (state.status === 'listening' || state.status === 'listening_unverified') {
@@ -515,7 +515,7 @@ export async function assertAgentReadyBeforeSend(agent, options = {}) {
     return {
       ok: false,
       state,
-      message: 'OpenClaw 模型配置未完成，请先到模型设置中填写 MiniMax API Key。',
+      message: 'OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。',
     }
   }
 
