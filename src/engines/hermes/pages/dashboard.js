@@ -1101,7 +1101,7 @@ export function render() {
 
     modelBusy = true; cfgMsg = ''; draw()
     try {
-      await applyUnifiedModelSelection({
+      const result = await applyUnifiedModelSelection({
         providerId,
         hermesProvider,
         name: matched?.name || providerId,
@@ -1113,7 +1113,9 @@ export function render() {
       }, { target: 'default' })
       // Hermes 保存入口用于明确设置三引擎默认模型。
       saveHermesPrimary(formModel)
-      cfgMsg = `<span style="color:var(--success)">✓ 已同步 Hermes、OpenClaw 和 Claude Code 默认模型</span>`
+      cfgMsg = result.deferred?.some(item => item.agent === 'openclaw')
+        ? `<span style="color:var(--success)">✓ 已同步默认模型；OpenClaw Gateway 当前未就绪，将在下次启动时自动生效</span>`
+        : `<span style="color:var(--success)">✓ 已同步 Hermes、OpenClaw 和 Claude Code 默认模型</span>`
       // 刷新后端状态（不覆盖 form）
       try { hermesConfig = await api.hermesReadConfig() } catch (_) {}
     } catch (e) {

@@ -116,7 +116,7 @@ export async function applyUnifiedModelSelection(input, options = {}) {
   const client = options.client || api
   const selectedAgents = targetAgents(target)
   const selection = normalizeModelSelection(input)
-  const result = { selection, applied: [], skipped: [], rolledBack: false }
+  const result = { selection, applied: [], skipped: [], deferred: [], rolledBack: false }
   let previousOpenClaw = null
 
   try {
@@ -144,7 +144,18 @@ export async function applyUnifiedModelSelection(input, options = {}) {
     }
 
     if (selectedAgents.includes('openclaw')) {
-      await client.reloadGateway()
+      // Persisting a shared model selection must not be reported as a Hermes or
+      // Claude configuration failure merely because OpenClaw is currently
+      // stopped or still starting. The saved config is picked up on its next
+      // successful Gateway start.
+      try {
+        await client.reloadGateway()
+      } catch (error) {
+        result.deferred.push({
+          agent: 'openclaw',
+          reason: String(error?.message || error || 'gateway-reload-unavailable'),
+        })
+      }
     }
     return result
   } catch (error) {

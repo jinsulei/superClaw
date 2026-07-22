@@ -1,1 +1,24 @@
-{"id":"superclaw-media","name":"SuperClaw Media","version":"1.0.1","description":"Generate media through an independently configured SuperClaw media route."}
+{
+  "id": "superclaw-media",
+  "enabledByDefault": true,
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "superclaw_generate_image",
+      "superclaw_generate_video",
+      "superclaw_generate_speech",
+      "superclaw_generate_music",
+      "superclaw_describe_image"
+    ]
+  },
+  "name": "SuperClaw Media",
+  "version": "1.0.1",
+  "description": "Generate media through an independently configured SuperClaw media route.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

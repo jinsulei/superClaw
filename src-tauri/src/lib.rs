@@ -1,4 +1,4 @@
-﻿mod agent_lifecycle;
+mod agent_lifecycle;
 mod commands;
 mod instance_guard;
 mod models;
@@ -7,7 +7,8 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
-    hermes_providers, logs, media, memory, messaging, ocr, openclaw_history, pairing, service, shared_memory, skills, update,
+    hermes_providers, logs, media, memory, messaging, ocr, openclaw_history, pairing, service,
+    shared_memory, skills, update,
 };
 use tauri::Manager;
 
@@ -236,6 +237,7 @@ pub fn run() {
             openclaw_history::read_openclaw_raw_history,
             openclaw_history::list_openclaw_raw_sessions,
             openclaw_history::openclaw_load_gateway_media,
+            openclaw_history::openclaw_load_local_media,
             openclaw_history::openclaw_open_workspace_output,
             openclaw_history::openclaw_download_workspace_output,
             // 诊断
@@ -260,10 +262,13 @@ pub fn run() {
             shared_memory::shared_memory_read,
             shared_memory::shared_memory_write,
             shared_memory::shared_memory_write_file,
+            claude_code::claude_collaboration_drain,
+            claude_code::claude_collaboration_result_append,
             // Portable media provider routes. These never alter Gateway chat routing.
             media::media_config_read,
             media::media_config_write,
             media::media_generate_text_image,
+            media::media_generate,
             // 扩展工具
             extensions::get_cftunnel_status,
             extensions::cftunnel_action,

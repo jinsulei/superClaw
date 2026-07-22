@@ -1,4 +1,4 @@
-﻿/// 服务管理命令
+/// 服务管理命令
 ///
 /// 检测策略（跨平台统一）：
 ///   1. TCP 连 127.0.0.1:{port}，超时 1.5s
@@ -1794,8 +1794,7 @@ mod platform {
             crate::agent_lifecycle::ManagedAgent::OpenClaw,
             spawned_pid,
             crate::commands::openclaw_dir().display().to_string(),
-            crate::utils::resolve_openclaw_cli_path()
-                .unwrap_or_else(|| "openclaw".to_string()),
+            crate::utils::resolve_openclaw_cli_path().unwrap_or_else(|| "openclaw".to_string()),
             Some(crate::commands::gateway_listen_port()),
         );
 

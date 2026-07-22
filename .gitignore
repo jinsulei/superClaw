@@ -56,6 +56,7 @@ release_body.md.bak
 
 # 本地临时文件 / 设计文档 / 构建脚本
 .tmp/
+.tmp-mmx/
 .dev-data/
 scripts/build-r2-archive.sh
 r2-archives/
@@ -121,6 +122,8 @@ src-tauri/resources/runtime/openclaw/dist/extensions/*
 !src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/**
 !src-tauri/resources/runtime/ocr/
 !src-tauri/resources/runtime/ocr/**
+!src-tauri/resources/runtime/minimax/
+!src-tauri/resources/runtime/minimax/mmx-cli-1.0.18.tgz
 !src-tauri/resources/runtime/document-tools/
 !src-tauri/resources/runtime/document-tools/**
 src-tauri/resources/runtime/ocr/node_modules/

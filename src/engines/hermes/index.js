@@ -80,7 +80,7 @@ export default {
   id: 'hermes',
   name: 'Hermes Agent',
   description: 'Hermes AI Agent with tool-calling capabilities',
-  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+  icon: '<img class="engine-brand-icon" src="/images/hermes-icon.png" alt="" aria-hidden="true">',
 
   async detect() {
     await detectHermesStatus()

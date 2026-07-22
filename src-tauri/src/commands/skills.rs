@@ -566,7 +566,10 @@ fn push_skill_root(
 fn bundled_skill_dir_candidates(openclaw_root: &std::path::Path) -> Vec<std::path::PathBuf> {
     vec![
         openclaw_root.join("skills"),
-        openclaw_root.join("node_modules").join("openclaw").join("skills"),
+        openclaw_root
+            .join("node_modules")
+            .join("openclaw")
+            .join("skills"),
         openclaw_root
             .join("node_modules")
             .join("@qingchencloud")
@@ -769,12 +772,8 @@ fn scan_local_skill_entries_for_agent(
             continue;
         }
 
-        let entries = std::fs::read_dir(&root.dir).map_err(|e| {
-            format!(
-                "读取 Skills 目录失败 ({}): {e}",
-                root.dir.to_string_lossy()
-            )
-        })?;
+        let entries = std::fs::read_dir(&root.dir)
+            .map_err(|e| format!("读取 Skills 目录失败 ({}): {e}", root.dir.to_string_lossy()))?;
 
         for entry in entries.flatten() {
             let Ok(file_type) = entry.file_type() else {

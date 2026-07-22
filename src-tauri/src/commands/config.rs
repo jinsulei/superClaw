@@ -1957,8 +1957,7 @@ fn strip_ui_fields(mut val: Value) -> Value {
                                         }
                                     }
 
-                                    if let Some(Value::Array(arr)) =
-                                        provider_obj.get_mut("models")
+                                    if let Some(Value::Array(arr)) = provider_obj.get_mut("models")
                                     {
                                         for model in arr.iter_mut() {
                                             if let Some(mobj) = model.as_object_mut() {

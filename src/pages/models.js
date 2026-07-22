@@ -7,7 +7,7 @@ import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
-import { emptyMediaRouteConfig, normalizeMediaRouteConfig } from '../lib/media-provider-routing.js'
+import { MEDIA_ROUTE_KINDS, buildMediaRoutesForProvider, emptyMediaRouteConfig, normalizeMediaRouteConfig, protocolForMediaProvider } from '../lib/media-provider-routing.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
 
@@ -64,7 +64,8 @@ function ensurePortableOpenClawSkills(config) {
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
   config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
   config.plugins.entries['superclaw-ocr'] = { ...(config.plugins.entries['superclaw-ocr'] || {}), enabled: true }
-  for (const pluginId of ['browser', 'desktop-control', 'skill-manager', 'superclaw-ocr']) {
+  config.plugins.entries['superclaw-media'] = { ...(config.plugins.entries['superclaw-media'] || {}), enabled: true }
+  for (const pluginId of ['browser', 'desktop-control', 'skill-manager', 'superclaw-ocr', 'superclaw-media']) {
     if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
   }
 
@@ -193,12 +194,15 @@ async function loadConfig(page, state) {
   }
 }
 
-const MEDIA_ROUTE_DEFINITIONS = [
-  { kind: 'text_to_image', label: '文生图', protocol: 'openai-images', hint: '使用已配置服务商的标准图片生成接口' },
-  { kind: 'image_to_image', label: '图生图', protocol: 'openai-images', hint: '使用已配置服务商的图片编辑/变体接口' },
-  { kind: 'text_to_video', label: '文生视频', protocol: 'openai-video', hint: '使用已配置服务商的视频生成接口' },
-  { kind: 'image_to_video', label: '图生视频', protocol: 'openai-video', hint: '使用已配置服务商的图生视频接口' },
-]
+const MEDIA_CAPABILITY_LABELS = {
+  text_to_image: '文生图',
+  image_to_image: '图生图',
+  text_to_video: '文生视频',
+  image_to_video: '图生视频',
+  text_to_speech: '文本转语音',
+  text_to_music: '文本生成音乐',
+  image_understanding: '图片理解',
+}
 
 function mediaRouteModelChoices(config) {
   const choices = []
@@ -216,63 +220,98 @@ function mediaRouteValue(route = {}) {
   return route?.providerId && route?.model ? `${route.providerId}::${route.model}` : ''
 }
 
+function currentMediaSelection(routes = {}) {
+  const preferred = routes.text_to_image || Object.values(routes).find(route => route?.enabled !== false)
+  return mediaRouteValue(preferred)
+}
+
+function mediaCapabilityLabels(providerId, provider, model) {
+  const routes = buildMediaRoutesForProvider(providerId, provider, model)
+  return Array.from(MEDIA_ROUTE_KINDS).filter(kind => routes[kind]).map(kind => MEDIA_CAPABILITY_LABELS[kind])
+}
+
 function renderMediaRoutePanel(page, state) {
   const panel = page.querySelector('#media-route-panel')
   if (!panel) return
+  const collapsed = Boolean(state.mediaRoutePanelCollapsed)
+  const chevron = collapsed ? '▸' : '▾'
   const routes = state.mediaConfig?.routes || {}
   const choices = mediaRouteModelChoices(state.config)
-  const optionHtml = (route) => {
-    const current = mediaRouteValue(route)
-    const known = new Set(choices.map(choice => `${choice.providerId}::${choice.model}`))
-    const selectedOption = current && !known.has(current)
-      ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(`${route.providerId} / ${route.model}`)}（当前不可用）</option>`
-      : ''
-    return `<option value="">未配置</option>${selectedOption}${choices.map(choice => {
-      const value = `${choice.providerId}::${choice.model}`
-      return `<option value="${escapeHtml(value)}" ${value === current ? 'selected' : ''}>${escapeHtml(`${choice.providerId} / ${choice.model}`)}</option>`
-    }).join('')}`
-  }
+  const current = currentMediaSelection(routes)
+  const known = new Set(choices.map(choice => `${choice.providerId}::${choice.model}`))
+  const selectedRoute = routes.text_to_image || Object.values(routes).find(route => route?.enabled !== false)
+  const unavailable = current && !known.has(current)
+    ? `<option value="${escapeHtml(current)}" selected>${escapeHtml(`${selectedRoute.providerId} / ${selectedRoute.model}`)}（当前不可用）</option>`
+    : ''
+  const options = choices.map(choice => {
+    const value = `${choice.providerId}::${choice.model}`
+    const provider = state.config?.models?.providers?.[choice.providerId]
+    const protocol = protocolForMediaProvider(choice.providerId, provider, 'text_to_image')
+    const capabilities = mediaCapabilityLabels(choice.providerId, provider, choice.model).join('、') || '无可用媒体能力'
+    return `<option value="${escapeHtml(value)}" ${value === current ? 'selected' : ''}>${escapeHtml(`${choice.providerId} / ${choice.model}`)} [${escapeHtml(protocol)}] - ${escapeHtml(capabilities)}</option>`
+  }).join('')
 
   panel.innerHTML = `
     <div class="config-section" style="margin-bottom:var(--space-lg)">
-      <div class="config-section-title">媒体任务模型</div>
-      <div class="form-hint" style="margin-bottom:12px">媒体任务与日常聊天模型分离。这里仅引用已配置服务商，不保存 API Key，不修改 OpenClaw 主模型或 fallback，也不会重启 Gateway。</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-        ${MEDIA_ROUTE_DEFINITIONS.map(definition => {
-          const route = routes[definition.kind] || {}
-          return `<div class="form-group" style="margin:0">
-            <label class="form-label">${definition.label}</label>
-            <select class="form-input" data-media-route="${definition.kind}" data-media-protocol="${definition.protocol}">${optionHtml(route)}</select>
-            <div class="form-hint" style="margin-top:5px;font-size:12px">${definition.hint}</div>
-          </div>`
-        }).join('')}
+      <div class="config-section-title" id="media-route-title" style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">
+        <span style="display:inline-block;width:16px;font-size:12px;color:var(--text-tertiary)">${chevron}</span>
+        <span>媒体任务模型</span>
+        ${collapsed ? `<span style="margin-left:8px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:12px;font-weight:400;color:var(--text-secondary)">${escapeHtml(current ? current.replace('::', ' / ') : '未配置')}</span>` : ''}
       </div>
-      <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
-        <button class="btn btn-secondary btn-sm" id="btn-save-media-routes">保存媒体任务模型</button>
-        <span id="media-route-status" class="form-hint"></span>
+      <div id="media-route-body" style="display:${collapsed ? 'none' : 'block'};margin-top:12px">
+        <div class="form-hint" style="margin-bottom:12px">选择一次媒体服务商即可。系统会把同一配置映射到它支持的媒体能力，不保存 API Key，不修改 OpenClaw 主模型或 fallback，也不会重启 Gateway。MiniMax 使用官方 CLI 为图片、视频、语音和音乐自动选择对应的官方媒体模型。</div>
+        <div class="form-group" style="margin:0;max-width:760px">
+          <label class="form-label" for="media-provider-model">媒体服务商 / 模型</label>
+          <select class="form-input" id="media-provider-model">
+            <option value="">未配置</option>${unavailable}${options}
+          </select>
+          <div class="form-hint" id="media-capability-status" style="margin-top:6px"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" id="btn-save-media-routes">保存媒体服务商</button>
+          <span id="media-route-status" class="form-hint"></span>
+        </div>
       </div>
     </div>
   `
 
+  panel.querySelector('#media-route-title')?.addEventListener('click', () => {
+    state.mediaRoutePanelCollapsed = !state.mediaRoutePanelCollapsed
+    renderMediaRoutePanel(page, state)
+  })
+
+  if (collapsed) return
+
+  const select = panel.querySelector('#media-provider-model')
+  const updateCapabilityStatus = () => {
+    const value = String(select?.value || '')
+    const status = panel.querySelector('#media-capability-status')
+    if (!status) return
+    if (!value) {
+      status.textContent = '未启用媒体生成或识别。'
+      return
+    }
+    const [providerId, ...modelParts] = value.split('::')
+    const model = modelParts.join('::').trim()
+    const labels = mediaCapabilityLabels(providerId, state.config?.models?.providers?.[providerId], model)
+    status.textContent = labels.length ? `将自动启用：${labels.join('、')}。` : '该服务商没有可用的媒体能力。'
+  }
+  select?.addEventListener('change', updateCapabilityStatus)
+  updateCapabilityStatus()
+
   panel.querySelector('#btn-save-media-routes')?.addEventListener('click', async (event) => {
     const button = event.currentTarget
-    const nextRoutes = {}
-    for (const definition of MEDIA_ROUTE_DEFINITIONS) {
-      const select = panel.querySelector(`[data-media-route="${definition.kind}"]`)
-      const value = String(select?.value || '')
-      if (!value) continue
-      const [providerId, ...modelParts] = value.split('::')
-      const model = modelParts.join('::').trim()
-      if (!providerId || !model) continue
-      nextRoutes[definition.kind] = { providerId, model, protocol: definition.protocol, enabled: true }
-    }
+    const value = String(select?.value || '')
+    const [providerId, ...modelParts] = value.split('::')
+    const model = modelParts.join('::').trim()
+    const nextRoutes = value ? buildMediaRoutesForProvider(providerId, state.config?.models?.providers?.[providerId], model) : {}
     button.disabled = true
     try {
       const saved = await api.mediaConfigWrite({ version: 1, routes: nextRoutes })
       state.mediaConfig = normalizeMediaRouteConfig(saved?.config || { version: 1, routes: nextRoutes })
       const status = panel.querySelector('#media-route-status')
       if (status) status.textContent = '已保存；聊天模型和 Gateway 未发生改动。'
-      toast('媒体任务模型已保存', 'success')
+      toast('媒体服务商已保存', 'success')
     } catch (error) {
       toast(`媒体任务模型保存失败: ${error?.message || error}`, 'error')
     } finally {

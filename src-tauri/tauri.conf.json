@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "node scripts/patch-openclaw-upload-runtime.mjs && npm run dev",
-    "beforeBuildCommand": "node scripts/patch-openclaw-upload-runtime.mjs && npm run build"
+    "beforeDevCommand": "node scripts/patch-openclaw-upload-runtime.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-bundled-minimax-cli.ps1 && npm run dev",
+    "beforeBuildCommand": "node scripts/patch-openclaw-upload-runtime.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-bundled-minimax-cli.ps1 && npm run build"
   },
   "app": {
     "windows": [

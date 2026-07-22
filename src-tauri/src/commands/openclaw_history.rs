@@ -69,7 +69,10 @@ fn openclaw_gateway_media_request(path: &str) -> Result<(String, String), String
 #[tauri::command]
 pub async fn openclaw_load_gateway_media(path: String) -> Result<String, String> {
     let (url, token) = openclaw_gateway_media_request(&path)?;
-    let client = super::build_http_client_no_proxy(Duration::from_secs(15), Some("SuperClaw/OpenClawMedia"))?;
+    let client = super::build_http_client_no_proxy(
+        Duration::from_secs(15),
+        Some("SuperClaw/OpenClawMedia"),
+    )?;
     let response = client
         .get(url)
         .header("Authorization", format!("Bearer {token}"))
@@ -77,7 +80,10 @@ pub async fn openclaw_load_gateway_media(path: String) -> Result<String, String>
         .await
         .map_err(|error| format!("读取 OpenClaw 图片失败: {error}"))?;
     if !response.status().is_success() {
-        return Err(format!("读取 OpenClaw 图片失败: HTTP {}", response.status()));
+        return Err(format!(
+            "读取 OpenClaw 图片失败: HTTP {}",
+            response.status()
+        ));
     }
     let mime = response
         .headers()
@@ -99,7 +105,57 @@ pub async fn openclaw_load_gateway_media(path: String) -> Result<String, String>
     if bytes.len() > 20 * 1024 * 1024 {
         return Err("OpenClaw 图片超过 20MB 限制".to_string());
     }
-    Ok(format!("data:{mime};base64,{}", general_purpose::STANDARD.encode(bytes)))
+    // Gateway outgoing media is ephemeral. Archive a successful read without
+    // making the current render depend on the archival write succeeding.
+    let archive_path = gateway_media_archive_path(&path, &mime);
+    if fs::create_dir_all(history_media_dir()).is_ok() && !archive_path.exists() {
+        let _ = fs::write(&archive_path, &bytes);
+    }
+    Ok(format!(
+        "data:{mime};base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// Loads a generated OpenClaw image from the portable data directory when the
+/// short-lived Gateway media URL is no longer available after a restart.
+#[tauri::command]
+pub async fn openclaw_load_local_media(path: String) -> Result<String, String> {
+    let requested = PathBuf::from(path.trim().trim_matches(&['"', '\''][..]));
+    let filepath = tokio::fs::canonicalize(&requested)
+        .await
+        .map_err(|error| format!("OpenClaw local media not found: {error}"))?;
+    let media_root = tokio::fs::canonicalize(openclaw_dir().join("media"))
+        .await
+        .map_err(|error| format!("OpenClaw media directory is unavailable: {error}"))?;
+    if !filepath.is_file() || !filepath.starts_with(&media_root) {
+        return Err(
+            "OpenClaw local media path is outside the portable media directory".to_string(),
+        );
+    }
+    let mime = match filepath
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return Err("Unsupported OpenClaw local media type".to_string()),
+    };
+    let bytes = tokio::fs::read(&filepath)
+        .await
+        .map_err(|error| format!("Failed to read OpenClaw local media: {error}"))?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("OpenClaw local media is larger than 20MB".to_string());
+    }
+    Ok(format!(
+        "data:{mime};base64,{}",
+        general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 #[tauri::command]
@@ -166,26 +222,36 @@ fn best_effort_registry_entries(source: &str) -> Vec<(String, Value)> {
         let field = |name: &str| {
             let prefix = format!("\"{name}\": \"");
             window.iter().find_map(|candidate| {
-                candidate.trim().strip_prefix(&prefix).and_then(|value| value.split('"').next()).map(str::to_string)
+                candidate
+                    .trim()
+                    .strip_prefix(&prefix)
+                    .and_then(|value| value.split('"').next())
+                    .map(str::to_string)
             })
         };
         let number = |name: &str| {
             let prefix = format!("\"{name}\": ");
             window.iter().find_map(|candidate| {
-                candidate.trim().strip_prefix(&prefix).and_then(|value| {
-                    value.trim_end_matches(',').parse::<i64>().ok()
-                })
+                candidate
+                    .trim()
+                    .strip_prefix(&prefix)
+                    .and_then(|value| value.trim_end_matches(',').parse::<i64>().ok())
             })
         };
-        let Some(session_id) = field("sessionId") else { continue; };
-        entries.push((key, json!({
-            "sessionId": session_id,
-            "updatedAt": number("updatedAt"),
-            "lastInteractionAt": number("lastInteractionAt"),
-            "sessionStartedAt": number("sessionStartedAt"),
-            "endedAt": number("endedAt"),
-            "status": field("status"),
-        })));
+        let Some(session_id) = field("sessionId") else {
+            continue;
+        };
+        entries.push((
+            key,
+            json!({
+                "sessionId": session_id,
+                "updatedAt": number("updatedAt"),
+                "lastInteractionAt": number("lastInteractionAt"),
+                "sessionStartedAt": number("sessionStartedAt"),
+                "endedAt": number("endedAt"),
+                "status": field("status"),
+            }),
+        ));
     }
     entries
 }
@@ -199,9 +265,232 @@ fn read_session_entries() -> Result<Vec<(String, Value)>, String> {
     }
     let recovered = best_effort_registry_entries(&source);
     if recovered.is_empty() {
-        return Err("parse sessions registry failed and no recoverable entries were found".to_string());
+        return Err(
+            "parse sessions registry failed and no recoverable entries were found".to_string(),
+        );
     }
     Ok(recovered)
+}
+
+fn portable_session_history_ids(entry: &Value, current_id: &str) -> Vec<String> {
+    let mut ids = entry
+        .get("usageFamilySessionIds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !ids.iter().any(|id| id == current_id) {
+        ids.push(current_id.to_string());
+    }
+    ids.retain(|id| {
+        id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    });
+    ids.dedup();
+    ids
+}
+
+fn portable_session_history_file(sessions_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    let active = sessions_dir.join(format!("{session_id}.jsonl"));
+    if active.is_file() {
+        return Some(active);
+    }
+    let prefix = format!("{session_id}.jsonl.");
+    let mut archived = fs::read_dir(sessions_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            path.is_file()
+                && name.starts_with(&prefix)
+                && (name.contains(".reset.") || name.contains(".deleted."))
+        })
+        .collect::<Vec<_>>();
+    archived.sort();
+    archived.pop()
+}
+
+fn append_portable_session_messages(source: &str, session_key: &str, messages: &mut Vec<Value>) {
+    for line in source.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        let Some(role) = message.get("role").and_then(Value::as_str) else {
+            continue;
+        };
+        if !matches!(role, "user" | "assistant" | "toolResult") {
+            continue;
+        }
+        messages.push(json!({
+            "id": entry.get("id").and_then(Value::as_str).unwrap_or_default(),
+            "parentId": entry.get("parentId").and_then(Value::as_str).unwrap_or_default(),
+            "role": role,
+            "sessionKey": session_key,
+            "idempotencyKey": message.get("idempotencyKey").and_then(Value::as_str).unwrap_or_default(),
+            "clientRequestId": message.get("clientRequestId").and_then(Value::as_str).unwrap_or_default(),
+            "requestId": message.get("requestId").and_then(Value::as_str).unwrap_or_default(),
+            "runId": message.get("runId").and_then(Value::as_str).unwrap_or_default(),
+            "stopReason": message.get("stopReason").and_then(Value::as_str).unwrap_or_default(),
+            "text": text_content(message),
+            "toolName": message.get("toolName").and_then(Value::as_str).unwrap_or_default(),
+            "toolCallId": message.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
+            "tools": tool_calls(message),
+            "isError": tool_result_failed(message),
+            "status": if tool_result_failed(message) { "error" } else { "completed" },
+            "timestamp": entry.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
+            "content": message.get("content").cloned().unwrap_or(Value::Null),
+            "attachments": image_attachments(message),
+        }));
+    }
+}
+
+fn media_paths_in_text(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("MEDIA:"))
+        .map(|path| path.trim().trim_matches(&['"', '\''][..]).to_string())
+        .filter(|path| {
+            let lower = path.to_ascii_lowercase();
+            lower.ends_with(".png")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg")
+                || lower.ends_with(".gif")
+                || lower.ends_with(".webp")
+        })
+        .collect()
+}
+
+fn stable_media_key(value: &str) -> String {
+    // A deterministic local key lets history recover media after Gateway's
+    // short-lived outgoing URL has expired.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn media_extension_for_mime(mime: &str) -> &'static str {
+    match mime.to_ascii_lowercase().as_str() {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
+fn history_media_dir() -> PathBuf {
+    openclaw_dir().join("media").join("history")
+}
+
+fn archive_openclaw_media_file(source: &str) -> Option<String> {
+    let source = PathBuf::from(source.trim().trim_matches(&['"', '\''][..]));
+    let source = source.canonicalize().ok()?;
+    let media_root = openclaw_dir().join("media").canonicalize().ok()?;
+    if !source.is_file() || !source.starts_with(&media_root) {
+        return None;
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("png");
+    let target_dir = history_media_dir();
+    fs::create_dir_all(&target_dir).ok()?;
+    let target = target_dir.join(format!(
+        "generated-{}.{}",
+        stable_media_key(&source.to_string_lossy()),
+        extension
+    ));
+    if !target.exists() && fs::copy(&source, &target).is_err() {
+        return None;
+    }
+    Some(target.to_string_lossy().to_string())
+}
+
+fn gateway_media_archive_path(route: &str, mime: &str) -> PathBuf {
+    history_media_dir().join(format!(
+        "gateway-{}.{}",
+        stable_media_key(route),
+        media_extension_for_mime(mime)
+    ))
+}
+
+fn archived_gateway_media_path(route: &str) -> Option<String> {
+    ["png", "jpg", "gif", "webp"]
+        .into_iter()
+        .find_map(|extension| {
+            let target = history_media_dir().join(format!(
+                "gateway-{}.{}",
+                stable_media_key(route),
+                extension
+            ));
+            target
+                .is_file()
+                .then(|| target.to_string_lossy().to_string())
+        })
+}
+
+fn attach_openclaw_local_media_fallbacks(messages: &mut [Value]) {
+    let mut pending_paths = Vec::<String>::new();
+    for message in messages {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let paths = media_paths_in_text(&text_content(message));
+        if !paths.is_empty() {
+            pending_paths = paths;
+        }
+        let Some(attachments) = message.get_mut("attachments").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if pending_paths.is_empty() {
+            continue;
+        }
+        let mut attached_any = false;
+        for (index, attachment) in attachments.iter_mut().enumerate() {
+            let url = attachment
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if url.starts_with("/api/chat/media/outgoing/")
+                && attachment.get("fallbackMediaPath").is_none()
+            {
+                if let Some(object) = attachment.as_object_mut() {
+                    let source = pending_paths
+                        .get(index)
+                        .or_else(|| pending_paths.last())
+                        .map(String::as_str)
+                        .and_then(archive_openclaw_media_file)
+                        .or_else(|| archived_gateway_media_path(&url));
+                    let Some(source) = source else {
+                        continue;
+                    };
+                    object.insert("fallbackMediaPath".to_string(), Value::String(source));
+                    attached_any = true;
+                }
+            }
+        }
+        if attached_any {
+            pending_paths.clear();
+        }
+    }
 }
 
 fn text_content(message: &Value) -> String {
@@ -210,8 +499,12 @@ fn text_content(message: &Value) -> String {
         Some(Value::Array(blocks)) => blocks
             .iter()
             .filter_map(|block| {
-                (block.get("type").and_then(Value::as_str) == Some("text"))
-                    .then(|| block.get("text").and_then(Value::as_str).unwrap_or_default())
+                (block.get("type").and_then(Value::as_str) == Some("text")).then(|| {
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                })
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -220,17 +513,24 @@ fn text_content(message: &Value) -> String {
 }
 
 fn tool_calls(message: &Value) -> Vec<Value> {
-    message.get("content").and_then(Value::as_array)
-        .map(|blocks| blocks.iter().filter_map(|block| {
-            (block.get("type").and_then(Value::as_str) == Some("toolCall")).then(|| {
-                json!({
-                    "id": block.get("id").and_then(Value::as_str).unwrap_or_default(),
-                    "name": block.get("name").and_then(Value::as_str).unwrap_or("tool"),
-                    "input": block.get("arguments").cloned().unwrap_or(Value::Null),
-                    "status": "running",
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    (block.get("type").and_then(Value::as_str) == Some("toolCall")).then(|| {
+                        json!({
+                            "id": block.get("id").and_then(Value::as_str).unwrap_or_default(),
+                            "name": block.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                            "input": block.get("arguments").cloned().unwrap_or(Value::Null),
+                            "status": "running",
+                        })
+                    })
                 })
-            })
-        }).collect())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -267,7 +567,9 @@ fn image_attachments(message: &Value) -> Vec<Value> {
 
 fn tool_result_failed(message: &Value) -> bool {
     message.get("isError").and_then(Value::as_bool) == Some(true)
-        || message.get("details").and_then(|details| details.get("exitCode"))
+        || message
+            .get("details")
+            .and_then(|details| details.get("exitCode"))
             .and_then(Value::as_i64)
             .map(|code| code != 0)
             .unwrap_or(false)
@@ -284,34 +586,62 @@ fn trajectory_messages(source: &str) -> Vec<Value> {
 
     let mut runs = BTreeMap::<String, RunProjection>::new();
     for line in source.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue; };
-        let entry_type = entry.get("type").and_then(Value::as_str).unwrap_or_default();
-        if !matches!(entry_type, "model.completed" | "trace.artifacts") { continue; }
-        let run_id = entry.get("runId").and_then(Value::as_str).unwrap_or_default();
-        if run_id.is_empty() { continue; }
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let entry_type = entry
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(entry_type, "model.completed" | "trace.artifacts") {
+            continue;
+        }
+        let run_id = entry
+            .get("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if run_id.is_empty() {
+            continue;
+        }
         let data = entry.get("data").unwrap_or(&Value::Null);
         let run = runs.entry(run_id.to_string()).or_default();
         if run.timestamp.is_empty() {
-            run.timestamp = entry.get("ts").and_then(Value::as_str).unwrap_or_default().to_string();
+            run.timestamp = entry
+                .get("ts")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
         }
         if let Some(prompt) = data.get("finalPromptText").and_then(Value::as_str) {
-            if !prompt.trim().is_empty() { run.prompt = prompt.to_string(); }
+            if !prompt.trim().is_empty() {
+                run.prompt = prompt.to_string();
+            }
         }
         if let Some(texts) = data.get("assistantTexts").and_then(Value::as_array) {
-            let values = texts.iter()
+            let values = texts
+                .iter()
                 .filter_map(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
                 .collect::<Vec<_>>();
-            if values.len() >= run.assistant_texts.len() { run.assistant_texts = values; }
+            if values.len() >= run.assistant_texts.len() {
+                run.assistant_texts = values;
+            }
         }
         if entry_type == "trace.artifacts" {
             if let Some(items) = data.get("itemLifecycle").and_then(Value::as_array) {
                 for (index, item) in items.iter().enumerate() {
-                    let label = item.get("title").or_else(|| item.get("name")).or_else(|| item.get("summary"))
-                        .and_then(Value::as_str).unwrap_or_default().trim();
-                    if label.is_empty() { continue; }
+                    let label = item
+                        .get("title")
+                        .or_else(|| item.get("name"))
+                        .or_else(|| item.get("summary"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim();
+                    if label.is_empty() {
+                        continue;
+                    }
                     run.timeline.push(json!({
                         "key": format!("trajectory-item-{run_id}-{index}"),
                         "kind": item.get("kind").and_then(Value::as_str).unwrap_or("task"),
@@ -322,8 +652,11 @@ fn trajectory_messages(source: &str) -> Vec<Value> {
             }
             if let Some(tools) = data.get("toolMetas").and_then(Value::as_array) {
                 for (index, tool) in tools.iter().enumerate() {
-                    let label = tool.get("name").or_else(|| tool.get("toolName"))
-                        .and_then(Value::as_str).unwrap_or("tool");
+                    let label = tool
+                        .get("name")
+                        .or_else(|| tool.get("toolName"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
                     run.timeline.push(json!({
                         "key": format!("trajectory-tool-{run_id}-{index}"),
                         "kind": "tool",
@@ -337,7 +670,9 @@ fn trajectory_messages(source: &str) -> Vec<Value> {
 
     let mut messages = Vec::new();
     for (run_id, mut run) in runs {
-        let Some(final_text) = run.assistant_texts.pop() else { continue; };
+        let Some(final_text) = run.assistant_texts.pop() else {
+            continue;
+        };
         for (index, text) in run.assistant_texts.into_iter().enumerate() {
             run.timeline.push(json!({
                 "key": format!("trajectory-progress-{run_id}-{index}"),
@@ -371,7 +706,8 @@ fn compact_terminal_text(value: &str, limit: usize) -> String {
 }
 
 fn history_message_text(message: &Value) -> String {
-    message.get("text")
+    message
+        .get("text")
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|text| !text.trim().is_empty())
@@ -383,54 +719,90 @@ fn history_message_text(message: &Value) -> String {
 /// still complete, but leaving the desktop UI waiting would be misleading.
 /// Build a narrowly-scoped terminal record only when the trajectory confirms a
 /// successful end and the latest user turn has no regular assistant final.
-fn successful_tool_only_terminal_messages(messages: &[Value], trajectory_source: &str) -> Vec<Value> {
+fn successful_tool_only_terminal_messages(
+    messages: &[Value],
+    trajectory_source: &str,
+) -> Vec<Value> {
     let mut completed_runs = Vec::<(String, String)>::new();
     for line in trajectory_source.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue; };
-        if entry.get("type").and_then(Value::as_str) != Some("session.ended") { continue; }
-        if entry.get("data").and_then(|data| data.get("status")).and_then(Value::as_str) != Some("success") {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) != Some("session.ended") {
             continue;
         }
-        let run_id = entry.get("runId").and_then(Value::as_str).unwrap_or_default().trim();
-        if run_id.is_empty() { continue; }
-        let timestamp = entry.get("ts").and_then(Value::as_str).unwrap_or_default().to_string();
+        if entry
+            .get("data")
+            .and_then(|data| data.get("status"))
+            .and_then(Value::as_str)
+            != Some("success")
+        {
+            continue;
+        }
+        let run_id = entry
+            .get("runId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if run_id.is_empty() {
+            continue;
+        }
+        let timestamp = entry
+            .get("ts")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         completed_runs.push((run_id.to_string(), timestamp));
     }
-    let Some((run_id, timestamp)) = completed_runs.last() else { return Vec::new(); };
+    let Some((run_id, timestamp)) = completed_runs.last() else {
+        return Vec::new();
+    };
 
-    let Some(last_user_index) = messages.iter().rposition(|message| {
-        message.get("role").and_then(Value::as_str) == Some("user")
-    }) else { return Vec::new(); };
+    let Some(last_user_index) = messages
+        .iter()
+        .rposition(|message| message.get("role").and_then(Value::as_str) == Some("user"))
+    else {
+        return Vec::new();
+    };
     let turn = &messages[last_user_index + 1..];
     let has_regular_final = turn.iter().any(|message| {
         message.get("role").and_then(Value::as_str) == Some("assistant")
             && message.get("stopReason").and_then(Value::as_str) != Some("toolUse")
             && !history_message_text(message).trim().is_empty()
     });
-    if has_regular_final { return Vec::new(); }
+    if has_regular_final {
+        return Vec::new();
+    }
     let already_projected = messages.iter().any(|message| {
         message.get("role").and_then(Value::as_str) == Some("assistant")
             && message.get("runId").and_then(Value::as_str) == Some(run_id.as_str())
             && message.get("trajectoryFinal").and_then(Value::as_bool) == Some(true)
     });
-    if already_projected { return Vec::new(); }
+    if already_projected {
+        return Vec::new();
+    }
 
     let last_step = turn.iter().rev().find_map(|message| {
         (message.get("role").and_then(Value::as_str) == Some("assistant")
             && message.get("stopReason").and_then(Value::as_str) == Some("toolUse"))
-            .then(|| history_message_text(message))
-            .filter(|text| !text.trim().is_empty())
+        .then(|| history_message_text(message))
+        .filter(|text| !text.trim().is_empty())
     });
     let last_result = turn.iter().rev().find_map(|message| {
         (message.get("role").and_then(Value::as_str) == Some("toolResult"))
             .then(|| history_message_text(message))
             .filter(|text| !text.trim().is_empty())
     });
-    if last_step.is_none() && last_result.is_none() { return Vec::new(); }
+    if last_step.is_none() && last_result.is_none() {
+        return Vec::new();
+    }
 
     let mut lines = vec!["OpenClaw 原生任务已执行完成。".to_string()];
     if let Some(step) = last_step {
-        lines.push(format!("最后处理步骤：{}", compact_terminal_text(&step, 500)));
+        lines.push(format!(
+            "最后处理步骤：{}",
+            compact_terminal_text(&step, 500)
+        ));
     }
     if let Some(result) = last_result {
         lines.push(format!("执行结果：{}", compact_terminal_text(&result, 900)));
@@ -450,7 +822,10 @@ fn successful_tool_only_terminal_messages(messages: &[Value], trajectory_source:
 /// Read the portable OpenClaw JSONL source of truth. Gateway chat.history can
 /// omit user turns after compaction, which makes a UI-only projection unsafe.
 #[tauri::command]
-pub fn read_openclaw_raw_history(session_key: String, limit: Option<usize>) -> Result<Value, String> {
+pub fn read_openclaw_raw_history(
+    session_key: String,
+    limit: Option<usize>,
+) -> Result<Value, String> {
     let sessions_dir = sessions_dir();
     let entries = read_session_entries()?;
     let session_entry = entries
@@ -461,68 +836,70 @@ pub fn read_openclaw_raw_history(session_key: String, limit: Option<usize>) -> R
         .and_then(|entry| entry.get("sessionId"))
         .and_then(Value::as_str)
         .ok_or_else(|| "session not found".to_string())?;
-    let path = sessions_dir.join(format!("{session_id}.jsonl"));
-    let source = fs::read_to_string(&path).map_err(|err| format!("read raw session failed: {err}"))?;
     let mut messages = Vec::new();
-    for line in source.lines() {
-        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue; };
-        if entry.get("type").and_then(Value::as_str) != Some("message") { continue; }
-        let Some(message) = entry.get("message") else { continue; };
-        let Some(role) = message.get("role").and_then(Value::as_str) else { continue; };
-        if !matches!(role, "user" | "assistant" | "toolResult") { continue; }
-        messages.push(json!({
-            "id": entry.get("id").and_then(Value::as_str).unwrap_or_default(),
-            "parentId": entry.get("parentId").and_then(Value::as_str).unwrap_or_default(),
-            "role": role,
-            "sessionKey": &session_key,
-            "idempotencyKey": message.get("idempotencyKey").and_then(Value::as_str).unwrap_or_default(),
-            "clientRequestId": message.get("clientRequestId").and_then(Value::as_str).unwrap_or_default(),
-            "requestId": message.get("requestId").and_then(Value::as_str).unwrap_or_default(),
-            "runId": message.get("runId").and_then(Value::as_str).unwrap_or_default(),
-            "stopReason": message.get("stopReason").and_then(Value::as_str).unwrap_or_default(),
-            "text": text_content(message),
-            "toolName": message.get("toolName").and_then(Value::as_str).unwrap_or_default(),
-            "toolCallId": message.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
-            "tools": tool_calls(message),
-            "isError": tool_result_failed(message),
-            "status": if tool_result_failed(message) { "error" } else { "completed" },
-            "timestamp": entry.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
-            "content": message.get("content").cloned().unwrap_or(Value::Null),
-            "attachments": image_attachments(message),
-        }));
-    }
-    let trajectory_path = sessions_dir.join(format!("{session_id}.trajectory.jsonl"));
-    if let Ok(trajectory_source) = fs::read_to_string(&trajectory_path) {
-        for mut candidate in trajectory_messages(&trajectory_source) {
-            if let Some(object) = candidate.as_object_mut() {
-                object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+    let family_ids =
+        portable_session_history_ids(session_entry.unwrap_or(&Value::Null), session_id);
+    for family_id in family_ids {
+        let Some(path) = portable_session_history_file(&sessions_dir, &family_id) else {
+            continue;
+        };
+        let source =
+            fs::read_to_string(&path).map_err(|err| format!("read raw session failed: {err}"))?;
+        let mut segment_messages = Vec::new();
+        append_portable_session_messages(&source, &session_key, &mut segment_messages);
+
+        let trajectory_path = sessions_dir.join(format!("{family_id}.trajectory.jsonl"));
+        if let Ok(trajectory_source) = fs::read_to_string(&trajectory_path) {
+            for mut candidate in trajectory_messages(&trajectory_source) {
+                if let Some(object) = candidate.as_object_mut() {
+                    object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+                }
+                let candidate_run_id = candidate
+                    .get("runId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let candidate_text = text_content(&candidate);
+                let already_present = segment_messages.iter().any(|message| {
+                    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+                        return false;
+                    }
+                    let same_run = !candidate_run_id.is_empty()
+                        && message.get("runId").and_then(Value::as_str) == Some(candidate_run_id);
+                    let same_text = !candidate_text.trim().is_empty()
+                        && text_content(message).trim() == candidate_text.trim();
+                    same_run || same_text
+                });
+                if !already_present {
+                    segment_messages.push(candidate);
+                }
             }
-            let candidate_run_id = candidate.get("runId").and_then(Value::as_str).unwrap_or_default();
-            let candidate_text = text_content(&candidate);
-            let already_present = messages.iter().any(|message| {
-                if message.get("role").and_then(Value::as_str) != Some("assistant") { return false; }
-                let same_run = !candidate_run_id.is_empty()
-                    && message.get("runId").and_then(Value::as_str) == Some(candidate_run_id);
-                let same_text = !candidate_text.trim().is_empty()
-                    && text_content(message).trim() == candidate_text.trim();
-                same_run || same_text
-            });
-            if !already_present { messages.push(candidate); }
-        }
-        for mut candidate in successful_tool_only_terminal_messages(&messages, &trajectory_source) {
-            if let Some(object) = candidate.as_object_mut() {
-                object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+            for mut candidate in
+                successful_tool_only_terminal_messages(&segment_messages, &trajectory_source)
+            {
+                if let Some(object) = candidate.as_object_mut() {
+                    object.insert("sessionKey".to_string(), Value::String(session_key.clone()));
+                }
+                segment_messages.push(candidate);
             }
-            messages.push(candidate);
         }
+        messages.extend(segment_messages);
     }
     messages.sort_by(|left, right| {
-        let left_time = left.get("timestamp").and_then(Value::as_str).unwrap_or_default();
-        let right_time = right.get("timestamp").and_then(Value::as_str).unwrap_or_default();
+        let left_time = left
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let right_time = right
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         left_time.cmp(right_time)
     });
-    let limit = limit.unwrap_or(300).clamp(1, 1000);
-    if messages.len() > limit { messages = messages.split_off(messages.len() - limit); }
+    attach_openclaw_local_media_fallbacks(&mut messages);
+    let limit = limit.unwrap_or(1_000).clamp(1, 5_000);
+    if messages.len() > limit {
+        messages = messages.split_off(messages.len() - limit);
+    }
     Ok(json!({
         "sessionKey": session_key,
         "messages": messages,
@@ -552,8 +929,14 @@ pub fn list_openclaw_raw_sessions(limit: Option<usize>) -> Result<Value, String>
         }))
     }).collect::<Vec<_>>();
     sessions.sort_by(|a, b| {
-        let a_time = a.get("updatedAt").and_then(Value::as_i64).unwrap_or_default();
-        let b_time = b.get("updatedAt").and_then(Value::as_i64).unwrap_or_default();
+        let a_time = a
+            .get("updatedAt")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let b_time = b
+            .get("updatedAt")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
         b_time.cmp(&a_time)
     });
     sessions.truncate(limit.unwrap_or(80).clamp(1, 500));
@@ -562,7 +945,10 @@ pub fn list_openclaw_raw_sessions(limit: Option<usize>) -> Result<Value, String>
 
 #[cfg(test)]
 mod tests {
-    use super::{best_effort_registry_entries, image_attachments, successful_tool_only_terminal_messages, trajectory_messages};
+    use super::{
+        best_effort_registry_entries, image_attachments, successful_tool_only_terminal_messages,
+        trajectory_messages,
+    };
     use serde_json::json;
 
     #[test]
@@ -583,7 +969,10 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["text"], "final answer");
         assert_eq!(messages[0]["trajectoryPrompt"], "question");
-        assert_eq!(messages[0]["executionTimeline"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            messages[0]["executionTimeline"].as_array().map(Vec::len),
+            Some(2)
+        );
     }
 
     #[test]
@@ -605,7 +994,10 @@ mod tests {
         let synthesized = successful_tool_only_terminal_messages(&messages, trajectory);
         assert_eq!(synthesized.len(), 1);
         assert_eq!(synthesized[0]["runId"], "run-tool-only");
-        assert!(synthesized[0]["text"].as_str().unwrap().contains("edited.docx"));
+        assert!(synthesized[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("edited.docx"));
     }
 
     #[test]
@@ -631,6 +1023,9 @@ mod tests {
         let attachments = image_attachments(&message);
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0]["category"], "image");
-        assert_eq!(attachments[0]["imageUrl"], "/api/chat/media/outgoing/run/image.png");
+        assert_eq!(
+            attachments[0]["imageUrl"],
+            "/api/chat/media/outgoing/run/image.png"
+        );
     }
 }

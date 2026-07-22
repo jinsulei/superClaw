@@ -305,6 +305,7 @@ export const api = {
   readOpenclawConfig: () => cachedInvoke('read_openclaw_config'),
   readOpenclawRawHistory: (sessionKey, limit = 300) => invoke('read_openclaw_raw_history', { sessionKey, limit }),
   loadOpenclawGatewayMedia: (path) => invoke('openclaw_load_gateway_media', { path }),
+  loadOpenclawLocalMedia: (path) => invoke('openclaw_load_local_media', { path }),
   openclawOpenWorkspaceOutput: (path) => invoke('openclaw_open_workspace_output', { path }),
   openclawDownloadWorkspaceOutput: (path) => invoke('openclaw_download_workspace_output', { path }),
   listOpenclawRawSessions: (limit = 80) => invoke('list_openclaw_raw_sessions', { limit }),
@@ -369,9 +370,12 @@ export const api = {
   sharedMemoryRead: () => invoke('shared_memory_read'),
   sharedMemoryWrite: (content) => invoke('shared_memory_write', { content }),
   sharedMemoryWriteFile: (path, content) => invoke('shared_memory_write_file', { path, content }),
+  claudeCollaborationDrain: () => invoke('claude_collaboration_drain'),
+  claudeCollaborationResultAppend: (result) => invoke('claude_collaboration_result_append', { result }),
   mediaConfigRead: () => invoke('media_config_read'),
   mediaConfigWrite: (config) => invoke('media_config_write', { config }),
   mediaGenerateTextImage: (prompt, size) => invoke('media_generate_text_image', { prompt, size }),
+  mediaGenerate: (kind, prompt, inputPath, options) => invoke('media_generate', { kind, prompt, inputPath, options }),
 
   // 消息渠道管理
   readPlatformConfig: (platform, accountId) => invoke('read_platform_config', { platform, accountId: accountId || null }),

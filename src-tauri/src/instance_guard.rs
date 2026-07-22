@@ -28,7 +28,9 @@ fn write_instance() {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let record = RunningInstance { pid: std::process::id() };
+    let record = RunningInstance {
+        pid: std::process::id(),
+    };
     let _ = std::fs::write(path, serde_json::to_vec(&record).unwrap_or_default());
 }
 
@@ -51,9 +53,18 @@ mod platform {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn CreateMutexW(attributes: *mut std::ffi::c_void, initial_owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn CreateMutexW(
+            attributes: *mut std::ffi::c_void,
+            initial_owner: i32,
+            name: *const u16,
+        ) -> *mut std::ffi::c_void;
         fn GetLastError() -> u32;
-        fn CreateEventW(attributes: *mut std::ffi::c_void, manual_reset: i32, initial_state: i32, name: *const u16) -> *mut std::ffi::c_void;
+        fn CreateEventW(
+            attributes: *mut std::ffi::c_void,
+            manual_reset: i32,
+            initial_state: i32,
+            name: *const u16,
+        ) -> *mut std::ffi::c_void;
         fn SetEvent(event: *mut std::ffi::c_void) -> i32;
         fn ResetEvent(event: *mut std::ffi::c_void) -> i32;
         fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
@@ -63,19 +74,31 @@ mod platform {
 
     #[link(name = "user32")]
     extern "system" {
-        fn MessageBoxW(hwnd: *mut std::ffi::c_void, text: *const u16, caption: *const u16, typ: u32) -> i32;
-        fn EnumWindows(callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32, data: isize) -> i32;
+        fn MessageBoxW(
+            hwnd: *mut std::ffi::c_void,
+            text: *const u16,
+            caption: *const u16,
+            typ: u32,
+        ) -> i32;
+        fn EnumWindows(
+            callback: unsafe extern "system" fn(*mut std::ffi::c_void, isize) -> i32,
+            data: isize,
+        ) -> i32;
         fn GetWindowThreadProcessId(hwnd: *mut std::ffi::c_void, pid: *mut u32) -> u32;
         fn ShowWindowAsync(hwnd: *mut std::ffi::c_void, command: i32) -> i32;
         fn SetForegroundWindow(hwnd: *mut std::ffi::c_void) -> i32;
     }
 
     fn wide(value: &str) -> Vec<u16> {
-        OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+        OsStr::new(value)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
     }
 
     fn process_is_alive(pid: u32) -> bool {
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
         if handle.is_null() {
             return false;
         }
@@ -94,7 +117,10 @@ mod platform {
         exited
     }
 
-    unsafe extern "system" fn focus_matching_window(hwnd: *mut std::ffi::c_void, data: isize) -> i32 {
+    unsafe extern "system" fn focus_matching_window(
+        hwnd: *mut std::ffi::c_void,
+        data: isize,
+    ) -> i32 {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
         if pid == data as u32 {
@@ -128,10 +154,17 @@ mod platform {
         };
         let mut message = wide("检测到 SuperClaw 正在运行。\n\n");
         message.pop();
-        message.extend(wide("是：打开当前应用\n否：重启并打开当前应用\n取消：保持当前状态"));
+        message.extend(wide(
+            "是：打开当前应用\n否：重启并打开当前应用\n取消：保持当前状态",
+        ));
         let caption = wide("SuperClaw");
         let choice = unsafe {
-            MessageBoxW(std::ptr::null_mut(), message.as_ptr(), caption.as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION)
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                caption.as_ptr(),
+                MB_YESNOCANCEL | MB_ICONQUESTION,
+            )
         };
         if choice == IDYES {
             focus_running_instance(existing.pid);
@@ -147,7 +180,14 @@ mod platform {
             }
             let title = wide("SuperClaw");
             let message = wide("当前运行中的 SuperClaw 未能在限定时间内正常退出。为避免服务冲突，未启动第二个实例。");
-            unsafe { MessageBoxW(std::ptr::null_mut(), message.as_ptr(), title.as_ptr(), 0x0000_0010) };
+            unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    message.as_ptr(),
+                    title.as_ptr(),
+                    0x0000_0010,
+                )
+            };
             return false;
         }
         false
@@ -179,7 +219,9 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
-    pub fn prepare_instance() -> bool { true }
+    pub fn prepare_instance() -> bool {
+        true
+    }
     pub fn register_primary_instance(_app: tauri::AppHandle) {}
 }
 

@@ -105,6 +105,18 @@ test('OpenClaw save writes a minimal patch then performs one Gateway reload', as
   assert.deepEqual(client.calls[0][1].agents.defaults.model.fallbacks, ['yyapi/gpt-5.5'])
 })
 
+test('shared model save remains successful when the OpenClaw reload is temporarily unavailable', async () => {
+  const client = fakeClient({
+    reloadGateway: async () => { throw new Error('Gateway not running') },
+  })
+  const result = await applyUnifiedModelSelection(selection, { target: 'default', client })
+  assert.deepEqual(result.applied, ['openclaw', 'hermes', 'claude_code'])
+  assert.equal(result.rolledBack, false)
+  assert.equal(result.deferred.length, 1)
+  assert.equal(result.deferred[0].agent, 'openclaw')
+  assert.match(result.deferred[0].reason, /Gateway not running/)
+})
+
 test('cross-agent failure restores the prior OpenClaw configuration before reporting failure', async () => {
   const client = fakeClient({
     configureHermes: async () => { throw new Error('Hermes rejected model') },

@@ -85,6 +85,64 @@ fn claude_panel_data_dir(resources: &Path) -> PathBuf {
     resources.join("data").join("claude-panel")
 }
 
+fn claude_collaboration_queue_path(resources: &Path) -> PathBuf {
+    claude_panel_data_dir(resources).join("collaboration-queue.json")
+}
+
+fn claude_collaboration_results_path(resources: &Path) -> PathBuf {
+    claude_panel_data_dir(resources).join("collaboration-results.json")
+}
+
+/// Drains media jobs created by the native Claude panel. The panel cannot use
+/// the main WebView's localStorage, so this tiny portable file is the handoff
+/// boundary; the frontend converts each row back into the existing queue.
+#[tauri::command]
+pub fn claude_collaboration_drain() -> Result<Value, String> {
+    let resources = resources_dir()?;
+    let path = claude_collaboration_queue_path(&resources);
+    if !path.exists() {
+        return Ok(json!({ "tasks": [] }));
+    }
+    let rows: Vec<Value> = serde_json::from_str(
+        &fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read Claude collaboration queue: {e}"))?,
+    )
+    .map_err(|e| format!("Invalid Claude collaboration queue: {e}"))?;
+    fs::write(&path, "[]")
+        .map_err(|e| format!("Failed to clear Claude collaboration queue: {e}"))?;
+    Ok(json!({ "tasks": rows }))
+}
+
+/// Persists an OpenClaw completion for the native Claude panel. Both runtime
+/// modes use the same portable data directory, avoiding cross-WebView storage.
+#[tauri::command]
+pub fn claude_collaboration_result_append(result: Value) -> Result<Value, String> {
+    let resources = resources_dir()?;
+    let path = claude_collaboration_results_path(&resources);
+    let mut rows: Vec<Value> = if path.exists() {
+        serde_json::from_str(
+            &fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read Claude collaboration results: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid Claude collaboration results: {e}"))?
+    } else {
+        Vec::new()
+    };
+    rows.push(result);
+    if rows.len() > 50 {
+        rows.drain(0..rows.len() - 50);
+    }
+    fs::create_dir_all(claude_panel_data_dir(&resources))
+        .map_err(|e| format!("Failed to create Claude panel data directory: {e}"))?;
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&rows)
+            .map_err(|e| format!("Failed to serialize Claude collaboration result: {e}"))?,
+    )
+    .map_err(|e| format!("Failed to write Claude collaboration result: {e}"))?;
+    Ok(json!({ "ok": true }))
+}
+
 fn hermes_env_path(resources: &Path) -> PathBuf {
     resources.join("data").join("hermes").join(".env")
 }

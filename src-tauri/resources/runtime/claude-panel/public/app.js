@@ -6554,6 +6554,12 @@ async function startRun(prompt, overrides = {}) {
   const authorizationOriginalUserMessageRecorded =
     authorizationContinuation && overrides.authorizationOriginalUserMessageRecorded === true;
   const authorizationAttempts = { ...(overrides.authorizationAttempts || {}) };
+  // Media generation uses the shared OpenClaw execution queue. Claude stays
+  // the originating agent; it never attempts to emulate an image provider.
+  if (isClaudeMediaGenerationPrompt(prompt)) {
+    const dispatched = await dispatchClaudeMediaTask(prompt);
+    if (dispatched) return;
+  }
   const projectReady = await ensureProjectForPrompt(prompt, overrides);
   if (!projectReady) return;
   if (!projectSelect.value) {
@@ -6785,6 +6791,60 @@ async function startRun(prompt, overrides = {}) {
     if (continuation) {
       queueMicrotask(() => startRun(continuation.prompt, continuation.overrides));
     }
+  }
+}
+
+function isClaudeMediaGenerationPrompt(prompt = "") {
+  const value = String(prompt || "");
+  return /(?:\u751f\u6210|\u7ed8\u5236|\u5236\u4f5c|\u8bbe\u8ba1|\u521b\u5efa).{0,24}(?:\u56fe\u7247|\u56fe\u50cf|\u63d2\u753b|\u6d77\u62a5|\u5c01\u9762|\u5934\u50cf)|(?:\u6587\u751f\u56fe|text\s*to\s*image)/i.test(value)
+    || /(?:\u89c6\u9891|video|\u914d\u97f3|\u8bed\u97f3|text\s*to\s*speech|\u97f3\u4e50|\u6b4c\u66f2|text\s*to\s*music)/i.test(value) && /(?:\u751f\u6210|\u5236\u4f5c|create|generate|\u8f6c)/i.test(value);
+}
+
+async function dispatchClaudeMediaTask(prompt) {
+  try {
+    createOrUpdateProjectConversation(prompt, prompt);
+    const conversationId = currentConversationId || "";
+    const response = await fetch("/api/collaboration/dispatch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt, conversationId }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.task?.taskId) throw new Error(data.error || "媒体协作任务创建失败");
+    appendActiveRunConversationMessage("user", "你", prompt);
+    appendActiveRunConversationMessage("assistant", "Claude", "The image generation task was sent to the OpenClaw collaboration queue.");
+    addMessage("user", "你", prompt);
+    addMessage("assistant", "Claude", "The image generation task was sent to OpenClaw. Opening the collaboration session now.");
+    const base = resolveSuperclawBase();
+    window.setTimeout(() => { window.location.assign(`${base}/#/chat`); }, 80);
+    return true;
+  } catch (error) {
+    addMessage("error", "媒体协作失败", error?.message || String(error));
+    return false;
+  }
+}
+
+async function drainClaudeMediaCollaborationResults() {
+  try {
+    const response = await fetch("/api/collaboration/results/drain", { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    const results = Array.isArray(data?.results) ? data.results : [];
+    for (const result of results) {
+      const conversation = getConversation(result?.conversationId);
+      if (!conversation || !result?.taskId) continue;
+      const title = result.failed ? "OpenClaw collaboration failed" : "OpenClaw collaboration completed";
+      const content = String(result.content || "The OpenClaw collaboration completed without a text summary.");
+      appendConversationMessage(conversation.id, result.failed ? "error" : "assistant", "OpenClaw", content);
+      updateConversationById(conversation.id, {
+        status: result.failed ? "运行异常" : "已完成",
+        result: content,
+      });
+      if (conversation.id === currentConversationId) {
+        addMessage(result.failed ? "error" : "assistant", "OpenClaw", content);
+      }
+    }
+  } catch (error) {
+    console.warn("[claude-collaboration] result drain failed:", error);
   }
 }
 
@@ -7511,4 +7571,6 @@ introStarted.finally(() => {
   if (!restoreLastConversation()) renderConversations();
 });
 loadAnnouncement().catch(() => renderAnnouncement(fallbackAnnouncementText));
+drainClaudeMediaCollaborationResults();
+setInterval(drainClaudeMediaCollaborationResults, 2000);
 loadStatus().catch((error) => addMessage("error", "错误", error.message));

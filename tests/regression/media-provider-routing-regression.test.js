@@ -3,11 +3,14 @@ import test from 'node:test'
 
 import {
   buildMediaRoutePatch,
+  buildMediaRoutesForProvider,
   emptyMediaRouteConfig,
   normalizeMediaRouteConfig,
+  protocolForMediaProvider,
   resolveMediaRoute,
   saveMediaRoute,
 } from '../../src/lib/media-provider-routing.js'
+import { buildOpenClawMediaTaskPrompt, detectTextToImageTask } from '../../src/lib/collaboration.js'
 
 const imageRoute = {
   providerId: 'image_provider',
@@ -56,4 +59,45 @@ test('saving a media route only calls its dedicated portable config bridge', asy
   await saveMediaRoute('text_to_image', imageRoute, client)
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0], { version: 1, routes: { text_to_image: imageRoute } })
+})
+
+test('MiniMax uses its dedicated portable CLI adapter without changing chat routing', () => {
+  const minimax = { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'hidden', models: [{ id: 'MiniMax-M3' }] }
+  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'text_to_image'), 'minimax-cli')
+  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'image_to_video'), 'minimax-cli')
+  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'image_to_image'), 'openai-images')
+  const route = { providerId: 'minimax_cn', model: 'MiniMax-M3', protocol: 'minimax-cli', enabled: true }
+  assert.deepEqual(normalizeMediaRouteConfig({ routes: { text_to_music: route } }), { version: 1, routes: { text_to_music: route } })
+  assert.throws(
+    () => normalizeMediaRouteConfig({ routes: { image_to_image: route } }),
+    /does not support/i,
+  )
+})
+
+test('one media provider selection expands only to its supported capabilities', () => {
+  const minimax = { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'hidden', models: [{ id: 'MiniMax-M3' }] }
+  const routes = buildMediaRoutesForProvider('minimax_cn', minimax, 'MiniMax-M3')
+  assert.deepEqual(Object.keys(routes).sort(), [
+    'image_to_video',
+    'image_understanding',
+    'text_to_image',
+    'text_to_music',
+    'text_to_speech',
+    'text_to_video',
+  ])
+  assert.equal(routes.text_to_image.protocol, 'minimax-cli')
+  assert.equal(routes.image_to_image, undefined)
+})
+
+test('text-to-image requests become an isolated OpenClaw collaboration task', () => {
+  const task = detectTextToImageTask({ text: '生成一张郑州夏日城市海报' })
+  assert.deepEqual(task, {
+    media_type: 'text_to_image',
+    prompt: '生成一张郑州夏日城市海报',
+    title: '文生图协作任务',
+  })
+  const prompt = buildOpenClawMediaTaskPrompt(task)
+  assert.match(prompt, /superclaw_generate_image/)
+  assert.match(prompt, /生成一张郑州夏日城市海报/)
+  assert.equal(detectTextToImageTask({ text: '分析我上传的图片', attachments: [{ name: 'source.png' }] }), null)
 })

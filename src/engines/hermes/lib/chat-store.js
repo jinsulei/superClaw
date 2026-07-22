@@ -27,7 +27,7 @@ import {
   mapAgentGatewayStatusToAgentRun,
   mapTaskBoundAgentHeartbeat,
 } from '../../../lib/agent-gateway-status.js'
-import { mapCollaborationTaskMessageToTaskEvents } from '../../../lib/collaboration.js'
+import { COLLAB_TARGETS, buildOpenClawMediaTaskPrompt, buildTaskContext, createTaskProgress, createTaskRequest, detectMediaTask, mapCollaborationTaskMessageToTaskEvents, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 import {
   dedupeToolEvents,
@@ -3340,6 +3340,47 @@ function createStore() {
     const displayText = (opts.displayContent || text).trim()
     if (!runText && !attachments.length) return
     const clientRequestId = String(opts.clientRequestId || uid())
+    const mediaTask = detectMediaTask({ text: rawText, attachments })
+    if (mediaTask) {
+      let mediaSession = activeSession()
+      if (!mediaSession) {
+        mediaSession = createLocalSession({
+          title: deriveSessionTitleFromText(displayText || rawText),
+          optimistic: false,
+          clientRequestId,
+        })
+      }
+      const taskId = `media-${clientRequestId}`
+      const sessionId = mediaSession.id
+      const context = buildTaskContext({
+        sessionId,
+        taskId,
+        summary: rawText,
+        recent_messages: mediaSession.messages.slice(-20).map(message => ({ role: message.role, content: message.content, timestamp: message.timestamp })),
+        content: rawText,
+      })
+      mediaSession.messages.push({ id: `user-${clientRequestId}`, role: 'user', content: displayText || rawText, timestamp: Date.now(), clientRequestId })
+      mediaSession.messages.push({
+        id: getHermesAssistantMessageId(clientRequestId),
+        role: 'assistant',
+        content: '已将文生图任务交给 OpenClaw 独立协作会话执行。生成结果会作为图片附件回传到本会话；若媒体模型未配置或不支持，会返回明确原因。',
+        timestamp: Date.now(),
+        clientRequestId,
+        collaborationTaskId: taskId,
+      })
+      createTaskRequest({ taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, toAgent: COLLAB_TARGETS.openclaw, title: mediaTask.title, content: rawText, context })
+      createTaskProgress({ taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, toAgent: COLLAB_TARGETS.hermes, title: mediaTask.title, content: '已创建 OpenClaw 文生图协作任务。', context })
+      setPendingDispatch({ target: COLLAB_TARGETS.openclaw, taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, stage: 'execute', title: mediaTask.title, message: buildOpenClawMediaTaskPrompt(mediaTask), context, artifacts: [{ type: 'media_request', text: rawText, created_at: new Date().toISOString() }] })
+      updateCollaborationTask(taskId, { status: 'pending', media_type: mediaTask.media_type, media_prompt: rawText, context })
+      updateSessionTitleFromFirstUser(mediaSession)
+      mediaSession.updatedAt = Date.now()
+      mediaSession.lastActiveAt = Date.now()
+      persistActiveMessages()
+      persistSessions()
+      notify()
+      visibleUserPromptByRequestId.delete(clientRequestId)
+      return Promise.resolve({ status: 'success', reason: 'media-task-dispatched', taskId })
+    }
     const isolateNativeMediaRun = Boolean(opts.isolateNativeMediaRun || isHermesCurrentChatMediaReturnRequest(runText || displayText))
     if (inFlightSendByRequestId.has(clientRequestId)) {
       return inFlightSendByRequestId.get(clientRequestId)

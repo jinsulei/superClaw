@@ -1,12 +1,12 @@
 /// 设备密钥管理 + Gateway connect 握手签名
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
+use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::Path;
-use rand::RngCore;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
@@ -29,9 +29,7 @@ pub(crate) fn get_or_create_key() -> Result<(String, String, SigningKey), String
     get_or_create_key_in_dir(&dir)
 }
 
-pub(crate) fn get_or_create_key_in_dir(
-    dir: &Path,
-) -> Result<(String, String, SigningKey), String> {
+pub(crate) fn get_or_create_key_in_dir(dir: &Path) -> Result<(String, String, SigningKey), String> {
     let path = dir.join(DEVICE_KEY_FILE);
 
     if path.exists() {
@@ -157,8 +155,11 @@ pub(crate) fn ensure_gateway_identity_store_in_dir(dir: &Path) -> Result<(), Str
             "privateKeyPem": private_key_pem_from_raw(&signing_key.to_bytes())?,
             "createdAtMs": unix_now_ms()
         });
-        fs::write(&identity_path, serde_json::to_string_pretty(&identity).unwrap())
-            .map_err(|e| format!("写入 device.json 失败: {e}"))?;
+        fs::write(
+            &identity_path,
+            serde_json::to_string_pretty(&identity).unwrap(),
+        )
+        .map_err(|e| format!("写入 device.json 失败: {e}"))?;
     }
 
     let token = ensure_paired_operator_token(dir, &device_id, &public_key)?;
@@ -175,8 +176,11 @@ pub(crate) fn ensure_gateway_identity_store_in_dir(dir: &Path) -> Result<(), Str
                 }
             }
         });
-        fs::write(&device_auth_path, serde_json::to_string_pretty(&device_auth).unwrap())
-            .map_err(|e| format!("写入 device-auth.json 失败: {e}"))?;
+        fs::write(
+            &device_auth_path,
+            serde_json::to_string_pretty(&device_auth).unwrap(),
+        )
+        .map_err(|e| format!("写入 device-auth.json 失败: {e}"))?;
     }
 
     Ok(())
@@ -221,17 +225,28 @@ fn ensure_paired_operator_token(
             *entry = serde_json::json!({});
         }
         let obj = entry.as_object_mut().unwrap();
-        obj.entry("deviceId").or_insert_with(|| serde_json::json!(device_id));
-        obj.entry("publicKey").or_insert_with(|| serde_json::json!(public_key));
-        obj.entry("platform").or_insert_with(|| serde_json::json!(gateway_cli_probe_platform()));
-        obj.entry("clientId").or_insert_with(|| serde_json::json!("openclaw-control-ui"));
-        obj.entry("clientMode").or_insert_with(|| serde_json::json!("ui"));
-        obj.entry("role").or_insert_with(|| serde_json::json!("operator"));
-        obj.entry("roles").or_insert_with(|| serde_json::json!(["operator"]));
-        obj.entry("scopes").or_insert_with(|| serde_json::json!(SCOPES));
-        obj.entry("approvedScopes").or_insert_with(|| serde_json::json!(SCOPES));
-        obj.entry("createdAtMs").or_insert_with(|| serde_json::json!(now));
-        obj.entry("approvedAtMs").or_insert_with(|| serde_json::json!(now));
+        obj.entry("deviceId")
+            .or_insert_with(|| serde_json::json!(device_id));
+        obj.entry("publicKey")
+            .or_insert_with(|| serde_json::json!(public_key));
+        obj.entry("platform")
+            .or_insert_with(|| serde_json::json!(gateway_cli_probe_platform()));
+        obj.entry("clientId")
+            .or_insert_with(|| serde_json::json!("openclaw-control-ui"));
+        obj.entry("clientMode")
+            .or_insert_with(|| serde_json::json!("ui"));
+        obj.entry("role")
+            .or_insert_with(|| serde_json::json!("operator"));
+        obj.entry("roles")
+            .or_insert_with(|| serde_json::json!(["operator"]));
+        obj.entry("scopes")
+            .or_insert_with(|| serde_json::json!(SCOPES));
+        obj.entry("approvedScopes")
+            .or_insert_with(|| serde_json::json!(SCOPES));
+        obj.entry("createdAtMs")
+            .or_insert_with(|| serde_json::json!(now));
+        obj.entry("approvedAtMs")
+            .or_insert_with(|| serde_json::json!(now));
         let tokens = obj.entry("tokens").or_insert_with(|| serde_json::json!({}));
         if !tokens.is_object() {
             *tokens = serde_json::json!({});

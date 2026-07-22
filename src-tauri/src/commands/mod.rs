@@ -28,8 +28,8 @@ pub mod extensions;
 pub mod hermes;
 pub mod hermes_providers;
 pub mod logs;
-pub mod memory;
 pub mod media;
+pub mod memory;
 pub mod messaging;
 pub mod ocr;
 pub mod openclaw_history;
@@ -329,10 +329,19 @@ fn ensure_superclaw_openclaw_plugins() {
         .join("openclaw-zh")
         .join("dist")
         .join("extensions");
-    for plugin in ["desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
+    for plugin in [
+        "desktop-control",
+        "skill-manager",
+        "superclaw-ocr",
+        "superclaw-media",
+    ] {
         let source = if plugin == "superclaw-media" {
-            app_resources_dir().map(|dir| dir.join("templates").join("openclaw-plugins").join(plugin)).unwrap_or_else(|| source_extensions.join(plugin))
-        } else { source_extensions.join(plugin) };
+            app_resources_dir()
+                .map(|dir| dir.join("templates").join("openclaw-plugins").join(plugin))
+                .unwrap_or_else(|| source_extensions.join(plugin))
+        } else {
+            source_extensions.join(plugin)
+        };
         let target = runtime_extensions.join(plugin);
         if source.join("openclaw.plugin.json").is_file() {
             copy_dir_overwrite(&source, &target);
@@ -579,7 +588,10 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             );
             changed = true;
         }
-        if let Some(list) = agents.get_mut("list").and_then(|value| value.as_array_mut()) {
+        if let Some(list) = agents
+            .get_mut("list")
+            .and_then(|value| value.as_array_mut())
+        {
             for agent_value in list {
                 let Some(agent) = agent_value.as_object_mut() else {
                     continue;
@@ -611,7 +623,14 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
                     .entry("alsoAllow")
                     .or_insert_with(|| serde_json::json!([]));
                 if let Some(allow) = allow.as_array_mut() {
-                    for tool in ["browser", "desktop_control", "skill_manager", "superclaw_ocr", "exec", "process"] {
+                    for tool in [
+                        "browser",
+                        "desktop_control",
+                        "skill_manager",
+                        "superclaw_ocr",
+                        "exec",
+                        "process",
+                    ] {
                         if !allow.iter().any(|value| value.as_str() == Some(tool)) {
                             allow.push(serde_json::json!(tool));
                             changed = true;
@@ -640,7 +659,13 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("allow")
             .or_insert_with(|| serde_json::json!([]));
         if let Some(allow_arr) = allow.as_array_mut() {
-            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
+            for key in [
+                "browser",
+                "desktop-control",
+                "skill-manager",
+                "superclaw-ocr",
+                "superclaw-media",
+            ] {
                 if !allow_arr.iter().any(|v| v.as_str() == Some(key)) {
                     allow_arr.push(serde_json::json!(key));
                     changed = true;
@@ -651,7 +676,13 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
             .entry("entries")
             .or_insert_with(|| serde_json::json!({}));
         if let Some(entries_obj) = entries.as_object_mut() {
-            for key in ["browser", "desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media"] {
+            for key in [
+                "browser",
+                "desktop-control",
+                "skill-manager",
+                "superclaw-ocr",
+                "superclaw-media",
+            ] {
                 let enabled = entries_obj
                     .get(key)
                     .and_then(|v| v.get("enabled"))

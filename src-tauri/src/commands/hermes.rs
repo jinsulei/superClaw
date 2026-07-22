@@ -1,4 +1,4 @@
-﻿//! Hermes Agent 安装与管理命令
+//! Hermes Agent 安装与管理命令
 //!
 //! 通过 uv (Astral) 实现零依赖安装：
 //!   1. 下载 uv 单文件二进制
@@ -587,7 +587,10 @@ fn uv_tool_dir() -> PathBuf {
     if new_path.exists() {
         return new_path;
     }
-    let new_path = app_root_dir().join("resources").join("runtime").join("uv-tools");
+    let new_path = app_root_dir()
+        .join("resources")
+        .join("runtime")
+        .join("uv-tools");
     if new_path.exists() {
         return new_path;
     }
@@ -627,7 +630,10 @@ fn uv_python_dir() -> PathBuf {
     if new_path.exists() {
         return new_path;
     }
-    let new_path = app_root_dir().join("resources").join("runtime").join("uv-python");
+    let new_path = app_root_dir()
+        .join("resources")
+        .join("runtime")
+        .join("uv-python");
     if new_path.exists() {
         return new_path;
     }
@@ -1898,10 +1904,7 @@ fn hermes_lifecycle_process_info(enhanced: &str) -> (String, String) {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| home.clone());
-        return (
-            cwd.display().to_string(),
-            python.display().to_string(),
-        );
+        return (cwd.display().to_string(), python.display().to_string());
     }
     let launcher = hermes_system_executable(enhanced);
     let cwd = hermes_launcher_cwd(&home, Some(&launcher));
@@ -1968,10 +1971,8 @@ pub fn hermes_native_terminal_start() -> Result<Value, String> {
     let runtime = hermes_agent_runtime_dir().unwrap_or_else(expected_hermes_agent_runtime_dir);
     let home = hermes_home();
     let workspace = hermes_native_workspace_dir();
-    std::fs::create_dir_all(&home)
-        .map_err(|e| format!("创建 Hermes 数据目录失败: {e}"))?;
-    std::fs::create_dir_all(&workspace)
-        .map_err(|e| format!("创建 Hermes 工作目录失败: {e}"))?;
+    std::fs::create_dir_all(&home).map_err(|e| format!("创建 Hermes 数据目录失败: {e}"))?;
+    std::fs::create_dir_all(&workspace).map_err(|e| format!("创建 Hermes 工作目录失败: {e}"))?;
 
     #[cfg(target_os = "windows")]
     {
@@ -3307,8 +3308,7 @@ platforms:
   api_server:
     enabled: true
 {custom_provider_block}
-"#
-            ,
+"#,
             toolsets = default_hermes_api_server_toolsets_yaml(),
         );
         ensure_hermes_api_server_toolsets(&baseline)
@@ -3514,9 +3514,26 @@ fn is_hermes_model_provider_section(trimmed: &str) -> bool {
 // fresh portable profiles expose the same native tools as configured profiles.
 // Write and command actions still stop at the native approval bridge.
 const HERMES_API_SERVER_TOOLSETS: &[&str] = &[
-    "hermes-api-server", "web", "browser", "terminal", "file", "code_execution",
-    "vision", "video", "image_gen", "tts", "skills", "todo", "memory", "session_search",
-    "clarify", "delegation", "cronjob", "messaging", "yuanbao", "computer_use",
+    "hermes-api-server",
+    "web",
+    "browser",
+    "terminal",
+    "file",
+    "code_execution",
+    "vision",
+    "video",
+    "image_gen",
+    "tts",
+    "skills",
+    "todo",
+    "memory",
+    "session_search",
+    "clarify",
+    "delegation",
+    "cronjob",
+    "messaging",
+    "yuanbao",
+    "computer_use",
     "desktop_control",
 ];
 
@@ -3539,7 +3556,10 @@ fn ensure_hermes_api_server_toolsets(content: &str) -> String {
     }
 
     let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
-    let Some(platform_start) = lines.iter().position(|line| line.trim() == "platform_toolsets:") else {
+    let Some(platform_start) = lines
+        .iter()
+        .position(|line| line.trim() == "platform_toolsets:")
+    else {
         return content.to_string();
     };
     let platform_end = lines
@@ -3548,18 +3568,22 @@ fn ensure_hermes_api_server_toolsets(content: &str) -> String {
         .skip(platform_start + 1)
         .find_map(|(index, line)| {
             let trimmed = line.trim();
-            (!trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t')).then_some(index)
+            (!trimmed.is_empty() && !line.starts_with(' ') && !line.starts_with('\t'))
+                .then_some(index)
         })
         .unwrap_or(lines.len());
-    let api_start = (platform_start + 1..platform_end)
-        .find(|index| lines[*index].trim() == "api_server:");
+    let api_start =
+        (platform_start + 1..platform_end).find(|index| lines[*index].trim() == "api_server:");
 
     let Some(api_start) = api_start else {
         let additions = HERMES_API_SERVER_TOOLSETS
             .iter()
             .map(|toolset| format!("    - {toolset}"))
             .collect::<Vec<_>>();
-        lines.splice(platform_start + 1..platform_start + 1, std::iter::once("  api_server:".to_string()).chain(additions));
+        lines.splice(
+            platform_start + 1..platform_start + 1,
+            std::iter::once("  api_server:".to_string()).chain(additions),
+        );
         return lines.join("\n");
     };
     let api_end = (api_start + 1..platform_end)
@@ -3989,7 +4013,6 @@ pub async fn hermes_gateway_action(
     let enhanced = hermes_enhanced_path();
     match action.as_str() {
         "start" => {
-
             // Guardian: ensure platforms.api_server.enabled:true is present
             // before every start. Auto-heal if missing (with a .bak backup).
             // See `ensure_api_server_enabled` for rationale.
@@ -4064,10 +4087,7 @@ pub async fn hermes_gateway_action(
                 // 注意：bin/bash.exe 是 45KB 的 MSYS2 桩，需要完整目录结构才能找到 top-level，
                 // 而 usr/bin/bash.exe 是真身（2.4MB），可以直接运行
                 if let Some(git_root) = portable_git_dir() {
-                    let portable_bash = git_root
-                        .join("usr")
-                        .join("bin")
-                        .join("bash.exe");
+                    let portable_bash = git_root.join("usr").join("bin").join("bash.exe");
                     if portable_bash.is_file() {
                         cmd.env(
                             "HERMES_GIT_BASH_PATH",
@@ -4549,12 +4569,7 @@ pub async fn hermes_detect_environments() -> Result<Value, String> {
         let pv = portable_git_dir();
         let has_bash = pv
             .as_ref()
-            .map(|r| {
-                r.join("usr")
-                    .join("bin")
-                    .join("bash.exe")
-                    .is_file()
-            })
+            .map(|r| r.join("usr").join("bin").join("bash.exe").is_file())
             .unwrap_or(false);
         let has_rg = false;
         let available = has_bash;
@@ -4954,7 +4969,10 @@ fn safe_hermes_document_name(name: &str) -> Option<String> {
 
 fn hermes_document_tool_path() -> PathBuf {
     if let Some(resources) = super::app_resources_dir() {
-        let packaged = resources.join("runtime").join("document-tools").join("hermes_document_tool.py");
+        let packaged = resources
+            .join("runtime")
+            .join("document-tools")
+            .join("hermes_document_tool.py");
         if packaged.exists() {
             return packaged;
         }
@@ -4975,12 +4993,19 @@ pub async fn hermes_save_document_attachment(
     data: String,
 ) -> Result<Value, String> {
     use base64::Engine as _;
-    let safe_name = safe_hermes_document_name(&file_name)
-        .ok_or("仅支持 .xlsx、.docx 或 .pdf 文档")?;
-    if id.len() > 80 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
+    let safe_name =
+        safe_hermes_document_name(&file_name).ok_or("仅支持 .xlsx、.docx 或 .pdf 文档")?;
+    if id.len() > 80
+        || !id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
         return Err("文档标识格式无效".into());
     }
-    let encoded = data.split_once(',').map(|(_, value)| value).unwrap_or(&data);
+    let encoded = data
+        .split_once(',')
+        .map(|(_, value)| value)
+        .unwrap_or(&data);
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())
         .map_err(|e| format!("文档 base64 解码失败: {e}"))?;
@@ -5048,10 +5073,9 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
             }
             let mut image_url = serde_json::Map::new();
             image_url.insert("url".to_string(), Value::String(url));
-            if let Some(detail) = normalize_image_detail(Some(json_string_field(
-                item,
-                &["detail", "imageDetail"],
-            ))) {
+            if let Some(detail) =
+                normalize_image_detail(Some(json_string_field(item, &["detail", "imageDetail"])))
+            {
                 image_url.insert("detail".to_string(), Value::String(detail));
             }
             parts.push(serde_json::json!({
@@ -5372,7 +5396,8 @@ pub async fn hermes_agent_run(
     if let Some(hist) = &conversation_history {
         payload["conversation_history"] = hist.clone();
     }
-    payload["instructions"] = Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
+    payload["instructions"] =
+        Value::String(merge_hermes_identity_instructions(instructions.as_ref()));
 
     let client = hermes_gateway_http_client(std::time::Duration::from_secs(10))
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
@@ -5552,8 +5577,13 @@ pub async fn hermes_agent_run(
                         let mut tool_evt = evt.clone();
                         if let Some(obj) = tool_evt.as_object_mut() {
                             obj.insert("run_id".into(), Value::String(run_id.clone()));
-                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
-                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                            obj.insert(
+                                "session_id".into(),
+                                Value::String(response_session_id.clone()),
+                            );
+                            if let Some(id) =
+                                client_request_id.as_ref().filter(|s| !s.trim().is_empty())
+                            {
                                 obj.insert("clientRequestId".into(), Value::String(id.to_string()));
                             }
                             if !obj.contains_key("tool_call_id") {
@@ -5568,10 +5598,7 @@ pub async fn hermes_agent_run(
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string)
                                     .unwrap_or_else(|| format!("{run_id}:{name}"));
-                                obj.insert(
-                                    "tool_call_id".into(),
-                                    Value::String(call_id),
-                                );
+                                obj.insert("tool_call_id".into(), Value::String(call_id));
                             }
                         }
                         let _ = app.emit("hermes-run-tool", tool_evt);
@@ -5580,8 +5607,13 @@ pub async fn hermes_agent_run(
                         let mut reasoning_evt = evt.clone();
                         if let Some(obj) = reasoning_evt.as_object_mut() {
                             obj.insert("run_id".into(), Value::String(run_id.clone()));
-                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
-                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                            obj.insert(
+                                "session_id".into(),
+                                Value::String(response_session_id.clone()),
+                            );
+                            if let Some(id) =
+                                client_request_id.as_ref().filter(|s| !s.trim().is_empty())
+                            {
                                 obj.insert("clientRequestId".into(), Value::String(id.to_string()));
                             }
                         }
@@ -5636,8 +5668,13 @@ pub async fn hermes_agent_run(
                         let mut forwarded = evt.clone();
                         if let Some(obj) = forwarded.as_object_mut() {
                             obj.insert("run_id".into(), Value::String(run_id.clone()));
-                            obj.insert("session_id".into(), Value::String(response_session_id.clone()));
-                            if let Some(id) = client_request_id.as_ref().filter(|s| !s.trim().is_empty()) {
+                            obj.insert(
+                                "session_id".into(),
+                                Value::String(response_session_id.clone()),
+                            );
+                            if let Some(id) =
+                                client_request_id.as_ref().filter(|s| !s.trim().is_empty())
+                            {
                                 obj.insert("clientRequestId".into(), Value::String(id.to_string()));
                             }
                         }
@@ -8179,7 +8216,8 @@ const DEFAULT_OFF_TOOLSETS: &[&str] = &[
 #[tauri::command]
 pub fn hermes_toolsets_list() -> Result<Value, String> {
     // 1) 优先尝试 CLI
-    let output = run_silent("hermes", &["tools", "list", "--platform", "api_server"]).unwrap_or_default();
+    let output =
+        run_silent("hermes", &["tools", "list", "--platform", "api_server"]).unwrap_or_default();
     if !output.is_empty() {
         return Ok(serde_json::json!({ "raw": output }));
     }
@@ -8587,8 +8625,19 @@ mod hermes_api_server_toolset_tests {
     #[test]
     fn fresh_config_gets_the_portable_agent_toolsets() {
         let merged = ensure_hermes_api_server_toolsets("model:\n  default: test\n");
-        for toolset in ["web", "browser", "terminal", "file", "vision", "memory", "delegation"] {
-            assert!(merged.contains(&format!("    - {toolset}")), "missing {toolset}");
+        for toolset in [
+            "web",
+            "browser",
+            "terminal",
+            "file",
+            "vision",
+            "memory",
+            "delegation",
+        ] {
+            assert!(
+                merged.contains(&format!("    - {toolset}")),
+                "missing {toolset}"
+            );
         }
     }
 
@@ -8604,17 +8653,31 @@ mod hermes_api_server_toolset_tests {
 
 #[cfg(test)]
 mod document_attachment_tests {
-    use super::{build_hermes_run_input, hermes_save_document_attachment, safe_hermes_document_name};
+    use super::{
+        build_hermes_run_input, hermes_save_document_attachment, safe_hermes_document_name,
+    };
     use base64::Engine as _;
     use serde_json::json;
 
     #[test]
     fn only_allows_supported_document_extensions() {
-        assert_eq!(safe_hermes_document_name("report.xlsx"), Some("report.xlsx".into()));
-        assert_eq!(safe_hermes_document_name("notes.docx"), Some("notes.docx".into()));
-        assert_eq!(safe_hermes_document_name("scan.pdf"), Some("scan.pdf".into()));
+        assert_eq!(
+            safe_hermes_document_name("report.xlsx"),
+            Some("report.xlsx".into())
+        );
+        assert_eq!(
+            safe_hermes_document_name("notes.docx"),
+            Some("notes.docx".into())
+        );
+        assert_eq!(
+            safe_hermes_document_name("scan.pdf"),
+            Some("scan.pdf".into())
+        );
         assert_eq!(safe_hermes_document_name("payload.exe"), None);
-        assert_eq!(safe_hermes_document_name("../escape.pdf"), Some("..escape.pdf".into()));
+        assert_eq!(
+            safe_hermes_document_name("../escape.pdf"),
+            Some("..escape.pdf".into())
+        );
     }
 
     #[test]
@@ -8650,7 +8713,9 @@ mod document_attachment_tests {
             }
         ]));
         let input = build_hermes_run_input("比较附件", &attachments);
-        let parts = input[0]["content"].as_array().expect("mixed input is multimodal");
+        let parts = input[0]["content"]
+            .as_array()
+            .expect("mixed input is multimodal");
         let text = parts
             .iter()
             .find(|part| part["type"] == "text")
@@ -8674,7 +8739,10 @@ mod document_attachment_tests {
         .expect("native document attachment is saved");
         let saved = result["path"].as_str().expect("saved path");
         assert!(saved.ends_with("report.xlsx"));
-        assert_eq!(std::fs::read(saved).expect("read saved document"), b"test workbook bytes");
+        assert_eq!(
+            std::fs::read(saved).expect("read saved document"),
+            b"test workbook bytes"
+        );
         std::fs::remove_file(saved).expect("remove test upload");
     }
 }

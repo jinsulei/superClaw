@@ -751,7 +751,9 @@
 
 .msg-ai .msg-bubble pre.agent-message-code-block code {
   min-width: max-content;
-  padding: 0;
+  /* The generic bubble rule resets pre padding. Keep code content inset so
+     indentation remains visible while horizontal scrolling preserves spaces. */
+  padding: 12px 14px;
   overflow: visible;
   white-space: pre;
   word-break: normal;

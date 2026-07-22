@@ -65,6 +65,7 @@ export const SHENGSUANYUN = {
   api: 'openai-completions',
 }
 
+// 常用模型预设（按服务商分组）
 export const MINIMAX_MODEL_PRESETS = [
   { id: 'MiniMax-M3', name: 'MiniMax M3', contextWindow: 1000000 },
   { id: 'MiniMax-M2.7', name: 'MiniMax M2.7', contextWindow: 1000000 },
@@ -73,7 +74,6 @@ export const MINIMAX_MODEL_PRESETS = [
   { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax M2.5 Highspeed', contextWindow: 204000 },
 ]
 
-// 常用模型预设（按服务商分组）
 export const MODEL_PRESETS = {
   openai: [
     { id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000 },

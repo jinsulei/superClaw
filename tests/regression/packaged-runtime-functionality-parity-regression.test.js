@@ -55,6 +55,7 @@ const openclawChatStyleSource = readFileSync('src/style/chat.css', 'utf8')
 const mediaProviderRoutingSource = readFileSync('src/lib/media-provider-routing.js', 'utf8')
 const mediaCommandSource = readFileSync('src-tauri/src/commands/media.rs', 'utf8')
 const openclawMediaPluginSource = readFileSync('src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js', 'utf8')
+const collaborationSource = readFileSync('src/lib/collaboration.js', 'utf8')
 
 test('packaged first run opens a console while bundled gateway startup continues in the background', () => {
   assert.match(openclawEngineSource, /void ensureGatewayReadyOnBoot\(\)/)
@@ -79,6 +80,51 @@ test('OpenClaw code copy supports Tauri clipboard fallback instead of silently r
   assert.match(openclawChatSource, /e\.target\.closest\('\.agent-message-code-copy'\)/)
   assert.match(openclawChatSource, /codeCopyBtn\.closest\('\.agent-message-code-block'\)\?\.querySelector\('code'\)/)
   assert.match(openclawChatSource, /const copied = await copyText\(code\?\.textContent \|\| ''\)/)
+})
+
+test('media collaboration uses the portable task queue and returns generated image artifacts', () => {
+  assert.match(collaborationSource, /detectTextToImageTask/)
+  assert.match(collaborationSource, /buildOpenClawMediaTaskPrompt/)
+  assert.match(hermesStoreSource, /media-task-dispatched/)
+  assert.match(hermesStoreSource, /setPendingDispatch\(\{ target: COLLAB_TARGETS\.openclaw/)
+  assert.match(hermesStoreSource, /buildOpenClawMediaTaskPrompt\(mediaTask\)/)
+  assert.match(openclawChatSource, /returnOpenClawCollaborationResult\(\{ runId, content, failed = false, artifacts = \[\] \}/)
+  assert.match(openclawChatSource, /type: 'image'/)
+  assert.match(openclawMediaPluginSource, /superclaw_generate_image/)
+  assert.match(openclawMediaPluginSource, /superclaw_generate_video/)
+  assert.match(openclawMediaPluginSource, /superclaw_generate_speech/)
+  assert.match(openclawMediaPluginSource, /superclaw_generate_music/)
+  assert.match(openclawMediaPluginSource, /superclaw_describe_image/)
+  assert.match(openclawMediaPluginSource, /mmx-cli/)
+})
+
+test('the bundled media plugin remains valid for the packaged OpenClaw config validator', () => {
+  const mediaManifest = JSON.parse(readFileSync('src-tauri/resources/templates/openclaw-plugins/superclaw-media/openclaw.plugin.json', 'utf8'))
+  assert.equal(mediaManifest.id, 'superclaw-media')
+  assert.deepEqual(mediaManifest.configSchema, {
+    type: 'object',
+    additionalProperties: false,
+    properties: {},
+  })
+})
+
+test('Claude native media requests use the same portable OpenClaw queue and receive a portable result', () => {
+  assert.match(claudePanelSource, /isClaudeMediaGenerationPrompt/)
+  assert.match(claudePanelSource, /dispatchClaudeMediaTask/)
+  assert.match(claudePanelSource, /createOrUpdateProjectConversation\(prompt, prompt\)/)
+  assert.match(claudePanelSource, /const conversationId = currentConversationId \|\| ""/)
+  assert.match(claudePanelSource, /drainClaudeMediaCollaborationResults/)
+  assert.match(claudePanelServerSource, /COLLABORATION_QUEUE_PATH/)
+  assert.match(claudePanelServerSource, /COLLABORATION_RESULTS_PATH/)
+  assert.match(claudePanelServerSource, /\/api\/collaboration\/dispatch/)
+  assert.match(claudePanelServerSource, /\/api\/collaboration\/result/)
+  assert.match(openclawChatSource, /claudeCollaborationDrain/)
+  assert.match(openclawChatSource, /rememberOpenClawCollaborationOrigin/)
+  assert.match(openclawChatSource, /publishOpenClawResultToClaudePanel/)
+  assert.match(tauriApiSource, /claudeCollaborationResultAppend/)
+  assert.match(claudeCommandsSource, /claude_collaboration_result_append/)
+  assert.match(tauriLibSource, /claude_code::claude_collaboration_result_append/)
+  assert.doesNotMatch(claudePanelServerSource, /C:\\Users|C:\\tmp/)
 })
 
 test('OpenClaw shared markdown code blocks stay scrollable instead of clipping long code', () => {
@@ -134,12 +180,15 @@ test('media task routes stay isolated from chat Gateway settings across dev and 
   assert.match(mediaProviderRoutingSource, /must not contain credentials or Base URL/)
   assert.doesNotMatch(mediaProviderRoutingSource, /writeOpenclawConfig|reloadGateway/)
   assert.match(mediaCommandSource, /join\("data"\)[\s\S]*?join\("media"\)[\s\S]*?join\("media-routes\.json"\)/)
+  assert.match(mediaCommandSource, /minimax-cli/)
+  assert.match(mediaCommandSource, /media_generate\(/)
   assert.match(buildDesktopSource, /\$MediaData = Join-Path \$DataRoot "media"/)
   assert.match(buildDesktopSource, /media-routes\.json/)
   assert.match(openclawMediaPluginSource, /superclaw_generate_image/)
   assert.match(openclawMediaPluginSource, /media-routes\.json/)
   assert.match(openclawMediaPluginSource, /images\/generations/)
   assert.match(buildDesktopSource, /superclaw-media/)
+  assert.match(buildDesktopSource, /mmx-cli-1\.0\.18\.tgz/)
 })
 
 test('Claude opens user-approved local files through a portable scoped desktop bridge', () => {

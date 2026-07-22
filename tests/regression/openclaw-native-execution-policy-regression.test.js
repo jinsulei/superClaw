@@ -27,6 +27,52 @@ test('OpenClaw workspace policy makes native tools the execution authority', () 
   assert.match(workspacePolicy, /Finance/i)
 })
 
+test('OpenClaw keeps raw tool identifiers out of the visible reply and uses friendly progress labels', () => {
+  const rawToolFilter = chat.match(/function stripOpenClawRawToolLines\([\s\S]*?\n\}/)?.[0] || ''
+  const displayName = chat.match(/function getOpenClawToolDisplayName\([\s\S]*?(?=\nfunction stripRawOpenClawToolText)/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${rawToolFilter}; ${displayName}; result = [
+    stripOpenClawRawToolLines('准备查询天气：\\nweb_search\\nweb_fetch\\n查询完成'),
+    stripOpenClawRawToolLines('web_search\\nweb_fetch'),
+    getOpenClawToolDisplayName({ name: 'web_search' }),
+    getOpenClawToolDisplayName({ name: 'web_fetch' }),
+    getOpenClawToolProgressLabel({ name: 'web_fetch' }),
+  ]`, sandbox)
+
+  assert.deepEqual(Array.from(sandbox.result), ['准备查询天气：\n查询完成', '', '检索公开资料', '读取网页内容', '读取网页内容，用于核对页面中的具体内容。'])
+  assert.match(chat, /recordOpenClawRunStep\('tool', toolLabel, current\.status \|\| 'running', toolCallId\)/)
+  assert.match(chat, /showTyping\(true, `正在\$\{toolLabel\}`\)/)
+  assert.match(chat, /计划：先理解你的目标，按需查找资料或执行操作，再整理可靠结论。/)
+})
+
+test('OpenClaw renders provider public reasoning summaries without rendering raw internal reasoning', () => {
+  const progress = chat.match(/function getOpenClawVisibleProgressFromEvent\([\s\S]*?(?=\nfunction hydrateOpenClawLiveHistoryProgress)/)?.[0] || ''
+
+  assert.match(progress, /data\.reasoning_summary/)
+  assert.match(progress, /data\.reasoningSummary/)
+  assert.match(progress, /data\.public_reasoning/)
+  assert.match(progress, /data\.explanation/)
+  assert.match(chat, /推理摘要：\$\{thought\}/)
+  assert.match(chat, /正在分析任务并确定下一步。/)
+})
+
+test('OpenClaw shows executed shell commands only in a redacted technical detail', () => {
+  const commandPreview = chat.match(/function redactOpenClawVisibleSensitiveText\([\s\S]*?(?=\nfunction collectOpenClawToolText)/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${commandPreview}; result = [
+    getOpenClawToolCommandPreview({ toolName: 'exec', input: { command: 'curl -H "Authorization: Bearer sk-secret-token-value-123" --api-key abcdefghijklmnop https://example.test' } }),
+    getOpenClawToolCommandPreview({ toolName: 'web_fetch', input: { command: 'curl https://example.test' } }),
+  ]`, sandbox)
+
+  const [safeCommand, ignoredCommand] = Array.from(sandbox.result)
+  assert.match(safeCommand, /curl -H "Authorization: Bearer \[已隐藏\]" --api-key \[已隐藏\]/)
+  assert.doesNotMatch(safeCommand, /sk-secret-token-value-123|abcdefghijklmnop/)
+  assert.equal(ignoredCommand, '')
+  assert.match(chat, /执行命令（已脱敏）/)
+})
+
 test('SuperClaw task policy keeps ecommerce, OCR, and finance inside native skills', () => {
   assert.match(taskSkill, /^name: superclaw-task-policy/m)
   assert.match(taskSkill, /supplements native\s+OpenClaw tools/i)
@@ -391,9 +437,10 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   assert.match(chat, /if \(retainedExecutionTimeline\) container\.insertBefore\(retainedExecutionTimeline, wrapper\)/)
   assert.match(renderCard, /if \(active\) card\.open = true/)
   assert.match(renderCard, /const displayedToolCount = Math\.max\(info\.toolCount, timelineToolCount\)/)
-  assert.match(chat, /recordOpenClawRunStep\('analysis', thought \? `思考：\$\{thought\}` : '正在分析任务'/)
-  assert.match(chat, /recordOpenClawRunStep\('plan', '正在规划执行步骤'/)
-  assert.match(chat, /recordOpenClawRunStep\('start', '\\u5df2\\u63d0\\u4ea4\\u4efb\\u52a1\\uff0c\\u6b63\\u5728\\u8fde\\u63a5\\u6267\\u884c\\u73af\\u5883'/)
+  assert.match(chat, /recordOpenClawRunStep\('analysis', thought \? `推理摘要：\$\{thought\}` : '正在分析任务并确定下一步。'/)
+  assert.match(chat, /recordOpenClawRunStep\('plan', plan \? `计划更新：\$\{plan\}` : '正在规划执行步骤。'/)
+  assert.match(chat, /recordOpenClawRunStep\('plan', '计划：先理解你的目标，按需查找资料或执行操作，再整理可靠结论。'/)
+  assert.match(chat, /recordOpenClawRunStep\('start', '正在连接执行环境，用于开始处理这项任务。'/)
   assert.match(chat, /if \(_currentAiTimeline\.length \|\| hasTimelineOverride\) \{\s*if \(existing\) existing\.remove\(\)\s*renderOpenClawToolResultCard\(el, \[\], '', timelineOverride\)/)
   assert.match(chat, /A live timeline is progress, not a completed assistant reply/)
   assert.match(chat, /const liveTimeline = _currentAiBubble\?\.querySelector\?\.\('\.openclaw-run-timeline\[open\]'\)/)
@@ -451,7 +498,7 @@ test('OpenClaw portable history preserves a trajectory final without duplicating
   assert.match(openclawHistorySource, /trajectory_messages\(&trajectory_source\)/)
   assert.match(openclawHistorySource, /let same_run =/)
   assert.match(openclawHistorySource, /let same_text =/)
-  assert.match(openclawHistorySource, /if !already_present \{ messages\.push\(candidate\); \}/)
+  assert.match(openclawHistorySource, /if !already_present \{\s+segment_messages\.push\(candidate\);\s+\}/)
 })
 
 test('OpenClaw execution timeline persists through snapshots and local history restore', () => {
@@ -595,29 +642,75 @@ test('OpenClaw history preserves images returned by native read tools', () => {
 })
 
 test('OpenClaw restores native history before cache so stale sessions cannot hide media', () => {
-  assert.match(chat, /const raw = await api\.readOpenclawRawHistory\(requestedSessionKey, 500\)/)
+  assert.match(chat, /const raw = await api\.readOpenclawRawHistory\(requestedSessionKey, 5_000\)/)
   assert.match(chat, /if \(local\.length && !rawHistory\?\.length\)/)
   assert.match(chat, /cachedHistoryMessage\(message, requestedSessionKey\)/)
   assert.match(chat, /function cachedHistoryMessage\(m, sessionKey = _sessionKey\)/)
   assert.match(chat, /sessionKey: normalizeOpenClawSessionKey\(m\.sessionKey \|\| sessionKey\)/)
 })
 
+test('OpenClaw restores every archived segment in the Gateway usage-family chain', () => {
+  assert.match(openclawHistorySource, /fn portable_session_history_ids\(entry: &Value, current_id: &str\)/)
+  assert.match(openclawHistorySource, /usageFamilySessionIds/)
+  assert.match(openclawHistorySource, /fn portable_session_history_file\(sessions_dir: &Path, session_id: &str\)/)
+  assert.match(openclawHistorySource, /name\.contains\("\.reset\."\)\s*\|\|\s*name\.contains\("\.deleted\."\)/)
+  assert.match(openclawHistorySource, /let family_ids\s*=\s*portable_session_history_ids/)
+  assert.match(openclawHistorySource, /for family_id in family_ids/)
+})
+
+test('OpenClaw restores the user-selected session and its raw history before Gateway readiness', () => {
+  const renderStart = chat.indexOf('export async function render()')
+  const renderEnd = chat.indexOf('const GUIDE_KEY', renderStart)
+  const render = chat.slice(renderStart, renderEnd)
+
+  const lastActiveIndex = render.indexOf('localStorage.getItem(STORAGE_LAST_ACTIVE_SESSION_KEY)')
+  const recentLocalIndex = render.indexOf('getMostRecentLocalSessionKey()')
+  assert.ok(lastActiveIndex >= 0 && recentLocalIndex >= 0 && lastActiveIndex < recentLocalIndex)
+  assert.match(render, /if \(snapshotSessionKey\) void loadHistory\(snapshotSessionKey\)/)
+})
+
+test('OpenClaw renders portable JSONL history before a ready Gateway can stall chat.history', () => {
+  const historyStart = chat.indexOf('async function loadHistory(')
+  const historyEnd = chat.indexOf('function countDisplayedChatMessages()', historyStart)
+  const history = chat.slice(historyStart, historyEnd)
+  const rawRenderIndex = history.indexOf('renderOpenClawRecoveredHistory(rawHistory, requestedSessionKey, localDedupedForSession)')
+  const gatewayHistoryIndex = history.indexOf('await wsClient.chatHistory(requestedSessionKey, 200)')
+
+  assert.ok(rawRenderIndex >= 0 && gatewayHistoryIndex >= 0 && rawRenderIndex < gatewayHistoryIndex)
+  assert.match(history, /if \(rawHistory\?\.length && !hasActiveOpenClawHistoryGeneration && isLoadHistoryForCurrentSession\(\)\)/)
+})
+
 test('OpenClaw native media history keeps the owning session and a renderable attachment fallback', () => {
-  assert.match(openclawHistorySource, /"sessionKey": &session_key/)
+  assert.match(openclawHistorySource, /"sessionKey": session_key/)
   assert.match(openclawHistorySource, /"attachments": image_attachments\(message\)/)
   assert.match(openclawHistorySource, /fn image_attachments\(message: &Value\)/)
+  assert.match(openclawHistorySource, /fn attach_openclaw_local_media_fallbacks\(messages: &mut \[Value\]\)/)
+  assert.match(openclawHistorySource, /"fallbackMediaPath"/)
+  assert.match(openclawHistorySource, /pub async fn openclaw_load_local_media\(path: String\)/)
+  assert.match(chat, /await api\.loadOpenclawLocalMedia\(fallbackMediaPath\)/)
   assert.match(chat, /return mergeOpenClawUniqueMedia\(\[\], images\)/)
 })
 
-test('OpenClaw execution cards retain user-visible thinking progress without exposing raw reasoning', () => {
+test('OpenClaw archives every successful generated-media read for future history recovery', () => {
+  assert.match(openclawHistorySource, /fn history_media_dir\(\) -> PathBuf/)
+  assert.match(openclawHistorySource, /fn archive_openclaw_media_file\(source: &str\)/)
+  assert.match(openclawHistorySource, /fn gateway_media_archive_path\(route: &str, mime: &str\)/)
+  assert.match(openclawHistorySource, /let _ = fs::write\(&archive_path, &bytes\)/)
+  assert.match(openclawHistorySource, /messages\.sort_by\([\s\S]*attach_openclaw_local_media_fallbacks\(&mut messages\)/)
+  assert.match(chat, /fallbackMediaPath: i\.fallbackMediaPath \|\| ''/)
+})
+
+test('OpenClaw execution cards retain provider public reasoning summaries without exposing raw reasoning', () => {
   const visibleProgress = chat.match(/function getOpenClawVisibleProgressFromEvent[\s\S]*?function hydrateOpenClawLiveHistoryProgress/)?.[0] || ''
   const eventHandler = chat.match(/function handleEvent[\s\S]*?function handleChatEvent/)?.[0] || ''
 
-  assert.match(visibleProgress, /\[data\.summary, data\.title, data\.message, data\.content, data\.text, data\.delta\]/)
+  assert.match(visibleProgress, /data\.reasoning_summary/)
+  assert.match(visibleProgress, /data\.public_reasoning/)
+  assert.match(visibleProgress, /data\.summary/)
   assert.match(visibleProgress, /isOpenClawVisibleTextInternalAuditOnly/)
-  assert.doesNotMatch(visibleProgress, /data\.reasoning/)
+  assert.doesNotMatch(visibleProgress, /data\.chain_of_thought/)
   assert.match(eventHandler, /const thought = getOpenClawVisibleProgressFromEvent\(data\)/)
-  assert.match(eventHandler, /thought \? `思考：\$\{thought\}` : '正在分析任务'/)
+  assert.match(eventHandler, /thought \? `推理摘要：\$\{thought\}` : '正在分析任务并确定下一步。'/)
 })
 
 test('product workflows stay in portable native skills with explicit confirmation boundaries', () => {

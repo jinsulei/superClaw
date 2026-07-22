@@ -38,6 +38,8 @@ const REMOTE_ADMIN_BASE_URL = String(process.env.CLEAN_PANEL_REMOTE_ADMIN_BASE_U
   .replace(/\/+$/, "");
 const AUDIT_LOG_PATH = path.join(APP_CONFIG_DIR, "audit.log");
 const UPLOAD_DIR = path.join(APP_CONFIG_DIR, "uploads");
+const COLLABORATION_QUEUE_PATH = path.join(APP_CONFIG_DIR, "collaboration-queue.json");
+const COLLABORATION_RESULTS_PATH = path.join(APP_CONFIG_DIR, "collaboration-results.json");
 const CLAUDE_SETTINGS_PATH =
   process.env.CLEAN_PANEL_CLAUDE_SETTINGS_PATH || path.join(HOME, ".claude", "settings.json");
 const CLAUDE_PROJECTS_JSON_PATH =
@@ -68,6 +70,76 @@ const MAX_XLSX_PREVIEW_ROWS = 200;
 const MAX_XLSX_PREVIEW_COLUMNS = 40;
 const MAX_XLSX_PREVIEW_CHARS = 240000;
 const SOURCE_GUARD_ENABLED = process.env.SUPERCLAW_SOURCE_GUARD_ENABLED !== "0";
+
+function detectMediaTask(prompt = "") {
+  const value = String(prompt || "").trim();
+  if (/(?:\u89c6\u9891|video)/i.test(value) && /(?:\u751f\u6210|\u5236\u4f5c|create|generate)/i.test(value)) return { mediaType: "text_to_video", tool: "superclaw_generate_video", title: "Claude Code video generation collaboration" };
+  if (/(?:\u914d\u97f3|\u8bed\u97f3|\u6717\u8bfb|text\s*to\s*speech)/i.test(value) && /(?:\u751f\u6210|\u5236\u4f5c|create|generate|\u8f6c)/i.test(value)) return { mediaType: "text_to_speech", tool: "superclaw_generate_speech", title: "Claude Code speech generation collaboration" };
+  if (/(?:\u97f3\u4e50|\u6b4c\u66f2|\u80cc\u666f\u97f3\u4e50|text\s*to\s*music)/i.test(value) && /(?:\u751f\u6210|\u5236\u4f5c|create|generate)/i.test(value)) return { mediaType: "text_to_music", tool: "superclaw_generate_music", title: "Claude Code music generation collaboration" };
+  if (/(?:\u751f\u6210|\u7ed8\u5236|\u5236\u4f5c|\u8bbe\u8ba1|\u521b\u5efa).{0,24}(?:\u56fe\u7247|\u56fe\u50cf|\u63d2\u753b|\u6d77\u62a5|\u5c01\u9762|\u5934\u50cf)|(?:\u6587\u751f\u56fe|text\s*to\s*image)/i.test(value)) return { mediaType: "text_to_image", tool: "superclaw_generate_image", title: "Claude Code image generation collaboration" };
+  return null;
+}
+
+function enqueueClaudeMediaTask(payload = {}) {
+  const raw = fs.existsSync(COLLABORATION_QUEUE_PATH) ? fs.readFileSync(COLLABORATION_QUEUE_PATH, "utf8") : "[]";
+  let rows = [];
+  try { rows = JSON.parse(raw); } catch {}
+  if (!Array.isArray(rows)) rows = [];
+  const now = new Date().toISOString();
+  const taskId = `claude-media-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
+  const prompt = String(payload.prompt || "").trim();
+  const media = detectMediaTask(prompt);
+  if (!media) throw new Error("Unsupported media generation request.");
+  const task = {
+    taskId,
+    sessionId: String(payload.conversationId || "").trim(),
+    fromAgent: "claude-code",
+    target: "openclaw",
+    stage: "execute",
+    title: media.title,
+    message: [
+      `This is a ${media.mediaType} task from the Claude Code native panel.`,
+      `Call ${media.tool} to complete it; do not only explain capability.`,
+      "Keep returned media artifacts and file paths, then provide a concise Chinese result.",
+      "",
+      `Original request: ${prompt}`,
+    ].join("\n"),
+    context: { summary: prompt, recent_messages: [], important_facts: [], artifacts: [] },
+    artifacts: [{ type: "media_request", path: "", text: prompt, created_at: now }],
+    media_type: media.mediaType,
+    createdAt: now,
+  };
+  rows.push(task);
+  fs.mkdirSync(APP_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(COLLABORATION_QUEUE_PATH, JSON.stringify(rows.slice(-20), null, 2));
+  return task;
+}
+
+function drainClaudeMediaTasks() {
+  if (!fs.existsSync(COLLABORATION_QUEUE_PATH)) return [];
+  let rows = [];
+  try { rows = JSON.parse(fs.readFileSync(COLLABORATION_QUEUE_PATH, "utf8")); } catch {}
+  fs.writeFileSync(COLLABORATION_QUEUE_PATH, "[]");
+  return Array.isArray(rows) ? rows : [];
+}
+
+function drainClaudeMediaResults() {
+  if (!fs.existsSync(COLLABORATION_RESULTS_PATH)) return [];
+  let rows = [];
+  try { rows = JSON.parse(fs.readFileSync(COLLABORATION_RESULTS_PATH, "utf8")); } catch {}
+  fs.writeFileSync(COLLABORATION_RESULTS_PATH, "[]");
+  return Array.isArray(rows) ? rows : [];
+}
+
+function appendClaudeMediaResult(payload = {}) {
+  const raw = fs.existsSync(COLLABORATION_RESULTS_PATH) ? fs.readFileSync(COLLABORATION_RESULTS_PATH, "utf8") : "[]";
+  let rows = [];
+  try { rows = JSON.parse(raw); } catch {}
+  if (!Array.isArray(rows)) rows = [];
+  rows.push({ ...payload, resultId: payload.resultId || `claude-media-result-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}` });
+  fs.mkdirSync(APP_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(COLLABORATION_RESULTS_PATH, JSON.stringify(rows.slice(-50), null, 2));
+}
 const TOOL_PROFILES = {
   none: [],
   read: ["Glob", "Grep", "Read", "LS"],
@@ -5709,6 +5781,36 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === "/api/upload") {
     handleUpload(req, res);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/collaboration/dispatch") {
+    readRequestBody(req).then((payload) => {
+      if (!detectMediaTask(payload?.prompt)) {
+        sendJson(res, 400, { error: "Only media generation tasks may use this collaboration bridge." });
+        return;
+      }
+      const task = enqueueClaudeMediaTask(payload);
+      sendJson(res, 200, { ok: true, task });
+    }).catch((error) => sendJson(res, 400, { error: error?.message || String(error) }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/collaboration/drain") {
+    sendJson(res, 200, { tasks: drainClaudeMediaTasks() });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/collaboration/result") {
+    readRequestBody(req).then((payload) => {
+      if (!payload?.taskId || payload?.toAgent !== "claude-code") {
+        sendJson(res, 400, { error: "Invalid Claude collaboration result." });
+        return;
+      }
+      appendClaudeMediaResult(payload);
+      sendJson(res, 200, { ok: true });
+    }).catch((error) => sendJson(res, 400, { error: error?.message || String(error) }));
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/collaboration/results/drain") {
+    sendJson(res, 200, { results: drainClaudeMediaResults() });
     return;
   }
 

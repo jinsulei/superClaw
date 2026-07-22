@@ -22,6 +22,61 @@ export const COLLAB_TARGETS = {
   hermes: 'hermes',
 }
 
+// Media jobs travel through the same portable collaboration queue as ordinary
+// agent work.  The route only carries intent and context; provider credentials
+// remain inside the OpenClaw media tool.
+export function detectTextToImageTask(input = {}) {
+  const task = detectMediaTask(input)
+  return task?.media_type === 'text_to_image' ? task : null
+}
+
+export function detectMediaTask(input = {}) {
+  const text = String(typeof input === 'string' ? input : input.text || '').trim()
+  const hasSourceImage = Array.isArray(input.attachments) && input.attachments.length > 0
+  if (!text) return null
+  if (/(?:视频|影片|短片|video)/i.test(text) && /(?:生成|制作|create|generate)/i.test(text)) {
+    return { media_type: hasSourceImage ? 'image_to_video' : 'text_to_video', prompt: text, title: hasSourceImage ? '图生视频协作任务' : '文生视频协作任务' }
+  }
+  if (/(?:配音|语音|朗读|text\s*to\s*speech|speech\s*synthesis)/i.test(text) && /(?:生成|制作|create|generate|转)/i.test(text)) {
+    return { media_type: 'text_to_speech', prompt: text, title: '语音生成协作任务' }
+  }
+  if (/(?:音乐|歌曲|背景音乐|text\s*to\s*music)/i.test(text) && /(?:生成|制作|create|generate)/i.test(text)) {
+    return { media_type: 'text_to_music', prompt: text, title: '音乐生成协作任务' }
+  }
+  if (hasSourceImage) return null
+  if (/(?:\u751f\u6210|\u7ed8\u5236|\u5236\u4f5c|\u8bbe\u8ba1|\u521b\u5efa).{0,18}(?:\u56fe\u7247|\u56fe\u50cf|\u63d2\u753b|\u6d77\u62a5|\u5c01\u9762|\u914d\u56fe|\u5934\u50cf)|(?:\u6587\u751f\u56fe|text\s*to\s*image)/i.test(text)) {
+    return { media_type: 'text_to_image', prompt: text, title: '\u6587\u751f\u56fe\u534f\u4f5c\u4efb\u52a1' }
+  }
+  const asksForImage = /(?:生成|画|绘制|制作|设计|创建|做).{0,18}(?:图片|图像|插画|海报|封面|配图|头像)|(?:文生图|生图|text\s*to\s*image)/i.test(text)
+  if (!asksForImage) return null
+  return {
+    media_type: 'text_to_image',
+    prompt: text,
+    title: '文生图协作任务',
+  }
+}
+
+export function buildOpenClawMediaTaskPrompt(task = {}) {
+  const prompt = String(task.prompt || task.content || '').trim()
+  const tools = {
+    text_to_image: 'superclaw_generate_image',
+    text_to_video: 'superclaw_generate_video',
+    image_to_video: 'superclaw_generate_video',
+    text_to_speech: 'superclaw_generate_speech',
+    text_to_music: 'superclaw_generate_music',
+    image_understanding: 'superclaw_describe_image',
+  }
+  const tool = tools[task.media_type] || 'superclaw_generate_image'
+  return [
+    `这是来自 SuperClaw 协作系统的媒体任务：${task.media_type || 'text_to_image'}。`,
+    `请在当前独立协作会话中调用工具 ${tool} 完成任务，不要只解释能力。`,
+    '请保留工具输出中的媒体附件和文件路径；完成后用中文简要说明结果。',
+    '如果媒体路由未配置、服务商不支持或调用失败，请如实报告明确原因，不要修改 Gateway、模型配置或其他代理。',
+    '',
+    `原始请求：${prompt}`,
+  ].join('\n')
+}
+
 export const CLAUDE_CODE_MODES = {
   safe: 'safe',
   browserAutomation: 'browser_automation',

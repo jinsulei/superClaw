@@ -529,13 +529,29 @@ function Ensure-ResourceDir([string]$RelativePath) {
   }
 }
 
+function Assert-OpenClawPluginManifest([string]$ManifestPath, [string]$Label) {
+  Assert-File $ManifestPath $Label
+  try {
+    $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+  } catch {
+    Fail "$Label is not valid JSON: $ManifestPath"
+  }
+
+  if ([string]::IsNullOrWhiteSpace([string]$manifest.id)) {
+    Fail "$Label is missing id: $ManifestPath"
+  }
+  if ($null -eq $manifest.configSchema -or -not ($manifest.configSchema -is [psobject])) {
+    Fail "$Label is missing configSchema: $ManifestPath"
+  }
+}
+
 function Assert-SuperClawOpenClawPluginSources {
   $SourceExtensions = Join-Path $ResourcesDir "runtime\openclaw\dist\extensions"
   $BundledExtensions = Join-Path $ResourcesDir "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions"
   Assert-Dir $SourceExtensions "SuperClaw OpenClaw plugin source directory"
   foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr", "superclaw-media")) {
     $source = if ($plugin -eq "superclaw-media") { Join-Path $ResourcesDir "templates\openclaw-plugins\$plugin" } else { Join-Path $SourceExtensions $plugin }
-    Assert-File (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
+    Assert-OpenClawPluginManifest (Join-Path $source "openclaw.plugin.json") "OpenClaw plugin source manifest: $plugin"
     Assert-File (Join-Path $source "index.js") "OpenClaw plugin source entry: $plugin"
   }
   Assert-File (Join-Path $BundledExtensions "browser\openclaw.plugin.json") "Bundled OpenClaw browser plugin manifest"
@@ -554,7 +570,7 @@ function Sync-SuperClawOpenClawPlugins([string]$TargetResourcesDir) {
     $source = if ($plugin -eq "superclaw-media") { Join-Path $ResourcesDir "templates\openclaw-plugins\$plugin" } else { Join-Path $SourceExtensions $plugin }
     $destination = Join-Path $RuntimeExtensions $plugin
     Copy-Directory $source $destination
-    Assert-File (Join-Path $destination "openclaw.plugin.json") "OpenClaw plugin manifest: $plugin"
+    Assert-OpenClawPluginManifest (Join-Path $destination "openclaw.plugin.json") "OpenClaw plugin manifest: $plugin"
     Assert-File (Join-Path $destination "index.js") "OpenClaw plugin entry: $plugin"
   }
 
@@ -632,6 +648,32 @@ function Prune-PackagedOpenClawDevDependencies([string]$PackagedResources) {
     Fail "Packaged OpenClaw dev dependency remains after prune: node_modules\\typescript"
   }
   Ok "Packaged OpenClaw development dependencies pruned"
+}
+
+function Install-PackagedMiniMaxCli([string]$PackagedResources) {
+  # mmx-cli is a small official MiniMax CLI bundle. It intentionally reuses
+  # OpenClaw's Node runtime, so the portable client never carries a second Node.
+  $archive = Join-Path $PackagedResources "runtime\minimax\mmx-cli-1.0.18.tgz"
+  $runtime = Join-Path $PackagedResources "runtime\openclaw"
+  $target = Join-Path $runtime "node_modules\mmx-cli"
+  Assert-File $archive "Bundled MiniMax media CLI archive"
+  Assert-File (Join-Path $runtime "node.exe") "Bundled OpenClaw Node runtime for MiniMax media"
+  Remove-IfExists $target
+  $staging = Join-Path $runtime ".mmx-cli-stage"
+  Remove-IfExists $staging
+  New-Item -ItemType Directory -Path $staging -Force | Out-Null
+  try {
+    Invoke-Checked -File "tar" -Arguments @("-xf", $archive, "-C", $staging) -Title "Unpacking bundled MiniMax media CLI"
+    Move-Item -LiteralPath (Join-Path $staging "package") -Destination $target -Force
+  } finally {
+    Remove-IfExists $staging
+  }
+  Assert-File (Join-Path $target "dist\mmx.mjs") "Packaged MiniMax media CLI"
+  Invoke-Checked -File (Join-Path $runtime "node.exe") -Arguments @(
+    (Join-Path $target "dist\mmx.mjs"),
+    "--version"
+  ) -Title "Validating packaged MiniMax media CLI"
+  Ok "Packaged MiniMax media CLI installed with the existing OpenClaw Node runtime"
 }
 
 function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$SanitizedTestMode = $false) {
@@ -715,7 +757,7 @@ function Write-PortableOpenClawConfig([string]$OpenClawDataDir, [bool]$Sanitized
       restart = $true
     }
     plugins = [ordered]@{
-      allow = @("browser", "desktop-control", "skill-manager", "superclaw-ocr")
+      allow = @("browser", "desktop-control", "skill-manager", "superclaw-ocr", "superclaw-media")
       entries = [ordered]@{
         browser = [ordered]@{ enabled = $true }
         "desktop-control" = [ordered]@{ enabled = $true }
@@ -1376,6 +1418,7 @@ Assert-File (Join-Path $ResourcesDir "runtime\hermes-agent\Scripts\hermes.exe") 
 Ensure-ResourceDir "portable"
 Assert-Dir (Join-Path $ResourcesDir "runtime\openclaw") "OpenClaw runtime"
 Assert-File (Join-Path $ResourcesDir "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
+Assert-File (Join-Path $ResourcesDir "runtime\minimax\mmx-cli-1.0.18.tgz") "MiniMax media CLI archive"
 foreach ($identityFile in @("IDENTITY.md", "SOUL.md", "AGENTS.md")) {
   Assert-File (Join-Path $ResourcesDir "templates\openclaw-workspace\$identityFile") "OpenClaw identity template $identityFile"
 }
@@ -1509,6 +1552,7 @@ Invoke-Checked -File "node" -Arguments @(
 ) -Title "Applying portable OpenClaw upload patch"
 Sync-SuperClawOpenClawPlugins $PackagedResources
 Prune-PackagedOpenClawDevDependencies $PackagedResources
+Install-PackagedMiniMaxCli $PackagedResources
 Prepare-PortableDataState (Join-Path $PackagedResources "data") $SanitizedTest.IsPresent
 Clear-PackagedRuntimeArtifacts (Join-Path $PackagedResources "data")
 if ($SanitizedTest) {
@@ -1588,6 +1632,7 @@ Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingch
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\desktop-control\openclaw.plugin.json") "Packaged OpenClaw desktop-control plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\superclaw-ocr\openclaw.plugin.json") "Packaged OpenClaw shared OCR plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\superclaw-media\openclaw.plugin.json") "Packaged OpenClaw media plugin"
+Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\mmx-cli\dist\mmx.mjs") "Packaged MiniMax media CLI"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\node_modules\@qingchencloud\openclaw-zh\dist\extensions\browser\openclaw.plugin.json") "Packaged OpenClaw browser plugin"
 Assert-File (Join-Path $PackagedResources "runtime\openclaw\bin\desktop-control-agent.exe") "Packaged OpenClaw desktop-control sidecar"
 Assert-File (Join-Path $PackagedResources "data\.openclaw\openclaw.json") "Packaged OpenClaw config"
