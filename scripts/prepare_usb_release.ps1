@@ -472,7 +472,11 @@ function Test-NoStalePaths([string]$OutRoot) {
         "resources\data\.openclaw\openclaw.json",
         "resources\data\.openclaw\clawpanel.json"
     )
-    $needles = @("C:\Users\ZXKJ", "C:/Users/ZXKJ", "Users\ZXKJ", "Users/ZXKJ", "ZXKJ", $ROOT, $env:USERPROFILE, ($env:USERPROFILE -replace "\\", "/"))
+    $needles = @($ROOT, $env:USERPROFILE, ($env:USERPROFILE -replace "\\", "/"))
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $username = Split-Path -Leaf $env:USERPROFILE
+        $needles += @("Users\$username", "Users/$username")
+    }
     $hits = New-Object System.Collections.Generic.List[string]
 
     foreach ($relative in $critical) {

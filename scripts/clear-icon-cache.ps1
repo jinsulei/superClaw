@@ -1,4 +1,4 @@
-# 清理 Windows 图标缓存
+# 清理 Windows 图标缓存，并提示当前仓库的 release 可执行文件路径。
 # 必须以管理员身份运行
 
 Write-Host "=== 清理 Windows 图标缓存 ===" -ForegroundColor Cyan
@@ -55,6 +55,8 @@ Write-Host ""
 Write-Host "接下来请执行：" -ForegroundColor Yellow
 Write-Host "1. 从开始菜单/任务栏取消固定旧的 SuperClaw 快捷方式" -ForegroundColor Yellow
 Write-Host "2. 直接运行新编译的 exe：" -ForegroundColor Yellow
-Write-Host "   c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\superclaw.exe" -ForegroundColor White
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$releaseExe = Join-Path $repoRoot "src-tauri\target\release\superclaw.exe"
+Write-Host ("   " + $releaseExe) -ForegroundColor White
 Write-Host "3. 如果还是模糊，请右键 exe → 发送到 → 桌面快捷方式" -ForegroundColor Yellow
 Write-Host "   然后从快捷方式启动" -ForegroundColor Yellow

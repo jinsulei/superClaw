@@ -1,7 +1,12 @@
 param(
-    [string]$IcoPath = "c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\icons\icon.ico",
-    [string]$ExePath = "c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\superclaw.exe"
+    [string]$IcoPath = "",
+    [string]$ExePath = ""
 )
+
+# Inspect the repository icon and the current local release executable.
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($IcoPath)) { $IcoPath = Join-Path $repoRoot "src-tauri\icons\icon.ico" }
+if ([string]::IsNullOrWhiteSpace($ExePath)) { $ExePath = Join-Path $repoRoot "src-tauri\target\release\superclaw.exe" }
 
 Write-Host "=== Checking icon.ico ===" -ForegroundColor Cyan
 
@@ -97,9 +102,7 @@ if (Test-Path $ExePath) {
     Write-Host "EXE not found at: $ExePath" -ForegroundColor Yellow
     Write-Host "Checking alternative paths..."
 
-    $altPaths = @(
-        "c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\superclaw.exe"
-    )
+    $altPaths = @($ExePath)
     foreach ($p in $altPaths) {
         if (Test-Path $p) {
             Write-Host ("Found at: " + $p)

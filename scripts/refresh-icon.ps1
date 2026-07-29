@@ -1,4 +1,4 @@
-# 刷新 Windows 图标缓存
+# 刷新 Windows 图标缓存，并提示当前仓库的 release 可执行文件路径。
 # 需要管理员权限运行
 # 用法：右键 → 以管理员身份运行
 
@@ -60,7 +60,9 @@ Write-Host "[4/4] 完成！" -ForegroundColor Green
 Write-Host ""
 Write-Host "=== 接下来 ===" -ForegroundColor Yellow
 Write-Host "1. 找到新编译的 exe：" -ForegroundColor White
-Write-Host "   c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\superclaw.exe" -ForegroundColor Cyan
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$releaseExe = Join-Path $repoRoot "src-tauri\target\release\superclaw.exe"
+Write-Host ("   " + $releaseExe) -ForegroundColor Cyan
 Write-Host "2. 右键 → 固定到任务栏" -ForegroundColor White
 Write-Host "3. 从任务栏启动，确认图标是否清晰" -ForegroundColor White
 Write-Host ""

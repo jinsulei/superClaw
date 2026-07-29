@@ -11694,8 +11694,8 @@ const handlers = {
     const safeId = String(id || '')
     const safeName = path.basename(String(fileName || ''))
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(safeId)) throw new Error('Invalid document identifier')
-    if (!/^[A-Za-z0-9._ -]+\.(xlsx|docx|pdf)$/i.test(safeName)) {
-      throw new Error('Only .xlsx, .docx, and .pdf documents are supported')
+    if (!/^[A-Za-z0-9._ -]+\.(xlsx|docx|pptx|pdf)$/i.test(safeName)) {
+      throw new Error('Only .xlsx, .docx, .pptx, and .pdf documents are supported')
     }
     const raw = String(data || '')
     const encoded = raw.includes(',') ? raw.slice(raw.indexOf(',') + 1) : raw
@@ -13833,7 +13833,7 @@ function _buildHermesRunInput(input, attachments = []) {
     if (category === 'document' || category === 'file') {
       const fileName = path.basename(String(item?.fileName || item?.name || ''))
       const savedPath = String(item?.savedPath || item?.localPath || item?.filePath || item?.path || '')
-      if (savedPath && /\.(xlsx|docx|pdf)$/i.test(fileName)) documents.push({ fileName, savedPath })
+      if (savedPath && /\.(xlsx|docx|pptx|pdf)$/i.test(fileName)) documents.push({ fileName, savedPath })
       continue
     }
     if (category !== 'image' && !mimeType.toLowerCase().startsWith('image/')) continue

@@ -1,5 +1,5 @@
 param(
-  [string]$PackageRoot = "F:\SuperClaw-Packages",
+  [string]$PackageRoot = "",
   [switch]$CreatePackageRoot,
   [switch]$Json
 )
@@ -8,6 +8,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($PackageRoot)) {
+  $PackageRoot = Join-Path $RepoRoot "..\SuperClaw_Desktop_Client"
+}
 $PackageRootFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($PackageRoot)
 
 function RelPath([string]$Path) {
@@ -111,8 +114,12 @@ $ignoredCheck = @(
   "uv-tools"
 )
 
+$requiredRuntimeArchives = @(
+  "src-tauri/resources/hermes-agent-main.zip"
+)
 $trackedArtifactPattern = '(?i)(\.zip$|\.7z$|\.rar$|\.tar\.gz$|^dist/|^build/|^release/|^portable/|^src-tauri/target/|^node_modules/|^logs/|^cache/|^tmp/|^temp/|^SuperClaw.*Client/)'
 foreach ($p in $tracked) {
+  if ($requiredRuntimeArchives -contains $p) { continue }
   if ($p -match $trackedArtifactPattern) {
     Add-Issue $issues "warning" "TRACKED_ARTIFACT" $p "Tracked file looks like a package, cache, build output, or generated artifact."
   }
@@ -148,6 +155,9 @@ foreach ($entry in ($largeTracked | Sort-Object mb -Descending | Select-Object -
 
 $sensitiveCandidates = New-Object System.Collections.Generic.List[string]
 foreach ($p in $tracked) {
+  # Test fixtures deliberately include representative credential-shaped strings.
+  # They are source-only and are never copied to the portable client.
+  if ($p -match '^(?:test|tests)/') { continue }
   if (Is-TextFile $p) { $sensitiveCandidates.Add((Join-Path $RepoRoot ($p -replace '/', '\'))) | Out-Null }
 }
 foreach ($p in @(
@@ -169,7 +179,7 @@ foreach ($full in ($sensitiveCandidates | Select-Object -Unique)) {
 
 $untracked = @($status | Where-Object { $_ -like "?? *" } | ForEach-Object { $_.Substring(3) })
 foreach ($p in $untracked) {
-  if ($p -match '(?i)(workspace/|src-tauri/workspace/|\.zip$|\.7z$|\.rar$|\.tar\.gz$|SuperClaw|target/|logs/)') {
+  if ($p -match '(?i)(?:^|[\\/])(?:workspace|logs|target)(?:[\\/]|$)|\.(?:zip|7z|rar|tar\.gz)$|^SuperClaw_(?:Desktop_Client|P2U_HANDOFF|DESKTOP_TEST_HANDOFF|VALIDATION_HANDOFF)(?:_|[\\/]|$)') {
     Add-Issue $issues "info" "UNTRACKED_LOCAL_ARTIFACT" $p "Untracked local artifact. Do not include unless explicitly required."
   }
 }

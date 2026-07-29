@@ -11,6 +11,7 @@ dist/
 src-tauri/target/
 SuperClaw-Desktop-Client/
 SuperClaw_Desktop_Client/
+SuperClaw_Desktop_Client_*/
 SuperClaw_DESKTOP_TEST_HANDOFF/
 SuperClaw_P2U_HANDOFF/
 SuperClaw_VALIDATION_HANDOFF/

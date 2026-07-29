@@ -1,4 +1,13 @@
-$base = "c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\build"
+param(
+    [string]$BuildRoot
+)
+
+# Inspect local Tauri build cache and executable icon resources using paths relative to this repository.
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
+    $BuildRoot = Join-Path $repoRoot "src-tauri\target\release\build"
+}
+$base = $BuildRoot
 
 Write-Host "=== Checking superclaw build out directories ===" -ForegroundColor Cyan
 
@@ -34,13 +43,20 @@ foreach ($d in $dirs) {
 Write-Host ""
 Write-Host "=== Checking if icon.ico was properly embedded ===" -ForegroundColor Cyan
 
-$exePath = "c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\target\release\superclaw.exe"
+$exePath = Join-Path $repoRoot "src-tauri\target\release\superclaw.exe"
+$iconPath = Join-Path $repoRoot "src-tauri\icons\icon.ico"
+if (!(Test-Path -LiteralPath $exePath)) {
+    throw "Release executable not found: $exePath"
+}
+if (!(Test-Path -LiteralPath $iconPath)) {
+    throw "Source icon not found: $iconPath"
+}
 $exeInfo = Get-Item $exePath
 Write-Host ("EXE: " + $exeInfo.LastWriteTime + " (" + $exeInfo.Length + " bytes)")
 
 # Search for the icon.ico content inside the exe
 $exeBytes = [System.IO.File]::ReadAllBytes($exePath)
-$icoBytes = [System.IO.File]::ReadAllBytes("c:\Users\ZXKJ\Documents\SuperClaw\clawpanel-main\src-tauri\icons\icon.ico")
+$icoBytes = [System.IO.File]::ReadAllBytes($iconPath)
 
 # Look for the signature of the 32x32 icon entry in the exe
 Write-Host ("Source icon.ico size: " + $icoBytes.Length + " bytes")

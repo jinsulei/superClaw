@@ -4,25 +4,25 @@
 
 ## 本地构建产物
 
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\superclaw.exe`
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\resources\`
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\resources\runtime\openclaw\`
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\resources\runtime\claude-code\`
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\resources\runtime\ocr\`
-- `C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\resources\data\memory\memory-config.json`
+- `<本地便携包根目录>\superclaw.exe`
+- `<本地便携包根目录>\resources\`
+- `<本地便携包根目录>\resources\runtime\openclaw\`
+- `<本地便携包根目录>\resources\runtime\claude-code\`
+- `<本地便携包根目录>\resources\runtime\ocr\`
+- `<本地便携包根目录>\resources\data\memory\memory-config.json`
 
 ## U 盘产物
 
-- `F:\SuperClaw_Desktop_Client\superclaw.exe`
-- `F:\SuperClaw_Desktop_Client\resources\`
-- `F:\SuperClaw_Desktop_Client\resources\runtime\openclaw\`
-- `F:\SuperClaw_Desktop_Client\resources\runtime\claude-code\`
-- `F:\SuperClaw_Desktop_Client\resources\runtime\ocr\`
-- `F:\SuperClaw_Desktop_Client\resources\data\memory\memory-config.json`
+- `<U盘便携包根目录>\superclaw.exe`
+- `<U盘便携包根目录>\resources\`
+- `<U盘便携包根目录>\resources\runtime\openclaw\`
+- `<U盘便携包根目录>\resources\runtime\claude-code\`
+- `<U盘便携包根目录>\resources\runtime\ocr\`
+- `<U盘便携包根目录>\resources\data\memory\memory-config.json`
 
 ## 备份
 
-- `F:\SuperClaw_Backups\SuperClaw_Desktop_Client_20260615_183347_before_1.0.1`
+- `<U盘备份根目录>\SuperClaw_Desktop_Client_20260615_183347_before_1.0.1`
 
 ## 验证命令摘要
 

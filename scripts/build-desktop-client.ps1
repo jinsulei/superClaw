@@ -6,8 +6,8 @@
   Builds the web UI and Tauri shell, then creates a portable desktop client
   folder that includes Hermes, OpenClaw, Claude Code CLI, and the Claude UI panel.
 
-  Output:
-    SuperClaw_Desktop_Client/
+  Default output (outside the source tree):
+    ../SuperClaw_Desktop_Client/
       superclaw.exe
       resources/
         runtime/openclaw/
@@ -441,7 +441,7 @@ function Test-PackagedHermesRuntime([string]$PackagedResources, [string]$PythonE
     $env:HERMES_HOME = Join-Path $PackagedResources "data\hermes"
     $env:HERMES_DISABLE_UPDATE_CHECK = "1"
     $env:PYTHONNOUSERSITE = "1"
-    & $PythonExe -c "import hermes_cli.main; import aiohttp; import openpyxl; import docx; import pypdf; import reportlab; print('HERMES_RUNTIME_OK')" | Out-Null
+    & $PythonExe -c "import hermes_cli.main; import aiohttp; import openpyxl; import docx; import pptx; import pypdf; import reportlab; print('HERMES_RUNTIME_OK')" | Out-Null
     return ($LASTEXITCODE -eq 0)
   } finally {
     Restore-EnvValue "PYTHONPATH" $OldPythonPath
@@ -486,7 +486,7 @@ function Ensure-PackagedHermesRuntime([string]$PackagedResources, [string]$Pytho
 
     $ToolPython = Join-Path $ToolHome "Scripts\python.exe"
     Assert-File $ToolPython "Portable Hermes venv Python"
-    & $UvExe pip install --python $ToolPython aiohttp openpyxl python-docx pypdf reportlab
+    & $UvExe pip install --python $ToolPython aiohttp openpyxl python-docx python-pptx pypdf reportlab
     if ($LASTEXITCODE -ne 0) {
       throw "Failed to install portable Hermes API/document dependencies"
     }
@@ -1211,6 +1211,11 @@ function Assert-CleanPackageForRelease([string]$PackageDir) {
     "SuperClaw-1\.0\.4",
     "电商1\.0\.2"
   )
+  foreach ($machinePath in @($Root, $env:USERPROFILE)) {
+    if (-not [string]::IsNullOrWhiteSpace($machinePath)) {
+      $blockedTextPatterns += [Regex]::Escape($machinePath)
+    }
+  }
   $textExtensions = @(".cmd", ".bat", ".ps1", ".sh", ".js", ".mjs", ".json", ".md", ".txt", ".yaml", ".yml", ".toml", ".html", ".css")
   $textHit = Get-ChildItem -LiteralPath $PackageDir -Recurse -Force -File -ErrorAction SilentlyContinue |
     Where-Object { $textExtensions -contains $_.Extension.ToLowerInvariant() } |
@@ -1368,11 +1373,12 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $TauriDir = Join-Path $Root "src-tauri"
 $ResourcesDir = Join-Path $TauriDir "resources"
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-  $OutDir = Join-Path $Root "SuperClaw_Desktop_Client"
+  # Keep delivery output beside the repository so it cannot be mistaken for source.
+  $OutDir = [System.IO.Path]::GetFullPath((Join-Path $Root "..\SuperClaw_Desktop_Client"))
 } elseif ([System.IO.Path]::IsPathRooted($OutputDir)) {
   $OutDir = $OutputDir
 } else {
-  $OutDir = Join-Path $Root $OutputDir
+  $OutDir = [System.IO.Path]::GetFullPath((Join-Path $Root $OutputDir))
 }
 $ModeDir = if ($Debug) { "debug" } else { "release" }
 $ExeSource = Join-Path $TauriDir "target\$ModeDir\superclaw.exe"
@@ -1644,6 +1650,7 @@ Assert-File (Join-Path $PackagedResources "data\.openclaw\workspace\skills\super
 Assert-File (Join-Path $PackagedResources "runtime\hermes-agent\Scripts\hermes.exe") "Hermes bundled executable"
 Assert-File (Join-Path $PackagedResources "runtime\hermes.cmd") "Hermes portable launcher"
 Assert-File (Join-Path $PackagedResources "runtime\document-tools\hermes_document_tool.py") "Hermes portable document tool"
+Assert-File (Join-Path $PackagedResources "runtime\document-tools\superclaw-file.cmd") "Shared portable file service CLI"
 Assert-File (Join-Path $PackagedResources "data\hermes\SOUL.md") "Packaged Hermes identity SOUL.md"
 Assert-File (Join-Path $PackagedResources "data\hermes\plugins\desktop_control_bridge\__init__.py") "Packaged Hermes desktop control bridge plugin"
 Assert-File (Join-Path $PackagedResources "runtime\git\bin\bash.exe") "Packaged Git Bash for Hermes terminal"
@@ -1687,6 +1694,16 @@ Assert-NoForbiddenPackageFiles $OutDir
 Assert-CleanPackageForRelease $OutDir
 Assert-NoPackagedUserState (Join-Path $PackagedResources "data")
 Ok "No user sessions, usage records, logs, locks, or local project state in package data"
+
+Step "Verifying source-to-package consistency"
+Invoke-Checked -File "powershell" -Arguments @(
+  "-NoProfile",
+  "-ExecutionPolicy", "Bypass",
+  "-File", (Join-Path $Root "scripts\verify-portable-package.ps1"),
+  "-PackageRoot", $OutDir,
+  "-RequireFresh",
+  "-WriteManifest"
+) -Title "Verifying portable package consistency"
 
 $HardcodedFound = $false
 foreach ($scan in @(

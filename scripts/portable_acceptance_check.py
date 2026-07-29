@@ -193,10 +193,13 @@ class Checker:
             self.resources / "data" / ".openclaw" / "clawpanel.json",
         ]
         found: list[str] = []
-        needles = [b"C:\\Users\\ZXKJ", b"C:/Users/ZXKJ", b"Users\\ZXKJ", b"Users/ZXKJ", b"ZXKJ"]
+        needles: list[bytes] = []
         userprofile = os.environ.get("USERPROFILE")
         if userprofile:
             needles.extend([userprofile.encode(), userprofile.replace("\\", "/").encode()])
+            username = Path(userprofile).name
+            if username:
+                needles.extend([f"Users\\{username}".encode(), f"Users/{username}".encode()])
         root_text = str(self.root)
         needles.extend([root_text.encode(), root_text.replace("\\", "/").encode()])
         for path in targets:

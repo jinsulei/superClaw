@@ -40,11 +40,11 @@
 
 ## 路径
 
-- 本地便携包：`C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client`
-- 本地 exe：`C:\Users\ZXKJ\Documents\superClaw_code\SuperClaw_Desktop_Client\superclaw.exe`
-- U 盘便携包：`F:\SuperClaw_Desktop_Client`
-- U 盘 exe：`F:\SuperClaw_Desktop_Client\superclaw.exe`
-- U 盘旧版备份：`F:\SuperClaw_Backups\SuperClaw_Desktop_Client_20260615_183347_before_1.0.1`
+- 本地便携包：`<本地便携包根目录>`
+- 本地 exe：`<本地便携包根目录>\superclaw.exe`
+- U 盘便携包：`<U盘便携包根目录>`
+- U 盘 exe：`<U盘便携包根目录>\superclaw.exe`
+- U 盘旧版备份：`<U盘备份根目录>\SuperClaw_Desktop_Client_20260615_183347_before_1.0.1`
 
 ## 发布前注意
 
