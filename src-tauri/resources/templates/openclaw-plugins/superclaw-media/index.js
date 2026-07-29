@@ -19,13 +19,15 @@ const routeKinds = new Set([
 
 function portableRoot() {
   const configPath = process.env.OPENCLAW_CONFIG_PATH || path.join(process.cwd(), 'resources', 'data', '.openclaw', 'openclaw.json')
-  return { configPath, root: path.resolve(path.dirname(configPath), '..') }
+  const root = path.resolve(path.dirname(configPath), '..')
+  const mediaConfigPath = process.env.SUPERCLAW_MEDIA_CONFIG_PATH || path.join(root, 'media', 'media-routes.json')
+  return { configPath, root, mediaConfigPath }
 }
 
 function configuredRoute(kind) {
   if (!routeKinds.has(kind)) throw new Error(`Unsupported media route: ${kind}`)
-  const { configPath, root } = portableRoot()
-  const selected = readJson(path.join(root, 'media', 'media-routes.json')).routes?.[kind]
+  const { configPath, root, mediaConfigPath } = portableRoot()
+  const selected = readJson(mediaConfigPath).routes?.[kind]
   if (!selected?.enabled) throw new Error(`Media route '${kind}' is not configured. Configure it in Models first.`)
   const provider = readJson(configPath).models?.providers?.[selected.providerId]
   const baseUrl = String(provider?.baseUrl || provider?.base_url || '').replace(/\/$/, '')
@@ -142,8 +144,8 @@ async function generateOpenAiImage(params, route) {
 
 async function execute(kind, params) {
   if (kind === 'text_to_video' && String(params?.imagePath || '').trim()) {
-    const { root } = portableRoot()
-    const hasImageToVideoRoute = Boolean(readJson(path.join(root, 'media', 'media-routes.json')).routes?.image_to_video?.enabled)
+    const { mediaConfigPath } = portableRoot()
+    const hasImageToVideoRoute = Boolean(readJson(mediaConfigPath).routes?.image_to_video?.enabled)
     if (hasImageToVideoRoute) kind = 'image_to_video'
   }
   const route = configuredRoute(kind)

@@ -10,16 +10,16 @@ const tool = readFileSync('src-tauri/resources/runtime/document-tools/hermes_doc
 const build = readFileSync('scripts/build-desktop-client.ps1', 'utf8')
 const devApi = readFileSync('scripts/dev-api.js', 'utf8')
 
-test('Hermes accepts portable Excel, Word, and PDF attachments through the native bridge', () => {
-  assert.match(chat, /image\/\*,\.txt,\.md,\.json,\.csv,\.xlsx,\.docx,\.pdf/)
+test('Hermes accepts portable Excel, Word, PowerPoint, and PDF attachments through the native bridge', () => {
+  assert.match(chat, /image\/\*,\.txt,\.md,\.json,\.csv,\.xlsx,\.docx,\.pptx,\.pdf/)
   assert.match(chat, /function isSupportedHermesDocument/)
   assert.match(chat, /api\.hermesSaveDocumentAttachment/)
   assert.match(api, /hermesSaveDocumentAttachment/)
   assert.match(rust, /pub async fn hermes_save_document_attachment/)
-  assert.match(rust, /"xlsx" \| "docx" \| "pdf"/)
+  assert.match(rust, /"xlsx" \| "docx" \| "pptx" \| "pdf"/)
   assert.match(lib, /hermes::hermes_save_document_attachment/)
   assert.match(devApi, /async hermes_save_document_attachment/)
-  assert.match(devApi, /Only \.xlsx, \.docx, and \.pdf documents are supported/)
+  assert.match(devApi, /Only \.xlsx, \.docx, \.pptx, and \.pdf documents are supported/)
 })
 
 test('Hermes document edits are explicit and preserve uploaded originals', () => {
@@ -34,12 +34,13 @@ test('Hermes document edits are explicit and preserve uploaded originals', () =>
 test('Hermes document tool resolves bundled dependencies and paths portably', () => {
   assert.match(tool, /runtime_dir = Path\(__file__\)\.resolve\(\)\.parent\.parent/)
   assert.match(tool, /runtime_dir \/ "hermes-agent" \/ "Lib" \/ "site-packages"/)
-  assert.match(rust, /resources\.join\("runtime"\)\.join\("document-tools"\)/)
+  assert.match(rust, /app_resources_dir\(\)/)
+  assert.match(rust, /join\("runtime"\)[\s\S]*join\("document-tools"\)/)
   assert.match(rust, /hermes_agent_python\(\)/)
   assert.match(devApi, /function hermesDocumentToolPath\(\)/)
   assert.match(devApi, /hermesPortablePython\(\) \|\| 'python'/)
   assert.match(devApi, /\[SuperClaw attached documents\]/)
-  assert.match(tool, /choices=\["preview", "replace", "clean-excel", "watermark"\]/)
+  assert.match(tool, /create-presentation/)
   assert.match(rust, /clean-excel <file> --output <new-file>/)
   assert.match(devApi, /clean-excel <file> --output <new-file>/)
   assert.match(`${chat}\n${rust}\n${devApi}`, /Do not use execute_code for attached-document work/)
@@ -47,7 +48,7 @@ test('Hermes document tool resolves bundled dependencies and paths portably', ()
 })
 
 test('portable build verifies the bundled Hermes document tool and dependencies', () => {
-  assert.match(build, /import openpyxl; import docx; import pypdf; import reportlab/)
-  assert.match(build, /aiohttp openpyxl python-docx pypdf reportlab/)
+  assert.match(build, /import openpyxl; import docx; import pptx; import pypdf; import reportlab/)
+  assert.match(build, /aiohttp openpyxl python-docx python-pptx pypdf reportlab/)
   assert.match(build, /runtime\\document-tools\\hermes_document_tool\.py/)
 })

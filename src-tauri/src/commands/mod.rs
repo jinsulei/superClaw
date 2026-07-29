@@ -25,6 +25,7 @@ pub mod config;
 pub mod device;
 pub mod diagnose;
 pub mod extensions;
+pub mod file_service;
 pub mod hermes;
 pub mod hermes_providers;
 pub mod logs;
@@ -162,6 +163,76 @@ fn app_resources_dir() -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Media route configuration is writable portable application data. During
+/// development it must live outside `resources/`, otherwise Tauri watches a
+/// normal settings change as a source change and restarts the application.
+pub(crate) fn media_config_path() -> Option<PathBuf> {
+    let resources = app_resources_dir()?;
+
+    #[cfg(debug_assertions)]
+    {
+        let project_root = resources.parent()?.parent()?;
+        let target = project_root
+            .join(".dev-data")
+            .join("media")
+            .join("media-routes.json");
+        if !target.exists() {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let template = resources.join("data").join("media").join("media-routes.json");
+            if template.is_file() {
+                let _ = std::fs::copy(template, &target);
+            }
+        }
+        return Some(target);
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        Some(resources.join("data").join("media").join("media-routes.json"))
+    }
+}
+
+/// Generated media is mutable application data. Keep it outside watched
+/// `resources/` during development so producing an image or video never
+/// triggers Tauri's source watcher and restarts the desktop application.
+pub(crate) fn media_output_data_dir() -> Option<PathBuf> {
+    let resources = app_resources_dir()?;
+
+    #[cfg(debug_assertions)]
+    {
+        let project_root = resources.parent()?.parent()?;
+        let target = project_root.join(".dev-data").join("generated").join("media");
+        let _ = std::fs::create_dir_all(&target);
+        return Some(target);
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        Some(resources.join("data").join("generated").join("media"))
+    }
+}
+
+/// Shared memory and cross-window collaboration handoff data follow the same
+/// portable layout as media settings. Dev writes stay out of watched sources.
+pub(crate) fn shared_memory_data_dir() -> Option<PathBuf> {
+    let resources = app_resources_dir()?;
+
+    #[cfg(debug_assertions)]
+    {
+        let project_root = resources.parent()?.parent()?;
+        let target = project_root.join(".dev-data").join("memory");
+        let _ = std::fs::create_dir_all(&target);
+        return Some(target);
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        Some(resources.join("data").join("memory"))
+    }
 }
 
 /// 便携模式下 bundled OpenClaw 的运行时目录（含 Node.js）

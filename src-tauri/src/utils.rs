@@ -38,6 +38,9 @@ fn apply_openclaw_dir_env(cmd: &mut std::process::Command) {
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
+    if let Some(media_config_path) = crate::commands::media_config_path() {
+        cmd.env("SUPERCLAW_MEDIA_CONFIG_PATH", media_config_path);
+    }
     cmd.env("OPENCLAW_LOG_DIR", &logs_dir);
     cmd.env("HOME", &portable_home);
     cmd.env("USERPROFILE", &portable_home);
@@ -64,6 +67,9 @@ fn apply_openclaw_dir_env_tokio(cmd: &mut tokio::process::Command) {
     cmd.env("OPENCLAW_HOME", &openclaw_dir);
     cmd.env("OPENCLAW_STATE_DIR", &openclaw_dir);
     cmd.env("OPENCLAW_CONFIG_PATH", &config_path);
+    if let Some(media_config_path) = crate::commands::media_config_path() {
+        cmd.env("SUPERCLAW_MEDIA_CONFIG_PATH", media_config_path);
+    }
     cmd.env("OPENCLAW_LOG_DIR", &logs_dir);
     cmd.env("HOME", &portable_home);
     cmd.env("USERPROFILE", &portable_home);

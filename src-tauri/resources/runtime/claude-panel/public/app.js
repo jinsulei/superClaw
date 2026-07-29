@@ -2331,6 +2331,43 @@ function renderClaudeAgentMessageContent(value, body, details = "") {
   }
 }
 
+function getDocumentCardDescriptor(value) {
+  const name = String(value || "").split(/[\\/]/).pop() || "file";
+  const extension = name.split(".").pop().toLowerCase();
+  const kind = ({ pdf: "pdf", doc: "word", docx: "word", xls: "excel", xlsx: "excel", csv: "excel", ppt: "ppt", pptx: "ppt" })[extension] || "file";
+  return { name, kind, label: ({ pdf: "PDF", word: "W", excel: "X", ppt: "P" })[kind] || "FILE" };
+}
+
+function appendClaudeOutputDocumentCards(value, parent) {
+  if (!parent) return;
+  const matches = String(value || "").match(/(?:[A-Za-z]:)?(?:[\\/][^\n<>"'`|]+)+\.(?:pdf|docx?|xlsx?|csv|pptx?)/gi) || [];
+  const paths = [...new Set(matches.map((item) => item.trim().replace(/[).,;:]+$/, "")))].slice(0, 8);
+  if (!paths.length) return;
+
+  const list = document.createElement("div");
+  list.className = "document-output-list";
+  for (const path of paths) {
+    const descriptor = getDocumentCardDescriptor(path);
+    const card = document.createElement("div");
+    card.className = "document-output-card";
+    const info = document.createElement("span");
+    info.className = "document-output-card__info";
+    const name = document.createElement("span");
+    name.className = "document-output-card__name";
+    name.textContent = descriptor.name;
+    const meta = document.createElement("span");
+    meta.className = "document-output-card__meta";
+    meta.textContent = "local document";
+    info.append(name, meta);
+    const type = document.createElement("span");
+    type.className = `document-output-card__type is-${descriptor.kind}`;
+    type.textContent = descriptor.label;
+    card.append(info, type);
+    list.append(card);
+  }
+  parent.append(list);
+}
+
 function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   if (!body) return;
   const parsed = splitClaudeThinkingBlocks(rawText);
@@ -2359,6 +2396,7 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   content.className = "assistant-compact-message__content";
   const renderContent = (value) => {
     renderClaudeAgentMessageContent(value || "", content);
+    appendClaudeOutputDocumentCards(value || "", content);
   };
   renderContent(compact.preview);
   if (compact.preview || compact.content) wrapper.appendChild(content);
@@ -6960,7 +6998,25 @@ function renderAttachmentPreview() {
     }
 
     const text = document.createElement("span");
+    if (attachment.kind !== "image") {
+      chip.classList.add("document-chip");
+      const extension = String(attachment.name || "").split(".").pop().toLowerCase();
+      const kind = ({ pdf: "pdf", doc: "word", docx: "word", xls: "excel", xlsx: "excel", csv: "excel", ppt: "ppt", pptx: "ppt" })[extension] || "file";
+      const icon = document.createElement("span");
+      icon.className = `document-chip-type is-${kind}`;
+      icon.textContent = ({ pdf: "PDF", word: "W", excel: "X", ppt: "P" })[kind] || "FILE";
+      chip.append(icon);
+    }
     text.textContent = `${attachment.name} · ${formatFileSize(attachment.size)}`;
+
+    if (attachment.kind !== "image") {
+      text.textContent = "";
+      const name = document.createElement("strong");
+      name.textContent = attachment.name;
+      const size = document.createElement("small");
+      size.textContent = formatFileSize(attachment.size);
+      text.append(name, size);
+    }
 
     const remove = document.createElement("button");
     remove.type = "button";

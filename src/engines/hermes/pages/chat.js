@@ -55,6 +55,7 @@ import {
   updateCollaborationTask,
 } from '../../../lib/collaboration.js'
 import { createSpeechPlaybackController, createVoiceInputController } from '../../../lib/voice.js'
+import { attachAnchoredImageZoom } from '../../../lib/anchored-image-zoom.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../../../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../../../lib/ocr-service.js'
 import { compactChatMessage } from '../../../shared/compact-chat-policy.js'
@@ -137,6 +138,13 @@ async function tauriListen(event, cb) {
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function formatDocumentFileSize(size) {
+  const bytes = Number(size) || 0
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 function escAttr(s) {
@@ -1132,7 +1140,7 @@ function isReadableTextFile(file) {
 }
 
 function isSupportedHermesDocument(file) {
-  return /\.(xlsx|docx|pdf)$/i.test(String(file?.name || ''))
+  return /\.(xlsx|docx|pptx|pdf)$/i.test(String(file?.name || ''))
 }
 
 // ----------------------------------------------------------- icons
@@ -1501,7 +1509,7 @@ export function render() {
 
   function renderHermesInboxMessages() {
     const rows = listAgentTaskMessages({ toAgent: COLLAB_TARGETS.hermes })
-      .filter(item => ['task_request', 'task_result', 'task_error', 'task_delegate'].includes(item.message_type))
+      .filter(item => ['task_request', 'task_progress', 'task_result', 'task_error', 'task_delegate'].includes(item.message_type))
       .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
     const fresh = rows.filter(item => !renderedInboxMessages.has(inboxMessageKey(item)))
     if (!fresh.length) return
@@ -1509,9 +1517,13 @@ export function render() {
     for (const item of fresh) {
       const key = inboxMessageKey(item)
       renderedInboxMessages.add(key)
+      if (isOpenClawInboxResultMessage(item) && item.message_type === 'task_result') {
+        store.attachCollaborationResult(item)
+      }
       const label = item.message_type === 'task_error' ? '错误回传'
         : item.message_type === 'task_delegate' ? '任务委派'
         : item.message_type === 'task_request' ? '任务请求'
+        : item.message_type === 'task_progress' ? '执行进度'
         : '结果回传'
       store.pushLocalAssistant([
         `## ${label}`,
@@ -1526,10 +1538,13 @@ export function render() {
         item.tool ? `- 工具：${item.tool}` : '',
         item.title ? `- 标题：${item.title}` : '',
         '',
-        renderFrontendProgressBubble(buildFrontendProgressBubbleViewModel({
-          task_events: buildFrontendTaskEventsFromInboxMessage(item),
-          mode: 'normal',
-        })),
+        (() => {
+          const progress = buildFrontendProgressBubbleViewModel({
+            task_events: buildFrontendTaskEventsFromInboxMessage(item),
+            mode: 'normal',
+          })
+          return progress.summary ? `- 进度：${progress.summary}（${progress.status}）` : ''
+        })(),
         '',
         formatHermesInboxMessageBody(item),
       ].filter(Boolean).join('\n'))
@@ -1537,6 +1552,35 @@ export function render() {
     persistRenderedInboxMessages()
     forceScrollBottom = true
     scheduleDraw('full')
+  }
+
+  async function drainPortableCollaborationResults() {
+    if (!isTauriRuntime()) return
+    try {
+      const bridge = await api.collaborationMessageDrain(COLLAB_TARGETS.hermes)
+      for (const item of (bridge?.messages || [])) {
+        const payload = {
+          taskId: item.task_id,
+          parentTaskId: item.parent_task_id,
+          sessionId: item.session_id,
+          fromAgent: item.from_agent,
+          toAgent: item.to_agent,
+          title: item.title,
+          content: item.content,
+          context: item.context,
+          artifacts: item.artifacts,
+          tool: item.tool,
+        }
+        if (item.message_type === 'task_progress') createTaskProgress(payload)
+        else createTaskResult({
+          ...payload,
+          failed: item.message_type === 'task_error' || item.status === 'failed',
+        })
+      }
+      if (bridge?.messages?.length) renderHermesInboxMessages()
+    } catch (error) {
+      console.warn('[collaboration] durable result drain failed:', error)
+    }
   }
 
   let hermesDispatchBusy = false
@@ -1792,7 +1836,90 @@ export function render() {
   }
 
   // --- initial session load + model meta ---
-  store.loadSessions().then(() => {
+  function publishHermesSidebarSessions() {
+    const { pinned, groups } = store.groupedSessions()
+    const sessions = [
+      ...pinned.map(session => ({ id: session.id, title: sessionDisplayTitle(session), updatedAt: session.updatedAt, createdAt: session.createdAt, group: '__pinned__', groupLabel: t('engine.chatPinned'), groupCollapsed: false })),
+      ...groups.flatMap(group => group.sessions.map(session => ({ id: session.id, title: sessionDisplayTitle(session), updatedAt: session.updatedAt, createdAt: session.createdAt, group: group.source, groupLabel: group.label, groupCollapsed: store.state.collapsed.has(group.source) }))),
+    ]
+    try { localStorage.setItem('superclaw-hermes-sidebar-sessions', JSON.stringify(sessions)) } catch {}
+    window.dispatchEvent(new CustomEvent('superclaw:hermes-sessions', {
+      detail: { sessions, activeSessionId: store.state.activeSessionId || '' },
+    }))
+  }
+
+  async function runHermesSidebarAction(action) {
+    const type = String(action?.type || '')
+    const sessionId = String(action?.sessionId || '')
+    if (type === 'select') {
+      if (sessionId && sessionId !== store.state.activeSessionId) {
+        forceScrollBottom = true
+        await store.switchSession(sessionId)
+      }
+      return
+    }
+    if (type === 'toggle-group') {
+      store.toggleCollapsed(String(action?.source || ''))
+      return
+    }
+    if (type === 'rename-group') {
+      const source = action?.source
+      if (source == null || String(source) === '__pinned__') return
+      const label = await showRenameModal(String(action?.label || ''))
+      if (label == null) return
+      const ok = store.renameGroup(source, label)
+      toast(ok ? '分组名称已更新' : '分组重命名失败', ok ? 'success' : 'error')
+      return
+    }
+    const session = store.state.sessions.find(item => item.id === sessionId)
+    if (!session) return
+    if (type === 'rename') {
+      const title = await showRenameModal(sessionDisplayTitle(session))
+      if (title == null) return
+      const ok = await store.renameSession(sessionId, title)
+      toast(ok ? t('engine.chatRenamed') : t('engine.chatRenameFailed'), ok ? 'success' : 'error')
+      return
+    }
+    if (type === 'delete') {
+      const ok = await showConfirm(t('engine.chatConfirmDelete'))
+      if (!ok) return
+      try {
+        await store.deleteSession(sessionId)
+        toast(t('engine.chatSessionDeleted'), 'success')
+      } catch (err) {
+        const message = err?.message === 'RUNNING_SESSION' ? t('engine.chatDeleteRunningBlocked') : (err?.message || err)
+        toast(t('engine.chatDeleteFailed') + ': ' + message, 'error')
+      }
+    }
+  }
+
+  const onHermesSidebarAction = (event) => {
+    runHermesSidebarAction(event?.detail || {}).catch(err => {
+      console.warn('[Hermes] sidebar action failed', err)
+    })
+  }
+  window.addEventListener('superclaw:hermes-sidebar-action', onHermesSidebarAction)
+
+  store.loadSessions().then(async () => {
+    const requestedSessionId = sessionStorage.getItem('superclaw-hermes-sidebar-session-id')
+    if (requestedSessionId) {
+      sessionStorage.removeItem('superclaw-hermes-sidebar-session-id')
+      if (store.state.sessions.some(session => session.id === requestedSessionId)) {
+        await store.switchSession(requestedSessionId)
+      }
+    }
+    if (sessionStorage.getItem('superclaw-hermes-new-session-request') === '1') {
+      sessionStorage.removeItem('superclaw-hermes-new-session-request')
+      handleCreateHermesSession()
+    }
+    try {
+      const rawAction = sessionStorage.getItem('superclaw-hermes-sidebar-action')
+      if (rawAction) {
+        sessionStorage.removeItem('superclaw-hermes-sidebar-action')
+        await runHermesSidebarAction(JSON.parse(rawAction))
+      }
+    } catch {}
+    publishHermesSidebarSessions()
     renderHermesInboxMessages()
     scheduleDraw('full')
   })
@@ -1811,7 +1938,10 @@ export function render() {
 
   // Store subscription → `draw()` on mutation. rAF-batched inside the store
   // so a burst of events (streaming deltas) collapses into a single redraw.
-  const unsubscribe = store.subscribe(() => scheduleStoreDraw())
+  const unsubscribe = store.subscribe(() => {
+    publishHermesSidebarSessions()
+    scheduleStoreDraw()
+  })
 
   // Teardown + mount-observer are set up near the end of render() (after
   // `onGlobalKey` is defined). We avoid attaching a MutationObserver here
@@ -2189,7 +2319,21 @@ export function render() {
   }
 
   function renderExecutionProcessCard(message = {}) {
-    const trace = Array.isArray(message.executionTrace) ? message.executionTrace : []
+    const storedTrace = Array.isArray(message.executionTrace) ? message.executionTrace : []
+    // A gateway can begin work before its first tool event reaches the WebView.
+    // Always give an active Hermes run a stable execution card instead of an
+    // empty assistant bubble; real tool events replace this fallback in place.
+    const trace = storedTrace.length
+      ? storedTrace
+      : (message.isStreaming ? [{
+          id: 'stream-pending',
+          kind: 'progress',
+          title: '执行进度',
+          status: 'running',
+          summary: store.state.taskStatus?.lastStep || '任务已开始，正在准备下一步。',
+          input: '',
+          output: '',
+        }] : [])
     if (!trace.length) return ''
     const running = message.isStreaming || trace.some(step => step?.status === 'running')
     const completedCount = trace.filter(step => step?.status === 'completed').length
@@ -2203,10 +2347,12 @@ export function render() {
       const status = String(step?.status || 'progress')
       const summary = String(step?.summary || '').trim()
       const input = String(step?.input || '').trim()
-      const output = String(step?.output || '').trim()
+      const detailLabel = String(step?.title || '') === 'execute_code' ? '查看命令' : '查看输入'
+      // A tool input is rendered inline as the step summary. Keep the details
+      // control only as a fallback for older events that did not include one.
+      const showDetail = Boolean(input) && !summary
       const detail = [
-        input ? `输入\n${input}` : '',
-        output ? `结果\n${output}` : '',
+        input ? `${detailLabel}\n${input}` : '',
       ].filter(Boolean).join('\n\n')
       const artifacts = Array.isArray(step?.artifacts) ? step.artifacts : []
       const artifactsHtml = artifacts.length ? `
@@ -2223,7 +2369,7 @@ export function render() {
           <div class="hm-chat-execution-body">
             <div class="hm-chat-execution-title">${escHtml(step?.title || '执行步骤')}</div>
             ${summary ? `<div class="hm-chat-execution-summary">${escHtml(summary)}</div>` : ''}
-            ${detail ? `<pre class="hm-chat-execution-detail">${escHtml(detail)}</pre>` : ''}
+            ${showDetail ? `<details class="hm-chat-execution-detail-toggle"><summary>${escHtml(detailLabel)}</summary><pre class="hm-chat-execution-detail">${escHtml(detail)}</pre></details>` : ''}
             ${artifactsHtml}
           </div>
           <span class="hm-chat-execution-state">${status === 'failed' ? '失败' : status === 'running' ? '进行中' : status === 'completed' ? '完成' : '处理中'}</span>
@@ -2335,7 +2481,7 @@ export function render() {
     })
     const documents = (attachments || []).filter(att => {
       const category = String(att?.category || att?.type || '').toLowerCase()
-      return category === 'document' || /\.(xlsx|docx|pdf)$/i.test(String(att?.fileName || att?.name || ''))
+      return category === 'document' || /\.(xlsx|docx|pptx|pdf)$/i.test(String(att?.fileName || att?.name || ''))
     })
     if (!images.length && !documents.length) return ''
     return `
@@ -2360,11 +2506,18 @@ export function render() {
             </figure>
           `
         }).join('')}
-        ${documents.map(att => `
-          <div class="hm-chat-document-card" title="${escAttr(att.savedPath || att.filePath || '')}">
-            <span class="hm-chat-document-name">${escHtml(att.fileName || att.name || 'document')}</span>
-          </div>
-        `).join('')}
+        ${documents.map(att => {
+          const name = String(att.fileName || att.name || 'document')
+          const extension = (name.split('.').pop() || '').toLowerCase()
+          const type = ({ pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', csv: 'excel', ppt: 'ppt', pptx: 'ppt' })[extension] || 'file'
+          const label = ({ pdf: 'PDF', word: 'W', excel: 'X', ppt: 'P' })[type] || 'FILE'
+          return `
+            <div class="hm-chat-document-card hm-document-card" title="${escAttr(att.savedPath || att.filePath || '')}">
+              <span class="hm-document-card__type is-${type}">${label}</span>
+              <span class="hm-document-card__info"><span class="hm-chat-document-name">${escHtml(name)}</span>${att.size ? `<span class="hm-document-card__size">${escHtml(formatDocumentFileSize(att.size))}</span>` : ''}</span>
+            </div>
+          `
+        }).join('')}
       </div>
     `
   }
@@ -2402,8 +2555,9 @@ export function render() {
 
   function closeHermesImagePreview() {
     if (!imagePreviewOverlay) return
-    const { element, onKeyDown } = imagePreviewOverlay
+    const { element, onKeyDown, zoomController } = imagePreviewOverlay
     document.removeEventListener('keydown', onKeyDown)
+    zoomController?.destroy()
     element.remove()
     imagePreviewOverlay = null
   }
@@ -2431,24 +2585,12 @@ export function render() {
     preview.src = src
     preview.alt = image?.alt || '图片预览'
     preview.title = '滚轮缩放，双击恢复'
-    let zoom = 1
-    const applyZoom = () => {
-      preview.style.transform = `scale(${zoom})`
-      panel.dataset.zoom = String(Math.round(zoom * 100))
-    }
-    const resetZoom = () => {
-      zoom = 1
-      applyZoom()
-    }
-    panel.addEventListener('wheel', (event) => {
-      event.preventDefault()
-      const delta = event.deltaY < 0 ? 0.14 : -0.14
-      zoom = Math.min(4, Math.max(0.5, Math.round((zoom + delta) * 100) / 100))
-      applyZoom()
-    }, { passive: false })
-    preview.addEventListener('dblclick', (event) => {
-      event.preventDefault()
-      resetZoom()
+    const zoomController = attachAnchoredImageZoom({
+      viewport: panel,
+      image: preview,
+      onChange: ({ zoom }) => {
+        panel.dataset.zoom = String(Math.round(zoom * 100))
+      },
     })
     panel.append(closeButton, preview)
     overlay.appendChild(panel)
@@ -2462,7 +2604,7 @@ export function render() {
     })
     document.addEventListener('keydown', onKeyDown)
     document.body.appendChild(overlay)
-    imagePreviewOverlay = { element: overlay, onKeyDown }
+    imagePreviewOverlay = { element: overlay, onKeyDown, zoomController }
     closeButton.focus()
   }
 
@@ -2470,15 +2612,21 @@ export function render() {
     if (!pendingAttachments.length) return ''
     return `
       <div class="hm-chat-pending-attachments">
-        ${pendingAttachments.map((att, idx) => `
-          <div class="hm-chat-pending-image">
-            ${attachmentImageSrc(att)
-              ? `<img src="${escAttr(attachmentImageSrc(att))}" alt="${escAttr(att.fileName || 'image')}">`
-              : `<span class="hm-chat-pending-image-placeholder">${escHtml(att.fileName || 'image')}</span>`}
-            <span>${escHtml(att.fileName || 'image')}</span>
-            <button type="button" data-remove-attachment="${idx}" title="Remove image">${ICONS.close}</button>
-          </div>
-        `).join('')}
+        ${pendingAttachments.map((att, idx) => {
+          const preview = attachmentImageSrc(att)
+          const mime = String(att?.mimeType || att?.mediaType || att?.mime || '').toLowerCase()
+          const isImage = Boolean(preview) || mime.startsWith('image/')
+          const name = att.fileName || att.name || (isImage ? 'image' : 'attachment')
+          return `
+            <div class="hm-chat-pending-image ${isImage ? 'is-image' : ''}">
+              ${preview
+                ? `<img src="${escAttr(preview)}" alt="${escAttr(name)}">`
+                : `<span class="hm-chat-pending-image-placeholder">${isImage ? '' : escHtml(name)}</span>`}
+              ${isImage ? '' : `<span>${escHtml(name)}</span>`}
+              <button type="button" data-remove-attachment="${idx}" title="Remove attachment">${ICONS.close}</button>
+            </div>
+          `
+        }).join('')}
       </div>
     `
   }
@@ -2660,7 +2808,7 @@ export function render() {
                          title="${escHtml(t('engine.chatSend'))}">
                   ${ICONS.send}
                  </button>`}
-            <input id="hm-chat-file-input" type="file" accept="image/*,.txt,.md,.json,.csv,.xlsx,.docx,.pdf" multiple hidden>
+            <input id="hm-chat-file-input" type="file" accept="image/*,.txt,.md,.json,.csv,.xlsx,.docx,.pptx,.pdf" multiple hidden>
           </div>
         </div>
       </div>
@@ -2675,12 +2823,6 @@ export function render() {
     return `
       <header class="hm-chat-header">
         <div class="hm-chat-header-left">
-          <button class="hm-chat-toggle-sidebar ${sidebarOpen ? '' : 'is-collapsed'}" id="hm-chat-toggle-sidebar"
-                  aria-pressed="${sidebarOpen ? 'true' : 'false'}"
-                  title="${escHtml(sidebarOpen ? t('engine.chatHideSessions') : t('engine.chatShowSessions'))}">
-            ${ICONS.sidebar}
-            <span>${escHtml(sidebarOpen ? t('engine.chatHideSessions') : t('engine.chatShowSessions'))}</span>
-          </button>
           <div class="hm-chat-header-title-wrap">
             <span class="hm-chat-header-title">${escHtml(title)}</span>
             ${workPath ? `<span class="hm-chat-source-badge hm-chat-work-path-badge" title="${escAttr(workPath)}">${escHtml(workPath)}</span>` : ''}
@@ -2745,9 +2887,7 @@ export function render() {
     }
 
     el.innerHTML = `
-      <div class="hm-chat-shell ${sidebarOpen ? '' : 'is-sidebar-collapsed'}">
-        <div class="hm-chat-sidebar-backdrop" id="hm-chat-sidebar-backdrop"></div>
-        ${renderSidebar()}
+      <div class="hm-chat-shell is-sidebar-collapsed">
         <section class="hm-chat-main">
           ${renderHeader()}
           <div class="hm-chat-messages sc-chat-stage" id="hm-chat-messages">
@@ -4609,6 +4749,9 @@ export function render() {
   }
   window.addEventListener('superclaw-agent-task-message', onInboxMessage)
   window.addEventListener('storage', onInboxMessage)
+  const collaborationResultPoll = setInterval(() => {
+    drainPortableCollaborationResults()
+  }, 1000)
 
   // Detach the global listener + close modal on unmount. A single
   // MutationObserver watches our parent; when `el` is detached, we run the
@@ -4629,6 +4772,8 @@ export function render() {
     document.removeEventListener('visibilitychange', onVisibilityRefreshStatus)
     window.removeEventListener('superclaw-agent-task-message', onInboxMessage)
     window.removeEventListener('storage', onInboxMessage)
+    clearInterval(collaborationResultPoll)
+    window.removeEventListener('superclaw:hermes-sidebar-action', onHermesSidebarAction)
     if (unlistenGatewayStatus) { unlistenGatewayStatus(); unlistenGatewayStatus = null }
     if (drawFrame != null) {
       cancelAnimationFrame(drawFrame)
@@ -4649,6 +4794,7 @@ export function render() {
 
   // Seed the initial draw (before store load resolves).
   draw()
+  drainPortableCollaborationResults()
   renderHermesInboxMessages()
   consumeHermesExecutionDispatch().catch(err => {
     toast(`Hermes 执行队列读取失败：${err?.message || err}`, 'error')

@@ -30,6 +30,31 @@ export function detectTextToImageTask(input = {}) {
   return task?.media_type === 'text_to_image' ? task : null
 }
 
+function isImageGenerationRequest(text = '') {
+  const value = String(text || '').trim()
+  if (!value) return false
+  const action = '(?:生成|绘制|制作|设计|创建|做一张|来一张|画一张|generate|create|draw|make)'
+  // “生成一张图”是最常见的文生图说法。保留图表、图纸等非媒体对象，
+  // 让它们继续由 Hermes 的普通对话/工具链处理。
+  const target = '(?:图片|图像|插画|海报|封面|配图|头像|照片|相片|摄影图|写真|图(?!表|纸|书|层|标)|photo|photograph|portrait|image|illustration|poster|cover)'
+  if (new RegExp(`${action}.{0,24}${target}|(?:文生图|生图|text\\s*to\\s*image)`, 'i').test(value)) return true
+
+  // Natural-language fallback: users often describe the picture they want
+  // instead of saying "generate an image". Require both a creative request
+  // and a visual deliverable/style signal so ordinary conversation, image
+  // analysis, and image search do not get routed to a media provider.
+  if (/(?:分析|识别|描述|解释|查看|读取|上传|粘贴|找图|搜图|搜索图片|这张图|这幅图)/i.test(value)) return false
+  const creativeIntent = /(?:我想要|我要|我需要|给我来|帮我做|帮我搞|请做|请创作|来个|来一幅|来张|做个)/i
+  const visualDeliverable = /(?:画面|视觉(?:效果|稿)?|效果图|壁纸|画作|绘画|艺术作品|场景图|设计稿|宣传(?:图|物料)|插图|海报|封面|头像|照片|相片|摄影图|写真|图(?!表|纸|书|层|标))/i
+  const styleSignal = /(?:写实|逼真|高清|电影感|动漫|卡通|插画风|水彩|油画|赛博朋克|构图|光影|镜头|壁纸|画风|风格|视角|比例|4k|8k)/i
+  return creativeIntent.test(value) && (visualDeliverable.test(value) || styleSignal.test(value))
+}
+
+function isImageTransformationRequest(text = '') {
+  const value = String(text || '').trim()
+  return /(?:把|将|用).{0,20}(?:图片|图像|照片|相片|photo|image).{0,32}(?:改成|修改|重绘|编辑|变成|转换|edit|transform|restyle)|(?:图生图|images*tos*image)/i.test(value)
+}
+
 export function detectMediaTask(input = {}) {
   const text = String(typeof input === 'string' ? input : input.text || '').trim()
   const hasSourceImage = Array.isArray(input.attachments) && input.attachments.length > 0
@@ -43,23 +68,19 @@ export function detectMediaTask(input = {}) {
   if (/(?:音乐|歌曲|背景音乐|text\s*to\s*music)/i.test(text) && /(?:生成|制作|create|generate)/i.test(text)) {
     return { media_type: 'text_to_music', prompt: text, title: '音乐生成协作任务' }
   }
-  if (hasSourceImage) return null
-  if (/(?:\u751f\u6210|\u7ed8\u5236|\u5236\u4f5c|\u8bbe\u8ba1|\u521b\u5efa).{0,18}(?:\u56fe\u7247|\u56fe\u50cf|\u63d2\u753b|\u6d77\u62a5|\u5c01\u9762|\u914d\u56fe|\u5934\u50cf)|(?:\u6587\u751f\u56fe|text\s*to\s*image)/i.test(text)) {
-    return { media_type: 'text_to_image', prompt: text, title: '\u6587\u751f\u56fe\u534f\u4f5c\u4efb\u52a1' }
+  const imageGeneration = isImageGenerationRequest(text)
+  if (hasSourceImage && (imageGeneration || isImageTransformationRequest(text))) {
+    return { media_type: 'image_to_image', prompt: text, title: '图生图协作任务' }
   }
-  const asksForImage = /(?:生成|画|绘制|制作|设计|创建|做).{0,18}(?:图片|图像|插画|海报|封面|配图|头像)|(?:文生图|生图|text\s*to\s*image)/i.test(text)
-  if (!asksForImage) return null
-  return {
-    media_type: 'text_to_image',
-    prompt: text,
-    title: '文生图协作任务',
-  }
+  if (hasSourceImage || !imageGeneration) return null
+  return { media_type: 'text_to_image', prompt: text, title: '文生图协作任务' }
 }
 
 export function buildOpenClawMediaTaskPrompt(task = {}) {
   const prompt = String(task.prompt || task.content || '').trim()
   const tools = {
     text_to_image: 'superclaw_generate_image',
+    image_to_image: 'superclaw_generate_image',
     text_to_video: 'superclaw_generate_video',
     image_to_video: 'superclaw_generate_video',
     text_to_speech: 'superclaw_generate_speech',
@@ -70,7 +91,7 @@ export function buildOpenClawMediaTaskPrompt(task = {}) {
   return [
     `这是来自 SuperClaw 协作系统的媒体任务：${task.media_type || 'text_to_image'}。`,
     `请在当前独立协作会话中调用工具 ${tool} 完成任务，不要只解释能力。`,
-    '请保留工具输出中的媒体附件和文件路径；完成后用中文简要说明结果。',
+    '请先理解原始创作意图；当描述口语化或不完整时，可补齐合理的主体、构图、光影和风格提示词，再调用工具生成。请保留工具输出中的媒体附件和文件路径；完成后用中文简要说明结果。',
     '如果媒体路由未配置、服务商不支持或调用失败，请如实报告明确原因，不要修改 Gateway、模型配置或其他代理。',
     '',
     `原始请求：${prompt}`,
@@ -1215,9 +1236,21 @@ export async function openCollaborationPanel(target, taskId, options = {}) {
   if (window.__TAURI_INTERNALS__ || window.__TAURI__) {
     try {
       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow')
+      // Media tasks are queued before this function is called. Reuse a live
+      // OpenClaw runner so each Hermes request does not create another window.
+      // The runner's queue watcher will pick up the next task and switch only
+      // its internal collaboration session.
+      if (target === COLLAB_TARGETS.openclaw && options.reuseExisting !== false) {
+        const openClawRunner = (await WebviewWindow.getAll().catch(() => []))
+          .find(candidate => candidate?.label?.startsWith('superclaw-openclaw-'))
+        if (openClawRunner) {
+          if (options.focusExisting) await openClawRunner.setFocus().catch(() => {})
+          return { mode: 'tauri', reused: true, label: openClawRunner.label, url }
+        }
+      }
       const existing = await WebviewWindow.getByLabel(label).catch(() => null)
       if (existing) {
-        await existing.setFocus().catch(() => {})
+        if (options.focusExisting !== false) await existing.setFocus().catch(() => {})
         return { mode: 'tauri', reused: true, label, url }
       }
       const child = new WebviewWindow(label, {

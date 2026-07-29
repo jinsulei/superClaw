@@ -3865,6 +3865,27 @@ h3 {
   padding: 5px 7px;
 }
 
+.attachment-chip.document-chip { width: min(238px, 100%); min-height: 58px; box-sizing: border-box; padding: 8px 10px; border: 0; border-radius: 4px; background: #f0f1f3; align-items: center; }
+.document-chip-type { order: 2; margin-left: auto; width: 32px; height: 38px; display: grid; place-items: center; border-radius: 2px; color: #fff; font-size: 10px; font-weight: 800; }
+.document-chip-type.is-excel { background: #14a05e; }
+.document-chip-type.is-word { background: #2375c5; }
+.document-chip-type.is-ppt, .document-chip-type.is-pdf { background: #df4d4d; }
+.document-chip-type.is-file { background: #7c8797; }
+.attachment-chip.document-chip > span:not(.document-chip-type) { display: grid; gap: 4px; }
+.attachment-chip.document-chip strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; color: #252a32; }
+.attachment-chip.document-chip small { color: #7a828e; font-size: 11px; font-weight: 500; }
+
+.document-output-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 238px)); gap: 6px; margin-top: 10px; }
+.document-output-card { min-height: 58px; box-sizing: border-box; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 4px; background: #f0f1f3; }
+.document-output-card__info { min-width: 0; display: grid; gap: 4px; }
+.document-output-card__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #252a32; font-size: 13px; font-weight: 650; }
+.document-output-card__meta { color: #7a828e; font-size: 11px; font-weight: 500; }
+.document-output-card__type { order: 2; margin-left: auto; width: 32px; height: 38px; display: grid; place-items: center; border-radius: 2px; color: #fff; font-size: 10px; font-weight: 800; }
+.document-output-card__type.is-excel { background: #14a05e; }
+.document-output-card__type.is-word { background: #2375c5; }
+.document-output-card__type.is-ppt, .document-output-card__type.is-pdf { background: #df4d4d; }
+.document-output-card__type.is-file { background: #7c8797; }
+
 .attachment-chip img {
   width: 32px;
   height: 32px;

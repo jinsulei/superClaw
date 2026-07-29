@@ -22,7 +22,8 @@ import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { createSpeechPlaybackController, createVoiceInputController, sanitizeSpeechPlaybackText } from '../lib/voice.js'
-import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
+import { attachAnchoredImageZoom } from '../lib/anchored-image-zoom.js'
+import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, detectMediaTask, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
@@ -188,6 +189,7 @@ let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubSta
 let _chatSnapshotLifecycleBound = false
 let _seenRunIds = new Set()
 let _pageActive = false
+let _openClawSidebarActionHandler = null
 let _sendInputLocked = false
 let _activeClientRequestId = null
 let _activeOpenClawUserText = ''
@@ -321,28 +323,14 @@ export async function render() {
   page.dataset.agent = 'openclaw'
   _pageActive = true
   _page = page
+  if (_openClawSidebarActionHandler) window.removeEventListener('superclaw:openclaw-sidebar-action', _openClawSidebarActionHandler)
+  _openClawSidebarActionHandler = event => { void handleOpenClawSidebarAction(event?.detail || {}) }
+  window.addEventListener('superclaw:openclaw-sidebar-action', _openClawSidebarActionHandler)
 
   page.innerHTML = `
-    <div class="chat-sidebar" id="chat-sidebar">
-      <div class="chat-sidebar-header">
-        <span>${t('chat.sessionList')}</span>
-        <div class="chat-sidebar-header-actions">
-          <button class="chat-sidebar-btn" id="btn-toggle-sidebar" title="${t('chat.sessionList')}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          </button>
-          <button class="chat-sidebar-btn" id="btn-new-session" title="${t('chat.newSession')}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
-        </div>
-      </div>
-      <div class="chat-session-list" id="chat-session-list"></div>
-    </div>
     <div class="chat-main">
       <div class="chat-header">
         <div class="chat-status">
-          <button class="chat-toggle-sidebar" id="btn-toggle-sidebar-main" title="${t('chat.sessionList')}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-          </button>
           <span class="status-dot" id="chat-status-dot"></span>
           <span class="chat-title" id="chat-title">${t('chat.chatTitle')}</span>
         </div>
@@ -502,7 +490,7 @@ export async function render() {
   _statusDot = page.querySelector('#chat-status-dot')
   _typingEl = page.querySelector('#typing-indicator')
   _scrollBtn = page.querySelector('#chat-scroll-btn')
-  _sessionListEl = page.querySelector('#chat-session-list')
+  _sessionListEl = null
   _cmdPanelEl = page.querySelector('#chat-cmd-panel')
   _attachPreviewEl = page.querySelector('#chat-attachments-preview')
   _fileInputEl = page.querySelector('#chat-file-input')
@@ -552,9 +540,14 @@ export async function render() {
     restoreOpenClawChatSnapshot(snapshotSessionKey, 'render')
   }
   bindOpenClawChatSnapshotLifecycle()
-  page.querySelector('#chat-sidebar')?.classList.toggle('open', getSidebarOpen())
-
   bindEvents(page)
+  try {
+    const pendingAction = sessionStorage.getItem('superclaw-openclaw-sidebar-action')
+    if (pendingAction) {
+      sessionStorage.removeItem('superclaw-openclaw-sidebar-action')
+      void handleOpenClawSidebarAction(JSON.parse(pendingAction))
+    }
+  } catch {}
   setupVoiceControls()
   bindConnectOverlay(page)
   const workspaceOpen = getWorkspacePanelOpen()
@@ -734,16 +727,11 @@ function bindEvents(page) {
     timerToggle.addEventListener('change', () => { timerBody.style.display = timerToggle.checked ? '' : 'none' })
   }
 
-  const toggleSidebar = () => {
-    const sidebar = page.querySelector('#chat-sidebar')
-    if (!sidebar) return
-    const nextOpen = !sidebar.classList.contains('open')
-    sidebar.classList.toggle('open', nextOpen)
-    setSidebarOpen(nextOpen)
+  page.querySelector('#btn-new-session')?.addEventListener('click', () => showNewSessionDialog())
+  if (sessionStorage.getItem('superclaw-openclaw-new-session-request') === '1') {
+    sessionStorage.removeItem('superclaw-openclaw-new-session-request')
+    setTimeout(() => showNewSessionDialog(), 0)
   }
-  page.querySelector('#btn-toggle-sidebar')?.addEventListener('click', toggleSidebar)
-  page.querySelector('#btn-toggle-sidebar-main')?.addEventListener('click', toggleSidebar)
-  page.querySelector('#btn-new-session').addEventListener('click', () => showNewSessionDialog())
   page.querySelector('#btn-cmd').addEventListener('click', () => toggleCmdPanel())
   page.querySelector('#btn-reset-session').addEventListener('click', () => resetCurrentSession())
   page.querySelector('#btn-refresh-models')?.addEventListener('click', () => loadModelOptions(true))
@@ -2247,6 +2235,7 @@ function normalizeOpenClawAttachment(att = {}) {
     path: att.path || '',
     fallbackMediaPath: att.fallbackMediaPath || '',
     workspaceOutputPath: att.workspaceOutputPath || '',
+    generatedMediaPath: att.generatedMediaPath || '',
     createdAt: att.createdAt || new Date().toISOString(),
   }
 }
@@ -2411,30 +2400,33 @@ function openOpenClawPdfPreview(att = {}) {
 function createOpenClawFileCard(att = {}, options = {}) {
   const normalized = normalizeOpenClawAttachment(att)
   const card = document.createElement('div')
-  card.className = 'msg-file-card'
+  card.className = 'msg-file-card sc-document-card'
   const extension = getOpenClawAttachmentExtension({ name: normalized.fileName })
-  const iconName = ({ pdf: 'file', doc: 'file-text', docx: 'file-text', xls: 'bar-chart', xlsx: 'bar-chart', csv: 'bar-chart', txt: 'file-plain', md: 'file-plain', json: 'clipboard' })[extension] || 'paperclip'
+  const documentType = ({ pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', csv: 'excel', ppt: 'ppt', pptx: 'ppt' })[extension] || 'file'
   const icon = document.createElement('span')
-  icon.className = 'msg-file-icon'
-  icon.innerHTML = svgIcon(iconName, 16)
+  icon.className = `msg-file-icon sc-document-card__type is-${documentType}`
+  icon.textContent = ({ pdf: 'PDF', word: 'W', excel: 'X', ppt: 'PPT' })[documentType] || 'FILE'
   const info = document.createElement('div')
   info.className = 'msg-file-info'
   const name = document.createElement('span')
-  name.className = 'msg-file-name'
+  name.className = 'msg-file-name sc-document-card__name'
   name.textContent = normalized.fileName || '附件'
   info.appendChild(name)
   if (normalized.size) {
     const size = document.createElement('span')
-    size.className = 'msg-file-size'
+    size.className = 'msg-file-size sc-document-card__size'
     size.textContent = formatFileSize(normalized.size)
     info.appendChild(size)
   }
   card.append(icon, info)
-  if (normalized.workspaceOutputPath) {
+  const localOutputPath = normalized.workspaceOutputPath || normalized.generatedMediaPath
+  if (localOutputPath) {
     const open = document.createElement('button')
     open.type = 'button'
-    open.className = 'msg-file-preview-btn'
-    open.textContent = '打开'
+    open.className = 'msg-file-preview-btn sc-document-card__action'
+    open.title = '打开文件'
+    open.setAttribute('aria-label', '打开文件')
+    open.innerHTML = svgIcon('eye', 14)
     open.addEventListener('click', async event => {
       event.stopPropagation()
       if (!isTauriRuntime()) {
@@ -2442,15 +2434,19 @@ function createOpenClawFileCard(att = {}, options = {}) {
         return
       }
       try {
-        await api.openclawOpenWorkspaceOutput(normalized.workspaceOutputPath)
+        if (normalized.workspaceOutputPath) await api.openclawOpenWorkspaceOutput(normalized.workspaceOutputPath)
+        else await api.assistantOpenPath(localOutputPath)
       } catch (error) {
         toast(`打开文件失败：${error?.message || error}`, 'error')
       }
     })
+    if (normalized.workspaceOutputPath) {
     const download = document.createElement('button')
     download.type = 'button'
-    download.className = 'msg-file-preview-btn'
-    download.textContent = '下载'
+    download.className = 'msg-file-preview-btn sc-document-card__action'
+    download.title = '下载文件'
+    download.setAttribute('aria-label', '下载文件')
+    download.innerHTML = svgIcon('download', 14)
     download.addEventListener('click', async event => {
       event.stopPropagation()
       if (!isTauriRuntime()) {
@@ -2465,6 +2461,9 @@ function createOpenClawFileCard(att = {}, options = {}) {
       }
     })
     card.append(open, download)
+    } else {
+      card.appendChild(open)
+    }
   }
   if (options.preview !== false && isOpenClawPdfAttachment(normalized)) {
     const preview = document.createElement('button')
@@ -2939,7 +2938,7 @@ async function maybeConsumeCollaborationDispatch() {
       context: collabContext,
       artifacts: collabContext.artifacts,
     })
-    createTaskProgress({
+    const progressMessage = createTaskProgress({
       taskId,
       sessionId: collabContext.session_id,
       fromAgent: COLLAB_TARGETS.openclaw,
@@ -2949,6 +2948,14 @@ async function maybeConsumeCollaborationDispatch() {
       context: collabContext,
       artifacts: collabContext.artifacts,
     })
+    // The isolated OpenClaw runner has a different WebView localStorage area.
+    // Mirror the acceptance event to the portable queue so Hermes can show
+    // real progress before the media tool has finished.
+    if (isTauriRuntime()) {
+      void api.collaborationMessageAppend(progressMessage).catch(error => {
+        console.warn('[collaboration] durable OpenClaw progress handoff failed:', error)
+      })
+    }
     if (_isSending || _isStreaming) {
       _messageQueue.push({ text: message, attachments: [] })
       toast('协作任务已进入 OpenClaw 队列。', 'success')
@@ -2991,12 +2998,17 @@ function resolveGatewaySessionKey(gatewaySessionKey) {
 }
 
 function renderSessionList(sessions) {
+  const sortedSessions = [...sessions].sort((a, b) => (b.updatedAt || b.lastActivity || 0) - (a.updatedAt || a.lastActivity || 0))
+  const sidebarSessions = sortedSessions.map(session => {
+    const key = normalizeOpenClawSessionKey(session.sessionKey || session.key || '')
+    return { ...session, sessionKey: key, title: sessionDisplayTitle(key, parseSessionLabel(key)) }
+  })
+  window.dispatchEvent(new CustomEvent('superclaw:openclaw-sessions', { detail: { sessions: sidebarSessions } }))
   if (!_sessionListEl) return
   if (!sessions.length) {
     _sessionListEl.innerHTML = `<div class="chat-session-empty">${t('chat.noSessions')}</div>`
     return
   }
-  const sortedSessions = [...sessions].sort((a, b) => (b.updatedAt || b.lastActivity || 0) - (a.updatedAt || a.lastActivity || 0))
   _sessionListEl.innerHTML = sortedSessions.map(s => {
   const key = normalizeOpenClawSessionKey(s.sessionKey || s.key || '')
   const active = isOpenClawCurrentSessionKey(key) ? ' active' : ''
@@ -3302,6 +3314,30 @@ async function deleteSession(key) {
     else refreshSessionList()
   } catch (e) {
     toast(`${t('common.operationFailed')}: ${e.message}`, 'error')
+  }
+}
+
+async function handleOpenClawSidebarAction(action = {}) {
+  const type = String(action.type || '')
+  const key = normalizeOpenClawSessionKey(action.key || '')
+  if (!key) return
+  if (type === 'delete') {
+    await deleteSession(key)
+    return
+  }
+  if (type === 'rename') {
+    const current = getDisplayLabel(key)
+    showModal({
+      title: '重命名会话',
+      fields: [{ name: 'title', label: '会话标题', value: current }],
+      onConfirm: async (result) => {
+        const next = String(result?.title || '').trim()
+        setSessionName(key, next && next !== parseSessionLabel(key) ? next : '')
+        if (key === _sessionKey) updateSessionTitle()
+        refreshSessionList()
+        toast(t('chat.sessionRenamed'), 'success')
+      },
+    })
   }
 }
 
@@ -5231,11 +5267,26 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
     clientRequestId,
     attachments: attachments?.length ? serializeOpenClawAttachments(attachments) : undefined
   })
-  recordOpenClawRunStep('plan', '计划：先理解你的目标，按需查找资料或执行操作，再整理可靠结论。', 'completed', 'initial-plan')
-  recordOpenClawRunStep('start', '正在连接执行环境，用于开始处理这项任务。', 'running', 'execution-start')
+  const initialTaskSummary = redactOpenClawVisibleSensitiveText(text).replace(/\s+/g, ' ').trim()
+  recordOpenClawRunStep('plan', `开始处理：${initialTaskSummary.slice(0, 180)}${initialTaskSummary.length > 180 ? '...' : ''}`, 'running', 'initial-plan')
   renderOpenClawLiveTimeline()
   showTyping(true)
   scrollToBottom(true)
+  const nativeMediaTask = resolveOpenClawNativeMediaTask(text, attachments)
+  if (nativeMediaTask) {
+    _isSending = true
+    try {
+      await executeOpenClawNativeMediaTask(nativeMediaTask, {
+        clientRequestId,
+        openclawTurnId,
+        assistantMessageId,
+      })
+    } finally {
+      _isSending = false
+      updateSendState()
+    }
+    return
+  }
   _isSending = true
   _startResponseWatchdog()
   startOpenClawProgressHistoryPolling()
@@ -5292,6 +5343,111 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   }
 }
 
+function resolveOpenClawNativeMediaTask(text, attachments = []) {
+  // Gateway JSONL is the authoritative OpenClaw history.  A frontend-only
+  // media call cannot survive reloads, nor can it reliably attach a failed
+  // task to its input turn. Keep every media request on the Gateway path.
+  // buildAttachmentTriggeredPrompt supplies the exact saved attachment path
+  // so the model invokes the registered media tool without filesystem scans.
+  return null
+}
+
+function openClawNativeMediaFileName(path = '', kind = 'media') {
+  const clean = String(path || '').replace(/[\\/]+$/, '')
+  return clean.split(/[\\/]/).pop() || `${kind}-output`
+}
+
+async function executeOpenClawNativeMediaTask(task, renderMeta = {}) {
+  const taskLabel = task.media_type === 'image_to_video' ? '图生视频' : task.media_type === 'text_to_video' ? '文生视频' : task.title || '媒体生成'
+  const sourceRequired = task.media_type === 'image_to_video'
+  if (sourceRequired && !task.inputPath) {
+    const message = '视频未生成：本轮图片附件没有可供本地媒体引擎读取的文件路径。请重新粘贴或上传图片后重试。'
+    recordOpenClawRunStep('tool', taskLabel, 'failed', `native-media-${renderMeta.clientRequestId}`, { detail: '缺少图片源文件路径' })
+    appendAiMessage(message, new Date(), [], [], [], [], [], [], [], {
+      ...renderMeta,
+      dedupeKey: `openclaw-native-media-failed-${renderMeta.clientRequestId}`,
+      sessionKey: _sessionKey,
+      executionTimeline: [..._currentAiTimeline],
+    })
+    saveMessage({
+      id: renderMeta.assistantMessageId || `openclaw-native-media-failed-${Date.now()}`,
+      sessionKey: _sessionKey,
+      role: 'assistant',
+      content: message,
+      timestamp: Date.now(),
+      createdAt: Date.now(),
+      clientRequestId: renderMeta.clientRequestId,
+      status: 'failed',
+    })
+    clearOpenClawGenerationState('native-media-failed-missing-source', renderMeta.clientRequestId)
+    processMessageQueue()
+    return
+  }
+
+  recordOpenClawRunStep('tool', taskLabel, 'running', `native-media-${renderMeta.clientRequestId}`, { detail: '正在调用已配置的本地媒体引擎。' })
+  renderOpenClawLiveTimeline()
+  try {
+    const result = await api.mediaGenerate(task.media_type, task.prompt, task.inputPath || null, {})
+    const outputPath = String(result?.path || '').trim()
+    if (!result?.ok || !outputPath) throw new Error('媒体引擎没有返回可用的输出文件')
+    recordOpenClawRunStep('tool', taskLabel, 'completed', `native-media-${renderMeta.clientRequestId}`, { detail: `已生成：${openClawNativeMediaFileName(outputPath, task.media_type)}` })
+    const output = {
+      fileName: openClawNativeMediaFileName(outputPath, task.media_type),
+      name: openClawNativeMediaFileName(outputPath, task.media_type),
+      generatedMediaPath: outputPath,
+      mimeType: /video/.test(task.media_type) ? 'video/mp4' : 'audio/mpeg',
+    }
+    const message = `${taskLabel}已生成完成。文件已保存到：\n\`${outputPath}\``
+    appendAiMessage(message, new Date(), [], [], [], [output], [], [], [], {
+      ...renderMeta,
+      dedupeKey: `openclaw-native-media-${renderMeta.clientRequestId}`,
+      sessionKey: _sessionKey,
+      executionTimeline: [..._currentAiTimeline],
+    })
+    saveMessage({
+      id: renderMeta.assistantMessageId || `openclaw-native-media-${Date.now()}`,
+      sessionKey: _sessionKey,
+      role: 'assistant',
+      content: message,
+      timestamp: Date.now(),
+      createdAt: Date.now(),
+      clientRequestId: renderMeta.clientRequestId,
+      attachments: [output],
+      status: 'completed',
+    })
+    returnOpenClawCollaborationResult({
+      runId: renderMeta.clientRequestId,
+      content: message,
+      artifacts: [{ type: 'file', path: outputPath, created_at: new Date().toISOString() }],
+    })
+    clearOpenClawGenerationState('native-media-completed', renderMeta.clientRequestId)
+  } catch (error) {
+    const reason = redactOpenClawVisibleSensitiveText(error?.message || String(error) || '未知错误')
+    const message = `${taskLabel}未生成：${reason}`
+    recordOpenClawRunStep('tool', taskLabel, 'failed', `native-media-${renderMeta.clientRequestId}`, { detail: reason })
+    appendAiMessage(message, new Date(), [], [], [], [], [], [], [], {
+      ...renderMeta,
+      dedupeKey: `openclaw-native-media-failed-${renderMeta.clientRequestId}`,
+      sessionKey: _sessionKey,
+      executionTimeline: [..._currentAiTimeline],
+    })
+    saveMessage({
+      id: renderMeta.assistantMessageId || `openclaw-native-media-failed-${Date.now()}`,
+      sessionKey: _sessionKey,
+      role: 'assistant',
+      content: message,
+      timestamp: Date.now(),
+      createdAt: Date.now(),
+      clientRequestId: renderMeta.clientRequestId,
+      status: 'failed',
+      error: { code: 'OPENCLAW_NATIVE_MEDIA_FAILED', reason },
+    })
+    returnOpenClawCollaborationResult({ runId: renderMeta.clientRequestId, content: message, failed: true })
+    clearOpenClawGenerationState('native-media-failed', renderMeta.clientRequestId)
+  }
+  processMessageQueue()
+}
+
 function buildAttachmentTriggeredPrompt(text, attachments = []) {
   const base = String(text || '').trim() || '请分析我刚才粘贴或上传的图片。'
   let toolPrompt = buildIntentTriggeredToolPrompt(base)
@@ -5312,12 +5468,27 @@ function buildAttachmentTriggeredPrompt(text, attachments = []) {
       '',
       '[DOCUMENT_ATTACHMENT_CONTEXT]',
       `The user attached portable document files: ${names}. The Gateway staged them for this exact native run and exposes their paths through MediaPath/MediaPaths.`,
-      'Inspect these files with native tools before answering. For an edit request, preserve the original, write a new output file in the workspace or attachment output directory, verify the result, and report the output path and what changed.',
+      'Use the shared SuperClaw file service for .xlsx, .docx, .pptx, and .pdf: its portable CLI is superclaw-file.cmd (preview, replace, clean-excel, watermark). Inspect before answering. For an edit request, preserve the original, write a new output file in the workspace or attachment output directory, verify the result, and report the output path and what changed.',
       'Do not say a file is unavailable until you have checked MediaPath/MediaPaths. Do not ask the user to upload again when this turn already includes the attachment.',
       '[/DOCUMENT_ATTACHMENT_CONTEXT]',
     ].join('\n')
   }
   if (!hasImage) return toolPrompt
+  const mediaTask = detectMediaTask({ text: base, attachments })
+  const mediaPath = attachments
+    .map(item => openClawAttachmentMediaPath(item))
+    .find(Boolean)
+  if (mediaTask?.media_type === 'image_to_video') {
+    return [
+      toolPrompt,
+      '',
+      '[MEDIA_ATTACHMENT_CONTEXT]',
+      `This is an image-to-video request. The exact source image for this turn is ${JSON.stringify(mediaPath || '')}.`,
+      `Call superclaw_generate_video once with imagePath=${JSON.stringify(mediaPath || '')}; do not use exec, shell, filesystem search, or recursive scans to rediscover the attachment.`,
+      'If the source path is empty or the media tool fails, state the concrete failure and do not claim that a video was generated.',
+      '[/MEDIA_ATTACHMENT_CONTEXT]',
+    ].join('\n')
+  }
   const ocrPath = attachments
     .map(item => openClawAttachmentMediaPath(item))
     .find(Boolean)
@@ -5345,11 +5516,14 @@ function buildIntentTriggeredToolPrompt(text) {
   const base = String(text || '').trim()
   if (!base) return base
   const lower = base.toLowerCase()
+  // Collaboration transport text is an already-approved execution request.
+  const collaborationExecutionIntent = /superclaw\s*.*(?:collaboration|协作)/i.test(base)
   const skillsIntent = isOpenClawSkillsQuestion(base)
   const nativeInspectionIntent = isOpenClawNativeInspectionRequest(base)
   const capabilityAuditIntent =
-    skillsIntent ||
+    !collaborationExecutionIntent && (skillsIntent ||
     /(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|能做吗|能做什么|缺什么|需要什么|安装什么|装什么|工具|插件|skills?|skill|plugin|tool|能力|调用|检索).{0,40}(工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索)|(?:工具|插件|skills?|skill|plugin|tool|能力|调用|安装|联网|上网|安全|检查|检索).{0,40}(能不能|能否|可以吗|可不可以|会不会|有没有|是否具备|缺什么|需要什么|安装什么|装什么)/i.test(base)
+    )
   const hasUrl = /https?:\/\//i.test(base)
   const desktopIntent =
     /(桌面端|客户端|本地应用|应用程序|桌面应用|app)\s*(里|上|中)?\s*(打开|搜索|点击|输入|查看|读取|采集|操作)/i.test(base) ||
@@ -5497,7 +5671,7 @@ function returnOpenClawCollaborationResult({ runId, content, failed = false, art
   if (!markCollaborationReturnOnce(task.taskId, runId || body.slice(0, 80), failed ? 'error' : 'result')) return
   const context = buildOpenClawCollaborationContext(task, body, artifacts)
   const target = task.origin?.fromAgent === COLLAB_TARGETS.claudeCode ? COLLAB_TARGETS.claudeCode : COLLAB_TARGETS.hermes
-  createTaskResult({
+  const resultMessage = createTaskResult({
     taskId: task.taskId,
     sessionId: context.session_id,
     fromAgent: COLLAB_TARGETS.openclaw,
@@ -5508,6 +5682,11 @@ function returnOpenClawCollaborationResult({ runId, content, failed = false, art
     context,
     artifacts,
   })
+  if (isTauriRuntime()) {
+    void api.collaborationMessageAppend(resultMessage).catch(error => {
+      console.warn('[collaboration] durable OpenClaw result handoff failed:', error)
+    })
+  }
   updateCollaborationTask(task.taskId, {
     status: failed ? 'failed' : (task.stage === 'review' ? 'review_completed' : 'executor_completed'),
     [task.stage === 'review' ? 'openclawReviewResultAt' : 'openclawResultAt']: Date.now(),
@@ -5580,6 +5759,33 @@ function getOpenClawToolCommandPreview(tool = {}) {
   }
   const visible = redactOpenClawVisibleSensitiveText(command).trim()
   return visible.length > 4000 ? `${visible.slice(0, 4000)}\n...` : visible
+}
+
+function getOpenClawToolInputPreview(tool = {}, maxLength = 160) {
+  const input = tool.input ?? tool.args ?? tool.arguments ?? tool.params ?? tool.parameters ?? null
+  if (input == null) return ''
+  const rawName = String(tool.toolName || tool.tool_name || tool.name || tool.tool || '').toLowerCase()
+  let value = ''
+  if (typeof input === 'string') value = input
+  else if (input && typeof input === 'object') {
+    const keys = /(?:search|query)/.test(rawName)
+      ? ['query', 'q', 'keyword', 'keywords', 'url', 'path']
+      : /(?:write|edit|patch|read|file|folder|directory)/.test(rawName)
+        ? ['path', 'filePath', 'file_path', 'target', 'filename', 'name']
+        : /(?:browser|navigate|open|fetch)/.test(rawName)
+          ? ['url', 'href', 'target', 'path']
+          : ['command', 'cmd', 'script', 'commandLine', 'command_line', 'path', 'url', 'query', 'prompt']
+    for (const key of keys) {
+      const candidate = input[key]
+      if (typeof candidate === 'string' && candidate.trim()) {
+        value = candidate
+        break
+      }
+    }
+    if (!value && Array.isArray(input.argv)) value = input.argv.join(' ')
+  }
+  const visible = redactOpenClawVisibleSensitiveText(value).replace(/\s+/g, ' ').trim()
+  return visible.length > maxLength ? `${visible.slice(0, maxLength)}...` : visible
 }
 
 function collectOpenClawToolText(tools = [], fallbackText = '') {
@@ -5667,32 +5873,24 @@ function getOpenClawToolDisplayName(tool = {}) {
 
 function getOpenClawToolProgressLabel(tool = {}) {
   const name = getOpenClawToolDisplayName(tool) || '调用工具'
-  const rawName = String(tool.name || tool.toolName || tool.tool_name || tool.tool || '').trim().toLowerCase().replace(/[\s.-]+/g, '_')
-  const reasons = {
-    web_search: '用于寻找可核实的信息来源。',
-    web_fetch: '用于核对页面中的具体内容。',
-    browser: '用于在当前浏览会话中完成页面操作。',
-    browser_open: '用于在当前浏览会话中打开目标页面。',
-    browser_navigate: '用于在当前浏览会话中继续浏览。',
-    browser_screenshot: '用于读取当前页面的可见内容。',
-    exec: '用于完成必要的本地操作。',
-    command: '用于完成必要的本地操作。',
-    process: '用于确认后台任务是否已经完成。',
-    shell: '用于完成必要的本地操作。',
-    terminal: '用于完成必要的本地操作。',
-    bash: '用于完成必要的本地操作。',
-    powershell: '用于完成必要的本地操作。',
-    cmd: '用于完成必要的本地操作。',
-    playwright: '用于在当前浏览会话中完成页面操作。',
-    puppeteer: '用于在当前浏览会话中完成页面操作。',
-    ocr: '用于识别图片中的文字。',
-    superclaw_ocr: '用于识别图片中的文字。',
-    superclaw_generate_image: '用于生成所需图片。',
-    image_generate: '用于生成所需图片。',
-    superclaw_generate_video: '用于生成所需视频。',
-    video_generate: '用于生成所需视频。',
+  const rawName = String(tool.toolName || tool.tool_name || tool.name || tool.tool || '').trim().toLowerCase().replace(/[\s.-]+/g, '_')
+  const command = getOpenClawToolCommandPreview(tool)
+  if (command) return `执行命令：${command.replace(/\s+/g, ' ').slice(0, 220)}`
+  const input = getOpenClawToolInputPreview(tool)
+  const actions = {
+    web_search: '检索资料', web_fetch: '读取网页', browser: '浏览网页',
+    browser_open: '打开网页', browser_navigate: '跳转网页', browser_screenshot: '读取当前页面',
+    exec: '执行本地命令', command: '执行命令', shell: '执行本地命令', terminal: '执行本地命令',
+    bash: '执行本地命令', powershell: '执行 PowerShell 命令', cmd: '执行命令提示符命令',
+    process: '检查后台任务', playwright: '浏览网页', puppeteer: '浏览网页',
+    ocr: '识别图片文字', superclaw_ocr: '识别图片文字',
+    superclaw_generate_image: '生成图片', image_generate: '生成图片',
+    superclaw_generate_video: '生成视频', video_generate: '生成视频',
+    write: '写入文件', write_file: '写入文件', edit: '修改文件', edit_file: '修改文件',
+    read: '读取文件', read_file: '读取文件', search_files: '检索文件',
   }
-  return reasons[rawName] ? `${name}，${reasons[rawName]}` : name
+  const action = actions[rawName] || name
+  return input ? `${action}：${input}` : action
 }
 
 function stripRawOpenClawToolText(text) {
@@ -5760,8 +5958,9 @@ function formatOpenClawToolResultForUser(info = {}) {
     }
     return 'Skills \u67e5\u8be2\u5df2\u5b8c\u6210\u3002\u7ed3\u679c\u5df2\u6574\u7406\u5230 Skills \u5217\u8868\uff0c\u8bf7\u5728 Skills \u9875\u9762\u67e5\u770b\u8be6\u60c5\u3002'
   }
-  const name = info.toolDisplayName ? `${info.toolDisplayName} ` : ''
-  return `${name}\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210\u3002`
+  // The timeline already records ordinary tool completion. Avoid repeating a
+  // generic success line in the card body when there is no user-facing result.
+  return ''
 }
 
 function normalizeOpenClawSkillName(value) {
@@ -5856,12 +6055,21 @@ function recordOpenClawRunStep(kind, label, status = 'running', stepId = '', ext
     if (extra.detail) current.detail = String(extra.detail).trim()
     return
   }
+  const previous = _currentAiTimeline[_currentAiTimeline.length - 1]
+  if (previous && previous.kind === kind && previous.label === text) {
+    previous.status = status || previous.status
+    previous.repeatCount = Number(previous.repeatCount || 1) + 1
+    previous.time = Date.now()
+    if (extra.detail) previous.detail = String(extra.detail).trim()
+    return
+  }
   _currentAiTimeline.push({
     key,
     kind,
     label: text,
     status,
     detail: String(extra.detail || '').trim(),
+    repeatCount: 1,
     time: Date.now(),
   })
 }
@@ -6092,7 +6300,7 @@ function collapseOpenClawRunTimeline(container) {
   if (!timeline) return
   timeline.removeAttribute('open')
   const title = timeline.querySelector?.('summary > span:nth-child(2)')
-  if (title?.textContent?.trim() === '正在执行') title.textContent = '执行过程已完成'
+  if (title?.textContent?.trim() === '正在执行') title.textContent = '执行过程'
 }
 
 function ensureOpenClawRunTimelineBubble() {
@@ -6124,6 +6332,9 @@ function renderOpenClawLiveTimeline() {
   const wasOpen = existing?.open === true
   if (existing) existing.remove()
   const rendered = renderOpenClawToolResultCard(bubble, _currentAiTools)
+  // The process card has its own progress information. The stream cursor is
+  // an extra flashing block below it, while the dedicated typing dots remain.
+  bubble.querySelector?.('.stream-cursor')?.remove()
   const replacement = bubble.querySelector?.('.openclaw-tool-result-card')
   if (replacement && wasOpen) replacement.open = true
   return rendered
@@ -6173,16 +6384,17 @@ function ensureOpenClawToolResultCardStyles() {
       font-weight: 650;
     }
     .openclaw-run-timeline > summary::-webkit-details-marker { display: none; }
-    .openclaw-run-timeline:not([open]) { display: block; gap: 0; margin: 0 0 8px; padding: 6px 10px; }
+    .openclaw-run-timeline > summary::marker { content: ''; }
+    /* Keep the summary in exactly the same box in both states, without the
+       grid row gap left below a closed details element. */
+    .openclaw-run-timeline:not([open]) { display: block; gap: 0; margin: 0 0 10px; padding: 12px 14px; }
     .openclaw-run-timeline__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-tertiary); font-size: 11px; font-weight: 500; }
     .openclaw-run-timeline__toggle { margin-left: auto; display: inline-flex; align-items: center; color: var(--text-tertiary); transition: transform .16s ease; }
     .openclaw-run-timeline[open] .openclaw-run-timeline__toggle { transform: rotate(90deg); }
     .openclaw-run-timeline__steps { display: grid; gap: 7px; margin: 4px 0 0; padding: 0; list-style: none; }
     .openclaw-run-timeline__step { display: flex; align-items: baseline; gap: 8px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
     .openclaw-run-timeline__dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--accent, #168c76); }
-    .openclaw-run-timeline__step.is-running .openclaw-run-timeline__dot { animation: openclaw-run-pulse 1.2s ease-in-out infinite; }
     .openclaw-run-timeline__step.is-error .openclaw-run-timeline__dot { background: var(--error, #d14d5a); }
-    @keyframes openclaw-run-pulse { 50% { opacity: .35; transform: scale(.72); } }
     .openclaw-tool-result-card__header {
       display: flex;
       align-items: center;
@@ -6220,24 +6432,6 @@ function ensureOpenClawToolResultCardStyles() {
       line-height: 1.4;
       font-weight: 650;
     }
-    .openclaw-tool-result-card__details summary {
-      cursor: pointer;
-      color: var(--text-tertiary);
-      font-size: 12px;
-      user-select: none;
-    }
-    .openclaw-tool-result-card__details pre {
-      max-height: 280px;
-      overflow: auto;
-      margin: 8px 0 0;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: rgba(80, 125, 190, 0.08);
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 11px;
-      line-height: 1.55;
-    }
   `
   document.head.appendChild(style)
 }
@@ -6250,7 +6444,7 @@ function renderOpenClawToolResultCard(container, tools = [], fallbackText = '', 
   ensureOpenClawToolResultCardStyles()
   const title = info.failed
     ? '\u5de5\u5177\u8c03\u7528\u9047\u5230\u95ee\u9898'
-    : (!info.toolCount && _currentAiTimeline.length ? '\u6267\u884c\u8fc7\u7a0b\u5df2\u5b8c\u6210' : (isOpenClawSkillsToolResult(info) ? 'Skills \u67e5\u8be2\u6210\u529f' : '\u5de5\u5177\u8c03\u7528\u5df2\u5b8c\u6210'))
+    : (isOpenClawSkillsToolResult(info) ? 'Skills \u67e5\u8be2\u6210\u529f' : '\u6267\u884c\u8fc7\u7a0b')
   const count = info.skillNames.length
   const summary = formatOpenClawToolResultForUser(info)
   const active = _openClawPendingResponse || _isSending || _isStreaming
@@ -6272,30 +6466,14 @@ function renderOpenClawToolResultCard(container, tools = [], fallbackText = '', 
   const chips = count
     ? `<div class="openclaw-tool-result-card__chips">${info.skillNames.slice(0, 24).map(name => `<span class="openclaw-tool-result-card__chip">${escapeHtml(name)}</span>`).join('')}${count > 24 ? `<span class="openclaw-tool-result-card__chip">+${count - 24}</span>` : ''}</div>`
     : ''
-  const raw = redactOpenClawVisibleSensitiveText(info.safeRawText)
-  const details = raw ? `
-    <details class="openclaw-tool-result-card__details">
-      <summary>\u5c55\u5f00\u8be6\u60c5</summary>
-      <pre>${escapeHtml(raw)}</pre>
-    </details>
-  ` : ''
-  const commandDetails = (Array.isArray(tools) ? tools : [])
-    .map(tool => getOpenClawToolCommandPreview(tool))
-    .filter((command, index, list) => command && list.indexOf(command) === index)
-    .map(command => `
-      <details class="openclaw-tool-result-card__details">
-        <summary>执行命令（已脱敏）</summary>
-        <pre>${escapeHtml(command)}</pre>
-      </details>
-    `)
-    .join('')
   const steps = timeline.map(step => {
     const statusHint = step.status === 'error'
       ? ' 此步骤未完成，错误详情已保留。'
       : (step.status === 'running' ? ' 正在进行。' : '')
+    const repeatSuffix = Number(step.repeatCount || 1) > 1 ? `（连续 ${step.repeatCount} 次）` : ''
     return `
     <li class="openclaw-run-timeline__step ${step.status === 'error' ? 'is-error' : (step.status === 'running' ? 'is-running' : '')}">
-      <span class="openclaw-run-timeline__dot"></span><span>${escapeHtml(`${step.label}${statusHint}`)}</span>
+      <span class="openclaw-run-timeline__dot"></span><span>${escapeHtml(`${step.label}${repeatSuffix}${statusHint}`)}</span>
     </li>
   `
   }).join('')
@@ -6309,8 +6487,6 @@ function renderOpenClawToolResultCard(container, tools = [], fallbackText = '', 
     <ul class="openclaw-run-timeline__steps">${steps}</ul>
     ${summary ? `<p class="openclaw-tool-result-card__summary">${summary}</p>` : ''}
     ${chips}
-    ${commandDetails}
-    ${details}
   `
   // Keep the process summary above the final assistant text for both live
   // streaming bubbles and restored history bubbles.
@@ -7240,7 +7416,11 @@ function handleEvent(msg) {
       if (typeof data.isError === 'boolean' && current.status == null) current.status = data.isError ? 'error' : 'ok'
       if (current.time == null) current.time = ts || null
       _toolEventData.set(toolCallId, current)
-      const toolLabel = getOpenClawToolProgressLabel({ name: data.name || data.toolName || 'tool' }) || '工具调用'
+      const toolLabel = getOpenClawToolProgressLabel({
+        name: data.name || data.toolName || 'tool',
+        toolName: data.name || data.toolName || '',
+        input: current.input || null,
+      }) || '工具调用'
       upsertTool(_currentAiTools, {
         id: toolCallId,
         name: toolLabel,
@@ -7767,6 +7947,7 @@ function handleChatEvent(payload, eventId = '') {
       returnOpenClawCollaborationResult({
         runId: payload.runId,
         content: _currentAiText || finalText,
+        failed: getOpenClawToolResultInfo(finalTools.length ? finalTools : _currentAiTools, _currentAiText || finalText).failed,
         artifacts: _currentAiImages.map(image => ({
           type: 'image',
           path: image.url || '',
@@ -10737,30 +10918,19 @@ function showLightbox(src) {
   close.className = 'chat-lightbox-close'
   close.setAttribute('aria-label', '关闭图片预览')
   close.textContent = '×'
-  let zoom = 1
-  const updateZoom = () => { image.style.transform = `scale(${zoom})` }
+  const zoomController = attachAnchoredImageZoom({
+    viewport: lb,
+    image,
+    step: 0.15,
+  })
   const dismiss = () => {
+    zoomController.destroy()
     lb.remove()
     document.removeEventListener('keydown', onKey)
   }
   const onKey = (e) => { if (e.key === 'Escape') dismiss() }
   close.addEventListener('click', dismiss)
   lb.addEventListener('click', event => { if (event.target === lb) dismiss() })
-  lb.addEventListener('wheel', event => {
-    if (event.target !== image) return
-    event.preventDefault()
-    const rect = image.getBoundingClientRect()
-    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))
-    image.style.transformOrigin = `${(x * 100).toFixed(2)}% ${(y * 100).toFixed(2)}%`
-    zoom = Math.max(0.5, Math.min(4, zoom + (event.deltaY < 0 ? 0.15 : -0.15)))
-    updateZoom()
-  }, { passive: false })
-  image.addEventListener('dblclick', () => {
-    zoom = 1
-    image.style.transformOrigin = '50% 50%'
-    updateZoom()
-  })
   lb.append(image, close)
   document.body.appendChild(lb)
   // ESC 关闭
@@ -11348,6 +11518,10 @@ function appendHostedOutput(text) {
 // ── 页面离开清理 ──
 
 export function cleanup() {
+  if (_openClawSidebarActionHandler) {
+    window.removeEventListener('superclaw:openclaw-sidebar-action', _openClawSidebarActionHandler)
+    _openClawSidebarActionHandler = null
+  }
   snapshotCurrentChatState('cleanup')
   clearOpenClawGatewayUiConvergenceTimers()
 

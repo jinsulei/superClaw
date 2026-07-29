@@ -27,7 +27,7 @@ import {
   mapAgentGatewayStatusToAgentRun,
   mapTaskBoundAgentHeartbeat,
 } from '../../../lib/agent-gateway-status.js'
-import { COLLAB_TARGETS, buildOpenClawMediaTaskPrompt, buildTaskContext, createTaskProgress, createTaskRequest, detectMediaTask, mapCollaborationTaskMessageToTaskEvents, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
+import { COLLAB_TARGETS, buildOpenClawMediaTaskPrompt, buildTaskContext, createTaskProgress, createTaskRequest, detectMediaTask, mapCollaborationTaskMessageToTaskEvents, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 import {
   dedupeToolEvents,
@@ -82,6 +82,7 @@ const STORAGE_SESSIONS_PREFIX = 'hermes_chat_sessions_v2_'
 const STORAGE_ACTIVE_PREFIX = 'hermes_chat_active_v2_'
 const STORAGE_PINNED_PREFIX = 'hermes_chat_pinned_'
 const STORAGE_COLLAPSED_PREFIX = 'hermes_chat_collapsed_groups_'
+const STORAGE_GROUP_LABELS_PREFIX = 'hermes_chat_group_labels_v1_'
 const STORAGE_MSGS_PREFIX = 'hermes_chat_msgs_v2_'
 const STORAGE_DELETED_PREFIX = 'hermes_chat_deleted_sessions_v1_'
 const LIVE_BADGE_WINDOW_MS = 5 * 60 * 1000  // 5 min
@@ -105,11 +106,22 @@ const HERMES_MEDIA_RETURN_HARD_INSTRUCTION = [
   'The successful superclaw_return_media result is the only evidence that the image reached the current SuperClaw chat. Keep the final text empty or to one short caption after the successful tool call.',
 ].join('\n')
 const HERMES_VISIBLE_EXECUTION_NARRATION = /^(?:\u6211(?:\u6765|\u5148|\u4f1a|\u6b63\u5728)(?:\u770b\u770b|\u67e5\u770b|\u68c0\u67e5|\u641c\u4e00\u4e0b|\u641c\u7d22|\u8bfb\u53d6|\u6838\u5bf9|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u83b7\u53d6|\u5904\u7406|\u6574\u7406|\u6267\u884c)|\u8ba9\u6211(?:\u5148|\u518d|\u53bb)?(?:\u770b\u770b|\u67e5\u770b|\u68c0\u67e5|\u641c\u4e00\u4e0b|\u641c\u7d22|\u8bfb\u53d6|\u6838\u5bf9|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u83b7\u53d6|\u5904\u7406|\u6574\u7406|\u6267\u884c)|(?:\u63a5\u4e0b\u6765|\u4e0b\u4e00\u6b65|\u5148)(?:\u6211|\u4f1a|\u9700\u8981|\u5c1d\u8bd5|\u67e5\u770b|\u68c0\u67e5|\u641c\u7d22|\u8bfb\u53d6|\u5b9a\u4f4d|\u786e\u8ba4|\u6267\u884c)|(?:\u6b63\u5728|\u51c6\u5907)(?:\u67e5\u770b|\u68c0\u67e5|\u641c\u7d22|\u8bfb\u53d6|\u5b9a\u4f4d|\u5206\u6790|\u786e\u8ba4|\u5c1d\u8bd5|\u6267\u884c|\u5904\u7406)|\u62b1\u6b49[\u2014\u2013-]|\u627e\u5230\u539f\u56e0\u4e86|\u8fd9\u6b21\u6362\u6210)/
+const HERMES_LONG_EXECUTION_NARRATION = /(?:^|\n)\s*(?:\u597d\u7684[\uff0c,]\s*\u6211|\u597d\u561e[\uff0c,]?|\u6280\u80fd\u8bf4\u660e|\u770b\u5230\u4e86|\u73b0\u5728\u6211|\u811a\u672c\u5df2|\u627e\u5230\u4e86|\u6709\u610f\u601d|\u9700\u8981\u66ff\u6362|lxml|uv\s*\u4e0d|venv|\u5b89\u88c5\u597d\u4e86|\u751f\u6210\s*PPT|\u73b0\u5728\u8f6c|LibreOffice|aspose|spire|\u6c34\u5370|\u9884\u89c8\u56fe|Python\s*\u8def\u5f84|python3|PYTHONPATH|\u8bd5\u8bd5|\u6362\u4e2a\u7b56\u7565|\u6700\u7a33\u7684\u65b9\u6848)/i
+const HERMES_DOCUMENT_TASK = /(?:\bpptx?\b|powerpoint|\u5e7b\u706f\u7247|\u6f14\u793a\u6587\u7a3f|\u751f\u6210\s*(?:ppt|\u6f14\u793a)|\bdocx?\b|\bxlsx?\b|excel|word|\bpdf\b|\u6587\u6863|\u6587\u4ef6)/i
+const HERMES_PORTABLE_DOCUMENT_INSTRUCTION = [
+  'Portable document execution rule:',
+  '- For Office/PDF tasks, call only the bundled resources/runtime/document-tools/superclaw-file.cmd service. It selects the bundled Python 3.11.13 itself.',
+  '- On Windows, do not run python, python3, py, uv, venv, pip, npm, npx, LibreOffice, browser download, or any package installer for document work.',
+  '- For a new editable presentation, call superclaw-file.cmd create-presentation with a JSON slide specification. Preserve source files and verify the created output before reporting it.',
+  '- Do not replace the requested PPT/PPTX deliverable with an HTML deck, index.html, web slide, or browser-only preview. The deliverable must remain an editable .pptx file.',
+  '- Report only the verified output and a concise summary in the final answer. Put plan, command progress, retries, and environment diagnostics in tool/progress events rather than the final answer.',
+].join('\n')
 const HERMES_REPLY_STYLE_INSTRUCTION = [
   SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE,
   '\u56de\u590d\u98ce\u683c\uff1a\u8bf7\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u53ef\u4ee5\u5728\u6807\u9898\u3001\u91cd\u70b9\u6216\u5206\u6bb5\u5904\u9002\u5ea6\u52a0\u5165\u5c11\u91cf\u8868\u60c5\u6216\u5c0f\u56fe\u6807\uff08\u4f8b\u5982 \ud83e\udd16\u3001\ud83d\udccc\u3001\u2705\u3001\ud83e\udded\u3001\ud83d\udca1\uff09\u3002',
   '\u4fdd\u6301\u81ea\u7136\u3001\u514b\u5236\u3001\u53ef\u8bfb\uff1a\u4e0d\u8981\u6bcf\u53e5\u90fd\u52a0\u8868\u60c5\uff0c\u4e0d\u8981\u5806\u780c\u56fe\u6807\uff0c\u4e0d\u8981\u5f71\u54cd\u4e13\u4e1a\u6027\u548c\u4fe1\u606f\u51c6\u786e\u6027\u3002',
   'The Hermes chat UI supports standard Markdown rendering. When structure helps, you may use Markdown headings, lists, tables, blockquotes, links, inline code, and fenced code blocks. Do not claim the interface only supports plain text.',
+  'Streaming protocol: while planning or using tools, write progress normally. When the task is truly finished, start the user-facing conclusion on its own line with `FINAL:`. After `FINAL:`, include only the concise result, verified artifacts, or a concrete blocker. Never put plans, tool narration, commands, or retries after `FINAL:`.',
 ].join('\n')
 
 const SOURCE_LABELS = {
@@ -159,6 +171,76 @@ export function extractHermesVisibleExecutionNarration(value) {
   const compact = text.replace(/\s+/g, ' ')
   if (!HERMES_VISIBLE_EXECUTION_NARRATION.test(compact)) return ''
   return compact
+}
+
+export function extractHermesStreamingExecutionNarration(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim()
+  if (!text || text.length > 1200) return ''
+  const visible = extractHermesVisibleExecutionNarration(text)
+  if (visible) return visible
+  if (/```|<think|<reasoning|<analysis/i.test(text)) return ''
+  return HERMES_LONG_EXECUTION_NARRATION.test(text) ? text.replace(/\s+/g, ' ').trim() : ''
+}
+
+export function splitHermesLongExecutionNarration(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim()
+  if (!text) return { execution: [], final: '' }
+  const blocks = text.split(/\n{2,}/).map(item => item.trim()).filter(Boolean)
+  const narrationCount = blocks.filter(block => HERMES_VISIBLE_EXECUTION_NARRATION.test(block) || HERMES_LONG_EXECUTION_NARRATION.test(block)).length
+  if (narrationCount < 2) return { execution: [], final: text }
+
+  const execution = []
+  const final = []
+  for (const block of blocks) {
+    if (HERMES_VISIBLE_EXECUTION_NARRATION.test(block) || HERMES_LONG_EXECUTION_NARRATION.test(block)) execution.push(block)
+    else final.push(block)
+  }
+  return { execution, final: final.join('\n\n').trim() }
+}
+
+// Streaming providers may split a single "I will now inspect / create / run"
+// paragraph into many tiny deltas. Classifying each delta independently leaks
+// the first fragments into the final assistant bubble. Keep the initial text
+// briefly, then decide from the assembled paragraph instead.
+export function classifyHermesStreamingText(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n')
+  const compact = text.replace(/\s+/g, ' ').trim()
+  if (!compact) return { kind: 'pending', text: '' }
+  if (extractHermesStreamingExecutionNarration(compact)) return { kind: 'execution', text: compact }
+
+  const executionSignals = [
+    /(?:先|然后|接下来|下一步).{0,32}(?:检查|查看|读取|生成|创建|执行|运行|验证|安装|加载|定位|处理)/,
+    /(?:我(?:会|先|正在)|让我们|开始).{0,40}(?:检查|查看|读取|生成|创建|执行|运行|验证|安装|加载|定位|处理)/,
+    /(?:技能说明|脚本已|正在执行|路径冲突|换个策略|干净环境|生成成功|预览图)/,
+  ]
+  const signalCount = executionSignals.reduce((count, pattern) => count + (pattern.test(compact) ? 1 : 0), 0)
+  if (signalCount >= 2 || (compact.length >= 180 && signalCount >= 1)) {
+    return { kind: 'execution', text: compact }
+  }
+  // A normal answer should remain responsive. This small threshold only holds
+  // an ambiguous opening long enough to recognise a fragmented work narration.
+  return compact.length < 180 ? { kind: 'pending', text: compact } : { kind: 'answer', text }
+}
+
+export function stripHermesExecutionNarrationBlocks(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim()
+  if (!text) return ''
+  const blocks = text.split(/\n{2,}/).map(item => item.trim()).filter(Boolean)
+  if (blocks.length < 2) return text
+  const remaining = blocks.filter(block => !extractHermesStreamingExecutionNarration(block))
+  return remaining.length ? remaining.join('\n\n').trim() : ''
+}
+
+export function splitHermesExecutionProtocol(value) {
+  const text = String(value || '').replace(/\r\n/g, '\n')
+  const marker = /(?:^|\n)\s*(?:FINAL\s*[:：]|最终(?:答复|结论|总结)\s*[:：])/i
+  const match = marker.exec(text)
+  if (!match) return { execution: text, final: '', hasFinal: false }
+  return {
+    execution: text.slice(0, match.index).trim(),
+    final: text.slice(match.index + match[0].length).trim(),
+    hasFinal: true,
+  }
 }
 
 export function stripHermesVisibleExecutionNarration(reply, executionTrace = []) {
@@ -394,8 +476,28 @@ function sanitizeToolRunText(value) {
   )
 }
 
-function sanitizeFrontendObservabilityText(value) {
-  return sanitizeToolRunText(value)
+function protectUserVisibleDocumentPaths(value) {
+  const paths = []
+  const text = String(value ?? '')
+  const protectedText = text.replace(
+    /(?:[A-Z]:\\|\/Users\/)[^\r\n<>"'`|]*?\.(?:pptx?|docx?|xlsx?|csv|pdf)\b/gi,
+    (path) => {
+      const token = `__SUPERCLAW_DOCUMENT_PATH_${paths.length}__`
+      paths.push(path)
+      return token
+    },
+  )
+  return {
+    text: protectedText,
+    restore: (sanitized) => paths.reduce((result, path, index) => (
+      result.replace(`__SUPERCLAW_DOCUMENT_PATH_${index}__`, path)
+    ), String(sanitized ?? '')),
+  }
+}
+
+export function sanitizeFrontendObservabilityText(value) {
+  const protectedPaths = protectUserVisibleDocumentPaths(value)
+  return protectedPaths.restore(sanitizeToolRunText(protectedPaths.text)
     .replace(/<think>[\s\S]*?<\/think>/gi, '[REDACTED]')
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '[REDACTED]')
     .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '[REDACTED]')
@@ -404,7 +506,7 @@ function sanitizeFrontendObservabilityText(value) {
     .replace(/private chain of thought/gi, '[REDACTED]')
     .replace(/[A-Z]:\\Users\\[^"'\s]+/gi, '[REDACTED_PATH]')
     .replace(/\/Users\/[^"'\s]+/gi, '[REDACTED_PATH]')
-    .replace(/(?:runtime\/data\/secrets|src-tauri\/resources\/data\/secrets|relay-config\.json|\.env)/gi, '[REDACTED_PATH]')
+    .replace(/(?:runtime\/data\/secrets|src-tauri\/resources\/data\/secrets|relay-config\.json|\.env)/gi, '[REDACTED_PATH]'))
 }
 
 function summarizeToolRunValue(value) {
@@ -733,8 +835,10 @@ function buildHermesCurrentTurnBoundaryInstruction(currentInput = '', history = 
       '- Execution contract: this is an actionable task. Do not finalize with a plan, intent, or "I will check/do it" statement.',
       '- Invoke the available tool now when a tool is needed; then return the observed result, artifact, or concrete blocker.',
       '- A task is complete only after an execution result is available. If execution is unavailable, say exactly which tool, permission, or dependency blocked it; do not imply that work will continue in the background.',
+      '- Required UI boundary: keep all plan, progress, tool narration, commands, and retries before the final boundary. When the task is actually done, output `FINAL:` on its own line, then provide only the concise Markdown conclusion. Never end an actionable task without this boundary.',
     )
   }
+  if (HERMES_DOCUMENT_TASK.test(current)) lines.push(HERMES_PORTABLE_DOCUMENT_INSTRUCTION)
   if (/(?:天气|气温|降雨|下雨|weather|forecast|temperature)/i.test(current)) {
     lines.push(
       '- Weather lookup rule: use at most one read-only public weather fetch and answer from that result.',
@@ -1329,12 +1433,14 @@ function createStore() {
     // UI prefs (persisted).
     pinned: new Set(loadJson(STORAGE_PINNED_PREFIX + profileKey(safeGet(STORAGE_PROFILE) || 'default')) || []),
     collapsed: new Set(loadJson(STORAGE_COLLAPSED_PREFIX + profileKey(safeGet(STORAGE_PROFILE) || 'default')) || []),
+    groupLabels: loadJson(STORAGE_GROUP_LABELS_PREFIX + profileKey(safeGet(STORAGE_PROFILE) || 'default')) || {},
   }
 
   const inFlightSendByRequestId = new Map()
   const userMessageByRequestId = new Map()
   const assistantMessageByRequestId = new Map()
   const visibleUserPromptByRequestId = new Map()
+  const hermesStreamingTextByRequestId = new Map()
 
   // --- subscription ---
   //
@@ -1720,6 +1826,7 @@ function createStore() {
   const activeKey = () => STORAGE_ACTIVE_PREFIX + profileKey(state.activeProfile)
   const pinnedKey = () => STORAGE_PINNED_PREFIX + profileKey(state.activeProfile)
   const collapsedKey = () => STORAGE_COLLAPSED_PREFIX + profileKey(state.activeProfile)
+  const groupLabelsKey = () => STORAGE_GROUP_LABELS_PREFIX + profileKey(state.activeProfile)
   const messagesKey = (sid) => STORAGE_MSGS_PREFIX + profileKey(state.activeProfile) + '_' + sid
   const deletedKey = () => STORAGE_DELETED_PREFIX + profileKey(state.activeProfile)
 
@@ -1812,10 +1919,12 @@ function createStore() {
   function loadProfilePrefs() {
     state.pinned = new Set(loadJson(pinnedKey()) || [])
     state.collapsed = new Set(loadJson(collapsedKey()) || [])
+    state.groupLabels = loadJson(groupLabelsKey()) || {}
   }
 
   function savePinned() { saveJson(pinnedKey(), [...state.pinned]) }
   function saveCollapsed() { saveJson(collapsedKey(), [...state.collapsed]) }
+  function saveGroupLabels() { saveJson(groupLabelsKey(), state.groupLabels) }
 
   // --- derived queries ---
   function activeSession() {
@@ -1866,7 +1975,7 @@ function createStore() {
 
     const groups = keys.map(src => ({
       source: src,
-      label: src ? getSourceLabel(src) : 'Local',
+      label: state.groupLabels[src] || (src ? getSourceLabel(src) : 'Local'),
       sessions: bySource.get(src).slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
     }))
 
@@ -2342,6 +2451,17 @@ function createStore() {
     notify()
   }
 
+  function renameGroup(source, label) {
+    if (source == null) return false
+    const key = String(source)
+    const trimmed = String(label || '').trim()
+    if (!trimmed) return false
+    state.groupLabels = { ...state.groupLabels, [key]: trimmed }
+    saveGroupLabels()
+    notify()
+    return true
+  }
+
   // ---------- streaming ----------
 
   const unlisteners = []
@@ -2381,9 +2501,29 @@ function createStore() {
     if (eventType === 'reasoning.available') {
       const visible = evt.visible_text ?? evt.visibleText ?? evt.userVisibleText ?? evt.summary ?? evt.preview
       if (typeof visible === 'string' && visible.trim()) {
-        return sanitizeFrontendObservabilityText(visible).slice(0, 500)
+        return sanitizeFrontendObservabilityText(visible)
+          .replace(/\s*\n\s*/g, ' ')
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+          .slice(0, 500)
       }
       return '正在分析任务并准备下一步。'
+    }
+    if (eventType === 'tool.completed') {
+      // Completion is represented by the status badge on the right. Repeating
+      // "tool completed" below every row hides the useful command/arguments.
+      return ''
+    }
+    if (eventType === 'tool.started') {
+      const tool = String(evt.tool || evt.tool_name || evt.name || '工具').trim()
+      const preview = evt.preview ?? evt.message ?? evt.detail
+      const note = typeof preview === 'string' ? preview.replace(/\s+/g, ' ').trim().slice(0, 180) : ''
+      const input = summarizeHermesExecutionInput(extractHermesExecutionInput(evt))
+      // All tools use the same compact representation: one invocation per row
+      // and its actual command, path, query, or arguments below the title.
+      // Completion only changes the status badge and never replaces this text.
+      if (input) return input
+      return note || `正在执行 ${tool}`
     }
     const value = evt.reasoning
       ?? evt.thinking
@@ -2483,6 +2623,100 @@ function createStore() {
     }
   }
 
+  function extractHermesExecutionInput(evt = {}) {
+    const candidate = evt.input ?? evt.args ?? evt.arguments ?? evt.parameters ?? evt.params
+      ?? evt.data?.input
+      ?? evt.data?.args
+      ?? evt.data?.arguments
+      ?? evt.data?.parameters
+      ?? evt.data?.params
+      ?? evt.data?.function?.arguments
+      ?? evt.tool_call?.function?.arguments
+      ?? evt.toolCall?.function?.arguments
+      ?? evt.function?.arguments
+    if (typeof candidate !== 'string') {
+      return candidate?.code ?? candidate?.command ?? candidate?.script ?? candidate
+    }
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object') {
+        return parsed.code ?? parsed.command ?? parsed.script ?? candidate
+      }
+    } catch {}
+    return candidate
+  }
+
+  function summarizeHermesExecutionInput(input) {
+    if (input == null || input === '') return ''
+    let value = input
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (!trimmed) return ''
+      try { value = JSON.parse(trimmed) } catch { return sanitizeFrontendObservabilityText(trimmed.replace(/\s+/g, ' ').slice(0, 360)) }
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      return sanitizeFrontendObservabilityText(String(value).replace(/\s+/g, ' ').slice(0, 360))
+    }
+    const preferredKeys = ['code', 'command', 'script', 'query', 'pattern', 'path', 'file_path', 'filePath', 'url', 'cwd']
+    for (const key of preferredKeys) {
+      const candidate = value[key]
+      if (candidate != null && String(candidate).trim()) {
+        return sanitizeFrontendObservabilityText(String(candidate).replace(/\s+/g, ' ').slice(0, 360))
+      }
+    }
+    return sanitizeFrontendObservabilityText(JSON.stringify(value).replace(/\s+/g, ' ').slice(0, 360))
+  }
+
+  function extractHermesStoredToolCalls(messages = []) {
+    const calls = []
+    for (const message of Array.isArray(messages) ? messages : []) {
+      if (message?.role !== 'assistant' || !Array.isArray(message?.tool_calls)) continue
+      for (const call of message.tool_calls) {
+        const fn = call?.function || call || {}
+        const name = String(fn?.name || call?.tool_name || call?.tool || '').trim()
+        const argumentsValue = fn?.arguments ?? call?.arguments ?? call?.input
+        const input = extractHermesExecutionInput({ arguments: argumentsValue })
+        if (name && input != null && String(input).trim()) calls.push({ name, input })
+      }
+    }
+    return calls
+  }
+
+  async function hydrateHermesExecutionInputs(sessionId, clientRequestId) {
+    try {
+      const detail = await api.hermesSessionDetail(sessionId)
+      const storedCalls = extractHermesStoredToolCalls(detail?.messages)
+      if (!storedCalls.length) return
+      const session = state.sessions.find(item => item.id === sessionId)
+      const message = session && ensureAssistantMessage(session, clientRequestId)
+      const steps = Array.isArray(message?.executionTrace) ? message.executionTrace : []
+      let cursor = storedCalls.length - 1
+      let changed = false
+      for (const step of [...steps].reverse()) {
+        if (step?.kind !== 'tool' || String(step?.input || '').trim()) continue
+        const name = String(step?.title || '').trim()
+        for (let index = cursor; index >= 0; index -= 1) {
+          if (storedCalls[index]?.name !== name) continue
+          step.input = stringifyMaybe(storedCalls[index].input)
+          cursor = index - 1
+          changed = true
+          break
+        }
+      }
+      if (changed) notify()
+    } catch {
+      // Tool arguments are supplementary UI data. A transient session export
+      // delay must never interrupt the running Hermes task.
+    }
+  }
+
+  function scheduleHermesExecutionInputHydration(sessionId, clientRequestId) {
+    if (!sessionId || !clientRequestId) return
+    setTimeout(() => {
+      void hydrateHermesExecutionInputs(sessionId, clientRequestId)
+    }, 350)
+  }
+
   function recordAssistantExecutionEvent(session, clientRequestId, eventType, evt = {}) {
     if (!session || !clientRequestId) return
     const message = ensureAssistantMessage(session, clientRequestId)
@@ -2510,10 +2744,30 @@ function createStore() {
     const text = executionEventText(evt, eventType)
     const isVisibleStreamNarration = kind === 'reasoning' && evt.source === 'stream-visible'
     const isGenericReasoning = kind === 'reasoning' && text === HERMES_REASONING_PLACEHOLDER
+    // Hermes runtime reasoning events may reuse a run-level `id`. Reusing that
+    // id here overwrites every earlier thought, leaving the card frozen on the
+    // first step. Prefer an explicit event id; otherwise key a reasoning step
+    // by its visible content rather than the transport-level id.
+    const reasoningKey = text
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 360)
+    const genericToolEventId = kind === 'tool'
+      && (!rawEventId || rawEventId === `${clientRequestId}:${toolName}` || rawEventId.endsWith(`:${toolName}`))
+    const matchingToolSteps = kind === 'tool'
+      ? trace.filter(item => item?.kind === 'tool' && item?.title === toolName)
+      : []
+    const activeToolStep = kind === 'tool' && eventType !== 'tool.started'
+      ? [...matchingToolSteps].reverse().find(item => item?.status === 'running' || item?.status === 'progress')
+      : null
     const eventId = isGenericReasoning
       ? `${clientRequestId}:reasoning:pending`
-      : (rawEventId || (kind === 'reasoning' ? `${clientRequestId}:reasoning:pending` : ''))
-    let existing = eventId ? trace.find(item => item.id === eventId) : null
+      : (kind === 'reasoning'
+        ? (String(evt.event_id || '').trim() || `${clientRequestId}:reasoning:${reasoningKey || Date.now()}`)
+        : (kind === 'tool' && genericToolEventId
+          ? (activeToolStep?.id || `${clientRequestId}:tool:${toolName}:${matchingToolSteps.length + 1}`)
+          : (rawEventId || '')))
+    let existing = activeToolStep || (eventId ? trace.find(item => item.id === eventId) : null)
     // The runtime's reasoning event often arrives without a safe summary. When
     // a later visible narration fragment arrives, replace that generic pending
     // step instead of leaving several "preparing next step" placeholders.
@@ -2536,10 +2790,12 @@ function createStore() {
     step.updatedAt = Date.now()
     if (isVisibleStreamNarration) step.source = 'stream-visible'
     if (text) step.summary = text
-    const input = evt.input ?? evt.args ?? evt.arguments ?? evt.parameters ?? evt.params
+    const input = extractHermesExecutionInput(evt)
     const output = evt.output ?? evt.result ?? evt.content ?? evt.response
     if (input != null && input !== '') step.input = stringifyMaybe(input)
-    if (output != null && output !== '' && typeof output !== 'boolean') step.output = stringifyMaybe(output)
+    // Raw tool output belongs in logs, not in the customer-facing execution
+    // card. It is frequently verbose and does not describe the next action.
+    if (output != null && output !== '' && typeof output !== 'boolean') step.output = ''
     const artifacts = normalizeExecutionArtifacts(evt)
     if (artifacts.length) {
       step.artifacts = artifacts
@@ -2629,6 +2885,80 @@ function createStore() {
     }
   }
 
+  function resolveHermesCompletionReply({ session, message, finalOutput, clientRequestId, runTools, streamState }) {
+    const protocol = splitHermesExecutionProtocol(finalOutput)
+    if (protocol.hasFinal) return protocol.final
+    if (streamState?.final) return streamState.final
+
+    // A number of providers return the final assistant message without the
+    // optional FINAL: boundary. The stream before it is execution narration,
+    // but the terminal response is authoritative and must never be discarded.
+    const selected = chooseHermesFinalOutput({
+      session,
+      current: message?.content,
+      finalOutput,
+      clientRequestId,
+      prompt: currentVisibleUserPrompt(),
+      executionTrace: message?.executionTrace,
+    })
+    return stripHermesExecutionNarrationBlocks(selected) || selected || summarizeToolOnlyReply(runTools)
+  }
+
+  async function reconcileHermesTerminalReply(sessionId, clientRequestId) {
+    // The native SSE stream can finish with only execution deltas. Hermes does
+    // persist the terminal assistant response immediately afterwards, so use
+    // that response as a narrow, completion-only fallback.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    try {
+      const detail = await api.hermesSessionDetail(sessionId)
+      const rawMessages = Array.isArray(detail?.messages) ? detail.messages : []
+      const terminal = [...rawMessages].reverse().find(item => (
+        item?.role === 'assistant'
+        && String(item?.content || '').trim()
+        && !Array.isArray(item?.tool_calls)
+      ))
+      if (!terminal) return
+      const session = state.sessions.find(item => item.id === sessionId)
+      const message = session && ensureAssistantMessage(session, clientRequestId)
+      if (!session || !message) return
+      const normalized = normalizeHermesMessageContent(terminal.content || '').text
+      const reply = sanitizeHermesVisibleReply(normalized, currentVisibleUserPrompt())
+      if (!reply.trim()) return
+      message.content = reply
+      persistSessionMessages(session.id)
+      persistSessions()
+      notify()
+    } catch {
+      // The immediate terminal UI result remains valid when the local session
+      // export is briefly unavailable; this fallback must not affect the run.
+    }
+  }
+
+  function recordHermesStreamNarration(session, clientRequestId, streamState, executionText) {
+    if (!session || !clientRequestId || !streamState) return
+    const start = Math.min(Number(streamState.executionOffset || 0), String(executionText || '').length)
+    const segment = String(executionText || '').slice(start).trim()
+    if (!segment) return
+    if (!streamState.narrationEventId) {
+      streamState.narrationStep = Number(streamState.narrationStep || 0) + 1
+      streamState.narrationEventId = `${clientRequestId}:reasoning:stream:${streamState.narrationStep}`
+    }
+    recordAssistantExecutionEvent(session, clientRequestId, 'reasoning.available', {
+      event_id: streamState.narrationEventId,
+      visible_text: segment,
+      source: 'stream-visible',
+    })
+  }
+
+  function beginNextHermesStreamNarration(clientRequestId) {
+    const streamState = hermesStreamingTextByRequestId.get(clientRequestId)
+    if (!streamState) return
+    const protocol = splitHermesExecutionProtocol(streamState.raw)
+    streamState.executionOffset = protocol.execution.length
+    streamState.narrationEventId = ''
+    hermesStreamingTextByRequestId.set(clientRequestId, streamState)
+  }
+
   async function attachStreamListeners(runSessionId, clientRequestId) {
     detachStreamListeners()
     let trackedSessionId = runSessionId
@@ -2659,12 +2989,11 @@ function createStore() {
         : { text: payload.delta || '' }
       const delta = accepted?.text || ''
       if (!delta) return
-      const s = runSession()
-      if (!s) return
-      const msg = ensureAssistantMessage(s, clientRequestId)
-      msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
+      // Tauri's native stream uses the same execution-first protocol as the
+      // web gateway stream. Do not append here: that bypasses the execution
+      // card and leaks progress narration into the final-answer bubble.
+      appendStreamDelta(trackedSessionId, delta, clientRequestId)
       touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
-      notify()
     })
     const u2 = await tauriListen('hermes-run-tool', (e) => {
       const evt = e?.payload || {}
@@ -2679,6 +3008,7 @@ function createStore() {
         return null
       }
       if (evtType === 'tool.started') {
+        beginNextHermesStreamNarration(clientRequestId)
         const input = extract(evt, ['input', 'args', 'arguments', 'parameters', 'params', 'data'])
         state.liveTools.push({
           id: evt.toolCallId || evt.tool_call_id || uid(),
@@ -2721,6 +3051,9 @@ function createStore() {
       }
       recordHermesToolProgress(evtType, toolName, preview, evt)
       recordAssistantExecutionEvent(runSession(), clientRequestId, evtType, evt)
+      if (evtType === 'tool.started') {
+        scheduleHermesExecutionInputHydration(trackedSessionId, clientRequestId)
+      }
       touchHermesRunWatchdog({ clientRequestId, sessionId: trackedSessionId })
       notify()
     })
@@ -2759,8 +3092,18 @@ function createStore() {
       const msg = ensureAssistantMessage(s, clientRequestId)
       if (msg) {
         delete msg.isStreaming
-        finalizeAssistantExecutionTrace(msg, 'completed')
         const finalOutput = accepted.output || payload.output || ''
+        const protocol = splitHermesExecutionProtocol(finalOutput)
+        const streamState = hermesStreamingTextByRequestId.get(clientRequestId)
+        if (protocol.hasFinal || streamState?.mode === 'execution' || streamState?.mode === 'final') {
+          recordHermesStreamNarration(s, clientRequestId, streamState, protocol.execution)
+          finalizeAssistantExecutionTrace(msg, 'completed')
+          msg.content = sanitizeHermesVisibleReply(
+            resolveHermesCompletionReply({ session: s, message: msg, finalOutput, clientRequestId, runTools, streamState }) || '任务已结束，但没有收到可展示的结论。请查看上方执行过程。',
+            currentVisibleUserPrompt(),
+          )
+        } else {
+        finalizeAssistantExecutionTrace(msg, 'completed')
         msg.content = chooseHermesFinalOutput({
           session: s,
           current: msg.content,
@@ -2779,6 +3122,10 @@ function createStore() {
           toolResult: runTools.length > 0,
         })
         applyHermesPromiseOnlyTaskGuard(msg, currentVisibleUserPrompt(), runTools, clientRequestId)
+        }
+        if (!protocol.hasFinal && !streamState?.final) {
+          void reconcileHermesTerminalReply(s.id, clientRequestId)
+        }
       }
       const longTaskGuardFailed = !!(msg?.error && Array.isArray(msg.task_events) && msg.task_events.some(event => event?.source === 'hermes.chat_store.long_task_guard'))
       rememberHermesTaskStatus(s, {
@@ -2856,18 +3203,59 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, clientRequestId)
-    const narration = extractHermesVisibleExecutionNarration(delta)
-    if (narration && Array.isArray(msg.executionTrace) && msg.executionTrace.length) {
-      recordAssistantExecutionEvent(s, clientRequestId, 'reasoning.available', {
-        event_id: hermesVisibleNarrationEventId(clientRequestId, narration),
-        visible_text: narration,
-        source: 'stream-visible',
-      })
+    const streamState = hermesStreamingTextByRequestId.get(clientRequestId) || { raw: '', mode: 'pending' }
+    streamState.raw += String(delta || '')
+    const protocol = splitHermesExecutionProtocol(streamState.raw)
+
+    // The stream is execution-first. This avoids guessing whether a natural
+    // language fragment is a plan or a final answer. Only the explicit FINAL
+    // section is rendered as the user-facing conclusion.
+    recordHermesStreamNarration(s, clientRequestId, streamState, protocol.execution)
+    if (protocol.hasFinal) {
+      streamState.mode = 'final'
+      streamState.final = protocol.final
+      msg.content = sanitizeHermesVisibleReply(protocol.final, currentVisibleUserPrompt(), { streaming: true })
+      hermesStreamingTextByRequestId.set(clientRequestId, streamState)
       notify()
       return
     }
-    msg.content = sanitizeHermesVisibleReply(msg.content + delta, currentVisibleUserPrompt(), { streaming: true })
+
+    // Do not expose pre-FINAL narration in the assistant bubble. It remains
+    // readable in the collapsed execution card while the task is running.
+    msg.content = ''
+    hermesStreamingTextByRequestId.set(clientRequestId, streamState)
     notify()
+    return
+
+    /* Legacy heuristic retained below for reference during rollout.
+    const classified = streamState.mode === 'pending'
+      ? classifyHermesStreamingText(streamState.raw)
+      : { kind: streamState.mode, text: streamState.raw }
+
+    if (classified.kind === 'pending') {
+      hermesStreamingTextByRequestId.set(clientRequestId, streamState)
+      return
+    }
+
+    if (classified.kind === 'execution') {
+      streamState.mode = 'execution'
+      hermesStreamingTextByRequestId.set(clientRequestId, streamState)
+      recordAssistantExecutionEvent(s, clientRequestId, 'reasoning.available', {
+        event_id: hermesVisibleNarrationEventId(clientRequestId, classified.text),
+        visible_text: classified.text,
+        source: 'stream-visible',
+      })
+      // Clear any short opening fragment rendered by an earlier event.
+      msg.content = ''
+      notify()
+      return
+    }
+
+    streamState.mode = 'answer'
+    hermesStreamingTextByRequestId.set(clientRequestId, streamState)
+    msg.content = sanitizeHermesVisibleReply(streamState.raw, currentVisibleUserPrompt(), { streaming: true })
+    notify()
+    */
   }
 
   function acceptActiveStreamEvent(evt = {}) {
@@ -2889,6 +3277,22 @@ function createStore() {
     const preview = evt.preview || evt.detail || evt.message || ''
     const session = state.sessions.find(x => x.id === state.runningSessionId)
     if (evtType === 'tool.started') {
+      beginNextHermesStreamNarration(state.runningClientRequestId)
+      // Several providers expose their user-facing plan as ordinary text
+      // deltas, then immediately begin a tool call without emitting a
+      // reasoning.available event. The tool boundary is reliable: text before
+      // it describes the upcoming execution, so move it out of the answer
+      // bubble and into the execution card.
+      const message = ensureAssistantMessage(session, state.runningClientRequestId)
+      const pendingNarration = String(message?.content || '').trim()
+      if (pendingNarration && message?.isStreaming) {
+        recordAssistantExecutionEvent(session, state.runningClientRequestId, 'reasoning.available', {
+          event_id: hermesVisibleNarrationEventId(state.runningClientRequestId, pendingNarration),
+          visible_text: pendingNarration,
+          source: 'stream-visible',
+        })
+        message.content = ''
+      }
       const input = extractStreamValue(evt, ['input', 'args', 'arguments', 'parameters', 'params', 'data'])
       state.liveTools.push({
         id: evt.toolCallId || evt.tool_call_id || uid(),
@@ -2958,6 +3362,16 @@ function createStore() {
     const msg = ensureAssistantMessage(s, clientRequestId)
     if (msg) {
       delete msg.isStreaming
+      const protocol = splitHermesExecutionProtocol(finalOutput)
+      const streamState = hermesStreamingTextByRequestId.get(clientRequestId)
+      if (protocol.hasFinal || streamState?.mode === 'execution' || streamState?.mode === 'final') {
+        recordHermesStreamNarration(s, clientRequestId, streamState, protocol.execution)
+        finalizeAssistantExecutionTrace(msg, 'completed')
+        msg.content = sanitizeHermesVisibleReply(
+          resolveHermesCompletionReply({ session: s, message: msg, finalOutput, clientRequestId, runTools, streamState }) || '任务已结束，但没有收到可展示的结论。请查看上方执行过程。',
+          currentVisibleUserPrompt(),
+        )
+      } else {
       finalizeAssistantExecutionTrace(msg, 'completed')
       msg.content = chooseHermesFinalOutput({
         session: s,
@@ -2967,6 +3381,7 @@ function createStore() {
         prompt: currentVisibleUserPrompt(),
         executionTrace: msg.executionTrace,
       })
+      msg.content = stripHermesExecutionNarrationBlocks(msg.content)
       msg.content = sanitizeHermesVisibleReply(msg.content)
       if (!msg.content.trim()) msg.content = summarizeToolOnlyReply(runTools) || '这轮没有收到可展示的正文结果。'
       msg.content = normalizeHermesExactShortReply(currentVisibleUserPrompt(), msg.content)
@@ -2977,6 +3392,10 @@ function createStore() {
         toolResult: runTools.length > 0,
       })
       applyHermesPromiseOnlyTaskGuard(msg, currentVisibleUserPrompt(), runTools, clientRequestId)
+      }
+      if (!protocol.hasFinal && !streamState?.final) {
+        void reconcileHermesTerminalReply(s.id, clientRequestId)
+      }
     }
     rememberHermesTaskStatus(s, {
       status: msg?.error ? 'failed' : 'success',
@@ -2998,14 +3417,49 @@ function createStore() {
     const s = state.sessions.find(x => x.id === runSessionId)
     if (!s) return
     const msg = ensureAssistantMessage(s, clientRequestId)
-    msg.content = sanitizeHermesVisibleReply(chooseHermesFinalOutput({
-      session: s,
-      current: msg.content,
-      finalOutput,
-      clientRequestId,
-      prompt: currentVisibleUserPrompt(),
-      executionTrace: msg.executionTrace,
-    }))
+    const protocol = splitHermesExecutionProtocol(finalOutput)
+    // Some gateways emit message.final after run.completed. At that point the
+    // completion handler has already written a safe final summary. An
+    // unmarked late event must not clear that summary just because it belongs
+    // to the execution-first stream.
+    if (!protocol.hasFinal && !msg.isStreaming) {
+      notify()
+      return
+    }
+    const streamState = hermesStreamingTextByRequestId.get(clientRequestId) || { raw: '', mode: 'pending' }
+    streamState.raw = finalOutput
+    streamState.mode = protocol.hasFinal ? 'final' : 'execution'
+    streamState.final = protocol.final
+    recordHermesStreamNarration(s, clientRequestId, streamState, protocol.execution)
+    hermesStreamingTextByRequestId.set(clientRequestId, streamState)
+    msg.content = protocol.hasFinal
+      ? sanitizeHermesVisibleReply(protocol.final, currentVisibleUserPrompt(), { streaming: true })
+      : ''
+    notify()
+    return
+
+    const partitioned = splitHermesLongExecutionNarration(finalOutput)
+    for (const narration of partitioned.execution) {
+      recordAssistantExecutionEvent(s, clientRequestId, 'reasoning.available', {
+        event_id: hermesVisibleNarrationEventId(clientRequestId, narration),
+        visible_text: narration,
+        source: 'stream-visible',
+      })
+    }
+    const finalReply = partitioned.execution.length
+      ? (partitioned.final || '执行过程已记录。请查看上方已完成的步骤和生成文件。')
+      : finalOutput
+    const selectedReply = partitioned.execution.length
+      ? finalReply
+      : chooseHermesFinalOutput({
+        session: s,
+        current: msg.content,
+        finalOutput: finalReply,
+        clientRequestId,
+        prompt: currentVisibleUserPrompt(),
+        executionTrace: msg.executionTrace,
+      })
+    msg.content = sanitizeHermesVisibleReply(stripHermesExecutionNarrationBlocks(selectedReply))
     notify()
   }
 
@@ -3080,6 +3534,7 @@ function createStore() {
   function cleanupAfterRun(meta = {}) {
     clearHermesRunTimeoutGuard()
     const completedSessionId = state.runningSessionId
+    const completedRequestId = state.runningClientRequestId
     const s = completedSessionId ? state.sessions.find(x => x.id === completedSessionId) : null
     if (s && meta.status && meta.status !== 'success') {
       rememberHermesTaskStatus(s, {
@@ -3096,6 +3551,7 @@ function createStore() {
     state.pendingAssistantId = null
     state.pendingApproval = null
     state.liveTools = []
+    if (completedRequestId) hermesStreamingTextByRequestId.delete(completedRequestId)
     hermesRunRecoveryAttempts = 0
     hermesRunRecoveryInFlight = false
     streamAbortController = null
@@ -3372,6 +3828,21 @@ function createStore() {
       createTaskProgress({ taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, toAgent: COLLAB_TARGETS.hermes, title: mediaTask.title, content: '已创建 OpenClaw 文生图协作任务。', context })
       setPendingDispatch({ target: COLLAB_TARGETS.openclaw, taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, stage: 'execute', title: mediaTask.title, message: buildOpenClawMediaTaskPrompt(mediaTask), context, artifacts: [{ type: 'media_request', text: rawText, created_at: new Date().toISOString() }] })
       updateCollaborationTask(taskId, { status: 'pending', media_type: mediaTask.media_type, media_prompt: rawText, context })
+      // The OpenClaw chat module owns the durable queue consumer and Gateway
+      // event handling. In the desktop app, open an isolated runner window so
+      // a Hermes media request cannot remain pending while the user stays in
+      // Hermes. Browser-based debugging keeps the existing manual flow.
+      if (isTauriRuntime()) {
+        void openCollaborationPanel(COLLAB_TARGETS.openclaw, taskId, {
+          title: `OpenClaw 媒体任务 - ${mediaTask.title}`,
+          width: 1180,
+          height: 780,
+          reuseExisting: true,
+          focusExisting: false,
+        }).catch(error => {
+          console.warn('[hermes-media] unable to open OpenClaw collaboration runner:', error)
+        })
+      }
       updateSessionTitleFromFirstUser(mediaSession)
       mediaSession.updatedAt = Date.now()
       mediaSession.lastActiveAt = Date.now()
@@ -3724,6 +4195,43 @@ function createStore() {
     notify()
   }
 
+  function attachCollaborationResult(taskMessage = {}) {
+    const taskId = String(taskMessage.task_id || taskMessage.taskId || '').trim()
+    if (!taskId) return false
+    const artifacts = Array.isArray(taskMessage.artifacts) ? taskMessage.artifacts : []
+    const imageArtifacts = artifacts.filter(item => String(item?.type || '').toLowerCase() === 'image' && item?.path)
+    if (!imageArtifacts.length) return false
+
+    const session = state.sessions.find(candidate => Array.isArray(candidate?.messages)
+      && candidate.messages.some(message => message?.collaborationTaskId === taskId))
+    const message = session?.messages?.find(candidate => candidate?.collaborationTaskId === taskId)
+    if (!session || !message) return false
+
+    const attachments = Array.isArray(message.attachments) ? message.attachments : []
+    for (const artifact of imageArtifacts) {
+      const path = String(artifact.path || '').trim()
+      if (!path || attachments.some(item => String(item?.imageUrl || item?.mediaPath || item?.path || '') === path)) continue
+      const isRenderableUrl = /^(?:data:image\/|https?:\/\/|asset:)/i.test(path)
+      attachments.push({
+        category: 'image',
+        type: 'image',
+        mimeType: 'image/png',
+        fileName: String(artifact.text || 'OpenClaw generated image').slice(0, 160),
+        ...(isRenderableUrl ? { imageUrl: path } : { mediaPath: path }),
+      })
+    }
+    if (!attachments.length) return false
+    message.attachments = attachments
+    message.content = String(message.content || '').includes('OpenClaw 已完成')
+      ? message.content
+      : `${String(message.content || '').trim()}\n\nOpenClaw 已完成，生成结果已附在此消息中。`.trim()
+    session.updatedAt = Date.now()
+    persistSessionMessages(session.id)
+    persistSessions()
+    notify()
+    return true
+  }
+
   function pushLocalUser(content) {
     const s = activeSession()
     if (!s) return
@@ -3788,11 +4296,13 @@ function createStore() {
     renameSession,
     togglePinned,
     toggleCollapsed,
+    renameGroup,
     sendMessage,
     stopStreaming,
     resolvePendingHermesApproval,
     pushLocalAssistant,
     pushLocalAssistantMessage,
+    attachCollaborationResult,
     pushLocalUser,
     clearActive,
     searchSessions,

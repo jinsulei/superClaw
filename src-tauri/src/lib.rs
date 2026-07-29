@@ -6,7 +6,7 @@ mod tray;
 mod utils;
 
 use commands::{
-    agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, hermes,
+    agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, file_service, hermes,
     hermes_providers, logs, media, memory, messaging, ocr, openclaw_history, pairing, service,
     shared_memory, skills, update,
 };
@@ -262,6 +262,9 @@ pub fn run() {
             shared_memory::shared_memory_read,
             shared_memory::shared_memory_write,
             shared_memory::shared_memory_write_file,
+            shared_memory::collaboration_message_append,
+            shared_memory::collaboration_message_drain,
+            file_service::file_service_run,
             claude_code::claude_collaboration_drain,
             claude_code::claude_collaboration_result_append,
             // Portable media provider routes. These never alter Gateway chat routing.

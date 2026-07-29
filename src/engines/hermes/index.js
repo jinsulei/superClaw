@@ -89,6 +89,12 @@ export default {
 
   async boot() {
     await detectHermesStatus()
+    // Populate portable bundled skills during engine startup. The skills page
+    // still loads its list on demand, but a fresh portable data directory no
+    // longer appears to have no skills while the user is elsewhere in Hermes.
+    void api.hermesEnsureBuiltinSkills().catch((error) => {
+      console.warn('[hermes] builtin skills bootstrap failed:', error)
+    })
     if (_ready && !_running) {
       // The bundled runtime can start in the background after the console opens.
       void tryAutoInit()
@@ -108,12 +114,6 @@ export default {
         items: [
           { route: '/h/setup', label: t('sidebar.setup'), icon: 'setup' },
           { route: '/h/chat', label: t('sidebar.chat'), icon: 'chat' },
-        ]
-      }, {
-        section: '',
-        items: [
-          { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-          { route: '/about', label: t('sidebar.about'), icon: 'about' },
         ]
       }]
     }
@@ -140,8 +140,6 @@ export default {
       items: [
         { route: '/models', label: t('sidebar.models'), icon: 'models' },
         { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
-        { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
-        { route: '/about', label: t('sidebar.about'), icon: 'about' },
       ]
     }]
   },

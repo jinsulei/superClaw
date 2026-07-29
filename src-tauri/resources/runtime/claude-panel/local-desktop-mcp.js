@@ -104,6 +104,20 @@ function result(text, isError = false) {
   return { content: [{ type: "text", text }], isError };
 }
 
+function inspectSharedDocument(target) {
+  const runtimeRoot = path.resolve(__dirname, "..");
+  const command = path.join(runtimeRoot, "document-tools", "superclaw-file.cmd");
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, ["preview", target], { windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(stderr || `file service exited with ${code}`)));
+  });
+}
+
 const server = new McpServer({ name: "superclaw-local-desktop", version: "1.0.0" });
 
 server.registerTool(
@@ -125,6 +139,23 @@ server.registerTool(
       return result(`Opened local path: ${target}`);
     } catch (error) {
       return result(`Could not open local path: ${error?.message || "unknown error"}`, true);
+    }
+  }
+);
+
+server.registerTool(
+  "inspect_local_document",
+  {
+    description: "Read an approved .xlsx, .docx, .pptx, or .pdf using SuperClaw's shared offline file service. This is read-only and does not modify the original file.",
+    inputSchema: { path: z.string().min(1).max(4096).describe("Absolute path to an approved document") },
+  },
+  async ({ path: rawPath }) => {
+    try {
+      const target = resolveApprovedTarget(rawPath);
+      if (!/\.(xlsx|docx|pptx|pdf)$/i.test(target)) throw new Error("Only .xlsx, .docx, .pptx, and .pdf files are supported.");
+      return result((await inspectSharedDocument(target)).slice(0, 120000));
+    } catch (error) {
+      return result(`Could not inspect local document: ${error?.message || "unknown error"}`, true);
     }
   }
 );

@@ -1462,7 +1462,6 @@ pub fn check_python() -> Result<Value, String> {
             vec![
                 ("py", vec!["-3", "--version"]),
                 ("python", vec!["--version"]),
-                ("python3", vec!["--version"]),
             ]
         }
         #[cfg(not(target_os = "windows"))]
@@ -4961,7 +4960,7 @@ fn safe_hermes_document_name(name: &str) -> Option<String> {
         .and_then(|item| item.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if value.is_empty() || !matches!(extension.as_str(), "xlsx" | "docx" | "pdf") {
+    if value.is_empty() || !matches!(extension.as_str(), "xlsx" | "docx" | "pptx" | "pdf") {
         return None;
     }
     Some(value)
@@ -4994,7 +4993,7 @@ pub async fn hermes_save_document_attachment(
 ) -> Result<Value, String> {
     use base64::Engine as _;
     let safe_name =
-        safe_hermes_document_name(&file_name).ok_or("仅支持 .xlsx、.docx 或 .pdf 文档")?;
+        safe_hermes_document_name(&file_name).ok_or("仅支持 .xlsx、.docx、.pptx 或 .pdf 文档")?;
     if id.len() > 80
         || !id
             .chars()
@@ -5094,7 +5093,7 @@ fn build_hermes_run_input(input: &str, attachments: &Option<Value>) -> Value {
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_else(|| "python".to_string());
             let note = format!(
-                "\n\n[SuperClaw attached documents]\n{list}\nUse the terminal and the bundled document tool to inspect or edit only these files. Command: \"{python_path}\" \"{}\" preview <file>. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. For Excel cleanup (empty rows, empty columns, or residual blank-cell formatting), run `clean-excel <file> --output <new-file>` directly with this bundled tool. Do not use execute_code for attached-document work. Report the output path after verification.\n[/SuperClaw attached documents]",
+                "\n\n[SuperClaw attached documents]\n{list}\nUse SuperClaw's shared offline file service to inspect or edit only these files. Command: \"{python_path}\" \"{}\" preview <file>. This same tool is shared by Hermes, OpenClaw, and Claude Code. For edits, always write --output to a new file in the same folder; do not overwrite the uploaded original. Excel/Word support replace; PDF supports preview and watermark. For Excel cleanup (empty rows, empty columns, or residual blank-cell formatting), run `clean-excel <file> --output <new-file>` directly with this bundled tool. Do not use execute_code for attached-document work. Report the output path after verification.\n[/SuperClaw attached documents]",
                 tool_path.to_string_lossy(),
             );
             text.push_str(&note);

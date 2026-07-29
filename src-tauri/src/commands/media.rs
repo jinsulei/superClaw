@@ -24,12 +24,8 @@ const FORBIDDEN_ROUTE_FIELDS: &[&str] = &[
 ];
 
 fn media_config_path() -> Result<PathBuf, String> {
-    let resources = super::app_resources_dir()
-        .ok_or_else(|| "SuperClaw resources directory was not found".to_string())?;
-    Ok(resources
-        .join("data")
-        .join("media")
-        .join("media-routes.json"))
+    super::media_config_path()
+        .ok_or_else(|| "SuperClaw resources directory was not found".to_string())
 }
 
 fn default_config() -> Value {
@@ -171,9 +167,8 @@ fn text_image_endpoint(base_url: &str) -> String {
 }
 
 fn media_output_dir() -> Result<PathBuf, String> {
-    let resources = super::app_resources_dir()
-        .ok_or_else(|| "SuperClaw resources directory was not found".to_string())?;
-    Ok(resources.join("data").join("generated").join("media"))
+    super::media_output_data_dir()
+        .ok_or_else(|| "SuperClaw media output directory was not found".to_string())
 }
 
 fn media_provider(route: &Value) -> Result<(String, String, String), String> {
