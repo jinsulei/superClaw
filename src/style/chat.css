@@ -1430,25 +1430,57 @@
   background: rgba(255,0,0,0.8);
 }
 
-.chat-page.openclaw-image-drag-over .chat-input-area {
-  outline: 2px dashed var(--accent);
-  outline-offset: 6px;
+/* Attachment previews keep their own dark surface instead of falling back to
+   the light document-card defaults when the OpenClaw composer is in dark mode. */
+[data-theme="dark"] .openclaw-chat .chat-attachment-item {
+  background: var(--bg-tertiary, #1b2430);
+  border-color: color-mix(in srgb, var(--border, #344356) 88%, #fff 12%);
 }
 
-.chat-page.openclaw-image-drag-over::after {
+[data-theme="dark"] .openclaw-chat .chat-attachment-placeholder {
+  color: var(--text-secondary, #b8c4d3);
+}
+
+[data-theme="dark"] .openclaw-chat .sc-document-card {
+  background: #202a36;
+  border-color: #3a4859;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .openclaw-chat .sc-document-card .sc-document-card__name {
+  color: #e4ebf4;
+}
+
+[data-theme="dark"] .openclaw-chat .sc-document-card .sc-document-card__size {
+  color: #9eacbd;
+}
+
+[data-theme="dark"] .openclaw-chat .chat-attachment-item.is-file .sc-document-card {
+  background: #202a36;
+  border-color: #3a4859;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .openclaw-chat .chat-attachment-item.is-file .msg-file-preview-btn {
+  background: #293646;
+  border-color: #45566a;
+  color: #9fd5ff;
+}
+
+.chat-page.openclaw-image-drag-over .chat-main::after {
   content: "松开上传图片";
-  position: fixed;
-  inset: 72px 24px 96px 24px;
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed var(--accent);
-  border-radius: 12px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 78%, var(--border-primary));
+  border-radius: 0;
   background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
   color: var(--accent);
   font-size: 18px;
   font-weight: 700;
-  z-index: 30;
+  z-index: 60;
   pointer-events: none;
 }
 
@@ -1614,11 +1646,11 @@
 
 /* 消息内图片 */
 .msg-img {
-  max-width: 200px;
-  max-height: 200px;
+  max-width: min(100%, 680px);
+  max-height: min(64vh, 560px);
   border-radius: 6px;
   cursor: pointer;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .msg-img-loading,
@@ -1664,6 +1696,59 @@
   border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
   transition: background 0.15s;
+}
+
+.sc-document-card {
+  min-width: 228px;
+  max-width: 286px;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-primary, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-2, #eef0f3) 92%, transparent);
+  align-items: center;
+  box-shadow: 0 3px 10px rgba(20, 31, 51, 0.08);
+}
+
+.sc-document-card .sc-document-card__type {
+  order: 2;
+  margin-left: auto;
+  width: 32px;
+  height: 38px;
+  border-radius: 2px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.sc-document-card .sc-document-card__type.is-excel { background: #14a05e; }
+.sc-document-card .sc-document-card__type.is-word { background: #2375c5; }
+.sc-document-card .sc-document-card__type.is-ppt { background: #e96a3a; }
+.sc-document-card .sc-document-card__type.is-pdf { background: #df4d4d; }
+.sc-document-card .sc-document-card__type.is-file { background: #7c8797; }
+.sc-document-card .sc-document-card__name { font-size: 13px; color: var(--text-primary); }
+.sc-document-card .sc-document-card__size { font-size: 11px; color: var(--text-muted); }
+.sc-document-card .sc-document-card__action {
+  display: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  margin-left: 0;
+  padding: 0;
+  border-radius: 5px;
+}
+
+.sc-document-card:hover .sc-document-card__action,
+.sc-document-card:focus-within .sc-document-card__action {
+  display: grid;
+}
+
+.sc-document-card .sc-document-card__action svg {
+  width: 14px;
+  height: 14px;
 }
 .msg-file-card:hover {
   background: var(--bg-hover);
@@ -2738,34 +2823,119 @@
   justify-content: center;
   align-items: center;
   gap: 0;
-  padding: 16px 48px 18px;
+  padding: 0 0 13px;
   box-sizing: border-box;
-  background: var(--bg-primary);
-  border-top: 1px solid var(--border);
+  background: transparent;
+  border-top: 0;
+}
+
+/* Keep pending attachments on the same left/right grid as the composer. */
+.openclaw-chat .chat-attachments-preview {
+  width: calc(100% - (var(--agent-chat-edge-gap, clamp(12px, 1vw, 20px)) * 2) - 48px);
+  margin: 0 auto;
+  padding: 0 0 8px;
+  box-sizing: border-box;
 }
 
 .openclaw-chat .openclaw-composer-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 27px 27px minmax(0, 1fr) 27px auto;
+  grid-template-rows: minmax(32px, auto) 27px;
   align-items: center;
-  gap: 10px;
-  width: min(1160px, 100%);
-  max-width: 1160px;
+  column-gap: 8px;
+  row-gap: 8px;
+  width: calc(100% - (var(--agent-chat-edge-gap, clamp(12px, 1vw, 20px)) * 2) - 48px);
+  max-width: none;
   margin-inline: auto;
   box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg-secondary, var(--bg-card));
+  box-shadow: 0 8px 22px rgba(20, 31, 51, 0.12);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
+}
+
+[data-theme="dark"] .openclaw-chat .openclaw-composer-row {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 .openclaw-chat .chat-input-wrapper {
-  flex: 1 1 auto;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  width: 100%;
   min-width: 0;
   max-width: none;
 }
 
 .openclaw-chat .chat-input-wrapper textarea {
-  min-height: 44px;
-  padding: 10px 14px;
-  border-radius: var(--radius-md, 8px);
+  width: 100%;
+  min-height: 32px;
+  padding: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: 14.5px;
   line-height: 1.6;
+  font-family: inherit;
+}
+
+.openclaw-chat .chat-input-wrapper textarea:focus {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+
+.openclaw-chat .chat-attach-btn,
+.openclaw-chat .chat-voice-btn,
+.openclaw-chat .chat-send-btn {
+  width: 27px;
+  height: 27px;
+  min-width: 27px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-primary);
+  transform: none;
+}
+
+.openclaw-chat .chat-attach-btn { grid-column: 1; grid-row: 2; }
+.openclaw-chat .chat-voice-btn { grid-column: 2; grid-row: 2; }
+.openclaw-chat .chat-send-btn {
+  grid-column: 4;
+  grid-row: 2;
+  color: var(--on-accent, #fff);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.openclaw-chat .chat-send-btn:disabled {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--bg-primary);
+  opacity: 0.55;
+}
+
+.openclaw-chat .chat-send-btn:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent));
+  opacity: 1;
+}
+
+.openclaw-chat .chat-send-btn svg,
+.openclaw-chat .chat-attach-btn svg,
+.openclaw-chat .chat-voice-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.openclaw-chat .chat-hosted-btn {
+  grid-column: 5;
+  grid-row: 2;
+  height: 27px;
+  min-height: 27px;
+  padding: 0 7px;
+  border-radius: 999px;
+  transform: none;
 }
 
 .openclaw-chat .chat-send-btn,
@@ -2773,7 +2943,6 @@
 .openclaw-chat .chat-voice-btn,
 .openclaw-chat .chat-hosted-btn {
   flex-shrink: 0;
-  transform: translateY(-2px);
 }
 
 [data-theme="dark"] .openclaw-chat .openclaw-role-badge,
@@ -2809,11 +2978,15 @@
   }
 
   .openclaw-chat .chat-input-area {
-    padding: 12px 14px 14px;
+    padding: 0 0 9px;
+  }
+
+  .openclaw-chat .chat-attachments-preview {
+    width: calc(100% - (var(--agent-chat-edge-gap, 8px) * 2) - 24px);
+    padding-bottom: 7px;
   }
 
   .openclaw-chat .openclaw-composer-row {
-    width: 100%;
-    gap: 8px;
+    width: calc(100% - (var(--agent-chat-edge-gap, 8px) * 2) - 24px);
   }
 }

@@ -114,6 +114,137 @@ const ICONS = {
 }
 
 let _delegated = false
+let _openClawSidebarSessions = []
+let _openClawSidebarSessionListenerBound = false
+
+const OPENCLAW_PRIMARY_SIDEBAR_ROUTES = ['/chat', '/dashboard', '/models', '/agents', '/skills']
+const OPENCLAW_SESSION_STORAGE_KEY = 'superclaw-last-session'
+const OPENCLAW_ACTIVE_SESSION_STORAGE_KEY = 'superclaw-last-active-session'
+const HERMES_PRIMARY_SIDEBAR_ROUTES = ['/h/chat', '/h/dashboard', '/h/skills', '/h/memory', '/models']
+let _hermesSidebarSessions = []
+let _hermesSidebarSessionListenerBound = false
+
+function _readOpenClawSidebarSessions() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('superclaw-chat-local-sessions') || '[]')
+    return Array.isArray(saved) ? saved : []
+  } catch {
+    return []
+  }
+}
+
+function _escapeSidebarText(value) {
+  return String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]))
+}
+
+function _openClawSessionTitle(session) {
+  const title = String(session?.title || '').trim()
+  if (title) return title
+  const key = String(session?.sessionKey || session?.key || '')
+  const parts = key.split(':').filter(Boolean)
+  return parts[parts.length - 1] || key || t('chat.newSession')
+}
+
+function _renderOpenClawSidebarSessions() {
+  const list = document.getElementById('openclaw-sidebar-session-list')
+  if (!list) return
+  const activeKey = localStorage.getItem(OPENCLAW_ACTIVE_SESSION_STORAGE_KEY) || localStorage.getItem(OPENCLAW_SESSION_STORAGE_KEY) || ''
+  const sessions = [..._openClawSidebarSessions]
+    .filter(session => String(session?.sessionKey || session?.key || '').trim())
+    .sort((a, b) => Number(b.updatedAt || b.lastActivity || b.createdAt || 0) - Number(a.updatedAt || a.lastActivity || a.createdAt || 0))
+    .slice(0, 40)
+  list.innerHTML = sessions.length
+    ? sessions.map(session => {
+      const key = String(session.sessionKey || session.key || '')
+      return `<div class="openclaw-sidebar-session-row${key === activeKey ? ' active' : ''}">
+        <button type="button" class="openclaw-sidebar-session" data-openclaw-session-key="${_escapeSidebarText(key)}" title="${_escapeSidebarText(_openClawSessionTitle(session))}"><span>${_escapeSidebarText(_openClawSessionTitle(session))}</span></button>
+        <button type="button" class="openclaw-sidebar-session-action" data-openclaw-session-action="rename" data-openclaw-session-key="${_escapeSidebarText(key)}" title="编辑">&#9998;</button>
+        <button type="button" class="openclaw-sidebar-session-action" data-openclaw-session-action="delete" data-openclaw-session-key="${_escapeSidebarText(key)}" title="删除">&#215;</button>
+      </div>`
+    }).join('')
+    : `<div class="openclaw-sidebar-session-empty">${_escapeSidebarText(t('chat.noSessions'))}</div>`
+}
+
+function _bindOpenClawSidebarSessionListener() {
+  if (_openClawSidebarSessionListenerBound || typeof window === 'undefined') return
+  _openClawSidebarSessionListenerBound = true
+  _openClawSidebarSessions = _readOpenClawSidebarSessions()
+  window.addEventListener('superclaw:openclaw-sessions', event => {
+    const sessions = event?.detail?.sessions
+    if (!Array.isArray(sessions)) return
+    _openClawSidebarSessions = sessions
+    _renderOpenClawSidebarSessions()
+  })
+}
+
+function _readHermesSidebarSessions() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('superclaw-hermes-sidebar-sessions') || '[]')
+    return Array.isArray(saved) ? saved : []
+  } catch {
+    return []
+  }
+}
+
+function _renderHermesSidebarSessions() {
+  const list = document.getElementById('hermes-sidebar-session-list')
+  if (!list) return
+  const activeId = String(_hermesSidebarSessions.activeSessionId || '')
+  const sessions = [..._hermesSidebarSessions]
+    .filter(session => String(session?.id || '').trim())
+    .slice(0, 40)
+  const groups = new Map()
+  for (const session of sessions) {
+    const key = String(session.group || '')
+    if (!groups.has(key)) groups.set(key, { label: session.groupLabel || 'Local', collapsed: !!session.groupCollapsed, sessions: [] })
+    groups.get(key).sessions.push(session)
+  }
+  list.innerHTML = groups.size ? [...groups.entries()].map(([group, value]) => `
+    <div class="hermes-sidebar-session-group">
+      <button type="button" class="hermes-sidebar-session-group-head${value.collapsed ? ' is-collapsed' : ''}" data-hermes-session-group="${_escapeSidebarText(group)}">
+        <span class="hermes-sidebar-session-group-arrow">&#9662;</span><span>${_escapeSidebarText(value.label)}</span>
+      </button>
+      ${group === '__pinned__' ? '' : `<button type="button" class="hermes-sidebar-group-action" data-hermes-group-action="rename" data-hermes-session-group="${_escapeSidebarText(group)}" data-hermes-session-group-label="${_escapeSidebarText(value.label)}" title="编辑分组">&#9998;</button>`}
+      <small class="hermes-sidebar-session-group-count">${value.sessions.length}</small>
+      ${value.collapsed ? '' : value.sessions.map(session => `<div class="hermes-sidebar-session-row${String(session.id) === activeId ? ' active' : ''}">
+        <button type="button" class="openclaw-sidebar-session" data-hermes-session-id="${_escapeSidebarText(session.id)}" title="${_escapeSidebarText(_openClawSessionTitle(session))}"><span>${_escapeSidebarText(_openClawSessionTitle(session))}</span></button>
+        <button type="button" class="hermes-sidebar-session-action" data-hermes-session-action="rename" data-hermes-session-id="${_escapeSidebarText(session.id)}" title="编辑">&#9998;</button>
+        <button type="button" class="hermes-sidebar-session-action" data-hermes-session-action="delete" data-hermes-session-id="${_escapeSidebarText(session.id)}" title="删除">&#215;</button>
+      </div>`).join('')}
+    </div>`).join('')
+    : `<div class="openclaw-sidebar-session-empty">${_escapeSidebarText(t('chat.noSessions'))}</div>`
+}
+
+function _bindHermesSidebarSessionListener() {
+  if (_hermesSidebarSessionListenerBound || typeof window === 'undefined') return
+  _hermesSidebarSessionListenerBound = true
+  _hermesSidebarSessions = _readHermesSidebarSessions()
+  window.addEventListener('superclaw:hermes-sessions', event => {
+    const sessions = event?.detail?.sessions
+    if (!Array.isArray(sessions)) return
+    _hermesSidebarSessions = sessions
+    _hermesSidebarSessions.activeSessionId = event?.detail?.activeSessionId || ''
+    _renderHermesSidebarSessions()
+  })
+}
+
+function _runHermesSidebarAction(action) {
+  if (getCurrentRoute() === '/h/chat') {
+    window.dispatchEvent(new CustomEvent('superclaw:hermes-sidebar-action', { detail: action }))
+    return
+  }
+  try { sessionStorage.setItem('superclaw-hermes-sidebar-action', JSON.stringify(action)) } catch {}
+  navigate('/h/chat')
+}
+
+function _runOpenClawSidebarAction(action) {
+  if (getCurrentRoute() === '/chat') {
+    window.dispatchEvent(new CustomEvent('superclaw:openclaw-sidebar-action', { detail: action }))
+    return
+  }
+  try { sessionStorage.setItem('superclaw-openclaw-sidebar-action', JSON.stringify(action)) } catch {}
+  navigate('/chat')
+}
 
 function _normalizeSidebarRoute(route) {
   const clean = String(route || '').split('?')[0].replace(/^#/, '')
@@ -623,8 +754,43 @@ export function renderSidebar(el) {
   // 从当前引擎获取菜单（回退到原有逻辑）
   const engine = getActiveEngine()
   const navItems = engine ? engine.getNavItems() : (isOpenclawReady() ? NAV_ITEMS_FULL() : NAV_ITEMS_SETUP())
+  const isOpenClawSidebar = engine?.id === 'openclaw'
+  const isHermesSidebar = engine?.id === 'hermes' && engine?.isReady?.()
+  const isSessionSidebar = isOpenClawSidebar || isHermesSidebar
+  const primaryRoutes = isHermesSidebar ? HERMES_PRIMARY_SIDEBAR_ROUTES : OPENCLAW_PRIMARY_SIDEBAR_ROUTES
+  const availableItems = navItems.flatMap(section => section.items.filter(item => {
+    if (item.gate && engine && !engine.isFeatureAvailable(item.gate)) return false
+    if (item.gate && !engine && !isFeatureAvailable(item.gate)) return false
+    return true
+  }))
 
-  for (const section of navItems) {
+  if (isSessionSidebar) {
+    const itemByRoute = new Map(availableItems.map(item => [item.route, item]))
+    html = html.replace('class="sidebar-nav"', 'class="sidebar-nav sidebar-nav-openclaw"')
+    html += '<div class="nav-section nav-section-openclaw-primary">'
+    for (const route of primaryRoutes) {
+      const item = itemByRoute.get(route)
+      if (!item) continue
+      const active = _isSidebarItemActive(current, item) ? ' active' : ''
+      html += `<div class="nav-item${active}" data-route="${item.route}">${ICONS[item.icon] || ''}<span>${item.label}</span></div>`
+    }
+    const sessionMarkup = isHermesSidebar ? `
+      <section class="openclaw-sidebar-sessions">
+        <div class="openclaw-sidebar-sessions-header">
+          <span>${t('chat.sessionList')}</span>
+          <button type="button" class="openclaw-sidebar-new-session" id="btn-hermes-sidebar-new-session" title="${t('chat.newSession')}">+</button>
+        </div>
+        <div class="openclaw-sidebar-session-list" id="hermes-sidebar-session-list"></div>
+      </section>` : `
+      <section class="openclaw-sidebar-sessions">
+        <div class="openclaw-sidebar-sessions-header">
+          <span>${t('chat.sessionList')}</span>
+          <button type="button" class="openclaw-sidebar-new-session" id="btn-openclaw-sidebar-new-session" title="${t('chat.newSession')}">+</button>
+        </div>
+        <div class="openclaw-sidebar-session-list" id="openclaw-sidebar-session-list"></div>
+      </section>`
+    html += `</div>${sessionMarkup}`
+  } else for (const section of navItems) {
     html += `<div class="nav-section">
       <div class="nav-section-title">${section.section}</div>`
 
@@ -682,8 +848,23 @@ export function renderSidebar(el) {
   // 内核可升级卡片（仅 openclaw 引擎、已连接、低于推荐版时显示）
   html += _renderKernelUpgradeHint()
 
+  const settingsItems = isSessionSidebar
+    ? availableItems.filter(item => !primaryRoutes.includes(item.route))
+    : []
+  const footerClass = isSessionSidebar ? 'sidebar-footer sidebar-footer-openclaw' : 'sidebar-footer'
+  const footerPrefix = isSessionSidebar ? `
+      <div class="sidebar-settings" id="sidebar-settings">
+        <button type="button" class="nav-item sidebar-settings-trigger" id="btn-sidebar-settings">
+          ${ICONS.settings}<span>${t('sidebar.settings')}</span>
+        </button>
+        <div class="sidebar-settings-popover" id="sidebar-settings-popover">
+          <div class="sidebar-settings-menu">${settingsItems.map(item => `<div class="nav-item${_isSidebarItemActive(current, item) ? ' active' : ''}" data-route="${item.route}">${ICONS[item.icon] || ''}<span>${item.label}</span></div>`).join('')}</div>
+    ` : ''
+  const footerSuffix = isSessionSidebar ? '</div></div>' : ''
+
   html += `
-    <div class="sidebar-footer">
+    <div class="${footerClass}">
+      ${footerPrefix}
       <div class="theme-switcher" id="theme-switcher">
         <div class="theme-switch-row">
           <button type="button" class="nav-item theme-mode-trigger" id="btn-theme-toggle">
@@ -709,6 +890,7 @@ export function renderSidebar(el) {
           <div class="lang-options" id="lang-options">${langOptions}</div>
         </div>
       </div>
+      ${footerSuffix}
       <div class="sidebar-meta">
         <span class="sidebar-version" title="内部构建版本 v${APP_BUILD_VERSION}">${PRODUCT_DISPLAY_VERSION}</span>
       </div>
@@ -719,14 +901,81 @@ export function renderSidebar(el) {
 
   // 应用折叠态（桌面端）
   _setDesktopSidebarCollapsed(collapsed)
+  _bindOpenClawSidebarSessionListener()
+  _renderOpenClawSidebarSessions()
+  _bindHermesSidebarSessionListener()
+  _renderHermesSidebarSessions()
 
   // 事件委托：只绑定一次，避免重复绑定
   if (!_delegated) {
     _delegated = true
     el.addEventListener('click', (e) => {
+      const hermesGroupAction = e.target.closest('[data-hermes-group-action]')
+      if (hermesGroupAction) {
+        _runHermesSidebarAction({
+          type: 'rename-group',
+          source: hermesGroupAction.dataset.hermesSessionGroup,
+          label: hermesGroupAction.dataset.hermesSessionGroupLabel || '',
+        })
+        return
+      }
+      const hermesGroup = e.target.closest('[data-hermes-session-group]')
+      if (hermesGroup) {
+        const action = { type: 'toggle-group', source: hermesGroup.dataset.hermesSessionGroup || '' }
+        _runHermesSidebarAction(action)
+        return
+      }
+      const hermesAction = e.target.closest('[data-hermes-session-action]')
+      if (hermesAction) {
+        const action = { type: hermesAction.dataset.hermesSessionAction, sessionId: hermesAction.dataset.hermesSessionId || '' }
+        _runHermesSidebarAction(action)
+        return
+      }
+      const hermesSessionItem = e.target.closest('[data-hermes-session-id]')
+      if (hermesSessionItem) {
+        const sessionId = hermesSessionItem.dataset.hermesSessionId
+        if (sessionId) {
+          _runHermesSidebarAction({ type: 'select', sessionId })
+        }
+        return
+      }
+      if (e.target.closest('#btn-hermes-sidebar-new-session')) {
+        try { sessionStorage.setItem('superclaw-hermes-new-session-request', '1') } catch {}
+        if (getCurrentRoute() === '/h/chat') reloadCurrentRoute()
+        else navigate('/h/chat')
+        return
+      }
+      const openClawAction = e.target.closest('[data-openclaw-session-action]')
+      if (openClawAction) {
+        _runOpenClawSidebarAction({ type: openClawAction.dataset.openclawSessionAction, key: openClawAction.dataset.openclawSessionKey || '' })
+        return
+      }
+      const sessionItem = e.target.closest('[data-openclaw-session-key]')
+      if (sessionItem) {
+        const key = sessionItem.dataset.openclawSessionKey
+        if (key) {
+          localStorage.setItem(OPENCLAW_SESSION_STORAGE_KEY, key)
+          localStorage.setItem(OPENCLAW_ACTIVE_SESSION_STORAGE_KEY, key)
+          _renderOpenClawSidebarSessions()
+          if (getCurrentRoute() === '/chat') reloadCurrentRoute()
+          else navigate('/chat')
+        }
+        return
+      }
+      if (e.target.closest('#btn-openclaw-sidebar-new-session')) {
+        try { sessionStorage.setItem('superclaw-openclaw-new-session-request', '1') } catch {}
+        if (getCurrentRoute() === '/chat') reloadCurrentRoute()
+        else navigate('/chat')
+        return
+      }
+      if (e.target.closest('#btn-sidebar-settings')) {
+        document.getElementById('sidebar-settings')?.classList.toggle('open')
+        return
+      }
       // 导航点击
       const navItem = e.target.closest('.nav-item[data-route]')
       if (navItem) {
+        document.getElementById('sidebar-settings')?.classList.remove('open')
         _syncSidebarActiveRoute(el, navItem.dataset.route)
         navigate(navItem.dataset.route)
         _closeMobileSidebar()

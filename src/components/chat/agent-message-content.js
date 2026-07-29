@@ -101,6 +101,14 @@ function protectExistingGfmTableBlocks(text) {
 
 function restoreCollapsedMarkdownLineBreaks(value) {
   let text = unwrapOuterMarkdownFence(value)
+  // Some gateways serialize a Markdown conclusion through JSON twice, leaving
+  // literal `\\n` separators in the visible reply. Decode them only when the
+  // decoded value is actually Markdown, so ordinary paths and prose remain
+  // untouched.
+  if (/\\\\n/.test(text)) {
+    const decoded = text.replace(/\\\\r\\\\n/g, '\n').replace(/\\\\n/g, '\n')
+    if (hasMarkdownStructure(decoded)) text = decoded
+  }
   if (!text || !hasMarkdownStructure(text)) return text
 
   const codeBlocks = []
