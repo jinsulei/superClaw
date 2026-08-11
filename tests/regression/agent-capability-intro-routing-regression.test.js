@@ -14,7 +14,7 @@ test('OpenClaw ordinary chat messages are routed to the native Gateway', () => {
   assert.doesNotMatch(send, /maybeHandleOpenClawLocalAnswer\(/)
   assert.doesNotMatch(send, /appendOpenClawLocalEcommerceAnswer\(/)
   assert.doesNotMatch(send, /appendOpenClawLocalIdentityAnswer\(/)
-  assert.match(send, /doSend\(text, attachments, clientRequestId, requestFingerprint\)/)
+  assert.match(send, /doSend\(text, attachments, clientRequestId, requestFingerprint(?:,\s*nativeMediaTask)?\)/)
 })
 
 test('OpenClaw capability intro covers skills opr exec collaboration ecommerce safety and coding profile', () => {

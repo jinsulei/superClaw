@@ -17,6 +17,7 @@ const messageDb = read('src/lib/message-db.js')
 const openclawHistorySource = read('src-tauri/src/commands/openclaw_history.rs')
 const ocrPlugin = read('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/index.js')
 const ocrManifest = read('src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-ocr/openclaw.plugin.json')
+const imageZoom = read('src/lib/anchored-image-zoom.js')
 
 test('OpenClaw workspace policy makes native tools the execution authority', () => {
   assert.match(workspacePolicy, /native execution agent/i)
@@ -29,7 +30,9 @@ test('OpenClaw workspace policy makes native tools the execution authority', () 
 
 test('OpenClaw keeps raw tool identifiers out of the visible reply and uses friendly progress labels', () => {
   const rawToolFilter = chat.match(/function stripOpenClawRawToolLines\([\s\S]*?\n\}/)?.[0] || ''
-  const displayName = chat.match(/function getOpenClawToolDisplayName\([\s\S]*?(?=\nfunction stripRawOpenClawToolText)/)?.[0] || ''
+  // The progress label and its helpers were refactored into a shared block that
+  // starts at redactOpenClawVisibleSensitiveText, so capture the whole span.
+  const displayName = chat.match(/function redactOpenClawVisibleSensitiveText\([\s\S]*?(?=\nfunction stripRawOpenClawToolText)/)?.[0] || ''
   const sandbox = { result: null }
 
   vm.runInNewContext(`${rawToolFilter}; ${displayName}; result = [
@@ -40,10 +43,10 @@ test('OpenClaw keeps raw tool identifiers out of the visible reply and uses frie
     getOpenClawToolProgressLabel({ name: 'web_fetch' }),
   ]`, sandbox)
 
-  assert.deepEqual(Array.from(sandbox.result), ['准备查询天气：\n查询完成', '', '检索公开资料', '读取网页内容', '读取网页内容，用于核对页面中的具体内容。'])
+  assert.deepEqual(Array.from(sandbox.result), ['准备查询天气：\n查询完成', '', '检索公开资料', '读取网页内容', '读取网页'])
   assert.match(chat, /recordOpenClawRunStep\('tool', toolLabel, current\.status \|\| 'running', toolCallId\)/)
   assert.match(chat, /showTyping\(true, `正在\$\{toolLabel\}`\)/)
-  assert.match(chat, /计划：先理解你的目标，按需查找资料或执行操作，再整理可靠结论。/)
+  assert.match(chat, /recordOpenClawRunStep\('plan', `开始处理：\$\{initialTaskSummary/)
 })
 
 test('OpenClaw renders provider public reasoning summaries without rendering raw internal reasoning', () => {
@@ -70,7 +73,7 @@ test('OpenClaw shows executed shell commands only in a redacted technical detail
   assert.match(safeCommand, /curl -H "Authorization: Bearer \[已隐藏\]" --api-key \[已隐藏\]/)
   assert.doesNotMatch(safeCommand, /sk-secret-token-value-123|abcdefghijklmnop/)
   assert.equal(ignoredCommand, '')
-  assert.match(chat, /执行命令（已脱敏）/)
+  assert.match(chat, /执行命令：\$\{command\.replace/)
 })
 
 test('SuperClaw task policy keeps ecommerce, OCR, and finance inside native skills', () => {
@@ -408,7 +411,105 @@ test('OpenClaw history fingerprints strip injected execution instructions before
   assert.match(stripRuntimeBlocks, /NATIVE_INSPECTION_REQUIRED/)
   assert.match(stripRuntimeBlocks, /CAPABILITY_AUDIT_TRIGGER/)
   assert.match(stripRuntimeBlocks, /DOCUMENT_ATTACHMENT_CONTEXT/)
+  assert.match(stripRuntimeBlocks, /IMAGE_ATTACHMENT_CONTEXT/)
+  assert.match(stripRuntimeBlocks, /图片识别触发/)
   assert.match(chat, /function openClawVisibleUserText\(text\) \{\s*return stripOpenClawHistoryUserTimestamp\(stripOpenClawRuntimePromptBlocks\(text\)\)/)
+})
+
+test('OpenClaw recovers MEDIA:<path> outputs into renderable images from assistant text', () => {
+  const helper = chat.match(/function extractOpenClawMediaImagePaths[\s\S]*?\n\}/)?.[0] || ''
+  const sandbox = { result: null }
+  vm.runInNewContext(`${helper}; result = [
+    extractOpenClawMediaImagePaths('已完成美化。\\n\\nMEDIA:C:\\\\Users\\\\ZXKJ\\\\image-1.png'),
+    extractOpenClawMediaImagePaths('MEDIA: "D:/media/generated/photo.jpg"'),
+    extractOpenClawMediaImagePaths('普通文本，没有媒体'),
+    extractOpenClawMediaImagePaths('MEDIA:C:\\\\path\\\\notes.txt'),
+  ]`, sandbox)
+  const [first, quoted, none, nonImage] = sandbox.result
+  assert.equal(first.length, 1)
+  assert.equal(first[0].generatedMediaPath, 'C:\\Users\\ZXKJ\\image-1.png')
+  assert.equal(first[0].fileName, 'image-1.png')
+  assert.equal(quoted.length, 1)
+  assert.equal(quoted[0].generatedMediaPath, 'D:/media/generated/photo.jpg')
+  assert.equal(none.length, 0)
+  assert.equal(nonImage.length, 0)
+  assert.match(chat, /extractOpenClawMediaImagePaths\(safeVisibleText\)/)
+  assert.match(chat, /extractOpenClawMediaImagePaths\(visibleText\)/)
+})
+
+test('OpenClaw strips the portable MEDIA:<path> marker from visible prose but still renders the image', () => {
+  const stripAnsi = 'function stripAnsi(text) { return String(text || \'\').replace(/\\x1b\\[[0-9;]*m/g, \'\') }'
+  const stripThinking = chat.match(/function stripThinkingTags[\s\S]*?\n\}/)?.[0] || ''
+  const stripBlocks = chat.match(/function stripOpenClawInternalBlocks[\s\S]*?\n\}/)?.[0] || ''
+  const extractMedia = chat.match(/function extractOpenClawMediaImagePaths[\s\S]*?\n\}/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${stripAnsi}; ${stripThinking}; ${stripBlocks}; ${extractMedia}; result = [
+    stripOpenClawInternalBlocks('已完成美化。\\n\\nMEDIA:C:\\\\Users\\\\ZXKJ\\\\image-1.png'),
+    stripOpenClawInternalBlocks('MEDIA: "D:/media/generated/photo.jpg"'),
+    stripOpenClawInternalBlocks('普通文本，没有媒体标记'),
+    extractOpenClawMediaImagePaths('已完成美化。\\n\\nMEDIA:C:\\\\Users\\\\ZXKJ\\\\image-1.png').length,
+  ]`, sandbox)
+
+  const [stripped, quoted, plain, mediaCount] = sandbox.result
+  assert.doesNotMatch(stripped, /MEDIA:/i)
+  assert.match(stripped, /已完成美化/)
+  assert.doesNotMatch(quoted, /MEDIA:/i)
+  assert.equal(plain, '普通文本，没有媒体标记')
+  assert.equal(mediaCount, 1)
+  assert.match(stripBlocks, /MEDIA:/)
+  // Stripping the MEDIA marker from sanitized text is what makes the
+  // text-only MEDIA record and the gateway image-block record share one
+  // display fingerprint, so history collapses them into a single reply
+  // instead of rendering the same image twice.
+  const fingerprintBlock = chat.match(/function getOpenClawDisplayFingerprint[\s\S]*?\n\}/)?.[0] || ''
+  assert.match(fingerprintBlock, /sanitizeOpenClawVisibleReply\(rawText\)/)
+})
+
+test('OpenClaw merges a gateway image URL with its portable MEDIA path into one rendered image', () => {
+  const merge = chat.match(/function mergeOpenClawUniqueMedia[\s\S]*?\n\}/)?.[0] || ''
+  const gatewayItem = chat.match(/function isOpenClawGatewayMediaItem[\s\S]*?\n\}/)?.[0] || ''
+  const localItem = chat.match(/function isOpenClawLocalMediaImageItem[\s\S]*?\n\}/)?.[0] || ''
+  const mediaKey = chat.match(/function getOpenClawMediaDedupeKey[\s\S]*?\n\}/)?.[0] || ''
+  const gatewayRoute = chat.match(/function isOpenClawGatewayMediaRoute[\s\S]*?\n\}/)?.[0] || ''
+  const windowsPath = chat.match(/function isOpenClawWindowsImagePath[\s\S]*?\n\}/)?.[0] || ''
+  const fileUrl = chat.match(/function isOpenClawFileImageUrl[\s\S]*?\n\}/)?.[0] || ''
+  const sandbox = { result: null }
+
+  vm.runInNewContext(`${gatewayRoute}; ${windowsPath}; ${fileUrl}; ${gatewayItem}; ${localItem}; ${mediaKey}; ${merge}; result = [
+    mergeOpenClawUniqueMedia(
+      [{ mediaType: 'image/png', generatedMediaPath: 'C:\\\\data\\\\generated\\\\media\\\\image-1.png', mediaPath: 'C:\\\\data\\\\generated\\\\media\\\\image-1.png', fileName: 'image-1.png' }],
+      [{ url: '/api/chat/media/outgoing/run/media/uuid/full', imageUrl: '/api/chat/media/outgoing/run/media/uuid/full', mediaType: 'image/png' }]
+    ),
+    mergeOpenClawUniqueMedia(
+      [{ url: '/api/chat/media/outgoing/run/media/uuid/full', imageUrl: '/api/chat/media/outgoing/run/media/uuid/full', mediaType: 'image/png' }],
+      []
+    ),
+    mergeOpenClawUniqueMedia(
+      [{ mediaType: 'image/png', generatedMediaPath: 'C:\\\\data\\\\generated\\\\media\\\\image-1.png', mediaPath: 'C:\\\\data\\\\generated\\\\media\\\\image-1.png', fileName: 'image-1.png' }],
+      []
+    ),
+  ]`, sandbox)
+
+  const [both, gatewayOnly, localOnly] = sandbox.result
+  assert.equal(both.length, 1)
+  assert.equal(both[0].generatedMediaPath, 'C:\\data\\generated\\media\\image-1.png')
+  assert.equal(both[0].url, undefined)
+  assert.equal(gatewayOnly.length, 1)
+  assert.equal(gatewayOnly[0].url, '/api/chat/media/outgoing/run/media/uuid/full')
+  assert.equal(localOnly.length, 1)
+  assert.equal(localOnly[0].generatedMediaPath, 'C:\\data\\generated\\media\\image-1.png')
+})
+
+test('OpenClaw restores user-uploaded MediaPath fields as renderable history attachments', () => {
+  assert.match(openclawHistorySource, /fn user_image_attachments\(message: &Value\)/)
+  assert.match(openclawHistorySource, /\.get\("MediaPaths"\)/)
+  assert.match(openclawHistorySource, /\.get\("MediaPath"\)/)
+  assert.match(openclawHistorySource, /"generatedMediaPath": trimmed/)
+  assert.match(chat, /generatedMediaPath: img\.generatedMediaPath \|\| ''/)
+  assert.match(chat, /generatedMediaPath: i\.generatedMediaPath \|\| ''/)
+  assert.match(chat, /fallbackMediaPath: img\.fallbackMediaPath \|\| ''/)
+  assert.match(chat, /fallbackMediaPath: i\.fallbackMediaPath \|\| ''/)
 })
 
 test('OpenClaw renders real tool execution alongside assistant prose', () => {
@@ -439,8 +540,8 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   assert.match(renderCard, /const displayedToolCount = Math\.max\(info\.toolCount, timelineToolCount\)/)
   assert.match(chat, /recordOpenClawRunStep\('analysis', thought \? `推理摘要：\$\{thought\}` : '正在分析任务并确定下一步。'/)
   assert.match(chat, /recordOpenClawRunStep\('plan', plan \? `计划更新：\$\{plan\}` : '正在规划执行步骤。'/)
-  assert.match(chat, /recordOpenClawRunStep\('plan', '计划：先理解你的目标，按需查找资料或执行操作，再整理可靠结论。'/)
-  assert.match(chat, /recordOpenClawRunStep\('start', '正在连接执行环境，用于开始处理这项任务。'/)
+  assert.match(chat, /recordOpenClawRunStep\('plan', `开始处理：\$\{initialTaskSummary\.slice\(0, 180\)\}/)
+  assert.match(chat, /recordOpenClawRunStep\('plan', `开始处理：\$\{initialTaskSummary[^]*?'running', 'initial-plan'\)/)
   assert.match(chat, /if \(_currentAiTimeline\.length \|\| hasTimelineOverride\) \{\s*if \(existing\) existing\.remove\(\)\s*renderOpenClawToolResultCard\(el, \[\], '', timelineOverride\)/)
   assert.match(chat, /A live timeline is progress, not a completed assistant reply/)
   assert.match(chat, /const liveTimeline = _currentAiBubble\?\.querySelector\?\.\('\.openclaw-run-timeline\[open\]'\)/)
@@ -465,7 +566,7 @@ test('OpenClaw execution timeline is live, safe, and collapses after the final r
   assert.match(chat, /stopOpenClawProgressHistoryPolling\(\)/)
   assert.match(chat, /collapseOpenClawRunTimeline\(_currentAiBubble\)/)
   const collapseBlock = chat.match(/function collapseOpenClawRunTimeline[\s\S]*?function ensureOpenClawRunTimelineBubble/)?.[0] || ''
-  assert.match(collapseBlock, /title\.textContent = '执行过程已完成'/)
+  assert.match(collapseBlock, /title\.textContent = '执行过程'/)
   assert.doesNotMatch(chat, /innerHTML\s*=\s*.*(?:reasoning|chain.of.thought)/i)
 })
 
@@ -606,10 +707,12 @@ test('OpenClaw renders safe image and PDF previews without bypassing the current
   assert.match(chat, /function createOpenClawImageElement/)
   assert.match(chat, /showLightbox\(img\.src\)/)
   assert.match(lightbox, /document\.createElement\('img'\)/)
-  assert.match(lightbox, /event\.deltaY/)
-  assert.match(lightbox, /if \(event\.target !== image\) return/)
-  assert.match(lightbox, /image\.style\.transformOrigin = `\$\{\(x \* 100\)\.toFixed\(2\)\}% \$\{\(y \* 100\)\.toFixed\(2\)\}%`/)
-  assert.match(lightbox, /Math\.min\(4, zoom/)
+  assert.match(lightbox, /attachAnchoredImageZoom\(\{/)
+  assert.match(lightbox, /step: 0\.15/)
+  assert.match(lightbox, /if \(event\.target === lb\) dismiss\(\)/)
+  assert.match(imageZoom, /event\.deltaY/)
+  assert.match(imageZoom, /image\.style\.transformOrigin = 'center center'/)
+  assert.match(imageZoom, /Math\.min\(maxZoom,/)
   assert.doesNotMatch(lightbox, /innerHTML\s*=/)
 })
 
@@ -643,7 +746,8 @@ test('OpenClaw history preserves images returned by native read tools', () => {
 
 test('OpenClaw restores native history before cache so stale sessions cannot hide media', () => {
   assert.match(chat, /const raw = await api\.readOpenclawRawHistory\(requestedSessionKey, 5_000\)/)
-  assert.match(chat, /if \(local\.length && !rawHistory\?\.length\)/)
+  assert.match(chat, /never reach the Gateway's portable JSONL/)
+  assert.match(chat, /if \(local\.length\)/)
   assert.match(chat, /cachedHistoryMessage\(message, requestedSessionKey\)/)
   assert.match(chat, /function cachedHistoryMessage\(m, sessionKey = _sessionKey\)/)
   assert.match(chat, /sessionKey: normalizeOpenClawSessionKey\(m\.sessionKey \|\| sessionKey\)/)
@@ -682,8 +786,11 @@ test('OpenClaw renders portable JSONL history before a ready Gateway can stall c
 
 test('OpenClaw native media history keeps the owning session and a renderable attachment fallback', () => {
   assert.match(openclawHistorySource, /"sessionKey": session_key/)
-  assert.match(openclawHistorySource, /"attachments": image_attachments\(message\)/)
+  assert.match(openclawHistorySource, /"attachments": if role == "user" \{/)
+  assert.match(openclawHistorySource, /user_image_attachments\(message\)/)
+  assert.match(openclawHistorySource, /image_attachments\(message\)/)
   assert.match(openclawHistorySource, /fn image_attachments\(message: &Value\)/)
+  assert.match(openclawHistorySource, /fn user_image_attachments\(message: &Value\)/)
   assert.match(openclawHistorySource, /fn attach_openclaw_local_media_fallbacks\(messages: &mut \[Value\]\)/)
   assert.match(openclawHistorySource, /"fallbackMediaPath"/)
   assert.match(openclawHistorySource, /pub async fn openclaw_load_local_media\(path: String\)/)

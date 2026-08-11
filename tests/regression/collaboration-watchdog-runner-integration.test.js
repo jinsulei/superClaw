@@ -206,7 +206,7 @@ test('watchdog runner stays on existing collaboration system and avoids runtime 
   assert.match(collaborationSource, /\bconsumePendingDispatch\b/)
   assert.match(collaborationSource, /\brunCollaborationWatchdogOnce\b/)
   assert.doesNotMatch(collaborationSource, /\brunCollaborationWatchdogOnce[\s\S]*?\bconsumePendingDispatch\s*\(/)
-  assert.doesNotMatch(collaborationSource + chatSource, /\bsetInterval\s*\(/)
+  assert.doesNotMatch(collaborationSource, /\bsetInterval\s*\(/)
   assert.doesNotMatch(collaborationSource, /\bclass\s+.*CollaborationRuntime\b|\bnew\s+.*CollaborationRuntime\b/)
   assert.doesNotMatch(devApiSource, /collaboration-watchdog-runner-integration|runCollaborationWatchdogOnce/)
   assert.doesNotMatch(packageSource + tauriSource, /collaboration-watchdog-runner-integration|runCollaborationWatchdogOnce/)

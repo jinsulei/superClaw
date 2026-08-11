@@ -16,14 +16,14 @@ import { navigate } from '../router.js'
 import { wsClient, uuid } from '../lib/ws-client.js'
 import { renderMarkdown } from '../lib/markdown.js'
 import { renderAgentMessageContent, renderAgentMessageContentInto } from '../components/chat/agent-message-content.js'
-import { saveMessage, saveMessages, getLocalMessages, isStorageAvailable } from '../lib/message-db.js'
+import { saveMessage, saveMessages, getLocalMessages, clearSessionMessages, isStorageAvailable } from '../lib/message-db.js'
 import { toast } from '../components/toast.js'
 import { showModal, showConfirm } from '../components/modal.js'
 import { icon as svgIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { createSpeechPlaybackController, createVoiceInputController, sanitizeSpeechPlaybackText } from '../lib/voice.js'
 import { attachAnchoredImageZoom } from '../lib/anchored-image-zoom.js'
-import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, detectMediaTask, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
+import { COLLAB_TARGETS, buildTaskContext, consumePendingDispatch, createTaskDelegate, createTaskProgress, createTaskResult, detectMediaTask, openCollaborationPanel, resolveMediaExecutionTask, setPendingDispatch, updateCollaborationTask } from '../lib/collaboration.js'
 import { clipboardHasImage, getUniqueClipboardImageFiles } from '../lib/clipboard-images.js'
 import { ocr, formatOcrResult } from '../lib/ocr-service.js'
 import { createGenerationTimeoutManager } from '../engines/openclaw/runtime/generation-timeout.js'
@@ -262,7 +262,7 @@ let _attachments = []
 const _openClawMediaDataUrlCache = new Map()
 const OPENCLAW_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 const OPENCLAW_DOCUMENT_EXTENSIONS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'md', 'json', 'ppt', 'pptx',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'md', 'json', 'ppt', 'pptx', 'html', 'htm',
 ])
 let _pasteHandler = null
 let _hasEverConnected = false
@@ -2184,6 +2184,7 @@ function isOpenClawSafeImageSrc(value = '') {
 
 function openClawAttachmentMediaPath(att = {}) {
   const candidates = [
+    att.generatedMediaPath,
     att.mediaPath,
     att.savedPath,
     att.localPath,
@@ -2301,7 +2302,9 @@ function createOpenClawImageElement(att = {}) {
     try {
       let dataUrl = _openClawMediaDataUrlCache.get(mediaPath)
       if (!dataUrl) {
-        dataUrl = fallbackMediaPath
+        dataUrl = normalized.generatedMediaPath
+          ? await api.loadOpenclawLocalMedia(normalized.generatedMediaPath)
+          : fallbackMediaPath
           ? await api.loadOpenclawLocalMedia(fallbackMediaPath)
           : isOpenClawGatewayMediaRoute(mediaPath)
           ? await api.loadOpenclawGatewayMedia(mediaPath)
@@ -2336,7 +2339,7 @@ function isOpenClawPdfAttachment(att = {}) {
 function extractOpenClawWorkspaceOutputFiles(text = '') {
   const files = []
   const seen = new Set()
-  const outputPathPattern = /(?:[a-zA-Z]:\\[^\r\n`"<>|]+?\.(?:pdf|docx?|xlsx?|csv|txt|md|json|pptx?))/g
+  const outputPathPattern = /(?:[a-zA-Z]:\\[^\r\n`"<>|]+?\.(?:pdf|docx?|xlsx?|csv|txt|md|json|pptx?|html?))/g
   for (const match of String(text || '').matchAll(outputPathPattern)) {
     const path = String(match[0] || '').trim()
     if (!path || !/\\workspace\\/i.test(path) || seen.has(path.toLowerCase())) continue
@@ -2350,6 +2353,32 @@ function extractOpenClawWorkspaceOutputFiles(text = '') {
     })
   }
   return files
+}
+
+// The Gateway persists generated image outputs as a portable MEDIA:<path> line
+// in the final assistant text. When the injected image-content frame is skipped
+// or the short-lived outgoing media URL has already expired, this recovers the
+// same image straight from the portable media directory.
+function extractOpenClawMediaImagePaths(text = '') {
+  const images = []
+  const seen = new Set()
+  const mediaPattern = /(?:^|\n)\s*MEDIA:\s*(?:"([^"]+)"|'([^']+)'|([^\r\n]+))/gi
+  for (const match of String(text || '').matchAll(mediaPattern)) {
+    const path = String(match[1] || match[2] || match[3] || '').trim()
+    if (!path) continue
+    if (!/\.(png|jpe?g|gif|webp)$/i.test(path)) continue
+    const key = path.toLowerCase().replace(/\\/g, '/')
+    if (seen.has(key)) continue
+    seen.add(key)
+    const fileName = path.split(/[\\/]/).pop() || 'image'
+    images.push({
+      mediaType: 'image/png',
+      generatedMediaPath: path,
+      mediaPath: path,
+      fileName,
+    })
+  }
+  return images
 }
 
 // History snapshots and final stream frames do not always carry the same
@@ -2402,10 +2431,10 @@ function createOpenClawFileCard(att = {}, options = {}) {
   const card = document.createElement('div')
   card.className = 'msg-file-card sc-document-card'
   const extension = getOpenClawAttachmentExtension({ name: normalized.fileName })
-  const documentType = ({ pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', csv: 'excel', ppt: 'ppt', pptx: 'ppt' })[extension] || 'file'
+  const documentType = ({ pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', csv: 'excel', ppt: 'ppt', pptx: 'ppt', html: 'html', htm: 'html' })[extension] || 'file'
   const icon = document.createElement('span')
   icon.className = `msg-file-icon sc-document-card__type is-${documentType}`
-  icon.textContent = ({ pdf: 'PDF', word: 'W', excel: 'X', ppt: 'PPT' })[documentType] || 'FILE'
+  icon.textContent = ({ pdf: 'PDF', word: 'W', excel: 'X', ppt: 'PPT', html: 'HTML' })[documentType] || 'FILE'
   const info = document.createElement('div')
   info.className = 'msg-file-info'
   const name = document.createElement('span')
@@ -2911,7 +2940,8 @@ async function maybeConsumeCollaborationDispatch() {
   const pending = consumePendingDispatch(COLLAB_TARGETS.openclaw)
   if (!pending) return
   const message = String(pending.message || '').trim()
-  if (!message) return
+  const mediaPrompt = String(pending.media_prompt || '').trim()
+  if (!message && !mediaPrompt) return
 
   _collabDispatchBusy = true
   try {
@@ -2956,11 +2986,23 @@ async function maybeConsumeCollaborationDispatch() {
         console.warn('[collaboration] durable OpenClaw progress handoff failed:', error)
       })
     }
+    const nativeMediaTask = pending.media_type
+      ? {
+          media_type: pending.media_type,
+          prompt: mediaPrompt || message,
+          title: pending.title || '媒体协作任务',
+          inputPath: pending.input_path || null,
+        }
+      : null
+    const dispatchText = mediaPrompt || message
     if (_isSending || _isStreaming) {
-      _messageQueue.push({ text: message, attachments: [] })
+      _messageQueue.push({ text: dispatchText, attachments: [], forceNativeMediaTask: nativeMediaTask })
       toast('协作任务已进入 OpenClaw 队列。', 'success')
     } else {
-      await doSend(message, [])
+      // Media execution is a deterministic local route. Never send a media
+      // dispatch as an instruction for the chat model to "decide" whether to
+      // call a tool: it must invoke the configured media provider here.
+      await doSend(dispatchText, [], createOpenClawClientRequestId(), undefined, nativeMediaTask)
       toast('协作任务已派发给 OpenClaw。', 'success')
     }
   } catch (err) {
@@ -3438,6 +3480,11 @@ async function resetCurrentSession() {
   if (!yes) return
   try {
     await wsClient.sessionsReset(_sessionKey)
+    if (isStorageAvailable()) {
+      clearSessionMessages(_sessionKey).catch(error => {
+        console.warn('[chat] clear local session messages failed:', error?.message || error)
+      })
+    }
     clearMessages()
     _lastHistoryHash = ''
     appendSystemMessage(t('chat.sessionResetDone'))
@@ -3946,13 +3993,19 @@ function stripOpenClawRuntimePromptBlocks(text) {
     // native Gateway run. They must never affect the visible prompt or the
     // active-turn fingerprint used to attach live tool frames to the UI.
     'DOCUMENT_ATTACHMENT_CONTEXT',
+    // Image-upload transport blocks are injected by buildAttachmentTriggeredPrompt.
+    // They are appended to the sent user text and persisted in native history,
+    // so they must be stripped too or the history fingerprint can never match
+    // the visible bubble fingerprint and the active turn never finalizes.
+    'IMAGE_ATTACHMENT_CONTEXT',
+    '图片识别触发',
   ]
   for (const name of blockNames) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     next = next.replace(new RegExp(`\\s*\\[${escaped}\\][\\s\\S]*?\\[/${escaped}\\]\\s*`, 'gi'), ' ')
   }
   return next
-    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|NATIVE_INSPECTION_REQUIRED|CAPABILITY_AUDIT_TRIGGER|OPENCLAW_IDENTITY_CONTEXT|DOCUMENT_ATTACHMENT_CONTEXT)\][\s\S]*$/i, '')
+    .replace(/\s*\[(?:BROWSER_TOOL_TRIGGER|DESKTOP_CONTROL_TRIGGER|OPENCLAW_TOOL_TRIGGER|NATIVE_INSPECTION_REQUIRED|CAPABILITY_AUDIT_TRIGGER|OPENCLAW_IDENTITY_CONTEXT|DOCUMENT_ATTACHMENT_CONTEXT|IMAGE_ATTACHMENT_CONTEXT|图片识别触发)\][\s\S]*$/i, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -4312,6 +4365,16 @@ function extractOpenClawAssistantText(payload) {
 function stripOpenClawInternalBlocks(text) {
   if (!text) return ''
   let next = stripThinkingTags(String(text))
+  // A Gateway portable image line (MEDIA:<path>) is an internal output marker,
+  // not assistant prose. The image itself is rendered separately through
+  // extractOpenClawMediaImagePaths, so drop the raw line from visible text.
+  next = next.replace(/(^|\n)[ \t]*MEDIA:[ \t]*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n]*?)[ \t]*(?:\r?\n|$)/gi, '$1')
+  // OpenClaw inline directive tags ([[reply_to_current]], [[reply_to:<id>]],
+  // [[audio_as_voice]]) are gateway command markers, not assistant prose. The
+  // runtime strips them for display; mirror that here so they never leak into
+  // the chat (e.g. `[[reply_to_current]] 当然可以` renders as `当然可以`).
+  next = next.replace(/\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]/gi, '')
+  next = next.replace(/\[\[\s*audio_as_voice\s*\]\]/gi, '')
   next = next.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '')
   next = next.replace(/```tool[\s\S]*?```/gi, '')
   next = next.replace(/```terminal[\s\S]*?```/gi, '')
@@ -4359,6 +4422,7 @@ function stripOpenClawInternalBlocks(text) {
       return !internalOnlyPatterns.some(pattern => pattern.test(trimmed))
     })
     .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
 
@@ -5115,8 +5179,6 @@ async function sendMessage(event) {
   if (!text && !_attachments.length) return
   const attachments = [..._attachments]
   const clientRequestId = createOpenClawClientRequestId()
-  if (!(await ensureOpenClawGatewayReadyForSend())) return
-  hideCmdPanel()
   const sendFingerprint = getOpenClawSendFingerprint(text, attachments)
   const requestFingerprint = getOpenClawRequestFingerprint(text, attachments)
   const now = Date.now()
@@ -5130,11 +5192,13 @@ async function sendMessage(event) {
   }
   _lastSendFingerprint = sendFingerprint
   _lastSendAt = now
+  // === 乐观 UI：清空输入框，让回车反馈立即出现（不等待任何异步操作）===
   _textarea.value = ''
   _textarea.style.height = 'auto'
   updateSendState()
   _attachments = []
   renderAttachments()
+  hideCmdPanel()
   const slashCommand = parseOpenClawSlashCommand(text)
   if (slashCommand?.type === 'delegate-hermes') {
     const content = slashCommand.payload
@@ -5177,17 +5241,54 @@ async function sendMessage(event) {
     appendSystemMessage('请在 `/hermes` 或 `/delegate-hermes` 后写清楚要交给 Hermes 的任务内容。')
     return
   }
+  // 忙碌时直接入队（不显示用户消息，等出队时由 doSend 渲染），输入框已清空
   if (_openClawPendingResponse || _isSending || _isStreaming) {
     if (!hasQueuedOpenClawRequestFingerprint(requestFingerprint)) {
       _messageQueue.push({ text, attachments, clientRequestId, requestFingerprint })
     }
     return
   }
-  doSend(text, attachments, clientRequestId, requestFingerprint)
+  // === 乐观 UI：立即渲染用户消息，不等媒体分类 / Gateway 检查 ===
+  const openclawTurnId = createOpenClawTurnId()
+  const userMessageId = `openclaw-user-${clientRequestId}`
+  const assistantMessageId = `openclaw-assistant-${clientRequestId}`
+  const userCreatedAt = Date.now()
+  appendUserMessage(text, attachments, new Date(userCreatedAt), {
+    dedupeKey: userMessageId,
+    sessionKey: _sessionKey,
+    openclawTurnId,
+    clientRequestId,
+    userMessageId,
+    createdAt: userCreatedAt,
+  })
+  scrollToBottom(true)
+  // 后台完成媒体意图分类与 Gateway 就绪检查，不再阻塞 UI
+  const nativeMediaTask = await resolveOpenClawNativeMediaTask(text, attachments)
+  if (_openClawPendingResponse || _isSending || _isStreaming) {
+    if (!hasQueuedOpenClawRequestFingerprint(requestFingerprint)) {
+      _messageQueue.push({ text, attachments, clientRequestId, requestFingerprint, forceNativeMediaTask: nativeMediaTask })
+    }
+    return
+  }
+  if (!nativeMediaTask && !(await ensureOpenClawGatewayReadyForSend())) {
+    rollbackOptimisticOpenClawSend(text, attachments, userMessageId)
+    return
+  }
+  doSend(text, attachments, clientRequestId, requestFingerprint, nativeMediaTask, {
+    userMessageShown: true,
+    openclawTurnId,
+    userMessageId,
+    assistantMessageId,
+  })
 }
 
-async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId(), requestFingerprint = getOpenClawRequestFingerprint(text, attachments)) {
-  if (!(await ensureOpenClawGatewayReadyForSend())) return
+async function doSend(text, attachments = [], clientRequestId = createOpenClawClientRequestId(), requestFingerprint = getOpenClawRequestFingerprint(text, attachments), forcedNativeMediaTask = null, options = {}) {
+  const skipUserMessage = options.userMessageShown === true
+  const nativeMediaTask = forcedNativeMediaTask || await resolveOpenClawNativeMediaTask(text, attachments)
+  if (!nativeMediaTask && !(await ensureOpenClawGatewayReadyForSend())) {
+    if (skipUserMessage) rollbackOptimisticOpenClawSend(text, attachments, options.userMessageId)
+    return
+  }
   if (isOpenClawDuplicatePendingRequest(requestFingerprint)) {
     updateSendState()
     return
@@ -5226,9 +5327,9 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   _currentAiTools = []
   _currentAiTimeline = []
   _currentRunId = null
-  const openclawTurnId = createOpenClawTurnId()
-  const userMessageId = `openclaw-user-${clientRequestId}`
-  const assistantMessageId = `openclaw-assistant-${clientRequestId}`
+  const openclawTurnId = options.openclawTurnId || createOpenClawTurnId()
+  const userMessageId = options.userMessageId || `openclaw-user-${clientRequestId}`
+  const assistantMessageId = options.assistantMessageId || `openclaw-assistant-${clientRequestId}`
   const userMessageIndex = _messagesEl ? _messagesEl.querySelectorAll('.msg-user, .msg-ai').length : -1
   createOpenClawActiveRun({
     openclawTurnId,
@@ -5240,26 +5341,29 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
     userText: text,
     status: 'pending',
   })
-  if (!(await ensureOpenClawGatewayReadyForSend())) {
+  if (!nativeMediaTask && !(await ensureOpenClawGatewayReadyForSend())) {
     _inFlightRequestIds.delete(clientRequestId)
     releaseOpenClawRequestFingerprint(clientRequestId)
     if (_activeClientRequestId === clientRequestId) _activeClientRequestId = null
     _openClawPendingResponse = false
     _openClawActiveRequestClosed = true
     finishOpenClawActiveRun('failed', 'gateway-not-ready')
+    if (skipUserMessage) rollbackOptimisticOpenClawSend(text, attachments, userMessageId)
     updateSendState()
     return
   }
   const sendText = withOpenClawIdentityPrelude(buildAttachmentTriggeredPrompt(text, attachments))
   const userCreatedAt = Date.now()
-  appendUserMessage(text, attachments, new Date(userCreatedAt), {
-    dedupeKey: userMessageId,
-    sessionKey: _sessionKey,
-    openclawTurnId,
-    clientRequestId,
-    userMessageId,
-    createdAt: userCreatedAt,
-  })
+  if (!skipUserMessage) {
+    appendUserMessage(text, attachments, new Date(userCreatedAt), {
+      dedupeKey: userMessageId,
+      sessionKey: _sessionKey,
+      openclawTurnId,
+      clientRequestId,
+      userMessageId,
+      createdAt: userCreatedAt,
+    })
+  }
   saveMessage({
     id: userMessageId, sessionKey: _sessionKey, role: 'user', content: text, timestamp: userCreatedAt,
     createdAt: userCreatedAt,
@@ -5272,7 +5376,6 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   renderOpenClawLiveTimeline()
   showTyping(true)
   scrollToBottom(true)
-  const nativeMediaTask = resolveOpenClawNativeMediaTask(text, attachments)
   if (nativeMediaTask) {
     _isSending = true
     try {
@@ -5343,18 +5446,70 @@ async function doSend(text, attachments = [], clientRequestId = createOpenClawCl
   }
 }
 
-function resolveOpenClawNativeMediaTask(text, attachments = []) {
-  // Gateway JSONL is the authoritative OpenClaw history.  A frontend-only
-  // media call cannot survive reloads, nor can it reliably attach a failed
-  // task to its input turn. Keep every media request on the Gateway path.
-  // buildAttachmentTriggeredPrompt supplies the exact saved attachment path
-  // so the model invokes the registered media tool without filesystem scans.
-  return null
+// 乐观 UI 回滚：Gateway/媒体检查失败时，移除刚显示的用户消息并恢复输入框与附件。
+function rollbackOptimisticOpenClawSend(text, attachments = [], userMessageId = '') {
+  if (userMessageId && _messagesEl) {
+    const normalizedSessionKey = normalizeOpenClawSessionKey(_sessionKey)
+    const target = Array.from(_messagesEl.querySelectorAll('[data-userMessageId]'))
+      .find(el => el.dataset.userMessageId === userMessageId)
+    if (target) {
+      const dedupeKey = target.dataset.openclawMessageKey
+      target.remove()
+      if (dedupeKey) {
+        const set = _renderedMessageKeysBySession.get(normalizedSessionKey)
+        if (set) set.delete(dedupeKey)
+      }
+    }
+  }
+  if (_textarea && !_textarea.value.trim()) {
+    _textarea.value = text
+    _textarea.style.height = 'auto'
+    _textarea.style.height = Math.min(_textarea.scrollHeight, 150) + 'px'
+  }
+  if (attachments?.length) {
+    _attachments = [...attachments, ..._attachments]
+    renderAttachments()
+  }
+  updateSendState()
+}
+
+async function resolveOpenClawNativeMediaTask(text, attachments = []) {
+  // OpenClaw owns the same semantic decision as Hermes. A visual brief may be
+  // planning-only; a current request to deliver the image must bypass the
+  // chat model and call the configured native media executor exactly once.
+  const context = {
+    recent_messages: getOpenClawRecentMessagesForContext(12).map(item => ({
+      role: item.role,
+      content: String(item.content || '').slice(0, 1600),
+      timestamp: item.timestamp,
+    })),
+  }
+  try {
+    const intent = await api.mediaClassifyIntent(text, context)
+    const task = resolveMediaExecutionTask({ text, attachments }, intent)
+    return task?.media_type === 'text_to_image' || task?.media_type === 'image_to_image' ? task : null
+  } catch (error) {
+    // Classification is advisory. If it is temporarily unavailable, preserve
+    // deterministic direct media execution for a clearly executable task.
+    console.warn('[openclaw-media] intent classification unavailable:', error)
+    const task = resolveMediaExecutionTask({ text, attachments })
+    return task?.media_type === 'text_to_image' || task?.media_type === 'image_to_image' ? task : null
+  }
 }
 
 function openClawNativeMediaFileName(path = '', kind = 'media') {
   const clean = String(path || '').replace(/[\\/]+$/, '')
   return clean.split(/[\\/]/).pop() || `${kind}-output`
+}
+
+function withOpenClawMediaTimeout(promise, timeoutMs = 135000) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('图片生成请求超过 135 秒未返回。请检查媒体模型额度、网络或稍后重试。')), timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 async function executeOpenClawNativeMediaTask(task, renderMeta = {}) {
@@ -5384,21 +5539,27 @@ async function executeOpenClawNativeMediaTask(task, renderMeta = {}) {
     return
   }
 
-  recordOpenClawRunStep('tool', taskLabel, 'running', `native-media-${renderMeta.clientRequestId}`, { detail: '正在调用已配置的本地媒体引擎。' })
+  recordOpenClawRunStep('tool', taskLabel, 'running', `native-media-${renderMeta.clientRequestId}`, { detail: '正在提交图片生成请求，等待媒体服务返回图片文件。' })
   renderOpenClawLiveTimeline()
   try {
-    const result = await api.mediaGenerate(task.media_type, task.prompt, task.inputPath || null, {})
+    const result = await withOpenClawMediaTimeout(
+      api.mediaGenerate(task.media_type, task.prompt, task.inputPath || null, {})
+    )
     const outputPath = String(result?.path || '').trim()
     if (!result?.ok || !outputPath) throw new Error('媒体引擎没有返回可用的输出文件')
     recordOpenClawRunStep('tool', taskLabel, 'completed', `native-media-${renderMeta.clientRequestId}`, { detail: `已生成：${openClawNativeMediaFileName(outputPath, task.media_type)}` })
+    const isImage = task.media_type === 'text_to_image' || task.media_type === 'image_to_image'
     const output = {
+      category: isImage ? 'image' : 'file',
+      type: isImage ? 'image' : 'file',
       fileName: openClawNativeMediaFileName(outputPath, task.media_type),
       name: openClawNativeMediaFileName(outputPath, task.media_type),
+      mediaPath: outputPath,
       generatedMediaPath: outputPath,
-      mimeType: /video/.test(task.media_type) ? 'video/mp4' : 'audio/mpeg',
+      mimeType: isImage ? 'image/png' : /video/.test(task.media_type) ? 'video/mp4' : 'audio/mpeg',
     }
     const message = `${taskLabel}已生成完成。文件已保存到：\n\`${outputPath}\``
-    appendAiMessage(message, new Date(), [], [], [], [output], [], [], [], {
+    appendAiMessage(message, new Date(), isImage ? [output] : [], [], [], isImage ? [] : [output], [], [], [], {
       ...renderMeta,
       dedupeKey: `openclaw-native-media-${renderMeta.clientRequestId}`,
       sessionKey: _sessionKey,
@@ -5418,13 +5579,25 @@ async function executeOpenClawNativeMediaTask(task, renderMeta = {}) {
     returnOpenClawCollaborationResult({
       runId: renderMeta.clientRequestId,
       content: message,
-      artifacts: [{ type: 'file', path: outputPath, created_at: new Date().toISOString() }],
+      artifacts: [{
+        type: isImage ? 'image' : 'file',
+        category: isImage ? 'image' : 'file',
+        path: outputPath,
+        mediaPath: outputPath,
+        mimeType: output.mimeType,
+        fileName: output.fileName,
+        created_at: new Date().toISOString(),
+      }],
     })
     clearOpenClawGenerationState('native-media-completed', renderMeta.clientRequestId)
   } catch (error) {
     const reason = redactOpenClawVisibleSensitiveText(error?.message || String(error) || '未知错误')
-    const message = `${taskLabel}未生成：${reason}`
-    recordOpenClawRunStep('tool', taskLabel, 'failed', `native-media-${renderMeta.clientRequestId}`, { detail: reason })
+    const groupDisabled = /image generation is not enabled for this group/i.test(reason)
+    const visibleReason = groupDisabled
+      ? 'yyapi 已识别到 gpt-image-2，但当前 API Key 所属分组未开通图片生成能力。请在 yyapi 后台为该分组启用 Images/图片生成权限，或切换到已开通该能力的令牌。'
+      : reason
+    const message = `${taskLabel}未生成：${visibleReason}`
+    recordOpenClawRunStep('tool', taskLabel, 'failed', `native-media-${renderMeta.clientRequestId}`, { detail: visibleReason })
     appendAiMessage(message, new Date(), [], [], [], [], [], [], [], {
       ...renderMeta,
       dedupeKey: `openclaw-native-media-failed-${renderMeta.clientRequestId}`,
@@ -5440,7 +5613,7 @@ async function executeOpenClawNativeMediaTask(task, renderMeta = {}) {
       createdAt: Date.now(),
       clientRequestId: renderMeta.clientRequestId,
       status: 'failed',
-      error: { code: 'OPENCLAW_NATIVE_MEDIA_FAILED', reason },
+      error: { code: groupDisabled ? 'MEDIA_GROUP_NOT_ENABLED' : 'OPENCLAW_NATIVE_MEDIA_FAILED', reason: visibleReason },
     })
     returnOpenClawCollaborationResult({ runId: renderMeta.clientRequestId, content: message, failed: true })
     clearOpenClawGenerationState('native-media-failed', renderMeta.clientRequestId)
@@ -5596,7 +5769,7 @@ function processMessageQueue() {
   if (_messageQueue.length === 0 || _openClawPendingResponse || _isSending || _isStreaming) return
   const msg = _messageQueue.shift()
   if (typeof msg === 'string') doSend(msg, [])
-  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId(), msg.requestFingerprint)
+  else doSend(msg.text, msg.attachments || [], msg.clientRequestId || createOpenClawClientRequestId(), msg.requestFingerprint, msg.forceNativeMediaTask || null)
 }
 
 function currentCollaborationTask() {
@@ -6953,11 +7126,15 @@ function canRecoverOpenClawDraftFromLatestHistory(msg = {}) {
   const recoveringToolTurn = Boolean(_activeOpenClawRun?.sawToolCall)
   if (!isRecoverableOpenClawCurrentDraft() && !recoveringToolTurn) return false
   if (!isOpenClawSameSession(msg, _activeOpenClawRun || { sessionKey: _sessionKey })) return false
-  const text = sanitizeOpenClawVisibleReply(msg.text || '')
-  if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
   // An explicit terminal record after the exact current user turn is the
   // portable runtime's source of truth even when Gateway omits request ids.
+  // Trust the runtime stop reason over text heuristics: a final answer can
+  // legitimately end with a colon/comma (e.g. a MEDIA:<path> output line is
+  // stripped from visible text, leaving a colon-terminated sentence behind),
+  // which would otherwise be mistaken for an unfinished reply.
   if (msg._openClawAuthoritativeTerminal && msg._openClawAfterLatestHistoryUser) return true
+  const text = sanitizeOpenClawVisibleReply(msg.text || '')
+  if (!text || isOpenClawVisibleTextInternalAuditOnly(msg.text || '') || isOpenClawTextClearlyIncomplete(text)) return false
   if (_activeOpenClawRun && isStrongOpenClawHistoryCandidate(msg, _activeOpenClawRun)) return true
   if (recoveringToolTurn) return false
   if (!msg._openClawAfterLatestHistoryUser) return false
@@ -8613,10 +8790,74 @@ function finalizeOpenClawRunTimeoutState(reason = 'openclaw-run-timeout', reques
   return true
 }
 
+// === 卡死会话修复 ===
+// 当 Agent 因 LLM API 错误（如 yyapi 403 余额不足）异常退出时，
+// sessions.json 的 status 可能保持 "running" 不更新，导致前端无法发新消息。
+// 此函数通过 HTTP 调用 dev-api.js 的 repair_stuck_sessions 端点修复 sessions.json，
+// 并返回修复结果（包含错误信息）供前端展示给用户。
+async function repairStuckOpenClawSessions() {
+  try {
+    const res = await fetch('/__api/repair_stuck_sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    if (!res.ok) return { repaired: [] }
+    const data = await res.json()
+    return data || { repaired: [] }
+  } catch {
+    return { repaired: [] }
+  }
+}
+
+// 将卡死会话的错误信息转换为用户可读的中文提示
+function formatStuckSessionError(repairedInfo) {
+  if (!repairedInfo?.error) return null
+  const err = String(repairedInfo.error)
+  // yyapi 余额不足
+  if (/403|余额|扣费|额度|insufficient.*balance|quota/i.test(err)) {
+    return 'AI 模型调用失败：账户余额不足，请充值后重试。'
+  }
+  // 429 限流
+  if (/429|rate.*limit|too.*many.*request/i.test(err)) {
+    return 'AI 模型调用失败：请求频率超限，请稍后重试。'
+  }
+  // API Key 问题
+  if (/401|unauthorized|api.*key|invalid.*key/i.test(err)) {
+    return 'AI 模型调用失败：API Key 无效或已过期，请检查模型配置。'
+  }
+  // 网络问题
+  if (/timeout|econnrefused|enotfound|network|connect/i.test(err)) {
+    return 'AI 模型调用失败：网络连接异常，请检查网络后重试。'
+  }
+  // 超时无响应
+  if (repairedInfo.errorType === 'timeout') {
+    return 'AI 回复超时，会话已自动恢复。请重新发送消息。'
+  }
+  // 其他错误
+  return `AI 执行出错：${err.slice(0, 200)}`
+}
+
 async function settleOpenClawActiveRunFromWatchdog(reason = 'active-run-watchdog', expectedRequestId = null) {
   const requestId = expectedRequestId || _activeOpenClawRun?.clientRequestId || _activeClientRequestId || _currentAiBubbleRequestId || null
   if (expectedRequestId && expectedRequestId !== _activeClientRequestId) return false
   if (!_sessionKey || !_messagesEl) return false
+
+  // 先尝试修复卡死的 sessions.json，并提取错误信息
+  let stuckError = null
+  try {
+    const repairResult = await repairStuckOpenClawSessions()
+    const repairedForCurrent = (repairResult?.repaired || []).find(
+      r => normalizeOpenClawSessionKey(r.sessionKey) === normalizeOpenClawSessionKey(_sessionKey)
+    )
+    if (repairedForCurrent) {
+      stuckError = formatStuckSessionError(repairedForCurrent)
+      console.warn('[chat] 检测到卡死会话并已修复:', repairedForCurrent)
+    }
+  } catch (error) {
+    console.debug('[chat] repair stuck sessions failed:', error?.message || error)
+  }
+
   try {
     const recovered = await recoverOpenClawAssistantFromHistoryBeforeFallback(reason, requestId, {
       attempts: 2,
@@ -8630,10 +8871,51 @@ async function settleOpenClawActiveRunFromWatchdog(reason = 'active-run-watchdog
   if (expectedRequestId && expectedRequestId !== _activeClientRequestId) return false
 
   if (reason === 'active-run-watchdog-timeout') {
+    // 如果有卡死错误信息，优先展示
+    if (stuckError) {
+      if (_currentAiBubble) {
+        _currentAiText = stuckError
+        renderCompactAssistantContent(stuckError, _currentAiBubble, { phase: 'error' })
+        _lastRenderedAiText = stuckError
+      } else {
+        appendAiMessage(stuckError, new Date(), [], [], [], [], [], [], [], {
+          dedupeKey: `openclaw-stuck-error-${requestId || Date.now()}`,
+          sessionKey: _sessionKey,
+        })
+      }
+      _openClawPendingResponse = false
+      _openClawActiveRequestClosed = true
+      _isSending = false
+      _isStreaming = false
+      if (requestId) {
+        _inFlightRequestIds.delete(requestId)
+        releaseOpenClawRequestFingerprint(requestId)
+      }
+      _activeClientRequestId = null
+      finishOpenClawActiveRun('failed', 'stuck-session-error')
+      showTyping(false)
+      clearOpenClawGenerationNotice()
+      hideOpenClawGenerationActions()
+      updateSendState()
+      processMessageQueue()
+      return true
+    }
     return finalizeOpenClawRunTimeoutState('active-run-watchdog-timeout', requestId)
   }
 
-  if (_currentAiBubble && _currentAiText) {
+  // 如果有卡死错误信息，优先展示错误而不是通用"未完成"提示
+  if (stuckError) {
+    if (_currentAiBubble) {
+      _currentAiText = stuckError
+      renderCompactAssistantContent(stuckError, _currentAiBubble, { phase: 'error' })
+      _lastRenderedAiText = stuckError
+    } else {
+      appendAiMessage(stuckError, new Date(), [], [], [], [], [], [], [], {
+        dedupeKey: `openclaw-stuck-error-${requestId || Date.now()}`,
+        sessionKey: _sessionKey,
+      })
+    }
+  } else if (_currentAiBubble && _currentAiText) {
     renderCompactAssistantContent(_currentAiText, _currentAiBubble, { phase: 'incomplete' })
     _lastRenderedAiText = _currentAiText
   } else if (_currentAiBubble) {
@@ -8783,6 +9065,40 @@ function startOpenClawProgressHistoryPolling() {
             stopOpenClawProgressHistoryPolling()
             processMessageQueue()
             return
+          }
+          // 卡死会话检测：如果 sessionStatus 仍为 "running" 但已超过 5 分钟无活动，
+          // 说明 Agent 可能已崩溃（如 yyapi 余额不足），主动触发修复并结束等待状态
+          if (raw?.sessionStatus === 'running' && !isOpenClawNativeSessionTerminal(raw?.sessionStatus)) {
+            const startedAt = _sendTimestamp || (_activeOpenClawRun?.startedAt) || 0
+            const idleMs = Date.now() - (_lastResponseActivityAt || startedAt || Date.now())
+            if (idleMs > OPENCLAW_ACTIVE_RUN_WATCHDOG_MS) {
+              console.warn(`[chat] 检测到卡死会话 (idle=${Math.round(idleMs / 1000)}s)，触发修复`)
+              const repairResult = await repairStuckOpenClawSessions()
+              const repairedForCurrent = (repairResult?.repaired || []).find(
+                r => normalizeOpenClawSessionKey(r.sessionKey) === normalizeOpenClawSessionKey(_sessionKey)
+              )
+              if (repairedForCurrent) {
+                const errorMsg = formatStuckSessionError(repairedForCurrent) || '会话已自动恢复，请重新发送消息。'
+                stopOpenClawProgressHistoryPolling()
+                if (_currentAiBubble) {
+                  _currentAiText = errorMsg
+                  renderCompactAssistantContent(errorMsg, _currentAiBubble, { phase: 'error' })
+                  _lastRenderedAiText = errorMsg
+                } else {
+                  appendAiMessage(errorMsg, new Date(), [], [], [], [], [], [], [], {
+                    dedupeKey: `openclaw-stuck-error-${_activeClientRequestId || Date.now()}`,
+                    sessionKey: _sessionKey,
+                  })
+                }
+                clearOpenClawGenerationState('stuck-session-detected', _activeClientRequestId)
+                showTyping(false)
+                clearOpenClawGenerationNotice()
+                hideOpenClawGenerationActions()
+                updateSendState()
+                processMessageQueue()
+                return
+              }
+            }
           }
         } catch (error) {
           console.debug('[chat] OpenClaw portable raw completion check skipped:', error?.message || error)
@@ -9495,6 +9811,8 @@ function appendOpenClawHistoryMessage(msg) {
         localPath: i.localPath || '',
         filePath: i.filePath || '',
         path: i.path || '',
+        generatedMediaPath: i.generatedMediaPath || '',
+        fallbackMediaPath: i.fallbackMediaPath || '',
         fileName: i.fileName || i.filename || i.name || '',
       })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a))
       : []
@@ -9530,7 +9848,11 @@ function completeStreamingDraftFromHistory(msg) {
   // reconnect, so never let a longer draft win over the durable native reply.
   const historyText = sanitizeOpenClawVisibleReply(msg.text || '', recoveryUserText)
   const finalText = normalizeOpenClawExactShortReply(recoveryUserText, historyText)
-  if (!finalText || isOpenClawTextClearlyIncomplete(finalText)) return false
+  const terminalAuthoritative = msg._openClawAuthoritativeTerminal === true && msg._openClawAfterLatestHistoryUser === true
+  // A terminal native record (stopReason=stop) is authoritative over trailing
+  // punctuation heuristics: visible text may end with a stripped MEDIA:<path>
+  // line and still be the complete final answer.
+  if (!finalText || (!terminalAuthoritative && isOpenClawTextClearlyIncomplete(finalText))) return false
   const visibleDraftText = finalText || msg.text || ((msg.tools?.length && !isOpenClawToolDebugEnabled()) ? OPENCLAW_TOOL_ONLY_FALLBACK : '')
   renderCompactAssistantContent(visibleDraftText, _currentAiBubble, { phase: 'completed' })
   appendImagesToEl(_currentAiBubble, msg.images || [])
@@ -9777,7 +10099,26 @@ function renderOpenClawRecoveredHistory(rawMessages, requestedSessionKey, localM
     if (!msg.text && !msg.images?.length && !msg.videos?.length && !msg.audios?.length && !msg.files?.length && !msg.tools?.length && !msg.screenshotCards?.length && !msg.confirmations?.length) return
     const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
     if (msg.role === 'user') {
-      appendUserMessage(openClawVisibleUserText(msg.text || ''), null, msgTime, {
+      const userAttachments = [
+        ...(msg.images || []).map(img => normalizeOpenClawAttachment({
+          category: 'image',
+          mimeType: img.mediaType || img.media_type || img.mimeType || 'image/png',
+          content: img.data || img.source?.data || '',
+          imageUrl: img.imageUrl || img.previewUrl || img.url || img.image_url?.url || img.source?.url || '',
+          mediaPath: img.mediaPath || '',
+          savedPath: img.savedPath || '',
+          localPath: img.localPath || '',
+          filePath: img.filePath || '',
+          path: img.path || '',
+          generatedMediaPath: img.generatedMediaPath || '',
+          fallbackMediaPath: img.fallbackMediaPath || '',
+          fileName: img.fileName || img.filename || img.name || '',
+        })),
+        ...(msg.videos || []).map(video => ({ ...video, category: 'video' })),
+        ...(msg.audios || []).map(audio => ({ ...audio, category: 'audio' })),
+        ...(msg.files || []).map(file => ({ ...file, category: file.category || 'file' })),
+      ]
+      appendUserMessage(openClawVisibleUserText(msg.text || ''), userAttachments.length ? userAttachments : null, msgTime, {
         dedupeKey: msg.dedupeKey,
         sessionKey: msg.sessionKey || requestedSessionKey,
         fromHistory: true,
@@ -9823,9 +10164,11 @@ async function loadHistory(sessionKey = _sessionKey) {
       _isLoadingHistory = false
       return
     }
-    // IndexedDB is only an offline fallback. Native history includes gateway
-    // media records that older cached rows did not preserve.
-    if (local.length && !rawHistory?.length) {
+    // IndexedDB also holds native-media turns that are executed locally and
+    // never reach the Gateway's portable JSONL. Always merge those local rows
+    // so they survive session restore even when the Gateway history is
+    // non-empty; dedupeHistoryStable drops rows the Gateway already contains.
+    if (local.length) {
       const localDeduped = dedupeHistoryStable(local)
       localDedupedForSession = localDeduped
       if (_activeOpenClawRun || _openClawPendingResponse || _isSending || _isStreaming) {
@@ -9840,7 +10183,20 @@ async function loadHistory(sessionKey = _sessionKey) {
           const msgTime = msg.timestamp ? new Date(msg.timestamp) : new Date()
           if (msg.role === 'user') {
             const userAttachments = [
-              ...(msg.images || []).map(img => ({ category: 'image', mimeType: img.mediaType || img.media_type || '', content: img.data || img.source?.data || '', url: img.url || img.image_url?.url || '' })),
+              ...(msg.images || []).map(img => normalizeOpenClawAttachment({
+                category: 'image',
+                mimeType: img.mediaType || img.media_type || img.mimeType || 'image/png',
+                content: img.data || img.source?.data || '',
+                imageUrl: img.imageUrl || img.previewUrl || img.url || img.image_url?.url || img.source?.url || '',
+                mediaPath: img.mediaPath || '',
+                savedPath: img.savedPath || '',
+                localPath: img.localPath || '',
+                filePath: img.filePath || '',
+                path: img.path || '',
+                generatedMediaPath: img.generatedMediaPath || '',
+                fallbackMediaPath: img.fallbackMediaPath || '',
+                fileName: img.fileName || img.filename || img.name || '',
+              })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a)),
               ...(msg.videos || []).map(video => ({ ...video, category: 'video' })),
               ...(msg.audios || []).map(audio => ({ ...audio, category: 'audio' })),
               ...(msg.files || []).map(file => ({ ...file, category: file.category || 'file' })),
@@ -9959,6 +10315,8 @@ async function loadHistory(sessionKey = _sessionKey) {
             localPath: i.localPath || '',
             filePath: i.filePath || '',
             path: i.path || '',
+            generatedMediaPath: i.generatedMediaPath || '',
+            fallbackMediaPath: i.fallbackMediaPath || '',
             fileName: i.fileName || i.filename || i.name || '',
           })).filter(a => a.content || a.imageUrl || openClawAttachmentMediaPath(a))
           : []
@@ -10194,11 +10552,62 @@ function shouldMergeAdjacentOpenClawAssistant(prev, next) {
   return false
 }
 
+function isOpenClawGatewayMediaItem(item = {}) {
+  return /^\/api\/chat\/media\/outgoing\//i.test(String(item?.url || item?.imageUrl || item?.image_url?.url || '').trim())
+}
+
+function isOpenClawLocalMediaImageItem(item = {}) {
+  const value = String(
+    item?.generatedMediaPath ||
+    item?.mediaPath ||
+    item?.savedPath ||
+    item?.localPath ||
+    item?.filePath ||
+    item?.path ||
+    item?.fallbackMediaPath ||
+    ''
+  ).trim()
+  if (!value) return false
+  if (isOpenClawGatewayMediaRoute(value)) return false
+  if (isOpenClawWindowsImagePath(value) || isOpenClawFileImageUrl(value)) return true
+  return /[\\/][^\\/]+\.(png|jpe?g|webp|gif)$/i.test(value)
+}
+
+function getOpenClawMediaDedupeKey(item = {}) {
+  const url = item?.url || item?.imageUrl || item?.image_url?.url || item?.source?.url || ''
+  const data = item?.data || item?.source?.data || ''
+  if (url) return `url:${url}`
+  if (data) return `data:${data}`
+  const path = item?.generatedMediaPath || item?.mediaPath || item?.savedPath || item?.localPath || item?.filePath || item?.path || ''
+  if (path) return `path:${String(path).toLowerCase().replace(/\\/g, '/')}`
+  return JSON.stringify(item || {})
+}
+
 function mergeOpenClawUniqueMedia(a = [], b = []) {
+  const combined = [...(a || []), ...(b || [])]
+  const gatewayImages = combined.filter(item => isOpenClawGatewayMediaItem(item))
+  const localImages = combined.filter(item => !isOpenClawGatewayMediaItem(item) && isOpenClawLocalMediaImageItem(item))
+  if (gatewayImages.length && localImages.length >= gatewayImages.length) {
+    // The Gateway injects the generated output as a short-lived
+    // /api/chat/media/outgoing/ URL, while the final assistant text carries the
+    // same output as a portable MEDIA:<path> line. When both representations
+    // land on the same message, keep the portable local path and drop the
+    // ephemeral Gateway URL so a single generated image does not render twice.
+    const result = []
+    const seen = new Set()
+    for (const item of combined) {
+      if (isOpenClawGatewayMediaItem(item)) continue
+      const key = getOpenClawMediaDedupeKey(item)
+      if (seen.has(key)) continue
+      seen.add(key)
+      result.push(item)
+    }
+    return result
+  }
   const result = []
   const seen = new Set()
-  for (const item of [...(a || []), ...(b || [])]) {
-    const key = item?.url || item?.data || item?.source?.data || JSON.stringify(item || {})
+  for (const item of combined) {
+    const key = getOpenClawMediaDedupeKey(item)
     if (seen.has(key)) continue
     seen.add(key)
     result.push(item)
@@ -10268,6 +10677,7 @@ function cachedHistoryMessage(m, sessionKey = _sessionKey) {
       filePath: i.filePath || '',
       path: i.path || '',
       fallbackMediaPath: i.fallbackMediaPath || '',
+      generatedMediaPath: i.generatedMediaPath || '',
       fileName: i.fileName || i.filename || i.name || '',
     })),
   ].filter(item => item.content || item.imageUrl || openClawAttachmentMediaPath(item))
@@ -10302,6 +10712,7 @@ function openClawAttachmentToImage(att = {}) {
     filePath: normalized.filePath || '',
     path: normalized.path || '',
     fallbackMediaPath: normalized.fallbackMediaPath || '',
+    generatedMediaPath: normalized.generatedMediaPath || '',
     fileName: normalized.fileName || '',
   }
 }
@@ -10313,7 +10724,7 @@ function collectOpenClawContentImages(content, initial = []) {
     if (block?.type === 'image' && !block.omitted) {
       if (block.data) images.push({ mediaType: block.mimeType || 'image/png', data: block.data })
       else if (block.source?.type === 'base64' && block.source.data) images.push({ mediaType: block.source.media_type || 'image/png', data: block.source.data })
-      else if (block.url || block.source?.url || block.imageUrl || block.savedPath || block.mediaPath || block.localPath) {
+      else if (block.url || block.source?.url || block.imageUrl || block.savedPath || block.mediaPath || block.localPath || block.generatedMediaPath) {
         images.push({
           url: block.url || block.source?.url || block.imageUrl || '',
           imageUrl: block.imageUrl || block.url || block.source?.url || '',
@@ -10324,6 +10735,7 @@ function collectOpenClawContentImages(content, initial = []) {
           filePath: block.filePath || '',
           path: block.path || '',
           fallbackMediaPath: block.fallbackMediaPath || '',
+          generatedMediaPath: block.generatedMediaPath || '',
           fileName: block.fileName || block.filename || block.name || '',
         })
       }
@@ -10398,7 +10810,10 @@ function extractContent(msg) {
       const visibleArtifactText = stripThinkingTags(artifactText)
       return {
         text: visibleArtifactText,
-        images: collectOpenClawContentImages(msg.content, attachmentImages),
+        images: mergeOpenClawUniqueMedia([], [
+          ...collectOpenClawContentImages(msg.content, attachmentImages),
+          ...extractOpenClawMediaImagePaths(visibleArtifactText),
+        ]),
         videos: [],
         audios: [],
         files: extractOpenClawWorkspaceOutputFiles(visibleArtifactText),
@@ -10422,7 +10837,7 @@ function extractContent(msg) {
       else if (block.type === 'image' && !block.omitted) {
         if (block.data) images.push({ mediaType: block.mimeType || 'image/png', data: block.data })
         else if (block.source?.type === 'base64' && block.source.data) images.push({ mediaType: block.source.media_type || 'image/png', data: block.source.data })
-        else if (block.url || block.source?.url || block.imageUrl || block.savedPath || block.mediaPath || block.localPath) {
+        else if (block.url || block.source?.url || block.imageUrl || block.savedPath || block.mediaPath || block.localPath || block.generatedMediaPath) {
           images.push({
             url: block.url || block.source?.url || block.imageUrl || '',
             imageUrl: block.imageUrl || block.url || block.source?.url || '',
@@ -10433,6 +10848,7 @@ function extractContent(msg) {
             filePath: block.filePath || '',
             path: block.path || '',
             fallbackMediaPath: block.fallbackMediaPath || '',
+            generatedMediaPath: block.generatedMediaPath || '',
             fileName: block.fileName || block.filename || block.name || '',
           })
         }
@@ -10490,7 +10906,10 @@ function extractContent(msg) {
     const visibleText = isOpenClawAssistantFailurePlaceholderText(text) ? '' : text
     return {
       text: visibleText,
-      images,
+      images: mergeOpenClawUniqueMedia([], [
+        ...images,
+        ...extractOpenClawMediaImagePaths(visibleText),
+      ]),
       videos,
       audios,
       files: [...files, ...extractOpenClawWorkspaceOutputFiles(visibleText)],
@@ -10504,7 +10923,10 @@ function extractContent(msg) {
   const safeVisibleText = isOpenClawAssistantFailurePlaceholderText(visibleText) ? '' : visibleText
   return {
     text: safeVisibleText,
-    images: attachmentImages,
+    images: mergeOpenClawUniqueMedia([], [
+      ...attachmentImages,
+      ...extractOpenClawMediaImagePaths(safeVisibleText),
+    ]),
     videos: [],
     audios: [],
     files: extractOpenClawWorkspaceOutputFiles(safeVisibleText),

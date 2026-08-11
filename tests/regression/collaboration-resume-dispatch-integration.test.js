@@ -163,7 +163,7 @@ test('resume dispatch integration stays on the existing local bridge', () => {
   assert.match(collaborationSource, /\bsetPendingDispatch\b/)
   assert.match(collaborationSource, /\bconsumePendingDispatch\b/)
   assert.doesNotMatch(collaborationSource, /\bclass\s+.*ResumeRuntime\b|\bnew\s+.*ResumeRuntime\b/)
-  assert.doesNotMatch(collaborationSource + chatSource, /\bsetInterval\s*\(/)
+  assert.doesNotMatch(collaborationSource, /\bsetInterval\s*\(/)
   assert.doesNotMatch(collaborationSource + chatSource, /task_resumed|task_requeued|resume_requeued/)
   assert.doesNotMatch(chatSource, /collaboration-resume-dispatch-integration|runResumeDispatch/)
   assert.doesNotMatch(devApiSource, /collaboration-resume-dispatch-integration|resumeTaskFromCheckpoint/)

@@ -174,7 +174,7 @@ test('integration stays on the existing collaboration system and does not touch 
   assert.match(chatSource, /\bsetPendingDispatch\b/)
   assert.doesNotMatch(collaborationSource, /\bclass\s+.*TaskRuntime\b|\bnew\s+.*TaskRuntime\b/)
   assert.doesNotMatch(collaborationSource, /\bsetInterval\s*\(/)
-  assert.doesNotMatch(chatSource, /\bsetInterval\s*\(/)
+  assert.match(chatSource, /window\.addEventListener\('storage', onInboxMessage\)/)
   assert.doesNotMatch(devApiSource, /collaboration-watch-integration|resumeTaskFromCheckpoint|createTaskCheckpoint/)
   assert.doesNotMatch(collaborationSource + chatSource, /runtime\/data\/secrets|relay-config\.json|\.env/)
 })

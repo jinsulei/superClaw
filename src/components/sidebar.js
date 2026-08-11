@@ -755,7 +755,10 @@ export function renderSidebar(el) {
   const engine = getActiveEngine()
   const navItems = engine ? engine.getNavItems() : (isOpenclawReady() ? NAV_ITEMS_FULL() : NAV_ITEMS_SETUP())
   const isOpenClawSidebar = engine?.id === 'openclaw'
-  const isHermesSidebar = engine?.id === 'hermes' && engine?.isReady?.()
+  // Hermes 始终使用新版会话侧边栏：即使尚未配置（config.yaml 缺失），
+  // 也渲染完整的“新版样式”。首次进入不强制初始化，也不显示“初始设置”入口；
+  // 未配置模型时由控制台（dashboard）内联的模型配置区引导完成配置。
+  const isHermesSidebar = engine?.id === 'hermes'
   const isSessionSidebar = isOpenClawSidebar || isHermesSidebar
   const primaryRoutes = isHermesSidebar ? HERMES_PRIMARY_SIDEBAR_ROUTES : OPENCLAW_PRIMARY_SIDEBAR_ROUTES
   const availableItems = navItems.flatMap(section => section.items.filter(item => {
