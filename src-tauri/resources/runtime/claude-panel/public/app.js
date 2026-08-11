@@ -194,6 +194,7 @@ const imageUploadInput = $("#imageUploadInput");
 const voiceModeBtn = $("#voiceModeBtn");
 const attachmentPreview = $("#attachmentPreview");
 const composerInputWrap = document.querySelector(".composer-input-wrap");
+const composerModelSlots = $("#composerModelSlots");
 const modeButtons = Array.from(document.querySelectorAll("[data-mode]"));
 const composerModeButtons = Array.from(document.querySelectorAll("[data-composer-mode]"));
 const workspaceTabButtons = Array.from(document.querySelectorAll("[data-workspace-tab]"));
@@ -645,18 +646,18 @@ const petTriggerRules = [
   },
 ];
 const maxUploadBytes = 20 * 1024 * 1024;
-const attachmentAccept = "image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp";
-const attachmentExtensions = new Set(["txt", "md", "json", "csv", "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "webp"]);
+const attachmentAccept = "image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx,.pptx,.png,.jpg,.jpeg,.webp";
+const attachmentExtensions = new Set(["txt", "md", "json", "csv", "pdf", "doc", "docx", "xls", "xlsx", "pptx", "png", "jpg", "jpeg", "webp"]);
 
 const modeNotes = {
   safe: {
-    note: "安全对话模式支持公开网络查询，不会读取或修改本地文件。",
+    note: "安全对话支持公开网络查询、本地只读审计和只读诊断命令，不会写入文件。",
     label: "安全对话",
     title: "安全对话模式",
-    detail: "AI 可以使用 WebSearch、WebFetch 查询公开信息并回答问题，不读取项目文件，不修改文件，不执行命令。",
-    cliMode: "plan",
-    toolProfile: "none",
-    toolLabel: "联网查询",
+    detail: "AI 可以使用 WebSearch、WebFetch 查询公开信息，读取并审计当前项目文件，执行不写入的诊断、查询、解析和验证命令。不能编辑、生成、删除、移动或覆盖文件。",
+    cliMode: "default",
+    toolProfile: "audit",
+    toolLabel: "联网查询 + 本地只读审计",
     risk: "低",
   },
   readOnly: {
@@ -670,10 +671,10 @@ const modeNotes = {
     risk: "中",
   },
   browser: {
-    note: "浏览器自动化模式支持联网搜索、读取公开网页和浏览器交互。",
+    note: "浏览器自动化模式支持联网搜索、网页交互；本地写入或命令会逐项请求授权。",
     label: "浏览器自动化",
     title: "浏览器自动化模式",
-    detail: "AI 可以直接使用 WebSearch、WebFetch 查询公开信息，并在浏览器授权后使用 Playwright 完成网页点击和输入；不会读取本地文件，不会修改控制台源码或客户配置。",
+    detail: "AI 可以直接使用 WebSearch、WebFetch 查询公开信息，并在授权后使用 Playwright 完成网页点击、输入和页面脚本操作。需要生成文件或运行本地命令时，会针对当前任务请求一次明确授权。",
     cliMode: "default",
     toolProfile: "none",
     toolLabel: "联网搜索 + 浏览器工具",
@@ -681,14 +682,15 @@ const modeNotes = {
     browserMode: true,
   },
   takeover: {
-    note: "接管模式支持公开网络查询，页面交互和接管操作需要先确认。",
+    note: "接管模式在确认后提供完整任务工具；敏感和破坏性操作仍会单独确认。",
     label: "接管模式",
     title: "接管模式",
-    detail: "AI 可以查询公开网络，并在明确确认后帮助客户进行浏览器页面操作或桌面辅助。此模式不允许修改本控制台源码或客户配置，危险操作仍必须再次确认。",
-    cliMode: "default",
-    toolProfile: "none",
-    toolLabel: "联网查询 + 桌面辅助",
-    risk: "谨慎",
+    detail: "AI 可以查询公开网络、使用浏览器自动化、读取和生成当前任务所需文件、执行任务相关命令。切换到此模式即代表本会话已确认接管；敏感、破坏性、登录、上传、支付和远端写入仍会单独确认。",
+    cliMode: "acceptEdits",
+    toolProfile: "command",
+    toolLabel: "完整任务工具 + 浏览器自动化",
+    risk: "高",
+    highRisk: true,
     caution: true,
   },
   edit: {
@@ -856,7 +858,7 @@ const faqSections = [
 
 const permissionGuideSections = [
   ["所有模式的联网查询", ["所有对话模式都可以直接使用 WebSearch、WebFetch 查询和读取公开网络内容，不重复弹出联网授权。", "登录、支付、上传、提交隐私信息、远端写入及浏览器交互仍按风险单独确认。"]],
-  ["安全对话模式", ["AI 可以查询公开网络并回答问题，不会读取或修改你的项目文件。适合普通聊天和咨询。", "后端参数：toolProfile=none。"]],
+  ["安全对话模式", ["AI 可以查询公开网络、读取和审计当前项目文件，并执行不写入的诊断命令。", "不能编辑、生成、删除、移动或覆盖文件。后端参数：toolProfile=audit。"]],
   ["浏览器自动化模式", ["除公开网络查询外，AI 还可以在授权后通过 Playwright 操作网页。", "不开放任意 HTTP 写请求、本地文件读取或 Shell 命令。"]],
   ["接管模式", ["支持公开网络查询，用于在明确确认后引导浏览器或桌面辅助操作。", "不会修改本控制台源码或客户配置，危险操作仍需二次确认。"]],
   ["授权修改模式", ["支持公开网络查询，并可以在授权项目目录内修改文件。建议在备份项目后使用。普通客户默认不可直接开启。", "后端参数：toolProfile=edit，默认安全锁定。"]],
@@ -886,6 +888,8 @@ let pendingToolAuthorization = null;
 let activeAuthorizationRun = null;
 let queuedAuthorizationContinuation = null;
 let slashCommandIndex = 0;
+let runStartInFlight = false;
+let activeRunFinalized = false;
 let activeAssistantMessage = null;
 let assistantTextBuffer = "";
 let activeExecutionProcess = [];
@@ -1926,8 +1930,53 @@ function splitClaudeThinkingBlocks(rawText) {
   };
 }
 
-function renderThinkingBlocks(thoughts, wrapper, options = {}) {
-  if (!Array.isArray(thoughts) || thoughts.length === 0 || !wrapper) return;
+function parseExecutionProcessEntry(entry) {
+  const source = String(entry || "").trim();
+  const matched = source.match(/^\[\[sc-process:([^\]]+)\]\]\n?([\s\S]*)$/);
+  const value = matched ? matched[2] : source;
+  const [title = "执行步骤", ...detailLines] = value.split("\n");
+  return {
+    kind: matched?.[1] || "reasoning",
+    title: title.trim() || "执行步骤",
+    detail: detailLines.join("\n").trim(),
+  };
+}
+
+function isExecutionCommand(entry) {
+  const value = `${entry.kind} ${entry.title}`.toLowerCase();
+  return /(?:terminal|execute_code|bash|shell|powershell|cmd|command)/.test(value);
+}
+
+function isStructuredExecutionPayload(value) {
+  const text = String(value || "").trim();
+  if (!text || !/^[{[]/.test(text)) return false;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object";
+  } catch (_error) {
+    // Some tool adapters write JSON-like diagnostic payloads. Keep them folded
+    // too, provided the value clearly starts as an object or array.
+    return true;
+  }
+}
+
+function summarizeExecutionPayload(value) {
+  const oneLine = String(value || "").replace(/\s+/g, " ").trim();
+  if (!oneLine) return "";
+  return oneLine.length > 132 ? `${oneLine.slice(0, 129)}...` : oneLine;
+}
+
+function renderExecutionProcessBlocks(entries, thoughts, wrapper, options = {}) {
+  const normalizedEntries = [
+    ...(Array.isArray(entries) ? entries : []).filter(Boolean).map(parseExecutionProcessEntry),
+    ...(Array.isArray(thoughts) ? thoughts : []).filter(Boolean).map((text) => ({
+      kind: "thinking",
+      title: "思考",
+      detail: String(text).trim(),
+    })),
+  ].filter((entry) => entry.title || entry.detail);
+  if (!normalizedEntries.length || !wrapper) return;
+
   const details = document.createElement("details");
   details.className = `assistant-thinking-block${options.streaming ? " is-thinking" : ""}`;
   const summary = document.createElement("summary");
@@ -1936,21 +1985,32 @@ function renderThinkingBlocks(thoughts, wrapper, options = {}) {
     : "<span>执行过程</span><em>已折叠</em>";
   const content = document.createElement("div");
   content.className = "assistant-thinking-block__content";
-  thoughts.forEach((thought, index) => {
-    const text = String(thought || "").trim();
-    if (!text) return;
+  normalizedEntries.forEach((entry, index) => {
     const item = document.createElement("div");
-    item.className = "assistant-thinking-block__item";
-    const [title, ...detailLines] = text.split("\n");
+    const isActiveStep = Boolean(options.streaming) && index === normalizedEntries.length - 1;
+    item.className = `assistant-thinking-block__item${isActiveStep ? " is-active" : ""}`;
     const heading = document.createElement("strong");
     heading.className = "assistant-thinking-block__item-title";
-    heading.textContent = title || `执行步骤 ${index + 1}`;
+    heading.textContent = `${index + 1}. ${entry.title || "执行步骤"}`;
     item.appendChild(heading);
-    const detail = detailLines.join("\n").trim();
-    if (detail) {
+
+    const isCommand = isExecutionCommand(entry);
+    const isStructuredPayload = isStructuredExecutionPayload(entry.detail);
+    if (entry.detail && !isCommand && (entry.kind === "tool_use" || isStructuredPayload)) {
+      const params = document.createElement("details");
+      params.className = "assistant-thinking-block__params";
+      const summary = document.createElement("summary");
+      const label = entry.kind === "tool_result" ? "执行结果" : "执行参数";
+      summary.textContent = `${label}${isStructuredPayload ? ` · ${summarizeExecutionPayload(entry.detail)}` : ""}`;
       const pre = document.createElement("pre");
       pre.className = "assistant-thinking-block__item-detail";
-      pre.textContent = detail;
+      pre.textContent = entry.detail;
+      params.append(summary, pre);
+      item.appendChild(params);
+    } else if (entry.detail) {
+      const pre = document.createElement("pre");
+      pre.className = `assistant-thinking-block__item-detail${isCommand ? " is-command" : ""}`;
+      pre.textContent = entry.detail;
       item.appendChild(pre);
     }
     content.appendChild(item);
@@ -2306,7 +2366,7 @@ function appendAgentMessageRow(parent, line, index, type = "paragraph") {
 function renderClaudeAgentMessageContent(value, body, details = "") {
   if (!body) return;
   body.innerHTML = "";
-  const finalText = maskAgentMessageSensitiveText(String(value || "").trim());
+  const finalText = maskAgentMessageSensitiveText(replaceClaudeLocalDocumentPathsForDisplay(String(value || "").trim()));
   const detailText = maskAgentMessageSensitiveText(String(details || "").trim());
   if (finalText) {
     const message = document.createElement("div");
@@ -2335,13 +2395,26 @@ function getDocumentCardDescriptor(value) {
   const name = String(value || "").split(/[\\/]/).pop() || "file";
   const extension = name.split(".").pop().toLowerCase();
   const kind = ({ pdf: "pdf", doc: "word", docx: "word", xls: "excel", xlsx: "excel", csv: "excel", ppt: "ppt", pptx: "ppt" })[extension] || "file";
-  return { name, kind, label: ({ pdf: "PDF", word: "W", excel: "X", ppt: "P" })[kind] || "FILE" };
+  return { name, kind, label: ({ pdf: "PDF", word: "W", excel: "X", ppt: "PPT" })[kind] || "FILE" };
+}
+
+function findClaudeLocalDocumentPaths(value) {
+  const matches = String(value || "").match(/(?:[A-Za-z]:)?(?:[\\/][^\n<>"'`|]+)+\.(?:pdf|docx?|xlsx?|csv|pptx?)/gi) || [];
+  return [...new Set(matches.map((item) => item.trim().replace(/[).,;:]+$/, "")))].slice(0, 8);
+}
+
+function replaceClaudeLocalDocumentPathsForDisplay(value) {
+  let rendered = String(value || "");
+  for (const filePath of findClaudeLocalDocumentPaths(rendered)) {
+    const { name } = getDocumentCardDescriptor(filePath);
+    rendered = rendered.split(filePath).join(`【${name}】`);
+  }
+  return rendered;
 }
 
 function appendClaudeOutputDocumentCards(value, parent) {
   if (!parent) return;
-  const matches = String(value || "").match(/(?:[A-Za-z]:)?(?:[\\/][^\n<>"'`|]+)+\.(?:pdf|docx?|xlsx?|csv|pptx?)/gi) || [];
-  const paths = [...new Set(matches.map((item) => item.trim().replace(/[).,;:]+$/, "")))].slice(0, 8);
+  const paths = findClaudeLocalDocumentPaths(value);
   if (!paths.length) return;
 
   const list = document.createElement("div");
@@ -2350,6 +2423,9 @@ function appendClaudeOutputDocumentCards(value, parent) {
     const descriptor = getDocumentCardDescriptor(path);
     const card = document.createElement("div");
     card.className = "document-output-card";
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.title = `打开 ${descriptor.name}`;
     const info = document.createElement("span");
     info.className = "document-output-card__info";
     const name = document.createElement("span");
@@ -2357,12 +2433,56 @@ function appendClaudeOutputDocumentCards(value, parent) {
     name.textContent = descriptor.name;
     const meta = document.createElement("span");
     meta.className = "document-output-card__meta";
-    meta.textContent = "local document";
+    meta.textContent = "本地生成文件";
     info.append(name, meta);
     const type = document.createElement("span");
     type.className = `document-output-card__type is-${descriptor.kind}`;
     type.textContent = descriptor.label;
-    card.append(info, type);
+    const actions = document.createElement("span");
+    actions.className = "document-output-card__actions";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "document-output-card__action";
+    open.title = "用默认程序打开";
+    open.setAttribute("aria-label", `打开 ${descriptor.name}`);
+    open.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg>';
+    const openDocument = async () => {
+      open.disabled = true;
+      try {
+        const response = await fetch("/api/local-document/open", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || "无法打开文件");
+      } catch (error) {
+        alert(error.message || "无法打开文件");
+      } finally {
+        open.disabled = false;
+      }
+    };
+    open.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openDocument();
+    });
+    card.addEventListener("click", openDocument);
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openDocument();
+      }
+    });
+    const download = document.createElement("a");
+    download.className = "document-output-card__action";
+    download.title = "下载文件";
+    download.setAttribute("aria-label", `下载 ${descriptor.name}`);
+    download.href = `/api/local-document?path=${encodeURIComponent(path)}`;
+    download.download = descriptor.name;
+    download.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"/></svg>';
+    download.addEventListener("click", (event) => event.stopPropagation());
+    actions.append(open, download);
+    card.append(info, type, actions);
     list.append(card);
   }
   parent.append(list);
@@ -2382,14 +2502,13 @@ function renderCompactClaudePanelMessage(rawText, body, options = {}) {
   const executionProcess = Array.isArray(options.executionProcess)
     ? options.executionProcess.filter(Boolean)
     : [];
-  const detailText = [
-    ...executionProcess,
-    ...(Array.isArray(parsed.thoughts) ? parsed.thoughts : []),
-    ...(Array.isArray(compact.toolLines) ? compact.toolLines : []),
-  ].join("\n\n");
-
-  if (detailText) {
-    renderThinkingBlocks([detailText], wrapper, { streaming: Boolean(options.streaming) });
+  const toolEntries = (Array.isArray(compact.toolLines) ? compact.toolLines : []).map((text) =>
+    formatExecutionProcessEntry({ kind: "tool_use", title: "工具调用", text })
+  );
+  if (executionProcess.length || parsed.thoughts.length || toolEntries.length) {
+    renderExecutionProcessBlocks([...executionProcess, ...toolEntries], parsed.thoughts, wrapper, {
+      streaming: Boolean(options.streaming),
+    });
   }
 
   const content = document.createElement("div");
@@ -2681,7 +2800,8 @@ function implicitBrowserRunOverrides(prompt, overrides = {}) {
   return {
     ...overrides,
     permissionProfile: "browser",
-    toolProfile: "none",
+    // Browser automation must still be able to inspect the current project and attachments.
+    toolProfile: "read",
     browserAccess: window.sessionStorage.getItem(browserAccessAlwaysKey) === "true" ? "always" : "once",
   };
 }
@@ -2718,7 +2838,7 @@ function isCommandContinuation(prompt) {
 
 function needsCommandAuthorization(prompt, overrides, permissionConfig) {
   if (overrides.authorizationContinuation || overrides.commandAuthorized) return false;
-  if (permissionConfig?.toolProfile === "command") return false;
+  if (["audit", "command"].includes(permissionConfig?.toolProfile)) return false;
   return isExplicitCommandTask(prompt) || isCommandContinuation(prompt);
 }
 
@@ -2854,16 +2974,21 @@ function scheduleAuthorizationContinuation(task, authorizationType, choice) {
   };
   if (authorizationType === "browser") {
     overrides.permissionProfile = "browser";
-    overrides.toolProfile = "none";
+    overrides.toolProfile = "read";
     overrides.browserAccess = choice === "always" ? "always" : "once";
   }
   if (authorizationType === "command") {
     // The bottom-sheet confirmation is the explicit per-task risk acceptance.
     // Keep this elevation scoped to the resumed task instead of changing the
     // user's global mode or silently enabling commands for later messages.
-    overrides.permissionProfile = "expert";
+    const originalProfile = String(task?.overrides?.permissionProfile || activeMode || "");
+    const keepsBrowserTools = originalProfile === "browser" || originalProfile === "takeover";
+    overrides.permissionProfile = keepsBrowserTools ? originalProfile : "expert";
     overrides.toolProfile = "command";
     overrides.mode = "acceptEdits";
+    if (keepsBrowserTools) {
+      overrides.browserAccess = task?.overrides?.browserAccess || "once";
+    }
     overrides.riskAccepted = true;
     overrides.commandAuthorized = true;
   }
@@ -2943,10 +3068,12 @@ function appendAssistantText(text) {
 }
 
 function formatExecutionProcessEntry(payload = {}) {
+  const kind = String(payload.kind || "reasoning").trim();
   const title = String(payload.title || "执行步骤").trim();
   const text = String(payload.text || "").trim();
-  if (!text) return title;
-  return `${title}\n${text}`;
+  const prefix = `[[sc-process:${kind}]]`;
+  if (!text) return `${prefix}\n${title}`;
+  return `${prefix}\n${title}\n${text}`;
 }
 
 function captureActiveAssistantTextForProcess() {
@@ -2985,11 +3112,23 @@ function moveClaudeExecutionNarrativeToProcess() {
 }
 
 function appendExecutionProcess(payload = {}) {
-  const capturedText = payload.captureAssistantText ? captureActiveAssistantTextForProcess() : "";
-  const processPayload = capturedText
-    ? { ...payload, text: [payload.text, capturedText].filter(Boolean).join("\n") }
-    : payload;
-  const entry = formatExecutionProcessEntry(processPayload);
+  // Some native Claude turns send a planning sentence as a text envelope and
+  // only then emit the tool envelope. Move that unfinished sentence into the
+  // execution card when the first reasoning/tool event arrives.
+  const shouldCaptureNarrative = payload.captureAssistantText === true ||
+    ((payload.kind === "reasoning" || payload.kind === "tool_use") &&
+      Boolean(String(activeAssistantMessage?.rawText || "").trim()));
+  const capturedText = shouldCaptureNarrative ? captureActiveAssistantTextForProcess() : "";
+  if (capturedText) {
+    const narrativeEntry = formatExecutionProcessEntry({
+      title: "执行说明",
+      text: capturedText,
+    });
+    if (narrativeEntry && activeExecutionProcess[activeExecutionProcess.length - 1] !== narrativeEntry) {
+      activeExecutionProcess.push(narrativeEntry);
+    }
+  }
+  const entry = formatExecutionProcessEntry(payload);
   if (!entry) return;
   if (runStateChip?.textContent !== "执行中...") {
     setRunState("thinking", "执行中...");
@@ -6429,6 +6568,10 @@ function handlePacket(packet) {
     payload = { text: data };
   }
 
+  if (activeRunFinalized && (event === "text" || event === "process" || event === "done")) {
+    return event === "done";
+  }
+
   if (event === "text") {
     appendAssistantText(payload.text || "");
   } else if (event === "process") {
@@ -6450,6 +6593,7 @@ function handlePacket(packet) {
     updateActiveRunConversation({ status: "运行异常", result: payload.text || "执行失败" });
     return true;
   } else if (event === "done") {
+    activeRunFinalized = true;
     flushAssistantTextBuffer();
     moveClaudeExecutionNarrativeToProcess();
     if (activeAssistantMessage?.body) {
@@ -6586,7 +6730,9 @@ function buildClaudeRunBlockingConfigMessageStable() {
 }
 
 async function startRun(prompt, overrides = {}) {
-  if (!prompt || runController) return;
+  if (!prompt || runController || runStartInFlight) return;
+  runStartInFlight = true;
+  const releaseStartLock = () => { runStartInFlight = false; };
   overrides = implicitBrowserRunOverrides(prompt, overrides);
   const authorizationContinuation = overrides.authorizationContinuation === true;
   const authorizationOriginalUserMessageRecorded =
@@ -6596,13 +6742,20 @@ async function startRun(prompt, overrides = {}) {
   // the originating agent; it never attempts to emulate an image provider.
   if (isClaudeMediaGenerationPrompt(prompt)) {
     const dispatched = await dispatchClaudeMediaTask(prompt);
-    if (dispatched) return;
+    if (dispatched) {
+      releaseStartLock();
+      return;
+    }
   }
   const projectReady = await ensureProjectForPrompt(prompt, overrides);
-  if (!projectReady) return;
+  if (!projectReady) {
+    releaseStartLock();
+    return;
+  }
   if (!projectSelect.value) {
     addMessage("error", "请选择对话", "请先在左侧选择一个对话，或点击左上角 + 新建对话后再发送。");
     openProjectNameDialog();
+    releaseStartLock();
     return;
   }
 
@@ -6613,13 +6766,18 @@ async function startRun(prompt, overrides = {}) {
       type: "file",
       task: {
         prompt,
-        overrides: { ...overrides },
+        overrides: {
+          ...overrides,
+          permissionProfile: overrides.permissionProfile || activeMode,
+          browserAccess: overrides.browserAccess,
+        },
         authorizationAttempts,
         conversationId: currentConversationId,
         userMessageRecorded: false,
       },
     };
     openToolAuthorizationSheet("file");
+    releaseStartLock();
     return;
   }
   if (needsCommandAuthorization(prompt, overrides, permissionConfig)) {
@@ -6635,15 +6793,20 @@ async function startRun(prompt, overrides = {}) {
       },
     };
     openToolAuthorizationSheet("command");
+    releaseStartLock();
     return;
   }
   if (permissionConfig.highRisk && highRiskToolsLocked) {
     addMessage("error", "权限已锁定", "高权限工具当前未启用，无法执行授权修改或专家命令模式。");
+    releaseStartLock();
     return;
   }
-  const riskAccepted = Boolean(overrides.riskAccepted) || confirmHighRiskRun(permissionConfig);
+  const takeoverAlreadyConfirmed =
+    (overrides.permissionProfile || activeMode) === "takeover" && takeoverModeAccepted;
+  const riskAccepted = Boolean(overrides.riskAccepted) || takeoverAlreadyConfirmed || confirmHighRiskRun(permissionConfig);
   if (permissionConfig.highRisk && !riskAccepted) {
     addMessage("system", "已取消", "未完成风险确认，本次高权限请求已取消。");
+    releaseStartLock();
     return;
   }
 
@@ -6656,6 +6819,7 @@ async function startRun(prompt, overrides = {}) {
       result: blockingConfigMessage,
       updatedAt: new Date().toISOString(),
     });
+    releaseStartLock();
     return;
   }
 
@@ -6699,6 +6863,8 @@ async function startRun(prompt, overrides = {}) {
 
   const currentRunController = new AbortController();
   runController = currentRunController;
+  activeRunFinalized = false;
+  releaseStartLock();
   let runTimedOut = false;
   let runIdleTimeoutTimer = null;
   const resetRunIdleTimeout = () => {
@@ -7388,6 +7554,16 @@ if (imageUploadInput) {
   imageUploadInput.accept = attachmentAccept;
   imageUploadInput.multiple = true;
 }
+function moveModelSwitchersToComposer() {
+  if (!composerModelSlots) return;
+  [modelChip, hostChip]
+    .map((button) => button?.closest(".model-switcher"))
+    .filter(Boolean)
+    .forEach((switcher) => composerModelSlots.append(switcher));
+}
+
+moveModelSwitchersToComposer();
+
 if (promptForm && imageUploadInput && !$("#attachmentPickerBtn")) {
   const attachmentPickerBtn = document.createElement("button");
   attachmentPickerBtn.id = "attachmentPickerBtn";
@@ -7396,7 +7572,8 @@ if (promptForm && imageUploadInput && !$("#attachmentPickerBtn")) {
   attachmentPickerBtn.title = "选择图片或文件";
   attachmentPickerBtn.setAttribute("aria-label", "选择图片或文件");
   attachmentPickerBtn.textContent = "+";
-  promptForm.insertBefore(attachmentPickerBtn, voiceModeBtn || composerInputWrap);
+  const toolbarAnchor = voiceModeBtn || composerInputWrap;
+  promptForm.insertBefore(attachmentPickerBtn, toolbarAnchor);
   attachmentPickerBtn.addEventListener("click", () => imageUploadInput.click());
 }
 imageUploadInput?.addEventListener("change", handleImageUpload);

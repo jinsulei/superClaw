@@ -3875,16 +3875,29 @@ h3 {
 .attachment-chip.document-chip strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; color: #252a32; }
 .attachment-chip.document-chip small { color: #7a828e; font-size: 11px; font-weight: 500; }
 
-.document-output-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 238px)); gap: 6px; margin-top: 10px; }
-.document-output-card { min-height: 58px; box-sizing: border-box; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 4px; background: #f0f1f3; }
+.document-output-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(228px, 286px)); gap: 8px; margin-top: 10px; }
+.document-output-card { min-height: 58px; box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #d7dfe8; border-radius: 6px; background: color-mix(in srgb, var(--surface-2, #eef0f3) 92%, transparent); box-shadow: 0 3px 10px rgba(20, 31, 51, .08); cursor: pointer; transition: background .15s, border-color .15s, box-shadow .15s; }
+.document-output-card:hover, .document-output-card:focus-visible { background: var(--bg-hover, #e9f2f2); border-color: #94cfc8; box-shadow: 0 4px 12px rgba(20, 31, 51, .12); outline: none; }
 .document-output-card__info { min-width: 0; display: grid; gap: 4px; }
 .document-output-card__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #252a32; font-size: 13px; font-weight: 650; }
 .document-output-card__meta { color: #7a828e; font-size: 11px; font-weight: 500; }
-.document-output-card__type { order: 2; margin-left: auto; width: 32px; height: 38px; display: grid; place-items: center; border-radius: 2px; color: #fff; font-size: 10px; font-weight: 800; }
+.document-output-card__type { order: 2; margin-left: 0; width: 32px; height: 38px; display: grid; place-items: center; border-radius: 2px; color: #fff; font-size: 9px; font-weight: 800; }
 .document-output-card__type.is-excel { background: #14a05e; }
 .document-output-card__type.is-word { background: #2375c5; }
-.document-output-card__type.is-ppt, .document-output-card__type.is-pdf { background: #df4d4d; }
+.document-output-card__type.is-ppt { background: #e35b33; }
+.document-output-card__type.is-pdf { background: #df4d4d; }
 .document-output-card__type.is-file { background: #7c8797; }
+.document-output-card__actions { display: inline-flex; gap: 4px; margin-left: auto; }
+.document-output-card__action { width: 28px; height: 28px; display: none; place-items: center; border: 1px solid #d7dce4; border-radius: 5px; background: #fff; color: #526170; line-height: 1; text-decoration: none; cursor: pointer; }
+.document-output-card:hover .document-output-card__action, .document-output-card:focus-within .document-output-card__action { display: grid; }
+.document-output-card__action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.document-output-card__action:hover { border-color: #1a9a89; color: #087c6d; background: #f3fffc; }
+.document-output-card__action:disabled { opacity: .55; cursor: wait; }
+[data-theme="dark"] .document-output-card { background: #202a36; border-color: #3a4859; box-shadow: 0 3px 10px rgba(0, 0, 0, .24); }
+[data-theme="dark"] .document-output-card:hover, [data-theme="dark"] .document-output-card:focus-visible { background: #263341; border-color: #4f7f7a; }
+[data-theme="dark"] .document-output-card__name { color: #e4ebf4; }
+[data-theme="dark"] .document-output-card__meta { color: #9eacbd; }
+[data-theme="dark"] .document-output-card__action { background: #18212c; border-color: #46576a; color: #c8d5e5; }
 
 .attachment-chip img {
   width: 32px;
@@ -7275,6 +7288,7 @@ textarea#promptInput {
 }
 
 .conversation-mode .transcript .message.assistant {
+  max-width: 85% !important;
   margin: 0 auto 0 clamp(8px, 1.5vw, 24px) !important;
   border-color: #d7e1ec !important;
   background: #fff8fb !important;
@@ -7636,7 +7650,9 @@ body.dark .conversation-mode .transcript .message.user {
 
 .assistant-thinking-block {
   position: relative;
-  overflow: hidden;
+  height: auto;
+  max-height: none;
+  overflow: visible;
   margin: 0 0 8px;
   padding: 8px 10px;
   border: 1px dashed rgba(100, 116, 139, 0.34);
@@ -7650,17 +7666,7 @@ body.dark .conversation-mode .transcript .message.user {
 .assistant-thinking-block.is-thinking {
   border-style: solid;
   border-color: rgba(59, 130, 246, 0.30);
-  background: linear-gradient(110deg, rgba(59, 130, 246, 0.10), rgba(148, 163, 184, 0.08), rgba(20, 184, 166, 0.10));
-}
-
-.assistant-thinking-block.is-thinking::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.34), transparent);
-  transform: translateX(-120%);
-  animation: thinking-sheen 1.8s ease-in-out infinite;
+  background: rgba(148, 163, 184, 0.10);
 }
 
 .assistant-thinking-block summary {
@@ -7744,6 +7750,26 @@ body.dark .conversation-mode .transcript .message.user {
   border-top: 1px solid rgba(123, 153, 188, 0.16);
 }
 
+.assistant-thinking-block__item.is-active {
+  position: relative;
+  margin: 4px -4px -2px;
+  padding: 5px 4px 4px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.045);
+  box-shadow: inset 2px 0 0 rgba(59, 130, 246, 0.48);
+}
+
+.assistant-thinking-block__item.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.34), transparent);
+  transform: translateX(-120%);
+  animation: thinking-sheen 1.8s ease-in-out infinite;
+}
+
 .assistant-thinking-block__item-title {
   display: block;
   color: var(--ink, #20304d);
@@ -7760,6 +7786,36 @@ body.dark .conversation-mode .transcript .message.user {
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.assistant-thinking-block__item-detail.is-command {
+  padding: 7px 8px;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.045);
+  color: #475569;
+  white-space: pre-wrap;
+}
+
+.assistant-thinking-block__params {
+  margin-top: 6px;
+  color: var(--muted, #61718b);
+}
+
+.assistant-thinking-block__params summary {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.assistant-thinking-block__params > .assistant-thinking-block__item-detail {
+  margin-left: 2px;
 }
 
 @keyframes thinking-dot {
@@ -9401,7 +9457,7 @@ body.conversation-mode.right-panel-collapsed .transcript.sc-chat-stage {
 .conversation-mode #transcript.transcript > .message-row.assistant > .message,
 .conversation-mode .transcript.sc-chat-stage > .sc-msg-row.assistant > .sc-msg-bubble {
   width: fit-content !important;
-  max-width: 70% !important;
+  max-width: 85% !important;
   min-width: 0 !important;
 }
 
@@ -9487,4 +9543,201 @@ body.conversation-mode.right-panel-collapsed .transcript.sc-chat-stage {
 .message-row.user .turn-run-state,
 .sc-msg-row.user .turn-run-state {
   display: none !important;
+}
+
+/* Claude Code uses the same two-row composer rhythm as Hermes: the writing
+   surface is above, while attachments, voice, mode, and send stay below. */
+.conversation-mode .composer,
+.home-mode .composer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-height: 0;
+  border-radius: 18px;
+  padding: 10px 12px;
+}
+
+.composer-input-wrap {
+  order: 1;
+  flex: 0 0 100%;
+  width: 100%;
+  gap: 5px;
+}
+
+.composer .attachment-entry,
+.composer .voice-mode-button,
+.composer .composer-permission,
+.composer .send-button {
+  order: 2;
+}
+
+.composer .attachment-entry,
+.composer .voice-mode-button,
+.composer .send-button {
+  width: 29px;
+  height: 29px;
+  min-width: 29px;
+  flex-basis: 29px;
+}
+
+.composer .attachment-entry {
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: 21px;
+}
+
+.composer .voice-mode-button {
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+}
+
+.composer .composer-permission {
+  margin-left: 2px;
+}
+
+.composer .composer-permission-trigger {
+  min-height: 29px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.composer .send-button {
+  margin-left: auto;
+}
+
+.composer textarea,
+textarea#promptInput {
+  min-height: 30px;
+  padding: 3px 2px;
+  border: 0 !important;
+  border-radius: 0;
+  box-shadow: none !important;
+}
+
+.composer textarea:focus,
+textarea#promptInput:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.composer .attachment-preview {
+  padding: 0 2px 4px;
+}
+
+@media (max-width: 640px) {
+  .conversation-mode .composer,
+  .home-mode .composer {
+    width: calc(100% - 20px) !important;
+    max-width: calc(100% - 20px) !important;
+    margin-left: 10px !important;
+    margin-right: 10px !important;
+    padding: 9px 10px;
+  }
+
+  .composer .composer-permission-trigger {
+    max-width: 132px;
+  }
+}
+
+/* Final Claude composer alignment: match the chat column, retain true round
+   controls, and keep model selection beside the send action. */
+.conversation-mode .composer {
+  width: calc(100% - (clamp(32px, 5.5vw, 88px) * 2)) !important;
+  max-width: 1080px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.composer .attachment-entry,
+.composer .voice-mode-button,
+.composer .send-button {
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  aspect-ratio: 1;
+  box-sizing: border-box;
+  line-height: 1;
+}
+
+.composer #attachmentPickerBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0 4px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.composer-model-slots {
+  order: 2;
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.composer-model-slots .model-switcher {
+  min-width: 0;
+}
+
+.composer-model-slots .model-chip-button {
+  min-height: 29px;
+  max-width: 160px;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.composer-model-slots .model-chip-name,
+.composer-model-slots .model-chip-chevron {
+  font-weight: 400;
+}
+
+.composer-model-slots .model-guide-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+  width: min(260px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+}
+
+/* The branch selector sits nearest the send button, so its popup opens inward
+   instead of overflowing through the right edge of the panel. */
+.composer-model-slots .model-switcher:last-child .model-guide-menu {
+  right: 0;
+  left: auto;
+}
+
+.composer-model-slots .model-chip-type {
+  display: none;
+}
+
+.composer .send-button {
+  margin-left: 2px;
+}
+
+.topbar .status-pills:empty {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .conversation-mode .composer {
+    width: calc(100% - 20px) !important;
+    max-width: calc(100% - 20px) !important;
+    margin-left: 10px !important;
+    margin-right: 10px !important;
+  }
+
+  .composer-model-slots .model-chip-button {
+    max-width: 98px;
+  }
+
+  .composer-model-slots .model-chip-name {
+    max-width: 62px;
+  }
 }

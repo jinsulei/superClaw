@@ -413,7 +413,7 @@
         </section>
 
         <form id="promptForm" class="composer">
-          <input id="imageUploadInput" type="file" accept="image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx" multiple hidden />
+          <input id="imageUploadInput" type="file" accept="image/*,.txt,.md,.json,.csv,.pdf,.doc,.docx,.xls,.xlsx,.pptx" multiple hidden />
           <button id="voiceModeBtn" class="attachment-entry voice-mode-button" type="button" title="语音对话" aria-label="语音对话" aria-pressed="false">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z" />
@@ -486,6 +486,7 @@
               </button>
             </div>
           </div>
+          <div id="composerModelSlots" class="composer-model-slots" aria-label="模型选择"></div>
           <button id="sendBtn" class="send-button" type="submit" title="发送" aria-label="发送">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M8 5v14l11-7Z" />
@@ -606,7 +607,7 @@
             <div id="permissionMenu" class="permission-menu" role="menu" hidden>
               <button class="permission-menu-item is-active" type="button" data-mode="safe" role="menuitem">
                 <strong>安全对话模式</strong>
-                <span>AI 只能回答问题，不读取或修改本地文件。</span>
+                <span>AI 可查询公开网络、读取本地项目并执行只读审计命令，不会写入文件。</span>
               </button>
               <button class="permission-menu-item" type="button" data-mode="browser" role="menuitem">
                 <strong>浏览器自动化模式</strong>
@@ -618,7 +619,7 @@
               </button>
             </div>
           </div>
-          <div id="modeNote" class="mode-note">安全对话模式不会读取或修改本地文件。</div>
+          <div id="modeNote" class="mode-note">安全对话模式可读取并审计本地项目，但不会写入文件。</div>
           <div id="modeDetails" class="mode-details"></div>
           <div class="permission-summary">
             <div><span>工具范围</span><strong id="toolAccessLabel">无工具</strong></div>

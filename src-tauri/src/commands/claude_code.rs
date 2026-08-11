@@ -12,6 +12,9 @@ use std::time::Duration;
 use std::os::windows::process::CommandExt;
 
 static CLAUDE_PANEL_CHILD: LazyLock<Mutex<Option<Child>>> = LazyLock::new(|| Mutex::new(None));
+// Several UI surfaces may request Claude Code during the same render. Serialize
+// startup so a second request cannot mistake the first panel for a failure.
+static CLAUDE_PANEL_START_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 const CLAUDE_PANEL_PORT: u16 = 3020;
 const NATIVE_CLAUDE_WINDOW_TITLE: &str = "SuperClaw Claude Code Native";
@@ -432,6 +435,9 @@ fn status_impl() -> Result<Value, String> {
 }
 
 fn start_cli_impl() -> Result<Value, String> {
+    let _start_guard = CLAUDE_PANEL_START_LOCK
+        .lock()
+        .map_err(|_| "Claude Code panel startup lock is unavailable".to_string())?;
     let resources = resources_dir()?;
     let home = claude_home_path(&resources);
     let projects = claude_projects_path(&resources);
@@ -505,7 +511,7 @@ fn start_cli_impl() -> Result<Value, String> {
     if let Ok(mut slot) = CLAUDE_PANEL_CHILD.lock() {
         *slot = Some(child);
     }
-    if !wait_for_panel(CLAUDE_PANEL_PORT) {
+    if !wait_for_panel(CLAUDE_PANEL_PORT) && !panel_status_ready(CLAUDE_PANEL_PORT) {
         return Err(format!(
             "Claude Code 面板启动超时，请查看 {}",
             log_dir.join("panel.err.log").display()
