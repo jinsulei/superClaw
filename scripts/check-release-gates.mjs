@@ -61,6 +61,7 @@ const gates = [
     group: 'Smoke',
     commands: [
       ['node', 'scripts/test-collaboration.mjs'],
+      ['node', 'scripts/smoke-hermes-sidebar-new-style.mjs'],
       ['node', 'scripts/smoke-hermes-ecommerce-link-reader.mjs'],
       ['node', 'scripts/smoke-hermes-link-reader-status.mjs'],
       ['node', 'scripts/smoke-hermes-link-material-workflow.mjs'],

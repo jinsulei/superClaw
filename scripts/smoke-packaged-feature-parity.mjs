@@ -114,6 +114,17 @@ const minimaxConfig = "src/lib/minimax-test-config.js";
 const desktopBuild = "scripts/build-desktop-client.ps1";
 const packageJson = "package.json";
 const tauriConfig = "src-tauri/tauri.conf.json";
+const mediaRoutingLib = "src/lib/media-provider-routing.js";
+const mediaRs = "src-tauri/src/commands/media.rs";
+const mediaPluginTemplate = "src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js";
+const mediaPluginCopies = [
+  "src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js",
+  "src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js",
+  "src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js",
+  "src-tauri/target/release/resources/templates/openclaw-plugins/superclaw-media/index.js",
+  "src-tauri/target/release/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js",
+  "src-tauri/target/release/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js",
+];
 
 let ok = true;
 
@@ -143,6 +154,66 @@ const mediaCommandOk = [
 ].every(Boolean);
 if (mediaCommandOk) pass("PACKAGED_HERMES_MEDIA_LOAD_COMMAND");
 ok = mediaCommandOk && ok;
+
+// 即梦 (Seedream/Seedance) media routing must be present and identical in the
+// JS routing lib, the OpenClaw plugin, the Web debug server, and the native
+// Rust command so `tauri dev` and the packaged artifact behave the same.
+const jiduRouteOk = [
+  assertMatch(mediaRoutingLib, /SEEDREAM_KEYWORDS = \['seedream', 'doubao-seedream'\]/, "PACKAGED_JIDU_ROUTING"),
+  assertMatch(mediaRoutingLib, /SEEDANCE_KEYWORDS = \['seedance', 'doubao-seedance', 'seedans'\]/, "PACKAGED_JIDU_ROUTING"),
+  assertMatch(mediaRoutingLib, /function autoDetectMediaRoutes\(openclawConfig\)/, "PACKAGED_JIDU_ROUTING"),
+  assertMatch(mediaRoutingLib, /function buildVideoEndpoints\(baseUrl\)/, "PACKAGED_JIDU_ROUTING"),
+].every(Boolean);
+if (jiduRouteOk) pass("PACKAGED_JIDU_ROUTING");
+ok = jiduRouteOk && ok;
+
+const jiduPluginOk = [
+  assertMatch(mediaPluginTemplate, /function autoDetectMediaRoutes\(config\)/, "PACKAGED_JIDU_PLUGIN"),
+  assertMatch(mediaPluginTemplate, /autoDetectMediaRoutes\(config\)\[kind\]/, "PACKAGED_JIDU_PLUGIN"),
+  assertMatch(mediaPluginTemplate, /async function generateOpenAiVideo\(params, route\)/, "PACKAGED_JIDU_PLUGIN"),
+  assertMatch(mediaPluginTemplate, /route\.selected\.protocol === 'openai-video'/, "PACKAGED_JIDU_PLUGIN"),
+].every(Boolean);
+if (jiduPluginOk) pass("PACKAGED_JIDU_PLUGIN");
+ok = jiduPluginOk && ok;
+
+const jiduDevApiOk = [
+  assertMatch(devApi, /function autoDetectMediaRoutes\(openclawConfig\)/, "PACKAGED_JIDU_DEV_API"),
+  assertMatch(devApi, /async function generateDevVideo\(/, "PACKAGED_JIDU_DEV_API"),
+  assertMatch(devApi, /normalizedKind === 'text_to_video' \|\| normalizedKind === 'image_to_video'/, "PACKAGED_JIDU_DEV_API"),
+].every(Boolean);
+if (jiduDevApiOk) pass("PACKAGED_JIDU_DEV_API");
+ok = jiduDevApiOk && ok;
+
+const jiduNativeOk = [
+  assertMatch(mediaRs, /fn auto_detect_media_routes\(config: &Value\)/, "PACKAGED_JIDU_NATIVE"),
+  assertMatch(mediaRs, /async fn run_openai_video\(/, "PACKAGED_JIDU_NATIVE"),
+  assertMatch(mediaRs, /Some\("openai-video"\) if kind == "text_to_video" \|\| kind == "image_to_video"/, "PACKAGED_JIDU_NATIVE"),
+].every(Boolean);
+if (jiduNativeOk) pass("PACKAGED_JIDU_NATIVE");
+ok = jiduNativeOk && ok;
+
+const jiduPluginCopiesOk = (() => {
+  if (!exists(mediaPluginTemplate)) {
+    fail(`PACKAGED_JIDU_COPY_IDENTITY: missing ${mediaPluginTemplate}`);
+    return false;
+  }
+  const templateText = read(mediaPluginTemplate);
+  let good = true;
+  for (const copy of mediaPluginCopies) {
+    if (!exists(copy)) {
+      fail(`PACKAGED_JIDU_COPY_IDENTITY: missing ${copy}`);
+      good = false;
+      continue;
+    }
+    if (read(copy) !== templateText) {
+      fail(`PACKAGED_JIDU_COPY_IDENTITY: ${copy} drifted from template`);
+      good = false;
+    }
+  }
+  if (good) pass("PACKAGED_JIDU_COPY_IDENTITY");
+  return good;
+})();
+ok = jiduPluginCopiesOk && ok;
 
 const minimaxEntryOk = [
   assertContains(modelPage, "minimax-test-panel", "PACKAGED_OPENCLAW_MINIMAX_TEST_ENTRY"),

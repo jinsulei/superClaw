@@ -12,6 +12,17 @@ license = "Proprietary"
 name = "superclaw_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+# Production builds MUST enable this. `npm run tauri:build` (tauri build) injects
+# tauri/custom-protocol automatically, which makes the binary load the embedded
+# frontend via the tauri:// (tauri.localhost) protocol instead of the Vite dev server.
+#
+# WARNING: never produce a release EXE with a bare `cargo build --release`.
+# Without custom-protocol the tauri build.rs sets `dev = true`, so the packaged app
+# boots WebView2 pointed at the (unavailable) dev URL http://localhost:1420 and
+# shows "localhost refused connection". Use `npm run tauri:build` instead.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

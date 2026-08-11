@@ -16,6 +16,7 @@ const hermesStoreSource = readFileSync('src/engines/hermes/lib/chat-store.js', '
 const hermesMemoryStoreSource = readFileSync('src/engines/hermes/lib/hermes-memory-store.js', 'utf8')
 const assistantCommandSource = readFileSync('src-tauri/src/commands/assistant.rs', 'utf8')
 const hermesChatSource = readFileSync('src/engines/hermes/pages/chat.js', 'utf8')
+const anchoredImageZoomSource = readFileSync('src/lib/anchored-image-zoom.js', 'utf8')
 const hermesStyleSource = readFileSync('src/engines/hermes/style/hermes.css', 'utf8')
 const hermesChatMediaToolSource = readFileSync('src-tauri/resources/runtime/hermes-agent/Lib/site-packages/tools/chat_media_return_tool.py', 'utf8')
 const hermesApiServerSource = readFileSync('src-tauri/resources/runtime/hermes-agent/Lib/site-packages/gateway/platforms/api_server.py', 'utf8')
@@ -164,22 +165,22 @@ test('OpenClaw packaged chat keeps portable document attachments, media previews
 test('OpenClaw uses one provider registry instead of a MiniMax-only test panel', () => {
   assert.match(modelPageSource, /PROVIDER_PRESETS/)
   assert.match(modelPresetsSource, /key: 'minimax'/)
-  assert.match(modelPresetsSource, /key: 'minimax_cn'/)
+  assert.doesNotMatch(modelPresetsSource, /key: 'minimax_cn'/)
   assert.doesNotMatch(modelPageSource, /minimax-test-panel/)
   assert.doesNotMatch(modelPageSource, /saveMiniMaxTestConfig/)
   assert.doesNotMatch(modelPresetsSource, /isMiniMaxOnlyMode/)
 })
 
-test('media task routes stay isolated from chat Gateway settings across dev and packaged runtimes', () => {
-  assert.match(modelPageSource, /id="media-route-panel"/)
-  assert.match(modelPageSource, /api\.mediaConfigRead\(\)/)
-  assert.match(modelPageSource, /api\.mediaConfigWrite\(/)
+test('media capabilities auto-detect from provider model lists without a user-facing route panel', () => {
+  assert.doesNotMatch(modelPageSource, /id="media-route-panel"/)
+  assert.doesNotMatch(modelPageSource, /api\.mediaConfigRead\(\)/)
+  assert.doesNotMatch(modelPageSource, /api\.mediaConfigWrite\(/)
   assert.match(tauriApiSource, /mediaConfigRead: \(\) => invoke\('media_config_read'\)/)
   assert.match(devApiSource, /media_config_read\(\)/)
   assert.match(devApiSource, /media_config_write\(\{ config \} = \{\}\)/)
   assert.match(mediaProviderRoutingSource, /must not contain credentials or Base URL/)
   assert.doesNotMatch(mediaProviderRoutingSource, /writeOpenclawConfig|reloadGateway/)
-  assert.match(mediaCommandSource, /join\("data"\)[\s\S]*?join\("media"\)[\s\S]*?join\("media-routes\.json"\)/)
+  assert.match(mediaCommandSource, /"path":\s*"data\/media\/media-routes\.json"/)
   assert.match(mediaCommandSource, /minimax-cli/)
   assert.match(mediaCommandSource, /media_generate\(/)
   assert.match(buildDesktopSource, /\$MediaData = Join-Path \$DataRoot "media"/)
@@ -370,13 +371,13 @@ test('packaged OpenClaw final-history recovery ignores timeline-only bubble text
 })
 
 test('packaged OpenClaw recovers the native terminal reply from the portable trajectory log', () => {
-  assert.match(openclawHistorySource, /format!\("\{session_id\}\.trajectory\.jsonl"\)/)
+  assert.match(openclawHistorySource, /format!\("\{family_id\}\.trajectory\.jsonl"\)/)
   assert.match(openclawHistorySource, /fn trajectory_messages\(source: &str\)/)
-  assert.match(openclawHistorySource, /fn successful_tool_only_terminal_messages\(messages: &\[Value\], trajectory_source: &str\)/)
+  assert.match(openclawHistorySource, /fn successful_tool_only_terminal_messages\([\s\S]{0,160}trajectory_source: &str/)
   assert.match(openclawHistorySource, /Some\("session\.ended"\)/)
   assert.match(openclawHistorySource, /Some\("success"\)/)
   assert.match(openclawHistorySource, /OpenClaw 原生任务已执行完成/)
-  assert.match(openclawHistorySource, /successful_tool_only_terminal_messages\(&messages, &trajectory_source\)/)
+  assert.match(openclawHistorySource, /successful_tool_only_terminal_messages\(&segment_messages, &trajectory_source\)/)
   assert.match(openclawHistorySource, /data\.get\("assistantTexts"\)/)
   assert.match(openclawHistorySource, /"trajectoryFinal": true/)
   assert.match(openclawHistorySource, /messages\.push\(candidate\)/)
@@ -649,7 +650,7 @@ test('Hermes current-chat media tool stages an attachment directly from its tool
   assert.match(hermesStoreSource, /attachment\.dataUrl = dataUrl/)
   assert.match(hermesStoreSource, /hydrateHermesReturnedMedia\(session\?\.id, clientRequestId, returnedMediaPath\)/)
   assert.match(hermesChatSource, /superclaw_return_media/)
-  assert.match(assistantCommandSource, /image_cache"\)\.join\("chat-media"\)/)
+  assert.match(assistantCommandSource, /\.join\("image_cache"\)[\s\S]*?\.join\("chat-media"\)/)
   assert.match(hermesChatMediaToolSource, /Return a verified local raster image to the current SuperClaw chat turn/)
   assert.match(hermesChatMediaToolSource, /For a simple text PNG, provide the text to render directly/)
   assert.match(hermesChatMediaToolSource, /def _render_text_png\(text: str, target_dir: Path\) -> Path/)
@@ -674,9 +675,10 @@ test('Hermes returned chat images support a safe in-app preview in packaged and 
   assert.match(hermesChatSource, /if \(!isSafeRenderableImageSrc\(src\)\) return/)
   assert.match(hermesChatSource, /event\.key === 'Escape'/)
   assert.match(hermesChatSource, /if \(event\.target === overlay\) closeHermesImagePreview\(\)/)
-  assert.match(hermesChatSource, /panel\.addEventListener\('wheel'/)
-  assert.match(hermesChatSource, /zoom = Math\.min\(4, Math\.max\(0\.5,/)
-  assert.match(hermesChatSource, /preview\.addEventListener\('dblclick'/)
+  assert.match(hermesChatSource, /attachAnchoredImageZoom\(\{/)
+  assert.match(anchoredImageZoomSource, /viewport\.addEventListener\('wheel', onWheel, \{ passive: false \}\)/)
+  assert.match(anchoredImageZoomSource, /Math\.min\(maxZoom, Math\.max\(minZoom,/)
+  assert.match(anchoredImageZoomSource, /image\.addEventListener\('dblclick', reset\)/)
   assert.match(hermesStyleSource, /\.hm-chat-image-preview-overlay/)
   assert.match(hermesStyleSource, /cursor:\s*zoom-in/)
 })
@@ -783,7 +785,7 @@ test('Hermes streaming deltas do not run final reply completion on every chunk',
   assert.doesNotMatch(streamingBlock, /completeHermesReplyIfNeeded/)
   assert.match(sanitizeBlock, /completeHermesReplyIfNeeded\(redacted/)
 
-  const streamDeltaCalls = hermesStoreSource.match(/sanitizeHermesVisibleReply\(msg\.content \+ (?:delta|accepted\.text), currentVisibleUserPrompt\(\), \{ streaming: true \}\)/g) || []
+  const streamDeltaCalls = hermesStoreSource.match(/sanitizeHermesVisibleReply\((?:protocol\.final|streamState\.raw), currentVisibleUserPrompt\(\), \{ streaming: true \}\)/g) || []
   assert.ok(streamDeltaCalls.length >= 2)
 })
 
@@ -797,7 +799,7 @@ test('Hermes packaged and web builds route visible work narration into the execu
   }]), '最终结论。')
 
   const appendBlock = hermesStoreSource.match(/function appendStreamDelta\(runSessionId, delta, clientRequestId = state\.runningClientRequestId\) \{[\s\S]*?function acceptActiveStreamEvent/)?.[0] || ''
-  assert.match(appendBlock, /extractHermesVisibleExecutionNarration\(delta\)/)
+  assert.match(appendBlock, /recordHermesStreamNarration\(s, clientRequestId, streamState, protocol\.execution\)/)
   assert.match(appendBlock, /source: 'stream-visible'/)
   assert.match(hermesStoreSource, /executionTrace: msg\.executionTrace/)
 })
@@ -897,7 +899,7 @@ test('Hermes packaged chat input defaults to a single visual row', () => {
   assert.match(inputCssBlock, /line-height:\s*22px/)
   assert.match(inputCssBlock, /box-sizing:\s*border-box/)
   assert.match(inputCssBlock, /min-height:\s*32px/)
-  assert.match(inputCssBlock, /padding:\s*5px 2px/)
+  assert.match(inputCssBlock, /padding:\s*2px/)
 })
 
 test('Hermes packaged long-task requests cannot complete with promise-only text', () => {
@@ -1498,7 +1500,7 @@ test('ClaudeCode code blocks place code below the header and copy only their own
 })
 
 test('ClaudeCode assistant bubbles use a responsive percentage max width', () => {
-  assert.match(claudePanelStylesSource, /message-row\.assistant > \.message[\s\S]*?max-width:\s*70%\s*!important/)
+  assert.match(claudePanelStylesSource, /message-row\.assistant > \.message[\s\S]*?max-width:\s*85%\s*!important/)
   assert.match(claudePanelStylesSource, /@media \(max-width:\s*760px\)[\s\S]*?message-row\.assistant > \.message[\s\S]*?max-width:\s*90%\s*!important/)
 })
 
@@ -1665,8 +1667,8 @@ test('ClaudeCode classifies native CLI prose as execution detail before tool cal
   assert.match(claudePanelServerSource, /let bufferedAssistantDeltas = ""/)
   assert.match(claudePanelServerSource, /bufferedAssistantDeltas \+= safeDelta/)
   assert.match(claudePanelServerSource, /const turnText = text \|\| streamedText/)
-  assert.match(claudePanelServerSource, /if \(toolBlocks\.length\) \{[\s\S]*?kind: "reasoning"[\s\S]*?text: sanitizeModelOutput\(turnText, \{ prompt \}\)/)
-  assert.match(claudePanelServerSource, /if \(turnText\) \{[\s\S]*?writeEvent\(res, "text", \{ text: sanitizeModelOutput\(turnText, \{ prompt \}\) \}\)/)
+  assert.match(claudePanelServerSource, /if \(toolBlocks\.length\) \{[\s\S]*?kind: "reasoning"[\s\S]*?text: processNarrativeSummary\(executionNarrative\)/)
+  assert.match(claudePanelServerSource, /if \(turnText\) \{[\s\S]*?pendingAssistantText = \[pendingAssistantText, sanitizeModelOutput\(turnText, \{ prompt \}\)\]/)
   assert.match(claudePanelSource, /assistant-thinking-block__item-title/)
   assert.match(claudePanelSource, /assistant-thinking-block__item-detail/)
   assert.match(claudePanelSource, /function moveClaudeExecutionNarrativeToProcess\(\)/)
@@ -1706,9 +1708,9 @@ test('ClaudeCode every mode grants read-only web research while Playwright stays
   assert.match(claudePanelServerSource, /主动使用 WebSearch 搜索公开网络/)
   assert.match(claudePanelServerSource, /WebFetch\/WebSearch 仅用于只读访问/)
   assert.match(claudePanelServerSource, /CURRENT_RUNTIME_CAPABILITY block is authoritative/)
-  assert.match(claudePanelSource, /安全对话模式支持公开网络查询/)
+  assert.match(claudePanelSource, /安全对话支持公开网络查询/)
   assert.match(claudePanelSource, /项目分析模式允许读取当前项目目录和查询公开网络/)
-  assert.match(claudePanelSource, /查询公开信息，并在浏览器授权后使用 Playwright/)
+  assert.match(claudePanelSource, /查询公开信息，并在授权后使用 Playwright/)
   assert.match(claudePanelSource, /function isReadOnlyWebAuthorizationRequest\(text\)/)
   assert.match(claudePanelSource, /if \(isReadOnlyWebAuthorizationRequest\(value\)\) return "web"/)
   assert.match(claudePanelSource, /if \(type === "web"\) \{[\s\S]*?scheduleAuthorizationContinuation\(task, type, "once"\)/)

@@ -1,7 +1,8 @@
 param(
   [string]$PackageRoot = "",
   [switch]$WriteManifest,
-  [switch]$RequireFresh
+  [switch]$RequireFresh,
+  [switch]$SkipBootCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -120,6 +121,16 @@ foreach ($required in @(
   $null = Assert-File (Join-Path $resources $required) "Required portable resource"
 }
 
+# Runtime-generated state files that the app regenerates on every boot with the
+# package's own resolved path (e.g. the Hermes native-terminal launcher, gateway
+# pid/state). build-desktop-client.ps1 removes these before delivery; they are NOT
+# packaged resources. They must not trip the source-machine path scan, which would
+# otherwise false-positive after any app boot (including the boot check below).
+$runtimeStateNames = @(
+  'gateway.lock', 'gateway.pid', 'gateway_state.json', 'gateway-run.log',
+  'hermes-native-terminal.cmd', 'kanban.db.init.lock', 'auth.lock', 'auth.json',
+  '.skills_prompt_snapshot.json', '.tirith-install-failed', 'channel_directory.json'
+)
 $repoNeedle = [Regex]::Escape($RepoRoot.Replace('\\', '/'))
 $currentUserProfileNeedle = if ($env:USERPROFILE) { [Regex]::Escape($env:USERPROFILE.Replace('\\', '/')) } else { $null }
 $textExtensions = @('.cmd', '.bat', '.ps1', '.json', '.yaml', '.yml', '.toml')
@@ -127,6 +138,7 @@ $hardcodedFiles = @(Get-ChildItem -LiteralPath $resources -Recurse -File -ErrorA
   Where-Object { $textExtensions -contains $_.Extension.ToLowerInvariant() })
 foreach ($file in $hardcodedFiles) {
   if ($file.Length -gt 5MB) { continue }
+  if ($runtimeStateNames -contains $file.Name) { continue }
   try {
     $content = Get-Content -LiteralPath $file.FullName -Raw
     $portableContent = $content.Replace('\\', '/')
@@ -166,6 +178,25 @@ if ($newerInputs.Count) {
   if ($RequireFresh) { Add-Error $message } else { Add-Warning $message }
 } else {
   Add-Ok "Package timestamp is current relative to source/build inputs"
+}
+
+# Durable guard: reject a dev-mode EXE (built without tauri/custom-protocol).
+# A dev-mode build boots WebView2 at the Vite dev URL (http://localhost:1420),
+# which is not running in production -> "localhost refused connection".
+$bootCheckScript = Join-Path $RepoRoot "scripts\check-exe-boot-mode.mjs"
+if ($SkipBootCheck) {
+  Add-Warning "Skipped boot-mode check (as requested)"
+} elseif (-not (Test-Path -LiteralPath $bootCheckScript -PathType Leaf)) {
+  Add-Warning "Boot-mode check script not found; skipping"
+} else {
+  Write-Host ""
+  Write-Host "Booting packaged executable to verify production (custom-protocol) mode..."
+  & node $bootCheckScript --exe $packageExe --port 9333 --timeout 25000
+  if ($LASTEXITCODE -ne 0) {
+    Add-Error "Packaged executable is NOT a production build (dev-mode EXE). Rebuild with 'npm run tauri:build' so the tauri/custom-protocol feature is enabled."
+  } else {
+    Add-Ok "Packaged executable boots in production (custom-protocol) mode"
+  }
 }
 
 $manifestPath = Join-Path $PackageRoot "package-manifest.json"
