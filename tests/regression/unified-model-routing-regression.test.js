@@ -6,6 +6,7 @@ import {
   buildClaudeRelayProjection,
   buildOpenClawModelPatch,
   modelRef,
+  normalizeModelSelection,
 } from '../../src/lib/unified-model-routing.js'
 
 const selection = {
@@ -64,6 +65,62 @@ test('Hermes provider identity can differ from the shared OpenClaw provider key'
   const client = fakeClient()
   await applyUnifiedModelSelection({ ...selection, providerId: 'openai_compatible', hermesProvider: 'custom' }, { target: 'hermes', client })
   assert.equal(client.calls[0][1], 'custom')
+})
+
+test('MiniMax CN selection canonicalizes the OpenClaw provider key and derives Hermes minimax-cn', () => {
+  const normalized = normalizeModelSelection({
+    providerId: 'minimax_cn',
+    model: 'MiniMax-M3',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    apiKey: 'k',
+  })
+  assert.equal(normalized.providerId, 'minimax')
+  assert.equal(normalized.hermesProvider, 'minimax-cn')
+})
+
+test('MiniMax International selection derives Hermes minimax', () => {
+  const normalized = normalizeModelSelection({
+    providerId: 'minimax',
+    model: 'MiniMax-M3',
+    baseUrl: 'https://api.minimax.io/v1',
+    apiKey: 'k',
+  })
+  assert.equal(normalized.providerId, 'minimax')
+  assert.equal(normalized.hermesProvider, 'minimax')
+})
+
+test('explicit Hermes provider is preserved for non-MiniMax providers', () => {
+  const normalized = normalizeModelSelection({
+    providerId: 'openai_compatible',
+    hermesProvider: 'custom',
+    model: 'gpt-4',
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'k',
+  })
+  assert.equal(normalized.providerId, 'openai_compatible')
+  assert.equal(normalized.hermesProvider, 'custom')
+})
+
+test('unknown OpenClaw provider defaults to Hermes custom instead of the raw id', () => {
+  const normalized = normalizeModelSelection({
+    providerId: 'openai_compatible',
+    model: 'gpt-5.6-terra',
+    baseUrl: 'https://api.yaoyaolx.com.cn/v1',
+    apiKey: 'k',
+  })
+  assert.equal(normalized.providerId, 'openai_compatible')
+  assert.equal(normalized.hermesProvider, 'custom')
+})
+
+test('known Hermes provider id is kept when no explicit Hermes provider is given', () => {
+  const normalized = normalizeModelSelection({
+    providerId: 'deepseek',
+    model: 'deepseek-chat',
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKey: 'k',
+  })
+  assert.equal(normalized.providerId, 'deepseek')
+  assert.equal(normalized.hermesProvider, 'deepseek')
 })
 
 function fakeClient(overrides = {}) {

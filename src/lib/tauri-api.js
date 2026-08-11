@@ -387,6 +387,7 @@ export const api = {
   claudeCollaborationResultAppend: (result) => invoke('claude_collaboration_result_append', { result }),
   mediaConfigRead: () => invoke('media_config_read'),
   mediaConfigWrite: (config) => invoke('media_config_write', { config }),
+  mediaClassifyIntent: (text, context = {}) => invoke('media_classify_intent', { text, context }),
   mediaGenerateTextImage: (prompt, size) => invoke('media_generate_text_image', { prompt, size }),
   mediaGenerate: (kind, prompt, inputPath, options) => invoke('media_generate', { kind, prompt, inputPath, options }),
 

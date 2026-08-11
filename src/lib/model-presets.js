@@ -17,15 +17,14 @@ export const API_TYPES = [
 
 // 服务商快捷预设
 const BASE_PROVIDER_PRESETS = [
+  { key: 'yyapi', label: 'yyapi', baseUrl: 'https://api.yaoyaolx.com.cn/v1', api: 'openai-completions', site: '', desc: 'SuperClaw 默认中转站；模型列表包含 gpt-image-2 时可自动用于文生图' },
   { key: 'qtcool', label: 'qtcool', badge: '推荐', baseUrl: 'https://gpt.qt.cool/v1', api: 'openai-completions', site: 'https://gpt.qt.cool/', desc: '每日签到领免费模型测试额度，邀请好友再送额度，付费低至官方价 2-3 折' },
   { key: 'shengsuanyun', label: '胜算云', baseUrl: 'https://router.shengsuanyun.com/api/v1', api: 'openai-completions', site: 'https://www.shengsuanyun.com/?from=CH_4BVI0BM2', desc: '国内知名 AI 模型聚合平台，支持多种主流模型' },
   { key: 'siliconflow', label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', api: 'openai-completions', site: 'https://cloud.siliconflow.cn/i/PFrw2an5', desc: '高性价比推理平台，支持 DeepSeek、Qwen 等开源模型' },
   { key: 'volcengine', label: '火山引擎', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', api: 'openai-completions', site: 'https://volcengine.com/L/Ph1OP5I3_GY', desc: '字节跳动旗下云平台，支持豆包等模型' },
   { key: 'aliyun', label: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', api: 'openai-completions', site: 'https://www.aliyun.com/benefit/ai/aistar?userCode=keahn2zr&clubBiz=subTask..12435175..10263..', desc: '阿里云 AI 大模型平台，支持通义千问全系列' },
   { key: 'zhipu', label: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', api: 'openai-completions', site: 'https://www.bigmodel.cn/glm-coding?ic=3F6F9XYKTS', desc: '国产大模型领军企业，支持 GLM-4 全系列' },
-  { key: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions', site: 'https://platform.minimax.io/user-center/basic-information/interface-key', desc: 'MiniMax international endpoint' },
-  { key: 'minimax_cn', label: 'MiniMax 国内', baseUrl: 'https://api.minimaxi.com/v1', api: 'openai-completions', site: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', desc: 'MiniMax China endpoint' },
-  { key: 'minimax_intl', label: 'MiniMax 国际', baseUrl: 'https://api.minimax.io/v1', api: 'openai-completions', site: 'https://platform.minimax.io/user-center/basic-information/interface-key', desc: 'MiniMax international endpoint' },
+  { key: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', api: 'openai-completions', site: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', desc: 'MiniMax China endpoint' },
   { key: 'openai_compatible', label: 'OpenAI Compatible', baseUrl: '', api: 'openai-completions', site: '', desc: '自定义 OpenAI-compatible 服务商，填写 Base URL、API Key 和模型 ID' },
   { key: 'moonshot', label: 'Moonshot / Kimi', baseUrl: 'https://api.moonshot.ai/v1', api: 'openai-completions', site: 'https://platform.moonshot.ai/console/api-keys', desc: 'Kimi 大模型平台，支持超长上下文' },
   { key: 'openai', label: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', api: 'openai-completions', site: 'https://platform.openai.com/api-keys' },
@@ -93,8 +92,6 @@ export const MODEL_PRESETS = {
     { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextWindow: 1000000 },
   ],
   minimax: MINIMAX_MODEL_PRESETS,
-  minimax_cn: MINIMAX_MODEL_PRESETS,
-  minimax_intl: MINIMAX_MODEL_PRESETS,
   moonshot: [
     { id: 'kimi-k2.5', name: 'Kimi K2.5', contextWindow: 131072 },
     { id: 'kimi-k2', name: 'Kimi K2', contextWindow: 131072 },

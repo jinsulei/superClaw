@@ -16,18 +16,47 @@ export function modelRef(providerId, model) {
   return provider && modelId ? `${provider}/${modelId}` : ''
 }
 
+// MiniMax provider keys: OpenClaw stores one canonical `minimax` provider
+// (the region lives in base_url), while Hermes keeps region-specific ids
+// (`minimax` for International, `minimax-cn` for China) that also key the
+// Hermes credential pool. Legacy variants (`minimax_cn`, `minimax-cn`,
+// `minimax-portal*`) all resolve back to the canonical `minimax` on the
+// OpenClaw side so a CN MiniMax key never spawns a duplicate provider record.
+const MINIMAX_PROVIDER_RE = /^minimax(-cn)?(-portal)?$|^minimax_cn$/
+
+// Hermes provider registry ids (src-tauri/src/commands/hermes_providers.rs).
+// An OpenClaw provider whose id is NOT one of these is a custom OpenAI-compatible
+// endpoint and must be configured in Hermes as the `custom` provider — passing
+// the raw OpenClaw id (e.g. `yyapi`, `openai_compatible`) produces a
+// `model.provider` value Hermes cannot resolve to a usable API key.
+const HERMES_KNOWN_PROVIDER_RE = /^(anthropic|openai-api|gemini|deepseek|xai|minimax|minimax-cn|huggingface|copilot|zai|kimi-coding|alibaba|xiaomi|openrouter|ai-gateway|opencode-zen|opencode-go|kilocode|nous|openai-codex|qwen-oauth|copilot-acp|custom)$/
+
+function canonicalOpenClawProviderId(providerId) {
+  return MINIMAX_PROVIDER_RE.test(providerId) ? 'minimax' : providerId
+}
+
+function deriveHermesProvider(providerId, baseUrl) {
+  if (MINIMAX_PROVIDER_RE.test(providerId)) {
+    return String(baseUrl || '').includes('api.minimaxi.com') ? 'minimax-cn' : 'minimax'
+  }
+  return HERMES_KNOWN_PROVIDER_RE.test(providerId) ? providerId : 'custom'
+}
+
 export function normalizeModelSelection(input = {}) {
-  const providerId = clean(input.providerId || input.provider)
+  const rawProviderId = clean(input.providerId || input.provider)
   const model = clean(input.model)
   const baseUrl = clean(input.baseUrl).replace(/\/+$/, '')
   const apiKey = clean(input.apiKey)
   const api = clean(input.api) || 'openai-completions'
-  if (!providerId || !model || !baseUrl) {
+  if (!rawProviderId || !model || !baseUrl) {
     throw new Error('服务商、模型和 Base URL 不能为空')
   }
+  const providerId = canonicalOpenClawProviderId(rawProviderId)
+  const explicitHermesProvider = clean(input.hermesProvider)
+  const hermesProvider = explicitHermesProvider || deriveHermesProvider(rawProviderId, baseUrl)
   return {
     providerId,
-    hermesProvider: clean(input.hermesProvider) || providerId,
+    hermesProvider,
     model,
     baseUrl,
     api,
@@ -79,6 +108,29 @@ export function buildOpenClawModelPatch(currentConfig, input, options = {}) {
     }
     config.agents.defaults.models ||= {}
     config.agents.defaults.models[reference] ||= {}
+  }
+
+  // MiniMax web_search wiring: OpenClaw's MiniMax plugin does not reuse
+  // models.providers.*.apiKey for web search. It needs its own plugin-scoped
+  // credential (plugins.entries.minimax.config.webSearch.apiKey) plus an
+  // explicit tools.web.search.provider, otherwise the gateway reports
+  // "web_search is disabled or no provider is available."
+  if (/^minimax(-cn)?(-portal)?$|^minimax_cn$/.test(selection.providerId) && selection.apiKey) {
+    const region = selection.baseUrl.includes('api.minimaxi.com') ? 'cn' : 'global'
+    config.plugins ||= {}
+    config.plugins.allow ||= []
+    if (!config.plugins.allow.includes('minimax')) config.plugins.allow.push('minimax')
+    config.plugins.entries ||= {}
+    config.plugins.entries.minimax ||= {}
+    config.plugins.entries.minimax.enabled = true
+    config.plugins.entries.minimax.config ||= {}
+    config.plugins.entries.minimax.config.webSearch ||= {}
+    config.plugins.entries.minimax.config.webSearch.apiKey = selection.apiKey
+    config.plugins.entries.minimax.config.webSearch.region = region
+    config.tools ||= {}
+    config.tools.web ||= {}
+    config.tools.web.search ||= {}
+    config.tools.web.search.provider = 'minimax'
   }
 
   return { config, selection, reference }

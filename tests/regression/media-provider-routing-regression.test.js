@@ -5,10 +5,17 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  autoDetectMediaRoutes,
+  autoYyapiTextImageRoute,
   buildMediaRoutePatch,
   buildMediaRoutesForProvider,
+  buildVideoEndpoints,
+  buildVideoPollEndpoint,
+  buildVideoRequestBody,
   emptyMediaRouteConfig,
   normalizeMediaRouteConfig,
+  parseVideoPollResponse,
+  parseVideoResponse,
   protocolForMediaProvider,
   resolveMediaRoute,
   saveMediaRoute,
@@ -55,6 +62,38 @@ test('media routes do not modify OpenClaw chat primary or fallbacks', () => {
   assert.equal(JSON.stringify(openclaw), before)
 })
 
+test('stale media-route provider references fall back to auto-detected routes', () => {
+  const openclaw = {
+    models: {
+      providers: {
+        minimax: {
+          baseUrl: 'https://api.minimaxi.com/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'MiniMax-M3' }, { id: 'MiniMax-M2.7' }],
+        },
+      },
+    },
+  }
+  // .dev-data/media/media-routes.json previously referenced minimax_cn / yyapi
+  // after a provider rename. The explicit route must not hard-fail; it should
+  // fall back to the auto-detected MiniMax route for the same kind.
+  const staleConfig = {
+    routes: {
+      text_to_image: { providerId: 'yyapi', model: 'gpt-image-2', protocol: 'openai-images', enabled: true },
+      text_to_video: { providerId: 'minimax_cn', model: 'MiniMax-M2.7', protocol: 'minimax-cli', enabled: true },
+    },
+  }
+  const image = resolveMediaRoute(staleConfig, openclaw, 'text_to_image')
+  assert.equal(image.ready, true)
+  assert.equal(image.route.providerId, 'minimax')
+  assert.equal(image.route.protocol, 'minimax-cli')
+  assert.equal(image.route.model, 'MiniMax-M3')
+  const video = resolveMediaRoute(staleConfig, openclaw, 'text_to_video')
+  assert.equal(video.ready, true)
+  assert.equal(video.route.providerId, 'minimax')
+  assert.equal(video.route.model, 'MiniMax-M3')
+})
+
 test('saving a media route only calls its dedicated portable config bridge', async () => {
   const calls = []
   const client = {
@@ -68,10 +107,10 @@ test('saving a media route only calls its dedicated portable config bridge', asy
 
 test('MiniMax uses its dedicated portable CLI adapter without changing chat routing', () => {
   const minimax = { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'hidden', models: [{ id: 'MiniMax-M3' }] }
-  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'text_to_image'), 'minimax-cli')
-  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'image_to_video'), 'minimax-cli')
-  assert.equal(protocolForMediaProvider('minimax_cn', minimax, 'image_to_image'), 'openai-images')
-  const route = { providerId: 'minimax_cn', model: 'MiniMax-M3', protocol: 'minimax-cli', enabled: true }
+  assert.equal(protocolForMediaProvider('minimax', minimax, 'text_to_image'), 'minimax-cli')
+  assert.equal(protocolForMediaProvider('minimax', minimax, 'image_to_video'), 'minimax-cli')
+  assert.equal(protocolForMediaProvider('minimax', minimax, 'image_to_image'), 'openai-images')
+  const route = { providerId: 'minimax', model: 'MiniMax-M3', protocol: 'minimax-cli', enabled: true }
   assert.deepEqual(normalizeMediaRouteConfig({ routes: { text_to_music: route } }), { version: 1, routes: { text_to_music: route } })
   assert.throws(
     () => normalizeMediaRouteConfig({ routes: { image_to_image: route } }),
@@ -81,7 +120,7 @@ test('MiniMax uses its dedicated portable CLI adapter without changing chat rout
 
 test('one media provider selection expands only to its supported capabilities', () => {
   const minimax = { baseUrl: 'https://api.minimaxi.com/v1', apiKey: 'hidden', models: [{ id: 'MiniMax-M3' }] }
-  const routes = buildMediaRoutesForProvider('minimax_cn', minimax, 'MiniMax-M3')
+  const routes = buildMediaRoutesForProvider('minimax', minimax, 'MiniMax-M3')
   assert.deepEqual(Object.keys(routes).sort(), [
     'image_to_video',
     'image_understanding',
@@ -92,6 +131,168 @@ test('one media provider selection expands only to its supported capabilities', 
   ])
   assert.equal(routes.text_to_image.protocol, 'minimax-cli')
   assert.equal(routes.image_to_image, undefined)
+})
+
+test('yyapi uses gpt-image-2 only as an implicit text-to-image fallback', () => {
+  const yyapi = {
+    models: {
+      providers: {
+        yyapi: {
+          baseUrl: 'https://api.yaoyaolx.com.cn',
+          apiKey: 'hidden',
+          models: [{ id: 'gpt-5.4' }, { id: 'GPT-IMAGE-2' }],
+        },
+        image_provider: {
+          baseUrl: 'https://example.test/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'image-model-v1' }],
+        },
+      },
+    },
+  }
+  const route = autoYyapiTextImageRoute(yyapi)
+  assert.deepEqual(route, {
+    providerId: 'yyapi', model: 'GPT-IMAGE-2', protocol: 'openai-images', enabled: true, implicit: true,
+  })
+  assert.equal(resolveMediaRoute(emptyMediaRouteConfig(), yyapi, 'text_to_image').ready, true)
+  assert.equal(resolveMediaRoute(emptyMediaRouteConfig(), yyapi, 'image_to_image').ready, false)
+  // An explicit route referencing an existing provider always wins over
+  // auto-detection; a stale reference (provider missing) falls back instead.
+  const explicit = { routes: { text_to_image: imageRoute } }
+  assert.equal(resolveMediaRoute(explicit, yyapi, 'text_to_image').route.providerId, 'image_provider')
+  const staleExplicit = { routes: { text_to_image: { ...imageRoute, providerId: 'renamed_provider' } } }
+  assert.equal(resolveMediaRoute(staleExplicit, yyapi, 'text_to_image').route.providerId, 'yyapi')
+  assert.deepEqual(buildMediaRoutesForProvider('yyapi', yyapi.models.providers.yyapi, 'gpt-image-2'), {
+    text_to_image: { providerId: 'yyapi', model: 'gpt-image-2', protocol: 'openai-images', enabled: true },
+  })
+})
+
+test('即梦 Seedream/Seedance auto-routes to OpenAI image/video protocols', () => {
+  const config = {
+    models: {
+      providers: {
+        yyapi: {
+          baseUrl: 'https://api.yaoyaolx.com.cn/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'gpt-5.4' }, { id: 'gpt-image-2' }],
+        },
+        jimeng: {
+          baseUrl: 'https://jimeng.example.com/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'doubao-seedream-4-0' }, { id: 'doubao-seedance-1-0-pro' }],
+        },
+      },
+    },
+  }
+  const routes = autoDetectMediaRoutes(config)
+  // gpt-image-2 wins text_to_image over Seedream
+  assert.equal(routes.text_to_image.providerId, 'yyapi')
+  assert.equal(routes.text_to_image.model, 'gpt-image-2')
+  assert.equal(routes.text_to_image.protocol, 'openai-images')
+  // Seedream covers image_to_image
+  assert.deepEqual(routes.image_to_image, {
+    providerId: 'jimeng', model: 'doubao-seedream-4-0', protocol: 'openai-images', enabled: true, implicit: true,
+  })
+  // Seedance covers video
+  assert.deepEqual(routes.text_to_video, {
+    providerId: 'jimeng', model: 'doubao-seedance-1-0-pro', protocol: 'openai-video', enabled: true, implicit: true,
+  })
+  assert.equal(routes.image_to_video.providerId, 'jimeng')
+  // No speech/music/understanding synthesized for a relay-only config
+  assert.equal(routes.text_to_speech, undefined)
+  assert.equal(routes.text_to_music, undefined)
+  // resolveMediaRoute picks up the auto-detected Seedance route
+  assert.equal(resolveMediaRoute(emptyMediaRouteConfig(), config, 'text_to_video').ready, true)
+})
+
+test('即梦 alone routes both image and video when no gpt-image-2/MiniMax exists', () => {
+  const config = {
+    models: {
+      providers: {
+        jimeng: {
+          baseUrl: 'https://jimeng.example.com/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'seedream-4-0' }, { id: 'seedance-1-0-pro' }],
+        },
+      },
+    },
+  }
+  const routes = autoDetectMediaRoutes(config)
+  assert.equal(routes.text_to_image.protocol, 'openai-images')
+  assert.equal(routes.text_to_image.model, 'seedream-4-0')
+  assert.equal(routes.text_to_video.protocol, 'openai-video')
+  assert.equal(routes.text_to_video.model, 'seedance-1-0-pro')
+})
+
+test('MiniMax beats Seedance for video when both are configured', () => {
+  const config = {
+    models: {
+      providers: {
+        minimax: {
+          baseUrl: 'https://api.minimaxi.com/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'MiniMax-M3' }],
+        },
+        jimeng: {
+          baseUrl: 'https://jimeng.example.com/v1',
+          apiKey: 'hidden',
+          models: [{ id: 'seedance-1-0-pro' }],
+        },
+      },
+    },
+  }
+  const routes = autoDetectMediaRoutes(config)
+  assert.equal(routes.text_to_video.providerId, 'minimax')
+  assert.equal(routes.text_to_video.protocol, 'minimax-cli')
+  assert.equal(routes.image_to_video.providerId, 'minimax')
+})
+
+test('buildMediaRoutesForProvider maps Seedream and Seedance to OpenAI protocols', () => {
+  const jimeng = {
+    baseUrl: 'https://jimeng.example.com/v1',
+    apiKey: 'hidden',
+    models: [{ id: 'doubao-seedream-4-0' }, { id: 'doubao-seedance-1-0-pro' }],
+  }
+  assert.deepEqual(buildMediaRoutesForProvider('jimeng', jimeng, 'doubao-seedream-4-0'), {
+    text_to_image: { providerId: 'jimeng', model: 'doubao-seedream-4-0', protocol: 'openai-images', enabled: true },
+    image_to_image: { providerId: 'jimeng', model: 'doubao-seedream-4-0', protocol: 'openai-images', enabled: true },
+  })
+  assert.deepEqual(buildMediaRoutesForProvider('jimeng', jimeng, 'doubao-seedance-1-0-pro'), {
+    text_to_video: { providerId: 'jimeng', model: 'doubao-seedance-1-0-pro', protocol: 'openai-video', enabled: true },
+    image_to_video: { providerId: 'jimeng', model: 'doubao-seedance-1-0-pro', protocol: 'openai-video', enabled: true },
+  })
+})
+
+test('OpenAI-style video adapter builds endpoints and parses async/sync responses', () => {
+  assert.deepEqual(buildVideoEndpoints('https://relay.test/v1'), {
+    submit: 'https://relay.test/v1/videos/generations',
+    pollBase: 'https://relay.test/v1/videos/generations/',
+    ark: false,
+  })
+  assert.deepEqual(buildVideoEndpoints('https://ark.cn-beijing.volces.com/api/v3'), {
+    submit: 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks',
+    pollBase: 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/',
+    ark: true,
+  })
+  assert.equal(
+    buildVideoPollEndpoint('https://relay.test/v1', 'task_1'),
+    'https://relay.test/v1/videos/generations/task_1',
+  )
+  assert.deepEqual(buildVideoRequestBody('seedance-1', 'hello'), { model: 'seedance-1', prompt: 'hello' })
+  assert.deepEqual(buildVideoRequestBody('seedance-1', 'hello', { ark: true }), {
+    model: 'seedance-1',
+    content: [{ type: 'text', text: 'hello' }],
+  })
+  assert.deepEqual(parseVideoResponse({ id: 'task_1' }), { taskId: 'task_1', videoUrl: '', videoB64: '' })
+  assert.deepEqual(parseVideoResponse({ data: [{ url: 'http://x/v.mp4' }] }), {
+    taskId: '', videoUrl: 'http://x/v.mp4', videoB64: '',
+  })
+  assert.deepEqual(parseVideoPollResponse({ status: 'succeeded', data: [{ url: 'http://x/v.mp4' }] }), {
+    status: 'succeeded', videoUrl: 'http://x/v.mp4', error: '',
+  })
+  assert.deepEqual(parseVideoPollResponse({ task_status: 'failed', error_message: 'boom' }), {
+    status: 'failed', videoUrl: '', error: 'boom',
+  })
 })
 
 test('text-to-image requests become an isolated OpenClaw collaboration task', () => {
@@ -177,10 +378,10 @@ test('OpenClaw media tool failures are returned to Hermes as failed collaboratio
 
 test('OpenClaw image-to-video stays on the durable Gateway history path', () => {
   const chat = fs.readFileSync(path.join(root, 'src/pages/chat.js'), 'utf8')
-  assert.match(chat, /Gateway JSONL is the authoritative OpenClaw history/)
   assert.match(chat, /Call superclaw_generate_video once with imagePath=/)
   assert.match(chat, /do not use exec, shell, filesystem search, or recursive scans/i)
   assert.match(chat, /wsClient\.chatSend\(_sessionKey, sendText, attachments/)
+  assert.match(chat, /media_type === 'image_to_image' \? task : null/)
   assert.doesNotMatch(chat, /return \{ \.\.\.task, inputPath \}/)
 })
 
@@ -214,4 +415,70 @@ test('OpenClaw results use the durable portable handoff and never render raw pro
   assert.match(sharedMemory, /pub fn collaboration_message_append/)
   assert.match(sharedMemory, /pub fn collaboration_message_drain/)
   assert.match(sharedMemory, /super::shared_memory_data_dir\(\)/)
+})
+
+test('即梦 media video wiring is present in the plugin, Web debug server, and native command', () => {
+  const routing = fs.readFileSync(path.join(root, 'src/lib/media-provider-routing.js'), 'utf8')
+  const plugin = fs.readFileSync(path.join(root, 'src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js'), 'utf8')
+  const devApi = fs.readFileSync(path.join(root, 'scripts/dev-api.js'), 'utf8')
+  const media = fs.readFileSync(path.join(root, 'src-tauri/src/commands/media.rs'), 'utf8')
+  // Routing lib detects 即梦 Seedream/Seedance by model-list keywords.
+  assert.match(routing, /SEEDREAM_KEYWORDS = \['seedream', 'doubao-seedream'\]/)
+  assert.match(routing, /SEEDANCE_KEYWORDS = \['seedance', 'doubao-seedance', 'seedans'\]/)
+  assert.match(routing, /function autoDetectMediaRoutes\(openclawConfig\)/)
+  assert.match(routing, /buildVideoEndpoints\(baseUrl\)/)
+  // Plugin resolves via auto-detection and executes the openai-video adapter.
+  assert.match(plugin, /function autoDetectMediaRoutes\(config\)/)
+  assert.match(plugin, /autoDetectMediaRoutes\(config\)\[kind\]/)
+  assert.match(plugin, /async function generateOpenAiVideo\(params, route\)/)
+  assert.match(plugin, /route\.selected\.protocol === 'openai-video'/)
+  // Web debug server shares the same auto-detection and video generation.
+  assert.match(devApi, /function autoDetectMediaRoutes\(openclawConfig\)/)
+  assert.match(devApi, /async function generateDevVideo\(/)
+  assert.match(devApi, /normalizedKind === 'text_to_video' \|\| normalizedKind === 'image_to_video'/)
+  // Native Rust command shares the same detection and run_openai_video.
+  assert.match(media, /fn auto_detect_media_routes\(config: &Value\)/)
+  assert.match(media, /async fn run_openai_video\(/)
+  assert.match(media, /Some\("openai-video"\) if kind == "text_to_video" \|\| kind == "image_to_video"/)
+})
+
+test('media route resolution falls back when the configured provider was renamed', () => {
+  // All four media-route resolution layers must agree: an explicitly-configured
+  // route whose provider no longer exists (e.g. minimax_cn/yyapi -> minimax)
+  // falls back to the auto-detected route instead of hard-failing.
+  const routing = fs.readFileSync(path.join(root, 'src/lib/media-provider-routing.js'), 'utf8')
+  const plugin = fs.readFileSync(path.join(root, 'src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js'), 'utf8')
+  const devApi = fs.readFileSync(path.join(root, 'scripts/dev-api.js'), 'utf8')
+  const media = fs.readFileSync(path.join(root, 'src-tauri/src/commands/media.rs'), 'utf8')
+  assert.match(routing, /function mediaProviderUsable\(openclawConfig, route\)/)
+  assert.match(routing, /fall back to the auto-detected route/)
+  assert.match(plugin, /function providerUsable\(config, route\)/)
+  assert.match(plugin, /fall back to the auto-detected route/)
+  assert.match(devApi, /function mediaProviderUsable\(openclaw, route\)/)
+  assert.match(devApi, /fall back to the auto-detected route/)
+  assert.match(media, /fn media_provider_usable\(openclaw: &Value, route: &Value\)/)
+  assert.match(media, /hard-fail media generation/)
+})
+
+test('即梦 plugin template is byte-identical across dev and packaged resource copies', () => {
+  // The packaged portable bundle is assembled from src-tauri/resources, and the
+  // Tauri target dirs mirror it for dev/release runs. A drift in any copy means
+  // `tauri dev` and the packaged artifact would behave differently for 即梦.
+  const copies = [
+    'src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js',
+    'src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js',
+    'src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js',
+    'src-tauri/target/debug/resources/templates/openclaw-plugins/superclaw-media/index.js',
+    'src-tauri/target/debug/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js',
+    'src-tauri/target/debug/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js',
+    'src-tauri/target/release/resources/templates/openclaw-plugins/superclaw-media/index.js',
+    'src-tauri/target/release/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js',
+    'src-tauri/target/release/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js',
+  ]
+  const template = fs.readFileSync(path.join(root, copies[0]), 'utf8')
+  assert.ok(template.includes('async function generateOpenAiVideo'))
+  for (const copy of copies) {
+    const actual = fs.readFileSync(path.join(root, copy), 'utf8')
+    assert.equal(actual, template, `plugin copy drifted from template: ${copy}`)
+  }
 })

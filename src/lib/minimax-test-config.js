@@ -279,6 +279,10 @@ export async function applyMiniMaxTestConfig(input = {}) {
     api: 'openai-completions',
     model: MODEL_ID,
     models: [openClawModelDefinition()],
+    // Hermes keeps region-specific MiniMax ids (`minimax-cn` for the CN
+    // endpoint), so the frontend fallback path must match the direct
+    // save_minimax_test_config writer instead of defaulting to `minimax`.
+    hermesProvider: providerForBaseUrl(config.baseUrl),
   }, { target: 'default', forceClaudeRelay: true })
   return statusFromParts(config, apiKey, {
     openclaw: applied.applied.includes('openclaw'),

@@ -18,7 +18,7 @@ test('PROVIDER_PRESETS contains MiniMax entry', () => {
 
 test('MiniMax provider preset uses correct API base URL', () => {
   const minimax = PROVIDER_PRESETS.find(p => p.key === 'minimax')
-  assert.equal(minimax.baseUrl, 'https://api.minimax.io/v1')
+  assert.equal(minimax.baseUrl, 'https://api.minimaxi.com/v1')
 })
 
 test('MiniMax provider preset has site and description', () => {
@@ -31,7 +31,10 @@ test('all provider presets have required fields', () => {
   for (const p of PROVIDER_PRESETS) {
     assert.ok(p.key, `preset missing key`)
     assert.ok(p.label, `preset ${p.key} missing label`)
-    assert.ok(p.baseUrl, `preset ${p.key} missing baseUrl`)
+    // openai_compatible is intentionally blank; the user fills in a custom Base URL.
+    if (p.key !== 'openai_compatible') {
+      assert.ok(p.baseUrl, `preset ${p.key} missing baseUrl`)
+    }
     assert.ok(p.api, `preset ${p.key} missing api type`)
     const valid = API_TYPES.map(t => t.value)
     assert.ok(valid.includes(p.api), `preset ${p.key} has invalid api type: ${p.api}`)
