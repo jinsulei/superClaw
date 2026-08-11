@@ -270,6 +270,7 @@ pub fn run() {
             // Portable media provider routes. These never alter Gateway chat routing.
             media::media_config_read,
             media::media_config_write,
+            media::media_classify_intent,
             media::media_generate_text_image,
             media::media_generate,
             // 扩展工具

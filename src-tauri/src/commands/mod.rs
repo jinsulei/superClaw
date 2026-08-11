@@ -834,6 +834,10 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
         }
     }
 
+    if ensure_portable_minimax_web_search(obj) {
+        changed = true;
+    }
+
     if changed {
         if let Ok(content) = serde_json::to_string_pretty(&config) {
             let _ = std::fs::write(config_path, content);
@@ -841,6 +845,128 @@ fn ensure_portable_openclaw_config(openclaw_dir: &Path) {
     }
 
     ensure_portable_device_identity(openclaw_dir);
+}
+
+/// MiniMax 的 OpenClaw 插件通过 `plugins.entries.minimax.config.webSearch`
+/// 持有独立的 web_search 凭据，且不会复用 `models.providers.*.apiKey`。
+/// 这里在启动自愈阶段把用户已配置的 MiniMax 提供商密钥镜像到该插件路径，
+/// 同时显式声明 `tools.web.search.provider = "minimax"`，
+/// 保证打包版与开发版在无机器级环境变量时也能启用 web_search。
+fn ensure_portable_minimax_web_search(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let mut changed = false;
+
+    let providers = match obj
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.as_object())
+    {
+        Some(providers) => providers,
+        None => return false,
+    };
+
+    // 兼容 minimax / minimax_cn / minimax-portal / minimax-portal-cn 等历史键名。
+    let mut minimax_api_key: Option<&str> = None;
+    let mut minimax_base_url = "";
+    for key in ["minimax", "minimax_cn", "minimax-portal", "minimax-portal-cn"] {
+        if let Some(provider) = providers.get(key).and_then(|v| v.as_object()) {
+            if minimax_api_key.is_none() {
+                minimax_api_key = provider
+                    .get("apiKey")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && !s.starts_with('$') && !s.starts_with('*'));
+            }
+            if minimax_base_url.is_empty() {
+                minimax_base_url = provider
+                    .get("baseUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+            }
+        }
+    }
+    // 克隆为 owned String，结束对 providers（obj 不可变借用）的依赖，
+    // 以便后续对 obj 做可变借用写入 webSearch / tools.web.search。
+    let Some(api_key) = minimax_api_key.map(str::to_string) else {
+        return false;
+    };
+    let region = if minimax_base_url.contains("api.minimaxi.com") {
+        "cn"
+    } else {
+        "global"
+    };
+
+    // 1) plugins.allow 与 plugins.entries.minimax.config.webSearch
+    if let Some(plugins) = obj.get_mut("plugins").and_then(|v| v.as_object_mut()) {
+        let allow = plugins.entry("allow").or_insert_with(|| serde_json::json!([]));
+        if let Some(allow_arr) = allow.as_array_mut() {
+            if !allow_arr.iter().any(|v| v.as_str() == Some("minimax")) {
+                allow_arr.push(serde_json::json!("minimax"));
+                changed = true;
+            }
+        }
+        let entries = plugins
+            .entry("entries")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(entries_obj) = entries.as_object_mut() {
+            let entry = entries_obj
+                .entry("minimax")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(entry_obj) = entry.as_object_mut() {
+                if entry_obj.get("enabled").and_then(|v| v.as_bool()) != Some(true) {
+                    entry_obj.insert("enabled".into(), serde_json::json!(true));
+                    changed = true;
+                }
+                let config = entry_obj
+                    .entry("config")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(config_obj) = config.as_object_mut() {
+                    let web_search = config_obj
+                        .entry("webSearch")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(web_search_obj) = web_search.as_object_mut() {
+                        if web_search_obj
+                            .get("apiKey")
+                            .and_then(|v| v.as_str())
+                            != Some(api_key.as_str())
+                        {
+                            web_search_obj
+                                .insert("apiKey".into(), serde_json::json!(api_key));
+                            changed = true;
+                        }
+                        if web_search_obj
+                            .get("region")
+                            .and_then(|v| v.as_str())
+                            != Some(region)
+                        {
+                            web_search_obj
+                                .insert("region".into(), serde_json::json!(region));
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) tools.web.search.provider = "minimax"
+    if let Some(tools) = obj.get_mut("tools").and_then(|v| v.as_object_mut()) {
+        let web = tools.entry("web").or_insert_with(|| serde_json::json!({}));
+        if let Some(web_obj) = web.as_object_mut() {
+            let search = web_obj
+                .entry("search")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(search_obj) = search.as_object_mut() {
+                if search_obj.get("provider").and_then(|v| v.as_str()) != Some("minimax") {
+                    search_obj.insert("provider".into(), serde_json::json!("minimax"));
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    changed
 }
 
 fn ensure_portable_device_identity(openclaw_dir: &Path) {

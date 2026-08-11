@@ -120,6 +120,9 @@ function hermesMediaRoots() {
   const roots = [
     path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'generated'),
     path.join(appRootDir(), 'resources', 'data', 'generated'),
+    // Dev/portable media output written by the native media command and the
+    // superclaw-media OpenClaw plugin (mirrors Rust hermes_media_roots).
+    path.join(appRootDir(), '.dev-data', 'generated'),
     path.join(OPENCLAW_DIR, 'clawpanel', 'images'),
     path.join(hermesHome(), 'generated'),
     path.join(hermesHome(), 'image_cache'),
@@ -847,20 +850,43 @@ function bundledOpenclawBinDir() {
 function portableOpenclawDataDir() {
   const testDir = testConfigHomeDir()
   if (testDir) return testDir
-  const resDir = appResourcesDir()
-  if (!resDir) return null
-  const dir = path.join(resDir, 'data', '.openclaw')
-  if (fs.existsSync(dir) || bundledOpenclawBinDir()) return dir
-  return null
+  // Vite is only used for source debugging. Mirror Tauri debug mode so model
+  // settings, routes, generated media, and gateway state are one workspace.
+  const devDir = path.join(appRootDir(), '.dev-data', '.openclaw')
+  const seedDir = path.join(appRootDir(), 'src-tauri', 'resources', 'data', '.openclaw')
+  if (!fs.existsSync(devDir)) fs.mkdirSync(devDir, { recursive: true })
+  for (const name of ['openclaw.json', 'clawpanel.json', 'mcp.json']) {
+    const source = path.join(seedDir, name)
+    const target = path.join(devDir, name)
+    if (!fs.existsSync(target) && fs.existsSync(source)) fs.copyFileSync(source, target)
+  }
+  return devDir
 }
 
-const MEDIA_ROUTE_KINDS = new Set(['text_to_image', 'image_to_image', 'text_to_video', 'image_to_video'])
-const MEDIA_ROUTE_PROTOCOLS = new Set(['openai-images', 'openai-video', 'custom'])
+// Keep this list in sync with src-tauri/src/commands/media.rs so a legacy
+// route for one media capability cannot prevent another route from loading.
+const MEDIA_ROUTE_KINDS = new Set([
+  'text_to_image',
+  'image_to_image',
+  'text_to_video',
+  'image_to_video',
+  'text_to_speech',
+  'text_to_music',
+  'image_understanding',
+])
+const MEDIA_ROUTE_PROTOCOLS = new Set(['openai-images', 'openai-video', 'minimax-cli', 'custom'])
 const MEDIA_ROUTE_FORBIDDEN_FIELDS = new Set(['apiKey', 'api_key', 'token', 'authorization', 'baseUrl', 'base_url'])
 
 function mediaRouteConfigPath() {
-  const resources = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
-  return assertPathInside(resources, path.join(resources, 'data', 'media', 'media-routes.json'))
+  // Keep Vite debugging on the same mutable data directory as Tauri dev.
+  // The source resource remains only the first-run template.
+  const target = path.join(appRootDir(), '.dev-data', 'media', 'media-routes.json')
+  const template = path.join(appRootDir(), 'src-tauri', 'resources', 'data', 'media', 'media-routes.json')
+  if (!fs.existsSync(target) && fs.existsSync(template)) {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.copyFileSync(template, target)
+  }
+  return target
 }
 
 function normalizeMediaRouteConfig(config = {}) {
@@ -905,6 +931,374 @@ function writeMediaRouteConfig(config) {
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, JSON.stringify(normalized, null, 2), 'utf8')
   return { ok: true, path: 'data/media/media-routes.json', config: normalized }
+}
+
+function textImageEndpoint(baseUrl) {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!root) throw new Error('Configured media provider is missing Base URL')
+  return root.endsWith('/v1') ? `${root}/images/generations` : `${root}/v1/images/generations`
+}
+
+function mediaOutputDir() {
+  const dir = path.join(appRootDir(), '.dev-data', 'generated', 'media')
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+function configuredMediaProvider(route) {
+  const providerId = String(route?.providerId || '').trim()
+  const provider = readOpenclawConfigRequired()?.models?.providers?.[providerId]
+  if (!provider || typeof provider !== 'object') throw new Error('Configured media provider was not found')
+  const baseUrl = String(provider.baseUrl || provider.base_url || '').trim()
+  const apiKey = String(provider.apiKey || provider.api_key || provider.key || '').trim()
+  if (!baseUrl || !apiKey) throw new Error('Configured media provider is missing Base URL or API Key')
+  return { baseUrl, apiKey, model: String(route.model || '').trim() }
+}
+
+function providerModelIds(provider) {
+  return (Array.isArray(provider?.models) ? provider.models : [])
+    .map(entry => String(typeof entry === 'string' ? entry : entry?.id || entry?.model || '').trim())
+    .filter(Boolean)
+}
+
+function providerHasCredentials(provider) {
+  return Boolean(
+    String(provider?.baseUrl || provider?.base_url || '').trim() &&
+    String(provider?.apiKey || provider?.api_key || provider?.key || '').trim(),
+  )
+}
+
+function mediaProviderUsable(openclaw, route) {
+  const provider = openclaw?.models?.providers?.[route?.providerId]
+  return Boolean(
+    provider &&
+    typeof provider === 'object' &&
+    String(provider.baseUrl || provider.base_url || '').trim() &&
+    String(provider.apiKey || provider.api_key || provider.key || '').trim(),
+  )
+}
+
+function isMiniMaxProvider(providerId, provider) {
+  const id = String(providerId || '').toLowerCase()
+  const baseUrl = String(provider?.baseUrl || provider?.base_url || '').toLowerCase()
+  return id.includes('minimax') || baseUrl.includes('api.minimax.io') || baseUrl.includes('api.minimaxi.com')
+}
+
+// 即梦 (Jidu/Dreamina) 主流模型关键词。Seedream 是生图模型，Seedance 是生视频模型。
+// 按子串做大小写不敏感匹配，与 src/lib/media-provider-routing.js 保持一致。
+const SEEDREAM_KEYWORDS = ['seedream', 'doubao-seedream']
+const SEEDANCE_KEYWORDS = ['seedance', 'doubao-seedance', 'seedans']
+const YYAPI_IMAGE_MODEL_ID = 'gpt-image-2'
+
+function autoDetectMediaRoutes(openclawConfig) {
+  const providers = openclawConfig?.models?.providers || {}
+  const routes = {}
+  const mark = (kind, route) => {
+    if (!routes[kind]) routes[kind] = { ...route, implicit: true }
+  }
+  const gptImageProviders = []
+  const minimaxProviders = []
+  const seedreamProviders = []
+  const seedanceProviders = []
+  for (const [providerId, provider] of Object.entries(providers)) {
+    if (!provider || typeof provider !== 'object' || !providerHasCredentials(provider)) continue
+    const modelIds = providerModelIds(provider)
+    const lowerIds = modelIds.map(id => id.toLowerCase())
+    if (isMiniMaxProvider(providerId, provider)) {
+      minimaxProviders.push({ providerId, model: modelIds[0] || 'MiniMax' })
+    }
+    if (lowerIds.some(id => id === YYAPI_IMAGE_MODEL_ID)) {
+      const model = modelIds.find(id => id.toLowerCase() === YYAPI_IMAGE_MODEL_ID)
+      gptImageProviders.push({ providerId, model })
+    }
+    if (lowerIds.some(id => SEEDREAM_KEYWORDS.some(keyword => id.includes(keyword)))) {
+      const model = modelIds.find(id => SEEDREAM_KEYWORDS.some(keyword => id.toLowerCase().includes(keyword)))
+      seedreamProviders.push({ providerId, model })
+    }
+    if (lowerIds.some(id => SEEDANCE_KEYWORDS.some(keyword => id.includes(keyword)))) {
+      const model = modelIds.find(id => SEEDANCE_KEYWORDS.some(keyword => id.toLowerCase().includes(keyword)))
+      seedanceProviders.push({ providerId, model })
+    }
+  }
+  if (gptImageProviders.length) {
+    const r = gptImageProviders[0]
+    mark('text_to_image', { providerId: r.providerId, model: r.model, protocol: 'openai-images', enabled: true })
+  } else if (minimaxProviders.length) {
+    const r = minimaxProviders[0]
+    mark('text_to_image', { providerId: r.providerId, model: r.model, protocol: 'minimax-cli', enabled: true })
+  } else if (seedreamProviders.length) {
+    const r = seedreamProviders[0]
+    mark('text_to_image', { providerId: r.providerId, model: r.model, protocol: 'openai-images', enabled: true })
+  }
+  if (seedreamProviders.length) {
+    const r = seedreamProviders[0]
+    mark('image_to_image', { providerId: r.providerId, model: r.model, protocol: 'openai-images', enabled: true })
+  }
+  if (minimaxProviders.length) {
+    const r = minimaxProviders[0]
+    for (const kind of ['text_to_image', 'text_to_video', 'image_to_video', 'text_to_speech', 'text_to_music', 'image_understanding']) {
+      mark(kind, { providerId: r.providerId, model: r.model, protocol: 'minimax-cli', enabled: true })
+    }
+  }
+  if (seedanceProviders.length) {
+    const r = seedanceProviders[0]
+    mark('text_to_video', { providerId: r.providerId, model: r.model, protocol: 'openai-video', enabled: true })
+    mark('image_to_video', { providerId: r.providerId, model: r.model, protocol: 'openai-video', enabled: true })
+  }
+  return routes
+}
+
+function autoYyapiTextImageRoute(kind, openclawConfig) {
+  if (kind !== 'text_to_image') return null
+  const provider = openclawConfig?.models?.providers?.yyapi
+  const baseUrl = String(provider?.baseUrl || provider?.base_url || '').trim()
+  const apiKey = String(provider?.apiKey || provider?.api_key || provider?.key || '').trim()
+  const models = Array.isArray(provider?.models) ? provider.models : []
+  const model = models.map(entry => typeof entry === 'string' ? entry : (entry?.id || entry?.model || ''))
+    .map(value => String(value).trim())
+    .find(value => value.toLowerCase() === 'gpt-image-2')
+  return baseUrl && apiKey && model
+    ? { providerId: 'yyapi', model, protocol: 'openai-images', enabled: true }
+    : null
+}
+
+function configuredMediaRoute(config, kind) {
+  const openclaw = readOpenclawConfigOptional()
+  const primary = String(openclaw?.agents?.defaults?.model?.primary || '').trim().toLowerCase()
+  if (kind === 'text_to_image' && primary.startsWith('yyapi/')) {
+    const yyapiRoute = autoDetectMediaRoutes(openclaw).text_to_image
+    if (yyapiRoute) return yyapiRoute
+  }
+  let selected = config?.routes?.[kind] || autoDetectMediaRoutes(openclaw)[kind]
+  if (!selected) return undefined
+  // An explicitly-configured media route always wins, but only while its
+  // provider still exists and is fully configured. After a provider rename
+  // (e.g. minimax_cn/yyapi -> minimax), the stale reference must not break
+  // media generation; fall back to the auto-detected route for this kind.
+  if (!mediaProviderUsable(openclaw, selected)) {
+    const detected = autoDetectMediaRoutes(openclaw)[kind]
+    if (detected?.enabled !== false && mediaProviderUsable(openclaw, detected)) selected = detected
+  }
+  return selected
+}
+
+function chatCompletionEndpoint(baseUrl) {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!root) throw new Error('Primary chat provider is missing Base URL')
+  return root.endsWith('/v1') ? `${root}/chat/completions` : `${root}/v1/chat/completions`
+}
+
+function parseMediaIntentResponse(raw) {
+  const text = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  let parsed = {}
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    const start = text.indexOf('{')
+    const end = text.lastIndexOf('}')
+    if (start >= 0 && end >= start) {
+      try { parsed = JSON.parse(text.slice(start, end + 1)) } catch { /* use the safe chat fallback */ }
+    }
+  }
+  const requested = String(parsed?.action || '').toLowerCase()
+  const action = ['generate', 'generate_image'].includes(requested)
+    ? 'generate_image'
+    : ['plan', 'plan_image'].includes(requested) ? 'plan_image' : 'chat'
+  return { action, prompt: String(parsed?.prompt || '').trim(), reason: String(parsed?.reason || '').trim() }
+}
+
+async function classifyDevMediaIntent({ text, context } = {}) {
+  const current = String(text || '').trim()
+  if (!current) return { action: 'chat', prompt: '', reason: 'empty input' }
+  const config = readOpenclawConfigRequired()
+  const primary = String(config?.agents?.defaults?.model?.primary || '').trim()
+  const [providerId, model] = primary.split('/', 2)
+  const provider = config?.models?.providers?.[providerId]
+  const baseUrl = String(provider?.baseUrl || provider?.base_url || '').trim()
+  const apiKey = String(provider?.apiKey || provider?.api_key || provider?.key || '').trim()
+  if (!providerId || !model || !baseUrl || !apiKey) throw new Error('Primary chat model is not configured for media intent classification')
+  const recent = Array.isArray(context?.recent_messages) ? context.recent_messages.slice(-12) : []
+  const system = 'You are a strict JSON intent classifier for a desktop AI assistant. Return JSON only: {"action":"chat|plan_image|generate_image","prompt":"","reason":""}. 你必须根据当前消息和最近对话的含义判断，不要按单个词匹配。规则：用户描述海报、宣传图、插画、图片等视觉成品，但说“先理解意图/先分析/先规划/不要生成”时，action=plan_image；用户当前明确说“现在生成/直接做出来/开始出图/请渲染/给我成图”时，action=generate_image，并把最近对话中的完整画面要求整理到 prompt；普通聊天为 chat。上一轮出现过图片需求本身不能自动执行，必须看当前轮是否要求交付图片。示例："饭店横屏宣传图，88元套餐，你先理解意图" => plan_image。上一轮是该需求，本轮说"现在就按刚才需求生成横屏宣传图" => generate_image。不要解释，不要添加 markdown。'
+  const response = await fetch(chatCompletionEndpoint(baseUrl), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      max_tokens: 320,
+      stream: false,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `Recent conversation (may be empty): ${JSON.stringify(recent)}\n\nCurrent user message:\n${current}` },
+      ],
+    }),
+    signal: AbortSignal.timeout(25000),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body?.error?.message || `Media intent classifier rejected the request (HTTP ${response.status})`)
+  return parseMediaIntentResponse(body?.choices?.[0]?.message?.content)
+}
+
+async function downloadMediaUrl(url, apiKey) {
+  let response = await fetch(url)
+  if (response.status === 401 && apiKey) {
+    response = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+  }
+  if (!response.ok) throw new Error(`Failed to download generated image (HTTP ${response.status})`)
+  const bytes = Buffer.from(await response.arrayBuffer())
+  if (!bytes.length) throw new Error('Generated image URL returned empty data.')
+  return bytes
+}
+
+async function generateDevTextImage({ prompt, size } = {}) {
+  const normalizedPrompt = String(prompt || '').trim()
+  if (!normalizedPrompt || normalizedPrompt.length > 8000) throw new Error('Image prompt must be between 1 and 8000 characters')
+  const route = configuredMediaRoute(readMediaRouteConfig(), 'text_to_image')
+  if (!route || route.enabled === false) throw new Error('Text-to-image is not configured')
+  if (route.protocol !== 'openai-images') {
+    throw new Error(`Text-to-image route '${route.protocol}' is not available in Web debug. Use Tauri dev for this configured route.`)
+  }
+  const provider = configuredMediaProvider(route)
+  const response = await fetch(textImageEndpoint(provider.baseUrl), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` },
+    body: JSON.stringify({ model: provider.model, prompt: normalizedPrompt, size: String(size || '1024x1024'), response_format: 'b64_json', output_format: 'png' }),
+    signal: AbortSignal.timeout(120000),
+  })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body?.error?.message || `Media provider rejected the request (HTTP ${response.status})`)
+  let bytes
+  const encoded = body?.data?.[0]?.b64_json
+  if (encoded) {
+    bytes = Buffer.from(encoded, 'base64')
+  } else if (body?.data?.[0]?.url) {
+    bytes = await downloadMediaUrl(body.data[0].url, provider.apiKey)
+  } else {
+    throw new Error('Media provider did not return image bytes or a URL')
+  }
+  if (!bytes.length || bytes.length > 25 * 1024 * 1024) throw new Error('Media provider returned invalid image data')
+  const outputPath = path.join(mediaOutputDir(), `image-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.png`)
+  fs.writeFileSync(outputPath, bytes)
+  return { ok: true, kind: 'image', path: outputPath, relativePath: `data/generated/media/${path.basename(outputPath)}` }
+}
+
+function videoEndpoints(baseUrl) {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!root) return { submit: '', pollBase: '', ark: false }
+  if (root.includes('/api/v3')) {
+    return { submit: `${root}/contents/generations/tasks`, pollBase: `${root}/contents/generations/tasks/`, ark: true }
+  }
+  if (root.endsWith('/v1')) {
+    return { submit: `${root}/videos/generations`, pollBase: `${root}/videos/generations/`, ark: false }
+  }
+  return { submit: `${root}/v1/videos/generations`, pollBase: `${root}/v1/videos/generations/`, ark: false }
+}
+
+function toVideoImageDataUrl(imagePath) {
+  const value = String(imagePath || '').trim()
+  if (!value) return ''
+  if (/^(https?:|data:)/i.test(value)) return value
+  const filePath = path.resolve(value)
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error(`Image file not found: ${value}`)
+  const stat = fs.statSync(filePath)
+  if (stat.size > 25 * 1024 * 1024) throw new Error('Source image for video is larger than 25MB')
+  const ext = path.extname(filePath).toLowerCase()
+  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png'
+  return `data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`
+}
+
+async function saveDevVideoResult(item, apiKey) {
+  let bytes
+  if (item.b64_json) {
+    bytes = Buffer.from(String(item.b64_json), 'base64')
+  } else if (item.url) {
+    bytes = await downloadMediaUrl(item.url, apiKey)
+  } else {
+    throw new Error('Video provider did not return downloadable video data')
+  }
+  if (!bytes.length || bytes.length > 500 * 1024 * 1024) throw new Error('Generated video is empty or exceeds 500MB')
+  const outputPath = path.join(mediaOutputDir(), `video-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`)
+  fs.writeFileSync(outputPath, bytes)
+  return { ok: true, kind: 'video', path: outputPath, relativePath: `data/generated/media/${path.basename(outputPath)}` }
+}
+
+async function generateDevVideo({ kind, prompt, imagePath } = {}) {
+  const normalizedKind = String(kind || '').trim()
+  if (normalizedKind !== 'text_to_video' && normalizedKind !== 'image_to_video') {
+    throw new Error(`Unsupported video kind: ${normalizedKind}`)
+  }
+  const normalizedPrompt = String(prompt || '').trim()
+  if (!normalizedPrompt || normalizedPrompt.length > 8000) throw new Error('Video prompt must be between 1 and 8000 characters')
+  const route = configuredMediaRoute(readMediaRouteConfig(), normalizedKind)
+  if (!route || route.enabled === false) throw new Error(`Media route '${normalizedKind}' is not configured`)
+  if (route.protocol !== 'openai-video') {
+    throw new Error(`Video route '${route.protocol}' is not available in Web debug. Use Tauri dev for this configured route.`)
+  }
+  const provider = configuredMediaProvider(route)
+  const endpoints = videoEndpoints(provider.baseUrl)
+  if (!endpoints.submit) throw new Error('Video provider Base URL is invalid')
+  const imageDataUrl = toVideoImageDataUrl(imagePath)
+  const body = { model: provider.model }
+  if (endpoints.ark) {
+    body.content = [{ type: 'text', text: normalizedPrompt }]
+    if (imageDataUrl) body.content.push({ type: 'image_url', image_url: { url: imageDataUrl } })
+  } else {
+    body.prompt = normalizedPrompt
+    if (imageDataUrl) body.image_url = imageDataUrl
+  }
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.apiKey}` }
+  if (endpoints.ark) headers['X-MultiModal-Async'] = '1'
+  const submit = await fetch(endpoints.submit, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120000),
+  })
+  const submitPayload = await submit.json().catch(() => ({}))
+  if (!submit.ok) throw new Error(submitPayload?.error?.message || `Video provider submit failed (HTTP ${submit.status})`)
+  const data = Array.isArray(submitPayload.data) ? submitPayload.data : []
+  const first = data[0] || {}
+  if (first.url || first.b64_json) return saveDevVideoResult(first, provider.apiKey)
+  const taskId = String(submitPayload.id || submitPayload.task_id || submitPayload.output?.task_id || submitPayload.request_id || '').trim()
+  if (!taskId) throw new Error('Video provider did not return a task id or a direct video')
+  const pollEndpoint = `${endpoints.pollBase}${encodeURIComponent(taskId)}`
+  const deadline = Date.now() + 600000
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 3000))
+    const poll = await fetch(pollEndpoint, { headers, signal: AbortSignal.timeout(120000) })
+    const pollPayload = await poll.json().catch(() => ({}))
+    if (!poll.ok) throw new Error(pollPayload?.error?.message || `Video provider poll failed (HTTP ${poll.status})`)
+    const status = String(pollPayload.status || pollPayload.task_status || pollPayload.output?.status || '').toLowerCase()
+    const videoUrl = String(
+      pollPayload.data?.[0]?.url ||
+      pollPayload.video_url ||
+      pollPayload.content?.video_url ||
+      pollPayload.output?.video_url ||
+      pollPayload.results?.video_url ||
+      '',
+    ).trim()
+    if (videoUrl) return saveDevVideoResult({ url: videoUrl }, provider.apiKey)
+    if (status.includes('fail') || status.includes('cancel') || status.includes('error')) {
+      throw new Error(pollPayload?.error?.message || pollPayload.error_message || pollPayload.output?.error_message || `Video task failed with status '${status}'`)
+    }
+    if (status.includes('succeed') || status === 'success' || status === 'done') {
+      throw new Error('Video task succeeded without a downloadable URL')
+    }
+  }
+  throw new Error('Video generation timed out after 10 minutes')
+}
+
+function readOpenclawLocalMediaDataUrl(rawPath) {
+  const filePath = normalizeLocalMediaPath(rawPath)
+  const ext = path.extname(filePath).toLowerCase()
+  const mime = HERMES_MEDIA_EXTENSIONS.get(ext)
+  if (!mime) throw new Error(`Unsupported local media type: ${ext || '(none)'}`)
+  const roots = [path.join(OPENCLAW_DIR, 'media'), mediaOutputDir()].map(root => path.resolve(root))
+  if (!roots.some(root => isPathInside(root, filePath))) throw new Error('Local media path is outside allowed generated directories')
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error('Local media file not found')
+  const stat = fs.statSync(filePath)
+  if (stat.size > 25 * 1024 * 1024) throw new Error('Local media file is larger than 25MB')
+  return `data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`
 }
 
 function ensureOpenClawWorkspaceIdentity(resourcesRoot, dataRoot) {
@@ -4889,6 +5283,7 @@ function buildCalibrationBaseline() {
         contextInjection: 'always',
         bootstrapMaxChars: 4000,
         bootstrapTotalMaxChars: 12000,
+        timeoutSeconds: 600,
         thinkingDefault: 'off',
         verboseDefault: 'off',
       },
@@ -4898,6 +5293,7 @@ function buildCalibrationBaseline() {
           name: 'Main Agent',
           workspace: 'workspace',
           skillsLimits: { maxSkillsPromptChars: 12000 },
+          timeoutSeconds: 600,
           tools: {
             profile: OPENCLAW_EFFECTIVE_TOOLS_PROFILE,
             alsoAllow: [...OPENCLAW_DIRECT_TOOL_ALLOWLIST],
@@ -4923,7 +5319,7 @@ function buildCalibrationBaseline() {
         'superclaw-ocr': { enabled: true },
       },
     },
-    session: { dmScope: 'per-channel-peer' },
+    session: { dmScope: 'per-channel-peer', reset: { mode: 'idle', idleMinutes: 43200 } },
     skills: {
       entries: {},
       limits: { maxSkillsPromptChars: 12000 },
@@ -5047,6 +5443,11 @@ function normalizeCalibratedConfig(input) {
   config.plugins = config.plugins && typeof config.plugins === 'object' && !Array.isArray(config.plugins) ? config.plugins : {}
   config.session = config.session && typeof config.session === 'object' && !Array.isArray(config.session) ? config.session : {}
   if (!String(config.session.dmScope || '').trim()) config.session.dmScope = 'per-channel-peer'
+  // 关闭 OpenClaw 默认的每日 4 点 session 重置：改用 idle 模式（30 天无交互才归档），
+  // 否则跨天会话会被判定 stale 并归档 transcript，导致"隔天发消息不续上下文"。
+  if (!config.session.reset || typeof config.session.reset !== 'object' || Array.isArray(config.session.reset)) {
+    config.session.reset = { mode: 'idle', idleMinutes: 43200 }
+  }
   config.skills = config.skills && typeof config.skills === 'object' && !Array.isArray(config.skills) ? config.skills : {}
   config.skills.entries = config.skills.entries && typeof config.skills.entries === 'object' && !Array.isArray(config.skills.entries) ? config.skills.entries : {}
 
@@ -7651,9 +8052,185 @@ function writeAgentToolLog({ agent = 'assistant', title = 'tool', command = '', 
   return { jobId, logPath }
 }
 
+// === 卡死会话检测与修复 ===
+// 当 OpenClaw Agent 因 LLM API 错误（如 yyapi 403 余额不足）崩溃时，
+// sessions.json 中的 session status 可能保持 "running" 而不会被正确更新为 "done"。
+// 此函数检测并修复这种情况，将错误信息提取出来供前端展示给用户。
+
+const STUCK_SESSION_TIMEOUT_MS = 5 * 60 * 1000 // 5 分钟无活动视为卡死
+
+function readSessionsJson() {
+  const sessionsPath = path.join(OPENCLAW_DIR, 'agents', 'main', 'sessions', 'sessions.json')
+  if (!fs.existsSync(sessionsPath)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(sessionsPath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeSessionsJson(data) {
+  const sessionsPath = path.join(OPENCLAW_DIR, 'agents', 'main', 'sessions', 'sessions.json')
+  fs.mkdirSync(path.dirname(sessionsPath), { recursive: true })
+  fs.writeFileSync(sessionsPath, JSON.stringify(data, null, 2), 'utf8')
+}
+
+function parseTrajectoryLastError(trajectoryPath) {
+  if (!fs.existsSync(trajectoryPath)) return null
+  try {
+    const content = fs.readFileSync(trajectoryPath, 'utf8')
+    const lines = content.split('\n').filter(l => l.trim())
+    if (!lines.length) return null
+    // 从末尾往前找 session.ended 或 error 事件
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const entry = JSON.parse(lines[i])
+        const type = entry.type || ''
+        // 检测 session.ended 事件
+        if (type === 'session.ended' || type === 'session.done' || type === 'session.end') {
+          const data = entry.data || entry.payload || {}
+          const errorMsg = data.error || data.errorMessage || data.reason || data.message || ''
+          const ts = entry.ts || entry.timestamp || ''
+          return { type: 'ended', error: errorMsg, ts, raw: entry }
+        }
+        // 检测 error 事件
+        if (type === 'error' || type === 'session.error') {
+          const data = entry.data || entry.payload || {}
+          const errorMsg = data.error || data.message || data.errorMessage || JSON.stringify(data).slice(0, 500)
+          const ts = entry.ts || entry.timestamp || ''
+          return { type: 'error', error: errorMsg, ts, raw: entry }
+        }
+      } catch {
+        continue
+      }
+    }
+    // 没找到明确的 ended/error 事件，检查最后一条的时间戳
+    try {
+      const lastEntry = JSON.parse(lines[lines.length - 1])
+      const ts = lastEntry.ts || lastEntry.timestamp || ''
+      if (ts) {
+        const lastTime = new Date(typeof ts === 'number' ? ts : ts.replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/, '$1'))
+        if (!isNaN(lastTime.getTime())) {
+          return { type: 'last_activity', error: '', ts, lastTime: lastTime.getTime() }
+        }
+      }
+    } catch {}
+    return null
+  } catch {
+    return null
+  }
+}
+
+function detectStuckSessions() {
+  const sessions = readSessionsJson()
+  const stuckSessions = []
+  const now = Date.now()
+
+  for (const [sessionKey, session] of Object.entries(sessions)) {
+    if (!session || typeof session !== 'object') continue
+    const status = String(session.status || '').toLowerCase()
+    if (status !== 'running') continue
+
+    const sessionId = session.sessionId || ''
+    if (!sessionId) continue
+
+    const trajectoryPath = path.join(OPENCLAW_DIR, 'agents', 'main', 'sessions', `${sessionId}.trajectory.jsonl`)
+    const trajInfo = parseTrajectoryLastError(trajectoryPath)
+
+    let isStuck = false
+    let errorMsg = ''
+    let errorType = ''
+
+    if (trajInfo) {
+      if (trajInfo.type === 'ended' || trajInfo.type === 'error') {
+        isStuck = true
+        errorMsg = trajInfo.error || (trajInfo.type === 'error' ? 'Agent 执行出错' : 'Agent 已结束但会话状态未更新')
+        errorType = trajInfo.type
+      } else if (trajInfo.type === 'last_activity' && trajInfo.lastTime) {
+        const idleMs = now - trajInfo.lastTime
+        if (idleMs > STUCK_SESSION_TIMEOUT_MS) {
+          isStuck = true
+          errorMsg = `会话已超过 ${Math.round(STUCK_SESSION_TIMEOUT_MS / 60000)} 分钟无活动`
+          errorType = 'timeout'
+        }
+      }
+    } else {
+      // 没有 trajectory 文件，检查 startedAt 是否超时
+      const startedAt = session.startedAt || session.sessionStartedAt
+      if (startedAt && typeof startedAt === 'number') {
+        const elapsedMs = now - startedAt
+        if (elapsedMs > STUCK_SESSION_TIMEOUT_MS) {
+          isStuck = true
+          errorMsg = `会话已运行 ${Math.round(elapsedMs / 60000)} 分钟无响应`
+          errorType = 'timeout'
+        }
+      }
+    }
+
+    if (isStuck) {
+      stuckSessions.push({
+        sessionKey,
+        sessionId,
+        status,
+        startedAt: session.startedAt || session.sessionStartedAt || null,
+        error: errorMsg,
+        errorType,
+        model: session.model || null,
+        modelProvider: session.modelProvider || null,
+      })
+    }
+  }
+
+  return { sessions, stuckSessions }
+}
+
+function repairStuckSessions() {
+  const { sessions, stuckSessions } = detectStuckSessions()
+  const repaired = []
+  const now = Date.now()
+
+  for (const stuck of stuckSessions) {
+    const session = sessions[stuck.sessionKey]
+    if (!session) continue
+
+    // 标记为 done，设置 endedAt 和 error 信息
+    session.status = 'done'
+    session.endedAt = now
+    session.error = stuck.error
+    session.errorType = stuck.errorType
+
+    repaired.push({
+      sessionKey: stuck.sessionKey,
+      sessionId: stuck.sessionId,
+      error: stuck.error,
+      errorType: stuck.errorType,
+      model: stuck.model,
+      modelProvider: stuck.modelProvider,
+    })
+  }
+
+  if (repaired.length > 0) {
+    writeSessionsJson(sessions)
+    console.log(`[repair-stuck-sessions] 修复了 ${repaired.length} 个卡死会话: ${repaired.map(r => r.sessionKey).join(', ')}`)
+  }
+
+  return { repaired, totalChecked: Object.keys(sessions).length }
+}
+
 const handlers = {
   health() {
     return { ok: true, mode: 'dev-api', noUserSystem: true, provider: 'minimax' }
+  },
+
+  // 卡死会话检测与修复
+  repair_stuck_sessions() {
+    return repairStuckSessions()
+  },
+
+  // 检测卡死会话（不修复，仅返回检测结果）
+  detect_stuck_sessions() {
+    const { stuckSessions } = detectStuckSessions()
+    return { stuck: stuckSessions }
   },
 
   get_effective_model_config({ agentName } = {}) {
@@ -7693,6 +8270,25 @@ const handlers = {
 
   media_config_write({ config } = {}) {
     return writeMediaRouteConfig(config)
+  },
+
+  media_classify_intent({ text, context } = {}) {
+    return classifyDevMediaIntent({ text, context })
+  },
+
+  async media_generate({ kind, prompt, imagePath, options } = {}) {
+    const normalizedKind = String(kind || '').trim()
+    if (normalizedKind === 'text_to_image') {
+      return generateDevTextImage({ prompt, size: options?.size })
+    }
+    if (normalizedKind === 'text_to_video' || normalizedKind === 'image_to_video') {
+      return generateDevVideo({ kind: normalizedKind, prompt, imagePath })
+    }
+    throw new Error(`Media route '${normalizedKind || ''}' is not available in Web debug`)
+  },
+
+  openclaw_load_local_media({ path: mediaPath } = {}) {
+    return readOpenclawLocalMediaDataUrl(mediaPath)
   },
 
   read_minimax_test_config() {
