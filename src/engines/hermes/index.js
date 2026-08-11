@@ -107,17 +107,9 @@ export default {
   },
 
   getNavItems() {
-    // 未就绪时显示 Setup 菜单
-    if (!_ready) {
-      return [{
-        section: '',
-        items: [
-          { route: '/h/setup', label: t('sidebar.setup'), icon: 'setup' },
-          { route: '/h/chat', label: t('sidebar.chat'), icon: 'chat' },
-        ]
-      }]
-    }
-    // 就绪后显示完整菜单
+    // 完整菜单（新版会话侧边栏）：无论是否已配置都返回。
+    // 首次进入不强制初始化、也不显示“初始设置”入口；
+    // 未配置模型时由控制台（dashboard）内联的模型配置区引导完成配置。
     return [{
       section: t('sidebar.sectionMonitor'),
       items: [

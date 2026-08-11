@@ -65,6 +65,13 @@ fn hermes_media_roots() -> Vec<PathBuf> {
     // OpenClaw workspace. They are Hermes-owned runtime artifacts, not an
     // arbitrary user directory, so allow this one scoped screenshot folder.
     roots.push(super::openclaw_dir().join("workspace").join(".shots"));
+    // SuperClaw text-to-image (both the native media command and the
+    // superclaw-media OpenClaw plugin) writes generated PNGs into the media
+    // output directory. Allow the panel to preview them so a MEDIA:<path> tool
+    // result can render in the chat.
+    if let Some(dir) = super::media_output_data_dir() {
+        roots.push(dir);
+    }
     if let Some(resources) = super::app_resources_dir() {
         roots.push(resources.join("data").join("generated"));
         roots.push(resources.join("data").join("hermes").join("generated"));

@@ -1096,10 +1096,60 @@ function parseHermesMediaDirectiveData(value = '') {
   }
 }
 
+const HERMES_DOCUMENT_EXTENSION_PATTERN = /\.(pptx?|docx?|xlsx?|pdf|csv|md|txt|json)$/i
+
+/**
+ * Convert an absolute filesystem path into a document attachment object.
+ * Only Windows drive / UNC paths ending in a supported document extension
+ * are accepted, so prose (e.g. `C: drive notes.docx`) is never misread.
+ */
+function parseHermesDocumentPath(value = '') {
+  const raw = String(value || '').trim().replace(/^["']|["']$/g, '')
+  if (!raw) return null
+  const isWindowsAbs = /^[A-Za-z]:[\\/]/.test(raw)
+  const isUncAbs = /^\\\\/.test(raw)
+  if (!isWindowsAbs && !isUncAbs) return null
+  if (!HERMES_DOCUMENT_EXTENSION_PATTERN.test(raw)) return null
+  const fileName = raw.split(/[\\/]/).pop() || 'document'
+  return {
+    category: 'document',
+    type: 'document',
+    savedPath: raw,
+    filePath: raw,
+    fileName,
+  }
+}
+
+/**
+ * Scan a single line of assistant text for absolute paths to generated
+ * documents (e.g. `C:\...\generated\汇报.pptx`). Each path is turned into a
+ * document attachment and the raw path is replaced with a friendly file name
+ * so the user is not confronted with an opaque filesystem path.
+ *
+ * The negative lookahead keeps directory names that happen to end in an
+ * extension (e.g. `my.docs\file.docx`) from truncating the match.
+ */
+function extractHermesDocumentPathsFromText(lineText = '') {
+  const attachments = []
+  const source = String(lineText || '')
+  const docPathRe = /(?:[A-Za-z]:[\\/]|\\\\[^\\\r\n]+\\[^\\\r\n]+)[^\r\n`"<>|]*?\.(?:pptx?|docx?|xlsx?|pdf|csv|md|txt|json)(?![A-Za-z0-9\\/])(?:[。，、；：！？）】」"'`]*)/gi
+  const cleaned = source.replace(docPathRe, (full) => {
+    const trailing = (full.match(/[。，、；：！？）】」"'`]+$/) || [''])[0]
+    const path = full.slice(0, full.length - trailing.length)
+    const att = parseHermesDocumentPath(path)
+    if (!att) return full
+    attachments.push(att)
+    return att.fileName + trailing
+  })
+  return { text: cleaned, attachments }
+}
+
 function splitHermesMediaDirectives(rawText = '') {
   const attachments = []
   const lines = String(rawText || '').split(/\r?\n/)
   const visibleLines = []
+  let inFence = false
+  const fenceRe = /^\s*(```|~~~)/
   for (const line of lines) {
     const dataMatch = /^\s*MEDIA_DATA:\s*(.+?)\s*$/i.exec(line)
     if (dataMatch) {
@@ -1117,7 +1167,20 @@ function splitHermesMediaDirectives(rawText = '') {
         continue
       }
     }
-    visibleLines.push(line)
+    // Keep fenced code blocks untouched so absolute paths shown as code
+    // (rather than generated-file references) are not rewritten.
+    if (fenceRe.test(line)) {
+      inFence = !inFence
+      visibleLines.push(line)
+      continue
+    }
+    if (inFence) {
+      visibleLines.push(line)
+      continue
+    }
+    const docParsed = extractHermesDocumentPathsFromText(line)
+    if (docParsed.attachments.length) attachments.push(...docParsed.attachments)
+    visibleLines.push(docParsed.text)
   }
   return {
     text: visibleLines.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
@@ -2405,10 +2468,17 @@ export function render() {
       ? { text: m.content || '', attachments: [] }
       : splitHermesMediaDirectives(m.content || '')
     const visibleContent = mediaParsed.text || ''
+    const seenAttachmentKeys = new Set()
     const attachments = [
       ...(Array.isArray(m.attachments) ? m.attachments : []),
       ...mediaParsed.attachments,
-    ]
+    ].filter(att => {
+      const key = String(att?.savedPath || att?.filePath || att?.mediaPath || att?.dataUrl || att?.fileName || att?.name || '')
+      if (!key) return true
+      if (seenAttachmentKeys.has(key)) return false
+      seenAttachmentKeys.add(key)
+      return true
+    })
     const canCopy = !!visibleContent.trim()
     const canSpeak = !isUser && canCopy
     const lifeAssistantHtml = [
@@ -2511,10 +2581,16 @@ export function render() {
           const extension = (name.split('.').pop() || '').toLowerCase()
           const type = ({ pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', csv: 'excel', ppt: 'ppt', pptx: 'ppt' })[extension] || 'file'
           const label = ({ pdf: 'PDF', word: 'W', excel: 'X', ppt: 'P' })[type] || 'FILE'
+          const docPath = String(att.savedPath || att.filePath || '')
+          const openLabel = t('engine.chatDocOpen')
+          const tooltip = docPath ? `${docPath} · ${openLabel}` : openLabel
+          const clickableClass = docPath ? ' is-clickable' : ''
+          const clickableAttrs = docPath ? ` role="button" tabindex="0" data-hermes-doc-path="${escAttr(docPath)}" data-hermes-doc-title="${escAttr(name)}"` : ''
           return `
-            <div class="hm-chat-document-card hm-document-card" title="${escAttr(att.savedPath || att.filePath || '')}">
+            <div class="hm-chat-document-card hm-document-card${clickableClass}"${clickableAttrs} title="${escAttr(tooltip)}" aria-label="${escAttr(`${openLabel}: ${name}`)}">
               <span class="hm-document-card__type is-${type}">${label}</span>
               <span class="hm-document-card__info"><span class="hm-chat-document-name">${escHtml(name)}</span>${att.size ? `<span class="hm-document-card__size">${escHtml(formatDocumentFileSize(att.size))}</span>` : ''}</span>
+              ${docPath ? `<span class="hm-document-card__open" aria-hidden="true">${ICONS.chevron}<span class="hm-document-card__open-text">${escHtml(openLabel)}</span></span>` : ''}
             </div>
           `
         }).join('')}
@@ -3056,6 +3132,32 @@ export function render() {
         event.preventDefault()
         event.stopPropagation()
         openHermesImagePreview(image)
+      })
+    })
+
+    el.querySelectorAll('[data-hermes-doc-path]').forEach(card => {
+      const openDocument = async (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        const path = card.dataset.hermesDocPath
+        if (!path) return
+        if (!isTauriRuntime()) {
+          toast(t('engine.chatDocOpenUnavailable'), 'warning')
+          return
+        }
+        try {
+          await api.assistantOpenPath(path)
+        } catch (err) {
+          console.error('[hermes-chat] open document failed:', err)
+          toast(t('engine.chatDocOpenFailed'), 'error')
+        }
+      }
+      card.addEventListener('click', openDocument)
+      card.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          openDocument(event)
+        }
       })
     })
 

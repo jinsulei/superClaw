@@ -158,7 +158,7 @@ test('Hermes collapses repeated generic reasoning placeholders and stores stream
 
   assert.match(executionBlock, /const isGenericReasoning = kind === 'reasoning' && text === HERMES_REASONING_PLACEHOLDER/)
   assert.match(executionBlock, /existing = trace\.find\(item => item\.id === pendingId\)/)
-  assert.match(appendBlock, /extractHermesVisibleExecutionNarration\(delta\)/)
+  assert.match(appendBlock, /recordHermesStreamNarration\(s, clientRequestId, streamState, protocol\.execution\)/)
   assert.match(appendBlock, /source: 'stream-visible'/)
   assert.match(appendBlock, /recordAssistantExecutionEvent\(s, clientRequestId, 'reasoning\.available'/)
 })

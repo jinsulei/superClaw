@@ -27,7 +27,7 @@ import {
   mapAgentGatewayStatusToAgentRun,
   mapTaskBoundAgentHeartbeat,
 } from '../../../lib/agent-gateway-status.js'
-import { COLLAB_TARGETS, buildOpenClawMediaTaskPrompt, buildTaskContext, createTaskProgress, createTaskRequest, detectMediaTask, mapCollaborationTaskMessageToTaskEvents, openCollaborationPanel, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
+import { COLLAB_TARGETS, buildOpenClawMediaTaskPrompt, buildTaskContext, createTaskProgress, createTaskRequest, mapCollaborationTaskMessageToTaskEvents, openCollaborationPanel, resolveMediaExecutionTask, setPendingDispatch, updateCollaborationTask } from '../../../lib/collaboration.js'
 import { SIMPLIFIED_CHINESE_VISIBLE_REPLY_RULE, sanitizeVisibleReplyForChinese } from '../../../lib/visible-reply-language.js'
 import {
   dedupeToolEvents,
@@ -873,7 +873,7 @@ function isHermesEphemeralMediaSession(sessionOrId = '') {
   // detector deliberately narrow: normal user sessions must never disappear
   // merely because they happen to mention an image.
   if (id.includes('--chat-media--') || /^(?:media-protocol|raw-media|media-e2e)-/i.test(id)) return true
-  return /\bsuperclaw_return_media\b|C:\\tmp\\hello_sandbox\.png|HELLO FROM SANDBOX/i.test(visibleText)
+  return /\bsuperclaw_return_media\b|\\tmp\\hello_sandbox\.png|HELLO FROM SANDBOX/i.test(visibleText)
 }
 
 function loadJson(key) {
@@ -3796,7 +3796,29 @@ function createStore() {
     const displayText = (opts.displayContent || text).trim()
     if (!runText && !attachments.length) return
     const clientRequestId = String(opts.clientRequestId || uid())
-    const mediaTask = detectMediaTask({ text: rawText, attachments })
+    // Do not turn an image brief into an execution job based on words alone.
+    // The selected chat model classifies the current turn with recent context:
+    // “先理解/规划” remains a Hermes conversation, while “现在生成” becomes a
+    // deterministic native media job in OpenClaw.
+    const semanticSession = activeSession()
+    const semanticContext = {
+      recent_messages: (semanticSession?.messages || []).slice(-12).map(message => ({
+        role: message.role,
+        content: String(message.content || '').slice(0, 1600),
+        timestamp: message.timestamp,
+      })),
+    }
+    let mediaTask = null
+    let classifiedIntent = null
+    try {
+      classifiedIntent = await api.mediaClassifyIntent(rawText, semanticContext)
+      mediaTask = resolveMediaExecutionTask({ text: rawText, attachments }, classifiedIntent)
+    } catch (error) {
+      // A temporary classifier outage must not block ordinary chat. Keep the
+      // legacy detector only as a conservative fallback for a clear request.
+      console.warn('[hermes-media] intent classification unavailable:', error)
+      mediaTask = resolveMediaExecutionTask({ text: rawText, attachments })
+    }
     if (mediaTask) {
       let mediaSession = activeSession()
       if (!mediaSession) {
@@ -3826,8 +3848,8 @@ function createStore() {
       })
       createTaskRequest({ taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, toAgent: COLLAB_TARGETS.openclaw, title: mediaTask.title, content: rawText, context })
       createTaskProgress({ taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, toAgent: COLLAB_TARGETS.hermes, title: mediaTask.title, content: '已创建 OpenClaw 文生图协作任务。', context })
-      setPendingDispatch({ target: COLLAB_TARGETS.openclaw, taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, stage: 'execute', title: mediaTask.title, message: buildOpenClawMediaTaskPrompt(mediaTask), context, artifacts: [{ type: 'media_request', text: rawText, created_at: new Date().toISOString() }] })
-      updateCollaborationTask(taskId, { status: 'pending', media_type: mediaTask.media_type, media_prompt: rawText, context })
+      setPendingDispatch({ target: COLLAB_TARGETS.openclaw, taskId, sessionId, fromAgent: COLLAB_TARGETS.hermes, stage: 'execute', title: mediaTask.title, message: buildOpenClawMediaTaskPrompt(mediaTask), media_type: mediaTask.media_type, media_prompt: mediaTask.prompt, context, artifacts: [{ type: 'media_request', text: mediaTask.prompt, created_at: new Date().toISOString() }] })
+      updateCollaborationTask(taskId, { status: 'pending', media_type: mediaTask.media_type, media_prompt: mediaTask.prompt, context })
       // The OpenClaw chat module owns the durable queue consumer and Gateway
       // event handling. In the desktop app, open an isolated runner window so
       // a Hermes media request cannot remain pending while the user stays in
@@ -4199,7 +4221,13 @@ function createStore() {
     const taskId = String(taskMessage.task_id || taskMessage.taskId || '').trim()
     if (!taskId) return false
     const artifacts = Array.isArray(taskMessage.artifacts) ? taskMessage.artifacts : []
-    const imageArtifacts = artifacts.filter(item => String(item?.type || '').toLowerCase() === 'image' && item?.path)
+    const imageArtifacts = artifacts.filter(item => {
+      const type = String(item?.type || item?.category || '').toLowerCase()
+      const path = String(item?.mediaPath || item?.path || '').trim()
+      if (!path) return false
+      if (type === 'image') return true
+      return /\.(png|jpe?g|gif|webp)$/i.test(path)
+    })
     if (!imageArtifacts.length) return false
 
     const session = state.sessions.find(candidate => Array.isArray(candidate?.messages)
@@ -4209,14 +4237,15 @@ function createStore() {
 
     const attachments = Array.isArray(message.attachments) ? message.attachments : []
     for (const artifact of imageArtifacts) {
-      const path = String(artifact.path || '').trim()
+      const path = String(artifact.mediaPath || artifact.path || '').trim()
       if (!path || attachments.some(item => String(item?.imageUrl || item?.mediaPath || item?.path || '') === path)) continue
       const isRenderableUrl = /^(?:data:image\/|https?:\/\/|asset:)/i.test(path)
+      const fileName = String(artifact.fileName || path.split(/[\\/]/).pop() || artifact.text || 'OpenClaw generated image').slice(0, 160)
       attachments.push({
         category: 'image',
         type: 'image',
-        mimeType: 'image/png',
-        fileName: String(artifact.text || 'OpenClaw generated image').slice(0, 160),
+        mimeType: artifact.mimeType || 'image/png',
+        fileName,
         ...(isRenderableUrl ? { imageUrl: path } : { mediaPath: path }),
       })
     }

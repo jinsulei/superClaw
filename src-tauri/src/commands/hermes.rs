@@ -3278,10 +3278,19 @@ pub async fn configure_hermes(
     };
     // Provider 字段：Hermes v0.14+ 的 model_switch 依赖该字段决定 env_var。
     // MiniMax/Anthropic transport 不能写 chat_completions，也不能带 custom OpenAI-compatible providers。
-    let provider_line = if provider.is_empty() {
+    // 关键：当 provider=="custom" 且带有 base_url 时，我们把 model.provider 写成
+    // custom_providers 区块的实际条目名 `custom_openai`（见下方 custom_provider_block）。
+    // Hermes 运行时对裸 `provider: custom` 走的是另一条路径，不会读取该命名条目，
+    // 最终会把 api_key 兜底成 "no-key-required"，导致上游 401 Invalid token。
+    let provider_field = if custom_provider && !base_url_value.is_empty() {
+        "custom_openai".to_string()
+    } else {
+        provider.clone()
+    };
+    let provider_line = if provider_field.is_empty() {
         String::new()
     } else {
-        format!("  provider: {provider}\n{api_mode_line}")
+        format!("  provider: {provider_field}\n{api_mode_line}")
     };
 
     let config_content = if config_path.exists() {
@@ -3918,8 +3927,13 @@ pub async fn hermes_update_model(
     //   1. 调用方显式提供 → 直接使用
     //   2. 从静态 catalog 反查唯一匹配 → 使用反查结果
     //   3. 找不到 / 模糊 → 保持现有 provider（不改）
-    let resolved_provider: Option<String> =
-        provider.or_else(|| hermes_providers::find_provider_by_model(&model).map(String::from));
+    let resolved_provider: Option<String> = provider
+        .or_else(|| hermes_providers::find_provider_by_model(&model).map(String::from))
+        // `custom` is a frontend placeholder id. The actual config.yaml entry
+        // written by configure_hermes for a custom OpenAI-compatible endpoint is
+        // the named custom_providers entry `custom_openai` — keep that name when
+        // a model switch reports `custom` so the provider line is not stripped.
+        .map(|p| if p == "custom" { "custom_openai".to_string() } else { p });
     // 一次性扫描并替换 model 区块中的 default / provider 字段。
     let lines: Vec<&str> = config_raw.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);

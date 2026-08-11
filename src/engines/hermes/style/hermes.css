@@ -6334,6 +6334,12 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hm-document-card__type.is-pdf { background: #df4d4d; }
 [data-engine="hermes"] .hm-document-card__type.is-file { background: #7c8797; }
 
+[data-engine="hermes"] .hm-document-card.is-clickable { cursor: pointer; transition: background-color .15s ease, box-shadow .15s ease; }
+[data-engine="hermes"] .hm-document-card.is-clickable:hover { background: var(--hm-surface-3, #e2e6ec); }
+[data-engine="hermes"] .hm-document-card.is-clickable:focus-visible { outline: 2px solid var(--hm-accent, #3b82f6); outline-offset: 1px; }
+[data-engine="hermes"] .hm-document-card__open { order: 3; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--hm-text-secondary, #5f6d81); font-size: 11px; white-space: nowrap; }
+[data-engine="hermes"] .hm-document-card__open svg { opacity: .7; }
+
 [data-engine="hermes"] .hm-chat-execution-artifact {
   max-width: 100%;
   padding: 3px 7px;
