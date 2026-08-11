@@ -3819,6 +3819,22 @@ function createStore() {
       console.warn('[hermes-media] intent classification unavailable:', error)
       mediaTask = resolveMediaExecutionTask({ text: rawText, attachments })
     }
+    // Hermes 原生执行没有可用的生图能力（image_generate 依赖 FAL_KEY 等
+    // 外部 provider，未配置时必然失败）。因此当语义分类器已明确判定当前轮
+    // 是图片生成（action=generate_image 且 deliverable 为 image/未声明）时，
+    // 即使本地关键词规则未命中（如"图标/logo/标志"等说法），也强制把任务
+    // dispatch 给 OpenClaw 协作执行——宁可多走一步协作，也不能让生图请求
+    // 在 Hermes 侧静默失败。
+    if (!mediaTask && classifiedIntent?.action === 'generate_image') {
+      const deliverable = String(classifiedIntent.deliverable || '').trim()
+      if (!deliverable || deliverable === 'image') {
+        mediaTask = {
+          media_type: attachments.length ? 'image_to_image' : 'text_to_image',
+          prompt: classifiedIntent.prompt || rawText,
+          title: attachments.length ? '图生图协作任务' : '文生图协作任务',
+        }
+      }
+    }
     if (mediaTask) {
       let mediaSession = activeSession()
       if (!mediaSession) {

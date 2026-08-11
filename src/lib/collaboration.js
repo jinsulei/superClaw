@@ -33,10 +33,11 @@ export function detectTextToImageTask(input = {}) {
 function isImageGenerationRequest(text = '') {
   const value = String(text || '').trim()
   if (!value) return false
-  const action = '(?:生成|绘制|制作|设计|创建|做一张|来一张|画一张|generate|create|draw|make)'
+  const action = '(?:生成|绘制|制作|设计|创建|做一张|来一张|画一张|画一只|画个|画幅|设计一个|设计张|做个|做一个|整一个|generate|create|draw|make)'
   // “生成一张图”是最常见的文生图说法。保留图表、图纸等非媒体对象，
-  // 让它们继续由 Hermes 的普通对话/工具链处理。
-  const target = '(?:图片|图像|插画|海报|封面|配图|头像|照片|相片|摄影图|写真|图(?!表|纸|书|层|标)|photo|photograph|portrait|image|illustration|poster|cover)'
+  // 让它们继续由 Hermes 的普通对话/工具链处理。图标/logo/标志等视觉
+  // 交付物也要归入生图（用户说法多样，不能只认“图片”）。
+  const target = '(?:图片|图像|插画|海报|封面|配图|头像|照片|相片|摄影图|写真|图标|logo|LOGO|标志|徽标|logo图|图(?!表|纸|书|层)|photo|photograph|portrait|image|illustration|poster|cover|icon)'
   if (new RegExp(`${action}.{0,24}${target}|(?:文生图|生图|text\\s*to\\s*image)`, 'i').test(value)) return true
 
   // Natural-language fallback: users often describe the picture they want
@@ -44,8 +45,8 @@ function isImageGenerationRequest(text = '') {
   // and a visual deliverable/style signal so ordinary conversation, image
   // analysis, and image search do not get routed to a media provider.
   if (/(?:分析|识别|描述|解释|查看|读取|上传|粘贴|找图|搜图|搜索图片|这张图|这幅图)/i.test(value)) return false
-  const creativeIntent = /(?:我想要|我要|我需要|给我来|帮我做|帮我搞|请做|请创作|来个|来一幅|来张|做个)/i
-  const visualDeliverable = /(?:画面|视觉(?:效果|稿)?|效果图|壁纸|画作|绘画|艺术作品|场景图|设计稿|宣传(?:图|物料)|插图|海报|封面|头像|照片|相片|摄影图|写真|图(?!表|纸|书|层|标))/i
+  const creativeIntent = /(?:我想要|我要|我需要|给我来|帮我做|帮我搞|帮我画|帮我设计|请做|请创作|来个|来一幅|来张|做个|画一个|设计一个)/i
+  const visualDeliverable = /(?:画面|视觉(?:效果|稿)?|效果图|壁纸|画作|绘画|艺术作品|场景图|设计稿|宣传(?:图|物料)|插图|海报|封面|头像|照片|相片|摄影图|写真|图标|logo|标志|徽标|图(?!表|纸|书|层))/i
   const styleSignal = /(?:写实|逼真|高清|电影感|动漫|卡通|插画风|水彩|油画|赛博朋克|构图|光影|镜头|壁纸|画风|风格|视角|比例|4k|8k)/i
   return creativeIntent.test(value) && (visualDeliverable.test(value) || styleSignal.test(value))
 }
