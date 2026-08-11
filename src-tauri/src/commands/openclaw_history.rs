@@ -128,9 +128,16 @@ pub async fn openclaw_load_local_media(path: String) -> Result<String, String> {
     let media_root = tokio::fs::canonicalize(openclaw_dir().join("media"))
         .await
         .map_err(|error| format!("OpenClaw media directory is unavailable: {error}"))?;
-    if !filepath.is_file() || !filepath.starts_with(&media_root) {
+    let generated_root =
+        super::media_output_data_dir().and_then(|root| std::fs::canonicalize(root).ok());
+    let is_allowed = filepath.starts_with(&media_root)
+        || generated_root
+            .as_ref()
+            .map(|root| filepath.starts_with(root))
+            .unwrap_or(false);
+    if !filepath.is_file() || !is_allowed {
         return Err(
-            "OpenClaw local media path is outside the portable media directory".to_string(),
+            "OpenClaw local media path is outside the portable media directories".to_string(),
         );
     }
     let mime = match filepath
@@ -353,7 +360,11 @@ fn append_portable_session_messages(source: &str, session_key: &str, messages: &
             "status": if tool_result_failed(message) { "error" } else { "completed" },
             "timestamp": entry.get("timestamp").and_then(Value::as_str).unwrap_or_default(),
             "content": message.get("content").cloned().unwrap_or(Value::Null),
-            "attachments": image_attachments(message),
+            "attachments": if role == "user" {
+                user_image_attachments(message)
+            } else {
+                image_attachments(message)
+            },
         }));
     }
 }
@@ -563,6 +574,87 @@ fn image_attachments(message: &Value) -> Vec<Value> {
             })
         }).filter(|attachment| !attachment.is_null()).collect())
         .unwrap_or_default()
+}
+
+/// Native OpenClaw user turns carry uploaded media as top-level
+/// `MediaPath`/`MediaPaths` (+ `MediaType`/`MediaTypes`) fields on the message
+/// object rather than as content blocks. Surface those as ordinary image
+/// attachments so a WebView refresh can restore the user's original upload.
+fn user_image_attachments(message: &Value) -> Vec<Value> {
+    let paths = message
+        .get("MediaPaths")
+        .and_then(Value::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            message
+                .get("MediaPath")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(|path| vec![path.to_string()])
+        })
+        .unwrap_or_default();
+    let types = message
+        .get("MediaTypes")
+        .and_then(Value::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .or_else(|| {
+            message
+                .get("MediaType")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| vec![value.to_string()])
+        })
+        .unwrap_or_default();
+    paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let trimmed = path.trim().trim_matches(&['"', '\''][..]).to_string();
+            if trimmed.is_empty() {
+                return Value::Null;
+            }
+            let extension = std::path::Path::new(&trimmed)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let mime = types.get(index).cloned().unwrap_or_else(|| {
+                match extension.as_str() {
+                    "jpg" | "jpeg" => "image/jpeg".to_string(),
+                    "gif" => "image/gif".to_string(),
+                    "webp" => "image/webp".to_string(),
+                    _ => "image/png".to_string(),
+                }
+            });
+            json!({
+                "category": "image",
+                "type": "image",
+                "mimeType": mime,
+                "mediaPath": trimmed,
+                "generatedMediaPath": trimmed,
+                "fileName": std::path::Path::new(&trimmed).file_name().and_then(|name| name.to_str()).unwrap_or("image").to_string(),
+            })
+        })
+        .filter(|attachment| !attachment.is_null())
+        .collect()
 }
 
 fn tool_result_failed(message: &Value) -> bool {
@@ -947,7 +1039,7 @@ pub fn list_openclaw_raw_sessions(limit: Option<usize>) -> Result<Value, String>
 mod tests {
     use super::{
         best_effort_registry_entries, image_attachments, successful_tool_only_terminal_messages,
-        trajectory_messages,
+        trajectory_messages, user_image_attachments,
     };
     use serde_json::json;
 
@@ -1027,5 +1119,38 @@ mod tests {
             attachments[0]["imageUrl"],
             "/api/chat/media/outgoing/run/image.png"
         );
+    }
+
+    #[test]
+    fn restores_user_uploaded_media_paths_as_attachments() {
+        let message = json!({
+            "role": "user",
+            "content": "optimize this image",
+            "MediaPath": "C:\\data\\.openclaw\\media\\inbound\\377f9702.jpg",
+            "MediaPaths": ["C:\\data\\.openclaw\\media\\inbound\\377f9702.jpg"],
+            "MediaType": "image/jpeg",
+            "MediaTypes": ["image/jpeg"]
+        });
+        let attachments = user_image_attachments(&message);
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0]["category"], "image");
+        assert_eq!(attachments[0]["mimeType"], "image/jpeg");
+        assert_eq!(
+            attachments[0]["mediaPath"],
+            "C:\\data\\.openclaw\\media\\inbound\\377f9702.jpg"
+        );
+        assert_eq!(
+            attachments[0]["generatedMediaPath"],
+            "C:\\data\\.openclaw\\media\\inbound\\377f9702.jpg"
+        );
+    }
+
+    #[test]
+    fn ignores_user_messages_without_media_paths() {
+        let message = json!({
+            "role": "user",
+            "content": "hello"
+        });
+        assert!(user_image_attachments(&message).is_empty());
     }
 }
