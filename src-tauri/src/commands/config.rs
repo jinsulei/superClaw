@@ -1026,7 +1026,7 @@ fn build_calibration_baseline() -> Value {
             "restart": true,
         },
         "plugins": {},
-        "session": { "dmScope": "per-channel-peer" },
+        "session": { "dmScope": "per-channel-peer", "reset": { "mode": "idle", "idleMinutes": 43200 } },
         "skills": { "entries": {} },
         "tools": {
             "profile": "coding",

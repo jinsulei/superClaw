@@ -1,10 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>&1\")",
-      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git rev-parse --abbrev-ref --symbolic-full-name ''@{upstream}'' 2>&1\")",
-      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git remote show origin 2>&1\")",
-      "Bash(powershell -NoProfile -Command \"cd c:\\Users\\ZXKJ\\Documents\\superClaw_code; git pull 2>&1\")"
+      "Read(//c/tmp/**)",
+      "Bash(node:*)",
+      "Bash(sha256sum:*)",
+      "Bash(src-tauri/resources/templates/openclaw-plugins/superclaw-media/index.js )",
+      "Bash(src-tauri/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/target/debug/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/target/debug/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/target/debug/resources/templates/openclaw-plugins/superclaw-media/index.js )",
+      "Bash(src-tauri/target/release/resources/runtime/openclaw/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/target/release/resources/runtime/openclaw/node_modules/@qingchencloud/openclaw-zh/dist/extensions/superclaw-media/index.js )",
+      "Bash(src-tauri/target/release/resources/templates/openclaw-plugins/superclaw-media/index.js)"
     ],
     "deny": [],
     "ask": []
