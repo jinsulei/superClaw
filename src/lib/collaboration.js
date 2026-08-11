@@ -52,7 +52,7 @@ function isImageGenerationRequest(text = '') {
 
 function isImageTransformationRequest(text = '') {
   const value = String(text || '').trim()
-  return /(?:把|将|用).{0,20}(?:图片|图像|照片|相片|photo|image).{0,32}(?:改成|修改|重绘|编辑|变成|转换|edit|transform|restyle)|(?:图生图|images*tos*image)/i.test(value)
+  return /(?:把|将|用).{0,20}(?:图片|图像|照片|相片|这张图|这幅图|这张|这幅|此图|photo|image).{0,32}(?:改成|修改|重绘|编辑|变成|转换|换个|做成|edit|transform|restyle)|(?:图生图|images*tos*image)/i.test(value)
 }
 
 export function detectMediaTask(input = {}) {
@@ -74,6 +74,56 @@ export function detectMediaTask(input = {}) {
   }
   if (hasSourceImage || !imageGeneration) return null
   return { media_type: 'text_to_image', prompt: text, title: '文生图协作任务' }
+}
+
+// 当 LLM 分类器把非图片任务（PPT/文档/表格/代码等）误判为 generate_image 时，
+// 本地关键词保护可以把消息放行回 agent，而不是被媒体链路拦截。
+// 只要文本提到明确的文档类交付物，就交给 OpenClaw agent 全权处理（agent
+// 自身具备 superclaw_generate_image 等工具，混合作图需求也能自己调工具）。
+function isExplicitlyNonImageTask(...texts) {
+  const value = texts.filter(Boolean).join(' ').trim()
+  if (!value) return false
+  return /(?:PPT|幻灯片|演示文稿|文档|Word|Excel|表格|报告|论文|纪要|清单|方案|策划案|代码|程序|脚本|网页|网站|前端|后端|视频|剪辑|配音|音乐|歌曲)/i.test(value)
+}
+
+// The model classifier is the primary intent boundary. Interception is a
+// best-effort optimization (native media route is faster than letting the
+// agent call superclaw_generate_image), so it must NEVER steal a task the user
+// did not clearly ask for. Strategy: only intercept when BOTH the semantic
+// classifier and the local keyword guard agree the deliverable is an image;
+// any ambiguity (document/video/code/music/speech, chat, unknown) falls
+// through to the OpenClaw agent, which owns all media tools itself.
+export function resolveMediaExecutionTask(input = {}, classifiedIntent = null) {
+  const text = String(typeof input === 'string' ? input : input.text || '').trim()
+  const attachments = Array.isArray(input?.attachments) ? input.attachments : []
+  const classifiedAction = String(classifiedIntent?.action || '').trim()
+  const classifiedPrompt = String(classifiedIntent?.prompt || '').trim()
+  const classifiedDeliverable = String(classifiedIntent?.deliverable || '').trim()
+
+  // 语义层明确判定为非图片交付物（文档/视频/代码/音乐/语音/普通对话）：
+  // 直接放行给 agent，绝不拦截。
+  if (classifiedDeliverable && classifiedDeliverable !== 'image') return null
+  if (classifiedAction === 'plan_image') return null
+  if (classifiedAction === 'chat') {
+    // 分类器说普通聊天：除非本地关键词规则高度确认是图片任务（如带附件图生图），
+    // 否则放行。带源图 + 明确"生成/编辑图片"意图时仍允许确定性执行。
+    const fallback = detectMediaTask({ text, attachments })
+    return fallback && fallback.media_type === 'image_to_image' && attachments.length ? fallback : null
+  }
+  // 到这里：分类器倾向 generate_image（且无明确的非图片交付物信号）。
+  // 双重确认：LLM 清洗后的画面描述与原始文本任一命中本地媒体规则才拦截，
+  // 提高"给我生成一张促销海报"这类说法的召回（原始文本含动词，易命中）。
+  const candidate = detectMediaTask({ text: classifiedPrompt || text, attachments })
+    || detectMediaTask({ text, attachments })
+  if (candidate) {
+    // 最后防线：即便本地规则命中图片词（如"生成PPT并配图"里的"配图"），
+    // 只要消息整体是文档类交付物（含 PPT/文档/报告等），就放行给 agent 全权处理。
+    if (isExplicitlyNonImageTask(text, classifiedPrompt)) return null
+    return { ...candidate, prompt: classifiedPrompt || candidate.prompt }
+  }
+  // 分类器说生成图片但本地规则没命中：宁可放行给 agent（agent 自带
+  // superclaw_generate_image 工具，漏判最多慢一点，绝不误伤丢任务）。
+  return null
 }
 
 export function buildOpenClawMediaTaskPrompt(task = {}) {
@@ -1092,9 +1142,18 @@ function normalizeArtifacts(input = []) {
     .filter(Boolean)
     .map(item => {
       const rawPath = String(item.path || item.relativePath || '').replace(/\\/g, '/')
+      const rawMediaPath = String(item.mediaPath || item.generatedMediaPath || '').replace(/\\/g, '/')
       return {
         type: item.type || 'file',
+        category: item.category || item.type || 'file',
         path: stripAbsolutePath(rawPath),
+        // Full local path used by the Hermes/OpenClaw media bridges to load
+        // generated images. Unlike `path`, this is deliberately NOT stripped:
+        // the Rust media loader canonicalizes and validates it against allowed
+        // roots, so a relative/mangled path would fail to resolve.
+        ...(rawMediaPath ? { mediaPath: rawMediaPath } : {}),
+        ...(item.mimeType ? { mimeType: item.mimeType } : {}),
+        ...(item.fileName ? { fileName: item.fileName } : {}),
         text: item.text || item.content || '',
         created_at: item.created_at || item.createdAt || new Date().toISOString(),
       }
