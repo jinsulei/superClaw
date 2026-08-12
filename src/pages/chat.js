@@ -3352,8 +3352,12 @@ async function deleteSession(key) {
     setSessionWorkFile(key, null)
     setSessionName(key, '')
     toast(t('chat.sessionDeleted'), 'success')
-    if (key === _sessionKey) void switchSession(mainKey, { forceWorkspace: true })
-    else refreshSessionList()
+    // 删除当前激活会话：等待切换完成后再刷新列表，避免 fire-and-forget
+    // 导致列表仍显示已删除会话。删除非激活会话同样刷新。
+    if (key === _sessionKey) {
+      await switchSession(mainKey, { forceWorkspace: true })
+    }
+    refreshSessionList()
   } catch (e) {
     toast(`${t('common.operationFailed')}: ${e.message}`, 'error')
   }
