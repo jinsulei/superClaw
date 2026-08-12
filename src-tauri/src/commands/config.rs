@@ -1014,6 +1014,12 @@ fn build_calibration_baseline() -> Value {
         "agents": {
             "defaults": {
                 "workspace": calibration_default_workspace(),
+                // 上下文压缩：提前到约 87.5% 预算触发（reserveTokens≈预算12.5%），
+                // 避免"溢出即压"导致模型在真实窗口边界才压缩、来不及。
+                "compaction": {
+                    "mode": "default",
+                    "reserveTokens": 25600,
+                },
             },
             "list": [],
         },
