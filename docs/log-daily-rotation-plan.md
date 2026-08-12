@@ -1,7 +1,8 @@
-# SuperClaw 日志按天记录 + 当天错误日志上传方案（v1）
+# SuperClaw 日志按天记录 + 当天错误日志上传方案（v2）
 
 > 日期：2026-08-12 ｜ 状态：待评审
 > 目标：错误日志按天切割（每天一个文件），用户可一键上传"当天错误日志"用于问题排查。
+> v2 更新：保留 15 天；上传含当天正常日志尾部；上传前预览/勾选排除项；新增后端接口规范（六）。
 
 ---
 
@@ -54,7 +55,7 @@
 
 1. **错误日志按天记录**：每天一个错误日志文件，命名含日期（`gateway.err-2026-08-12.log`）
 2. **一键上传当天错误日志**：用户在界面点按钮，自动收集当天错误日志 + 环境上下文，打包上传
-3. **保留策略**：按天日志保留 N 天（建议 14 天），防磁盘膨胀
+3. **保留策略**：按天日志保留 **15 天**，防磁盘膨胀
 4. **兼容现有前端**：日志查看器默认读当天文件，可切换历史日期；旧的无日期文件不受影响
 
 ---
@@ -101,7 +102,7 @@ pub fn prune_daily_logs(logs_dir: &Path, keep_days: u32);
 ### 3.2 前端日志查看器适配
 
 - `src/pages/logs.js`（OpenClaw tab）与 `src/engines/hermes/pages/logs.js`：
-  - 增加"日期"下拉（默认今天，列出最近 14 天有日志的日期）
+  - 增加"日期"下拉（默认今天，列出最近 15 天有日志的日期）
   - `read_log_tail` / `hermes_logs_read` 增加可选 `date` 参数；未传时读当天文件；当天文件不存在回退读旧名文件
 - `logs.rs:log_path()` 增加 `gateway-err` 等按天解析逻辑
 
@@ -112,22 +113,33 @@ pub fn prune_daily_logs(logs_dir: &Path, keep_days: u32);
 **Rust 命令 `collect_today_error_logs`（新增）**：
 
 1. 收集（按当前日期 `{today}`）：
-   - OpenClaw：`gateway.err-{today}.log`、`guardian-{today}.log`、`stability/` 今天的快照
-   - Hermes：`errors-{today}.log`（新）、Python `errors.log` 中今天时间戳的行、`gateway-exit-diag.log`
+   - **当天错误日志**：
+     - OpenClaw：`gateway.err-{today}.log`（进程 stderr）、`guardian-{today}.log`、`stability/` 今天的快照
+     - Hermes：`errors-{today}.log`（新，进程 stderr 按天）、Python `errors.log` 中今天时间戳的行、`gateway-exit-diag.log`
+   - **当天正常日志尾部**（还原现场用，默认 ≤512KB/文件）：
+     - OpenClaw：`gateway-{today}.log` 尾部
+     - Hermes：`gateway-run-{today}.log` 尾部、`agent.log` 中今天的行
 2. 附加环境上下文（`manifest.json`）：应用版本、引擎版本、OS、Gateway 状态、配置摘要（**API key 脱敏**）
-3. 打包 zip → 上传
+3. 打包 zip → **用户预览/编辑**（见 3.5）→ 上传
 
-**上传通道（需确认）**：
-- v1 建议：上传到问题反馈服务/腾讯云 COS（临时目录，7 天有效）
-- 备选：若暂无后端，先**落本地暂存目录** `{app_data}/log-upload/` 并给出 zip 路径，提示用户手动提交到群/工单
-- 上传成功 toast「已上传，可联系支持人员处理」；失败给出本地 zip 路径兜底
+**上传通道**：后端接口见「六、后端上传接口规范」。后端未就绪时，v1 先落本地暂存目录 `{app_data}/log-upload/` 并给出 zip 路径，提示用户手动提交。
 
-**安全脱敏**：日志可能含 API key / token → 上传前 Rust 侧正则脱敏（`sk-[a-zA-Z0-9]+`、`Authorization`、apiKey 值等）；Hermes 侧 RedactingFormatter 已做引擎级脱敏。
+**上传成功** toast「已上传，可联系支持人员处理」；失败给出本地 zip 路径兜底。
 
 ### 3.4 保留策略
 
-- 按天日志保留 **14 天**，由 `prune_daily_logs` 在应用启动时清理
+- 按天日志保留 **15 天**，由 `prune_daily_logs` 在应用启动时清理
 - Python 级轮转（agent.log 5MB×3 等）由引擎自身管理，不动
+
+### 3.5 上传前预览 / 编辑（勾选排除项）
+
+点击「上传今天的错误日志」后弹出**上传预览对话框**：
+
+1. **文件清单**：列出将上传的每个文件（名称、大小、行数、来源引擎），默认全部勾选
+2. **排除项勾选**：用户可取消勾选不想上传的文件（如怀疑含隐私的日志），排除项记录进 `manifest.json.excluded` 与 `excluded.txt`
+3. **内容预览**：点击文件名查看内容（滚动查看，**脱敏后显示**：apiKey/token/Authorization 自动打码）
+4. **备注**：可选输入框，随 manifest 上传（用户描述问题现象）
+5. **确认上传 / 取消**：确认后打包上传；取消则关闭且不产生上传
 
 ---
 
@@ -135,19 +147,111 @@ pub fn prune_daily_logs(logs_dir: &Path, keep_days: u32);
 
 | Phase | 内容 | 涉及文件 | 验证 |
 |---|---|---|---|
-| **P1** 按天工具 + OpenClaw 改点 | `log_rotate.rs` 新增；service.rs 3 处改 append_daily | `src-tauri/src/commands/log_rotate.rs`（新）、`service.rs`、`mod.rs` | cargo check + 跨天滚动单测 |
+| **P1** 按天工具 + OpenClaw 改点 | `log_rotate.rs` 新增（保留 15 天）；service.rs 3 处改 append_daily | `src-tauri/src/commands/log_rotate.rs`（新）、`service.rs`、`mod.rs` | cargo check + 跨天滚动单测 |
 | **P2** Hermes 进程日志分离 | hermes.rs stderr 独立按天；`/h/logs` 日期选择 | `hermes.rs`、`logs.js`（两个）、`logs.rs` | 启动/停止 gateway 观察文件命名 |
-| **P3** 上传 | `collect_today_error_logs` + zip + 上传端点（或本地暂存兜底）+ 前端按钮 | `hermes.rs` 或新 `log_upload.rs`、`settings.js`、`logs.js`、`tauri-api.js` | 手动触发一次，核对 zip 内容 |
-| **P4** 收尾 | 脱敏扫描、prune 保留策略、旧日志兼容回退 | 同上 | 全量回归 |
+| **P3** 上传（含预览/编辑） | `collect_today_error_logs`（错误+正常尾部）+ 脱敏 + zip + 上传对话框（文件清单勾选排除/预览/备注）+ 上传端点（或本地暂存兜底） | 新 `log_upload.rs`、`settings.js`、`logs.js`、`tauri-api.js` | 手动触发一次，核对 zip 内容与排除项 |
+| **P4** 收尾 | 脱敏扫描、prune 15 天保留、旧日志兼容回退、接口联调 | 同上 | 全量回归 + 后端联调 |
 
 ---
 
-## 五、待确认事项
+## 六、后端上传接口规范（给后端实现）
 
-1. **上传通道**：是否已有问题反馈后端 / COS bucket？没有的话 v1 先本地暂存 + 手动提交
-2. **保留天数**：默认 14 天是否合适（或 7 天）
-3. **上传范围**：仅"当天错误日志"，还是需要同时附带当天的正常日志尾部（更利于还原现场）
-4. **隐私**：是否需要在设置里提供"上传前预览/编辑"（用户可勾选排除项）
+### 6.1 接口定义
+
+```
+POST {base_url}/api/v1/log-upload
+Content-Type: multipart/form-data
+Authorization: Bearer {token}        # 可选；若接入登录态则必填
+```
+
+| 表单字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | file | ✅ | zip 包（结构见 6.3），≤20MB |
+| `client_id` | string | ✅ | 设备/安装唯一 ID（UUID，本地持久化） |
+| `client_version` | string | ✅ | 应用版本，如 `1.0.7` |
+| `engine` | string | ✅ | `openclaw` / `hermes` / `both` |
+| `upload_date` | string | ✅ | 日志所属本地日期，`YYYY-MM-DD` |
+| `remark` | string | ❌ | 用户备注（≤500 字符） |
+
+### 6.2 响应与错误码
+
+**成功（200）**：
+```json
+{ "code": 0, "data": { "upload_id": "log-20260812-xxxx", "expires_at": "2026-08-19T00:00:00+08:00" } }
+```
+
+| HTTP | code | 场景 |
+|---|---|---|
+| 200 | 0 | 成功，返回 upload_id 与保留到期时间 |
+| 400 | 10001 | 缺少 `file` / `client_id` / `upload_date` |
+| 400 | 10002 | 文件类型不是 zip |
+| 413 | 10003 | 超过 20MB 限制 |
+| 429 | 10004 | 频率限制：同一 `client_id` 1 次/分钟 |
+| 401 | 10005 | 鉴权失败（接入登录态时） |
+| 500 | 10500 | 服务器内部错误 |
+
+### 6.3 zip 包结构（客户端生成）
+
+```
+log-YYYYMMDD-<client_id前8位>.zip
+├── manifest.json          # 环境上下文（见 6.4）
+├── excluded.txt           # 用户勾选排除的文件清单（无则省略）
+├── openclaw/
+│   ├── gateway.err-YYYY-MM-DD.log      # 当天进程错误（stderr）
+│   ├── guardian-YYYY-MM-DD.log         # 当天守护日志
+│   ├── gateway-YYYY-MM-DD.log.tail     # 当天正常日志尾部 ≤512KB
+│   └── stability-*.json                # 当天启动失败快照
+└── hermes/
+    ├── errors-YYYY-MM-DD.log           # 当天进程错误（stderr，按天）
+    ├── errors.log.today                # Python WARNING+ 中当天行
+    ├── gateway-run-YYYY-MM-DD.log.tail # 当天进程输出尾部 ≤512KB
+    └── agent.log.today                 # agent.log 中当天的行
+```
+
+### 6.4 manifest.json 字段
+
+```json
+{
+  "app_version": "1.0.7",
+  "client_id": "uuid",
+  "os": "Windows 11 23H2 (x64)",
+  "engine": "both",
+  "upload_date": "2026-08-12",
+  "upload_at": "2026-08-12T18:00:00+08:00",
+  "gateway_status": "running",
+  "files": [ { "name": "openclaw/gateway.err-2026-08-12.log", "size": 20480, "lines": 312 } ],
+  "excluded": ["hermes/agent.log.today"],
+  "remark": "用户备注（可选）",
+  "stats": { "error_count": 3, "warn_count": 7 }
+}
+```
+
+### 6.5 服务端要求（后端实现时遵守）
+
+1. **存储**：对象存储（COS/OSS）或磁盘目录，按 `upload_id` 组织；**TTL 7 天**自动清理
+2. **解压安全**：防 zip 路径穿越（拒绝 `../`、绝对路径、符号链接）；仅接受白名单文件类型 `.log/.txt/.json/.tail`
+3. **大小/频率限制**：单 zip ≤20MB；同 `client_id` 1 次/分钟
+4. **脱敏复核**：服务端可对 manifest 中的 apiKey 字段再次掩码
+5. **合规**：日志含用户对话内容与密钥，仅用于问题排查，不可用于训练；默认 7 天后删除；提供 `GET /api/v1/log-upload/{upload_id}` 供支持人员按 ID 拉取
+
+### 6.6 客户端脱敏（上传前）
+
+- 正则脱敏：`sk-[A-Za-z0-9_-]{8,}`、`Bearer [A-Za-z0-9._-]+`、`Authorization:.*`、`apiKey["']?\s*[:=]\s*["'][^"']+`
+- Hermes Python 级已由 `RedactingFormatter` 引擎内脱敏，客户端对 Rust 侧日志再兜底一次
+- 预览对话框内展示的也是脱敏后内容
+
+---
+
+## 七、待确认事项（已确认项关闭）
+
+| 项 | 结论 |
+|---|---|
+| ✅ 上传通道 | 无现成后端 → 按「六、后端上传接口规范」由后端实现；v1 客户端先做本地暂存兜底 |
+| ✅ 保留天数 | **15 天** |
+| ✅ 上传范围 | 当天错误日志 + **当天正常日志尾部**（≤512KB/文件） |
+| ✅ 上传前预览 | 文件清单勾选排除项 + 脱敏预览 + 备注，确认后上传 |
+| ⏳ 上传按钮位置 | 设置页 + 日志页各一个（默认方案，可再调） |
+| ⏳ 接口 base_url | 待后端提供（可在设置页配置或内置默认） |
 
 ---
 
