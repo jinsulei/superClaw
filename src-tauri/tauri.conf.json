@@ -5,7 +5,7 @@
   "identifier": "com.superclaw.app",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeDevCommand": "node scripts/patch-openclaw-upload-runtime.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-bundled-minimax-cli.ps1 && npm run dev",
     "beforeBuildCommand": "node scripts/patch-openclaw-upload-runtime.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-bundled-minimax-cli.ps1 && npm run build"
   },
