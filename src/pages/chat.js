@@ -7688,9 +7688,32 @@ function handleEvent(msg) {
       showCompactionHint(true)
     }
 
-    // error 事件
-    if (stream === 'error' && data.message && !_isStreaming) {
-      showTyping(true, `⚠ ${data.message}`)
+    // error 事件：Agent 运行失败（如 yyapi 403 余额不足、429 限流、401、超时）。
+    // 必须识别错误类型并持久化展示，绝不能只做一闪而过的 typing 提示，
+    // 否则用户只会看到"超时/无反应"，误以为系统故障。
+    if (stream === 'error' && data.message) {
+      const errMsg = String(data.message || '')
+      const friendly = formatStuckSessionError({
+        error: errMsg,
+        errorType: /timeout|aborted|idle/i.test(errMsg) ? 'timeout' : undefined,
+      })
+      const display = friendly || `AI 执行出错：${errMsg.slice(0, 300)}`
+      if (_currentAiBubble && (_isStreaming || _isSending || _openClawPendingResponse)) {
+        _currentAiText = display
+        renderCompactAssistantContent(display, _currentAiBubble, { phase: 'error' })
+        _lastRenderedAiText = display
+        _isStreaming = false
+        _isSending = false
+        _openClawPendingResponse = false
+        showTyping(false)
+        clearOpenClawGenerationNotice()
+        hideOpenClawGenerationActions()
+        updateSendState()
+        finishOpenClawActiveRun('failed', 'llm-error-stream')
+        processMessageQueue()
+      } else {
+        showTyping(true, `⚠ ${display}`)
+      }
     }
   }
 
@@ -8796,6 +8819,16 @@ function finalizeOpenClawRunTimeoutState(reason = 'openclaw-run-timeout', reques
 // 此函数通过 HTTP 调用 dev-api.js 的 repair_stuck_sessions 端点修复 sessions.json，
 // 并返回修复结果（包含错误信息）供前端展示给用户。
 async function repairStuckOpenClawSessions() {
+  // Tauri 桌面版：调用 Rust 端 repair_stuck_sessions 命令（打包版没有 dev-api）。
+  // 浏览器调试模式：回退到 dev-api 的 HTTP 端点。
+  if (isTauriRuntime()) {
+    try {
+      const result = await api.repairStuckSessions()
+      return result || { repaired: [] }
+    } catch {
+      return { repaired: [] }
+    }
+  }
   try {
     const res = await fetch('/__api/repair_stuck_sessions', {
       method: 'POST',

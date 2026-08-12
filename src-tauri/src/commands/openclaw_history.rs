@@ -1035,13 +1035,202 @@ pub fn list_openclaw_raw_sessions(limit: Option<usize>) -> Result<Value, String>
     Ok(json!({ "sessions": sessions }))
 }
 
+const STUCK_SESSION_TIMEOUT_MS: i64 = 5 * 60 * 1000; // 5 分钟无活动视为卡死
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 从 trajectory 尾部解析会话最后状态：(is_stuck, error, error_type)
+/// 优先读 `model.completed` 的 errorMessage/errorCode（如 yyapi 403 余额不足），
+/// 其次 `session.ended` 的状态；都没有则返回最后活动时间用于超时判定。
+fn parse_trajectory_stuck(trajectory_path: &Path, now: i64) -> (bool, String, String) {
+    let content = match fs::read_to_string(trajectory_path) {
+        Ok(c) => c,
+        Err(_) => return (false, String::new(), String::new()),
+    };
+    // 从末尾往前解析，最多看 120 行（trajectory 可能很大）
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(120);
+    for line in lines[start..].iter().rev() {
+        let entry: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let etype = entry.get("type").and_then(Value::as_str).unwrap_or("");
+        if etype == "model.completed" {
+            let snap = entry
+                .pointer("/data/messagesSnapshot")
+                .and_then(Value::as_array);
+            if let Some(snap) = snap {
+                if let Some(last) = snap.last() {
+                    let stop_reason = last.get("stopReason").and_then(Value::as_str).unwrap_or("");
+                    let err_msg = last
+                        .get("errorMessage")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if stop_reason == "error" || !err_msg.is_empty() {
+                        let msg = if !err_msg.is_empty() {
+                            err_msg.to_string()
+                        } else {
+                            "Agent 执行出错".to_string()
+                        };
+                        return (true, msg, "error".to_string());
+                    }
+                }
+            }
+        }
+        if etype == "session.ended" || etype == "session.done" {
+            let data = entry.get("data").or_else(|| entry.get("payload"));
+            let status = data
+                .and_then(|d| d.get("status"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let err_msg = data
+                .and_then(|d| d.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if status == "error" {
+                let msg = if !err_msg.is_empty() {
+                    err_msg.to_string()
+                } else {
+                    "Agent 已结束但会话状态未更新".to_string()
+                };
+                return (true, msg, "error".to_string());
+            }
+            if status == "success" || status == "done" {
+                return (true, "Agent 已结束但会话状态未更新".to_string(), "ended".to_string());
+            }
+        }
+    }
+    // 最后一条的时间戳 → 超时判定
+    if let Some(last_line) = lines.last() {
+        if let Ok(entry) = serde_json::from_str::<Value>(last_line) {
+            let ts = entry.get("ts").and_then(Value::as_i64).unwrap_or(0);
+            if ts > 0 && now - ts > STUCK_SESSION_TIMEOUT_MS {
+                return (
+                    true,
+                    format!("会话已超过 {} 分钟无活动", STUCK_SESSION_TIMEOUT_MS / 60000),
+                    "timeout".to_string(),
+                );
+            }
+        }
+    }
+    (false, String::new(), String::new())
+}
+
+/// 检测并修复卡死会话（status=running 但实际已结束/超时），返回修复结果含
+/// 错误信息（如 yyapi 403 余额不足），供前端向用户明确提示。打包版没有
+/// dev-api 的 /__api/repair_stuck_sessions，此命令提供等价能力。
+#[tauri::command]
+pub fn repair_stuck_sessions() -> Result<Value, String> {
+    let dir = sessions_dir();
+    let registry_path = dir.join("sessions.json");
+    let mut store: Value = match fs::read_to_string(&registry_path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or(json!({})),
+        Err(_) => json!({}),
+    };
+    let Some(obj) = store.as_object_mut() else {
+        return Ok(json!({ "repaired": [], "totalChecked": 0 }));
+    };
+    let now = now_millis();
+    let mut repaired: Vec<Value> = Vec::new();
+
+    for (session_key, entry) in obj.iter_mut() {
+        let Some(e) = entry.as_object_mut() else { continue };
+        let status = e.get("status").and_then(Value::as_str).unwrap_or("").to_lowercase();
+        if status != "running" {
+            continue;
+        }
+        let Some(sid) = e.get("sessionId").and_then(Value::as_str) else { continue };
+        if sid.is_empty() {
+            continue;
+        }
+        let sid = sid.to_string();
+        let trajectory_path = dir.join(format!("{sid}.trajectory.jsonl"));
+        let (mut is_stuck, mut err_msg, mut err_type) =
+            parse_trajectory_stuck(&trajectory_path, now);
+        if !is_stuck {
+            // 无 trajectory 或未结束：检查 startedAt 超时
+            let started = e
+                .get("startedAt")
+                .or_else(|| e.get("sessionStartedAt"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if started > 0 && now - started > STUCK_SESSION_TIMEOUT_MS {
+                is_stuck = true;
+                err_msg = format!("会话已运行 {} 分钟无响应", (now - started) / 60000);
+                err_type = "timeout".to_string();
+            }
+        }
+        if is_stuck {
+            e.insert("status".into(), json!("done"));
+            e.insert("endedAt".into(), json!(now));
+            e.insert("error".into(), json!(err_msg));
+            e.insert("errorType".into(), json!(err_type));
+            repaired.push(json!({
+                "sessionKey": session_key,
+                "sessionId": sid,
+                "error": err_msg,
+                "errorType": err_type,
+                "model": e.get("model").cloned().unwrap_or(Value::Null),
+                "modelProvider": e.get("modelProvider").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+
+    let total_checked = obj.len();
+    drop(obj);
+
+    if !repaired.is_empty() {
+        if let Ok(content) = serde_json::to_string_pretty(&store) {
+            let _ = fs::write(&registry_path, content);
+        }
+    }
+    Ok(json!({ "repaired": repaired, "totalChecked": total_checked }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        best_effort_registry_entries, image_attachments, successful_tool_only_terminal_messages,
-        trajectory_messages, user_image_attachments,
+        best_effort_registry_entries, image_attachments, parse_trajectory_stuck,
+        successful_tool_only_terminal_messages, trajectory_messages, user_image_attachments,
     };
     use serde_json::json;
+
+    #[test]
+    fn parses_trajectory_quota_error_from_model_completed() {
+        let p = std::env::temp_dir().join("superclaw-traj-quota-test.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"prompt.submitted\",\"ts\":100,\"data\":{}}\n\
+             {\"type\":\"model.completed\",\"ts\":200,\"data\":{\"messagesSnapshot\":[{\"role\":\"assistant\",\"stopReason\":\"error\",\"errorMessage\":\"403 预扣费额度失败, 用户剩余额度: ＄0.13, 需要预扣费额度: ＄0.14\",\"errorCode\":\"insufficient_user_quota\"}]}}\n",
+        )
+        .unwrap();
+        let (stuck, err, err_type) = parse_trajectory_stuck(&p, 300);
+        let _ = std::fs::remove_file(&p);
+        assert!(stuck);
+        assert!(err.contains("403"));
+        assert_eq!(err_type, "error");
+    }
+
+    #[test]
+    fn marks_idle_trajectory_as_timeout() {
+        let p = std::env::temp_dir().join("superclaw-traj-idle-test.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"prompt.submitted\",\"ts\":100,\"data\":{}}\n",
+        )
+        .unwrap();
+        // now 远大于最后活动 ts(100)，超过 5 分钟阈值
+        let (stuck, _err, err_type) = parse_trajectory_stuck(&p, 100 + 6 * 60 * 1000);
+        let _ = std::fs::remove_file(&p);
+        assert!(stuck);
+        assert_eq!(err_type, "timeout");
+    }
 
     #[test]
     fn recovers_session_entries_when_registry_has_invalid_json_later() {

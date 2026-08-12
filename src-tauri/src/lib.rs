@@ -236,6 +236,7 @@ pub fn run() {
             service::guardian_status,
             openclaw_history::read_openclaw_raw_history,
             openclaw_history::list_openclaw_raw_sessions,
+            openclaw_history::repair_stuck_sessions,
             openclaw_history::openclaw_load_gateway_media,
             openclaw_history::openclaw_load_local_media,
             openclaw_history::openclaw_open_workspace_output,

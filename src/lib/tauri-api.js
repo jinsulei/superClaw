@@ -309,6 +309,7 @@ export const api = {
   openclawOpenWorkspaceOutput: (path) => invoke('openclaw_open_workspace_output', { path }),
   openclawDownloadWorkspaceOutput: (path) => invoke('openclaw_download_workspace_output', { path }),
   listOpenclawRawSessions: (limit = 80) => invoke('list_openclaw_raw_sessions', { limit }),
+  repairStuckSessions: () => invoke('repair_stuck_sessions'),
   calibrateOpenclawConfig: (mode = 'inherit') => { invalidate('read_openclaw_config', 'check_installation', 'list_backups', 'get_services_status', 'get_status_summary'); return invoke('calibrate_openclaw_config', { mode }).then(r => { _debouncedReloadGateway(); return r }) },
   writeOpenclawConfig: (config, reload = true) => { invalidate('read_openclaw_config'); return invoke('write_openclaw_config', { config }).then(r => { if (reload) _debouncedReloadGateway(); return r }) },
   readMcpConfig: () => cachedInvoke('read_mcp_config'),
