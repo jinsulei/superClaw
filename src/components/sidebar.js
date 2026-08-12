@@ -120,7 +120,7 @@ let _openClawSidebarSessionListenerBound = false
 const OPENCLAW_PRIMARY_SIDEBAR_ROUTES = ['/chat', '/dashboard', '/models', '/agents', '/skills']
 const OPENCLAW_SESSION_STORAGE_KEY = 'superclaw-last-session'
 const OPENCLAW_ACTIVE_SESSION_STORAGE_KEY = 'superclaw-last-active-session'
-const HERMES_PRIMARY_SIDEBAR_ROUTES = ['/h/chat', '/h/dashboard', '/h/skills', '/h/memory', '/models']
+const HERMES_PRIMARY_SIDEBAR_ROUTES = ['/h/chat', '/h/dashboard', '/models', '/h/skills', '/h/memory']
 let _hermesSidebarSessions = []
 let _hermesSidebarSessionListenerBound = false
 
