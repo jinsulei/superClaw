@@ -364,61 +364,6 @@ export function render() {
         </button>
       </div>-->
 
-      <!-- Model config panel (collapsible). hm-panel--allow-overflow lets the model dropdown escape the panel overflow:hidden clip (issue #260). -->
-      <div class="hm-panel hm-panel--allow-overflow">
-        <div class="hm-panel-header hm-panel-header--toggle hm-cfg-toggle ${modelConfigCollapsed ? '' : 'is-open'}">
-          <div class="hm-panel-title">
-            <svg class="hm-panel-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/></svg>
-            ${t('engine.dashModelConfig')}
-            <!--<span class="hm-panel-title-count">${hermesProviders.filter(p => p.id !== 'custom').length}</span>-->
-          </div>
-          <div class="hm-panel-actions">
-            <svg class="hm-panel-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-        </div>
-        ${!modelConfigCollapsed ? `
-        <div class="hm-panel-body">
-          <!--<div class="hm-field-label" style="margin-bottom:10px">${t('engine.dashProviderPresets')}</div>-->
-          <!--<div class="hm-pills" style="margin-bottom:18px">
-            ${hermesProviders.filter(p => p.id !== 'custom').map(p => {
-              const api = p.transport === 'anthropic_messages' ? 'anthropic-messages'
-                : p.transport === 'google_gemini' ? 'google-generative-ai'
-                : 'openai-completions'
-              const active = activePreset?.id === p.id
-              return `<button class="hm-pill hm-preset-btn ${active ? 'is-active' : ''}" data-key="${p.id}" data-url="${esc(p.baseUrl)}" data-api="${api}">${esc(p.name)}</button>`
-            }).join('')}
-          </div>-->
-          <div class="hm-field-row">
-            <label class="hm-field">
-              <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
-              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimax.io/v1" >
-            </label>
-            <label class="hm-field">
-              <span class="hm-field-label">${t('engine.dashApiKey')}</span>
-              <input type="password" id="hm-cfg-apikey" class="hm-input" value="${esc(formApiKey)}" placeholder="MiniMax API Key">
-              <div class="hm-muted" style="margin-top:6px;font-size:11px">API Key ??????????</div>
-            </label>
-          </div>
-          <div style="display:flex;gap:10px;align-items:flex-end;margin-top:12px">
-            <label class="hm-field" style="flex:1">
-              <span class="hm-field-label">${t('engine.configModel')}</span>
-              <div style="position:relative">
-                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="MiniMax-M3">
-                ${dropdownHtml}
-              </div>
-            </label>
-            <button class="hm-btn hm-btn--sm hm-fetch-models" ${fetchBusy ? 'disabled' : ''}>${fetchBusy ? t('engine.configFetching') : t('engine.configFetchModels')}</button>
-          </div>
-          <div id="hm-cfg-msg" class="hm-muted" style="min-height:16px;margin:12px 0 6px">${cfgMsg}</div>
-          <div class="hm-stack">
-            <button class="hm-btn hm-btn--primary hm-btn--sm hm-save-model" ${modelBusy ? 'disabled' : ''}>${modelBusy ? '...' : t('engine.configSaveBtn')}</button>
-            <span class="hm-spacer"></span>
-            <a href="#/h/env" class="hm-btn hm-btn--ghost hm-btn--sm" title="${t('engine.dashEnvAdvancedEdit')}">${t('engine.dashEnvAdvancedEdit')}</a>
-          </div>
-        </div>
-        ` : ''}
-      </div>
-
       <!-- Gateway message line (actions moved to Hero bar) -->
       <div id="hm-dash-msg" class="hm-muted" style="min-height:14px;margin:-6px 4px 12px;font-size:11px"></div>
 
@@ -597,6 +542,61 @@ export function render() {
           </table>
         </div>
       </div>-->
+
+      <!-- Model config panel (collapsible). hm-panel--allow-overflow lets the model dropdown escape the panel overflow:hidden clip (issue #260). -->
+      <div class="hm-panel hm-panel--allow-overflow">
+        <div class="hm-panel-header hm-panel-header--toggle hm-cfg-toggle ${modelConfigCollapsed ? '' : 'is-open'}">
+          <div class="hm-panel-title">
+            <svg class="hm-panel-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/></svg>
+            ${t('engine.dashModelConfig')}
+            <!--<span class="hm-panel-title-count">${hermesProviders.filter(p => p.id !== 'custom').length}</span>-->
+          </div>
+          <div class="hm-panel-actions">
+            <svg class="hm-panel-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+        </div>
+        ${!modelConfigCollapsed ? `
+        <div class="hm-panel-body">
+          <!--<div class="hm-field-label" style="margin-bottom:10px">${t('engine.dashProviderPresets')}</div>-->
+          <!--<div class="hm-pills" style="margin-bottom:18px">
+            ${hermesProviders.filter(p => p.id !== 'custom').map(p => {
+              const api = p.transport === 'anthropic_messages' ? 'anthropic-messages'
+                : p.transport === 'google_gemini' ? 'google-generative-ai'
+                : 'openai-completions'
+              const active = activePreset?.id === p.id
+              return `<button class="hm-pill hm-preset-btn ${active ? 'is-active' : ''}" data-key="${p.id}" data-url="${esc(p.baseUrl)}" data-api="${api}">${esc(p.name)}</button>`
+            }).join('')}
+          </div>-->
+          <div class="hm-field-row">
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.dashApiBaseUrl')}</span>
+              <input type="text" id="hm-cfg-baseurl" class="hm-input" value="${esc(formBaseUrl)}" placeholder="https://api.minimax.io/v1" >
+            </label>
+            <label class="hm-field">
+              <span class="hm-field-label">${t('engine.dashApiKey')}</span>
+              <input type="password" id="hm-cfg-apikey" class="hm-input" value="${esc(formApiKey)}" placeholder="MiniMax API Key">
+              <div class="hm-muted" style="margin-top:6px;font-size:11px">API Key ??????????</div>
+            </label>
+          </div>
+          <div style="display:flex;gap:10px;align-items:flex-end;margin-top:12px">
+            <label class="hm-field" style="flex:1">
+              <span class="hm-field-label">${t('engine.configModel')}</span>
+              <div style="position:relative">
+                <input type="text" id="hm-cfg-model" class="hm-input" value="${esc(formModel)}" placeholder="MiniMax-M3">
+                ${dropdownHtml}
+              </div>
+            </label>
+            <button class="hm-btn hm-btn--sm hm-fetch-models" ${fetchBusy ? 'disabled' : ''}>${fetchBusy ? t('engine.configFetching') : t('engine.configFetchModels')}</button>
+          </div>
+          <div id="hm-cfg-msg" class="hm-muted" style="min-height:16px;margin:12px 0 6px">${cfgMsg}</div>
+          <div class="hm-stack">
+            <button class="hm-btn hm-btn--primary hm-btn--sm hm-save-model" ${modelBusy ? 'disabled' : ''}>${modelBusy ? '...' : t('engine.configSaveBtn')}</button>
+            <span class="hm-spacer"></span>
+            <a href="#/h/env" class="hm-btn hm-btn--ghost hm-btn--sm" title="${t('engine.dashEnvAdvancedEdit')}">${t('engine.dashEnvAdvancedEdit')}</a>
+          </div>
+        </div>
+        ` : ''}
+      </div>
     `
     bind()
   }
