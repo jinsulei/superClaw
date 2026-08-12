@@ -1183,7 +1183,7 @@ pub fn repair_stuck_sessions() -> Result<Value, String> {
     }
 
     let total_checked = obj.len();
-    drop(obj);
+    let _ = obj;
 
     if !repaired.is_empty() {
         if let Ok(content) = serde_json::to_string_pretty(&store) {
