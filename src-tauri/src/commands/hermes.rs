@@ -133,7 +133,19 @@ fn reqwest_error_detail(error: &reqwest::Error) -> String {
 }
 
 fn hermes_gateway_log_tail(limit: usize) -> String {
-    let log_path = hermes_home().join("gateway-run.log");
+    let logs_dir = hermes_home().join("logs");
+    // 按天文件优先（gateway-run-{date}.log），回退历史 gateway-run.log
+    let daily = crate::commands::log_rotate::daily_path(&logs_dir, "gateway-run", ".log");
+    let log_path = if daily.exists() {
+        daily
+    } else {
+        let legacy = hermes_home().join("gateway-run.log");
+        if legacy.exists() {
+            legacy
+        } else {
+            daily
+        }
+    };
     let content = std::fs::read_to_string(log_path).unwrap_or_default();
     content
         .lines()
@@ -368,15 +380,12 @@ async fn do_restart_gateway() -> Result<(), String> {
     // 3. 修正 uv tool pyvenv.cfg Python 路径，然后启动新进程
     patch_uv_tool_pyvenv_cfgs();
     let enhanced = hermes_enhanced_path();
-    let log_path = home.join("gateway-run.log");
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
+    // 进程日志按天分离：stdout → logs/gateway-run-{date}.log；stderr → logs/errors-{date}.log
+    let logs_dir = home.join("logs");
+    let log_file = crate::commands::log_rotate::open_daily_append(&logs_dir, "gateway-run", ".log")
         .map_err(|e| format!("打开日志失败: {e}"))?;
-    let log_err = log_file
-        .try_clone()
-        .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
+    let log_err = crate::commands::log_rotate::open_daily_append(&logs_dir, "errors", ".log")
+        .map_err(|e| format!("打开错误日志失败: {e}"))?;
 
     let mut cmd = hermes_command(&["gateway", "run"], &enhanced);
     cmd.stdin(std::process::Stdio::null())
@@ -4077,13 +4086,13 @@ pub async fn hermes_gateway_action(
                     let _ = std::fs::remove_file(&pid_file);
                 }
 
-                // 4. 启动 Gateway 进程
-                let log_path = home.join("gateway-run.log");
-                let log_file = std::fs::File::create(&log_path)
+                // 4. 启动 Gateway 进程（按天日志：stdout → gateway-run-{date}，stderr → errors-{date}）
+                let logs_dir = home.join("logs");
+                let log_file = crate::commands::log_rotate::open_daily_append(&logs_dir, "gateway-run", ".log")
                     .map_err(|e| format!("创建日志文件失败: {e}"))?;
-                let log_err = log_file
-                    .try_clone()
+                let log_err = crate::commands::log_rotate::open_daily_append(&logs_dir, "errors", ".log")
                     .map_err(|e| format!("克隆日志句柄失败: {e}"))?;
+                let log_path = crate::commands::log_rotate::daily_path(&logs_dir, "gateway-run", ".log");
 
                 if let Some(runtime_error) = hermes_portable_runtime_error() {
                     let _ = std::fs::write(&log_path, &runtime_error);

@@ -538,18 +538,12 @@ fn guardian_state() -> &'static Arc<Mutex<GuardianRuntimeState>> {
 
 fn guardian_log(message: &str) {
     let log_dir = crate::commands::openclaw_dir().join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let path = log_dir.join("guardian.log");
     let line = format!(
         "[{}] {}\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
         message
     );
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    crate::commands::log_rotate::append_daily(&log_dir, "guardian", ".log", &line);
 }
 
 fn emit_guardian_event(app: Option<&tauri::AppHandle>, kind: &str, message: impl Into<String>) {
@@ -874,6 +868,12 @@ pub fn start_backend_guardian(app: tauri::AppHandle) {
         platform::cleanup_zombie_gateway_processes();
     }
 
+    // 清理保留期外的按天日志（默认 15 天）
+    crate::commands::log_rotate::prune_daily_logs(
+        &crate::commands::openclaw_dir().join("logs"),
+        crate::commands::log_rotate::DEFAULT_KEEP_DAYS,
+    );
+
     guardian_log("后端守护循环已启动");
     tauri::async_runtime::spawn(async move {
         loop {
@@ -1010,16 +1010,10 @@ mod platform {
         let log_dir = crate::commands::openclaw_dir().join("logs");
         fs::create_dir_all(&log_dir).ok();
 
-        let stdout_log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("gateway.log"))
+        let stdout_log = crate::commands::log_rotate::open_daily_append(&log_dir, "gateway", ".log")
             .map_err(|e| format!("创建日志文件失败: {e}"))?;
 
-        let stderr_log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("gateway.err.log"))
+        let stderr_log = crate::commands::log_rotate::open_daily_append(&log_dir, "gateway.err", ".log")
             .map_err(|e| format!("创建错误日志文件失败: {e}"))?;
 
         let mut cmd = crate::utils::openclaw_command();
@@ -1702,17 +1696,13 @@ mod platform {
         let log_dir = crate::commands::openclaw_dir().join("logs");
         fs::create_dir_all(&log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
 
-        let mut stdout_log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("gateway.log"))
-            .map_err(|e| format!("创建日志文件失败: {e}"))?;
+        let mut stdout_log =
+            crate::commands::log_rotate::open_daily_append(&log_dir, "gateway", ".log")
+                .map_err(|e| format!("创建日志文件失败: {e}"))?;
 
-        let stderr_log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("gateway.err.log"))
-            .map_err(|e| format!("创建错误日志文件失败: {e}"))?;
+        let stderr_log =
+            crate::commands::log_rotate::open_daily_append(&log_dir, "gateway.err", ".log")
+                .map_err(|e| format!("创建错误日志文件失败: {e}"))?;
 
         let _ = writeln!(
             stdout_log,

@@ -3,6 +3,7 @@
  */
 import { api } from '../lib/tauri-api.js'
 import { toast } from '../components/toast.js'
+import { showContentModal } from '../components/modal.js'
 import { t } from '../lib/i18n.js'
 
 const LOG_TABS = [
@@ -92,6 +93,7 @@ export async function render() {
           <input type="text" class="form-input" id="log-search" placeholder="${t('logs.searchPlaceholder')}">
         </div>
         <button class="btn btn-secondary btn-sm" id="btn-refresh">${t('logs.refresh')}</button>
+        <button class="btn btn-primary btn-sm" id="btn-upload-log" style="margin-left:4px">↑ ${t('logs.uploadToday') || '上传今天的错误日志'}</button>
         <label class="logs-toggle">
           <input type="checkbox" id="log-show-raw">
           <span>${t('logs.showRaw')}</span>
@@ -140,8 +142,95 @@ export async function render() {
 
   page.querySelector('#btn-refresh').onclick = loadCurrentLog
 
+  // 上传今天的错误日志（预览 → 勾选排除 → 打包 → 上传）
+  page.querySelector('#btn-upload-log').onclick = () => openLogUploadDialog()
+
   loadCurrentLog()
   return page
+}
+
+/**
+ * 打开"上传今天的错误日志"预览对话框：
+ * 1. 拉取当天日志文件清单（含错误数/行数/大小）
+ * 2. 用户勾选排除不想上传的文件、填写备注
+ * 3. 打包 zip 后上传到后端接口
+ */
+async function openLogUploadDialog() {
+  let preview
+  try {
+    toast('正在收集今天的错误日志...', 'info')
+    preview = await api.logUploadPreview()
+  } catch (e) {
+    toast('收集日志失败: ' + String(e?.message || e), 'error')
+    return
+  }
+  const files = (preview?.files) || []
+  if (!files.length) {
+    toast('今天暂无日志可上传', 'warning')
+    return
+  }
+
+  const totalErr = files.reduce((a, f) => a + (f.error_count || 0), 0)
+  const fileRows = files.map(f => {
+    const tag = f.error
+      ? `<span style="color:var(--error);font-weight:600">错误</span>`
+      : `<span style="color:var(--text-tertiary)">日志</span>`
+    const badge = f.error_count
+      ? `<span style="color:var(--error);font-size:11px">(${f.error_count} 错误 / ${f.warn_count || 0} 警告)</span>`
+      : ''
+    return `
+      <label style="display:flex;align-items:flex-start;gap:8px;padding:6px 4px;border-bottom:1px solid var(--border-tertiary);cursor:pointer">
+        <input type="checkbox" data-key="${f.key}" checked style="margin-top:3px">
+        <span style="flex:1;min-width:0">
+          <code style="font-size:12px;word-break:break-all">${f.name}</code>
+          <div style="font-size:11px;color:var(--text-tertiary)">${tag} · ${(f.size/1024).toFixed(1)} KB · ${f.lines} 行 ${badge}</div>
+        </span>
+      </label>`
+  }).join('')
+
+  const overlay = showContentModal({
+    title: '上传今天的错误日志',
+    width: 560,
+    content: `
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
+        共 ${files.length} 个文件 · ${totalErr} 条错误记录。取消勾选可排除不想上传的文件（将记录在 manifest.excluded）。
+        日志已自动脱敏（API Key / Token 打码）。
+      </div>
+      <div style="max-height:260px;overflow:auto;border:1px solid var(--border-tertiary);border-radius:8px;padding:4px 8px;margin-bottom:10px">
+        ${fileRows}
+      </div>
+      <input type="text" id="log-upload-remark" class="form-input" placeholder="备注（可选）：描述遇到的问题，随日志一起上传" style="width:100%">
+    `,
+    buttons: [
+      { id: 'btn-log-upload-confirm', label: '上传', className: 'btn btn-primary btn-sm' },
+    ],
+  })
+
+  overlay.querySelector('#btn-log-upload-confirm').onclick = async () => {
+    const excluded = []
+    overlay.querySelectorAll('input[data-key]').forEach(cb => {
+      if (!cb.checked) excluded.push(cb.dataset.key)
+    })
+    const remark = (overlay.querySelector('#log-upload-remark')?.value || '').trim()
+    const btn = overlay.querySelector('#btn-log-upload-confirm')
+    btn.disabled = true
+    btn.textContent = '打包中...'
+    try {
+      const built = await api.logUploadBuild(excluded, remark)
+      btn.textContent = '上传中...'
+      const sent = await api.logUploadSend(built.zip_path, remark)
+      if (sent?.ok) {
+        overlay.close()
+        toast('日志已上传，可联系支持人员处理（ID: ' + (sent.upload_id || '') + '）', 'success')
+      } else {
+        toast('上传返回异常', 'error')
+      }
+    } catch (e) {
+      overlay.close()
+      toast('上传失败: ' + String(e?.message || e), 'error')
+      toast('如需手动提交，zip 保存在 log-upload 目录', 'warning')
+    }
+  }
 }
 
 export function cleanup() {

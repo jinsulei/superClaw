@@ -361,6 +361,11 @@ export const api = {
   readLogTail: (logName, lines = 100) => cachedInvoke('read_log_tail', { logName, lines }, 5000),
   searchLog: (logName, query, maxResults = 50) => invoke('search_log', { logName, query, maxResults }),
 
+  // 当天错误日志收集与上传
+  logUploadPreview: () => invoke('log_upload_preview'),
+  logUploadBuild: (excluded, remark) => invoke('log_upload_build', { excluded, remark }),
+  logUploadSend: (zipPath, remark) => invoke('log_upload_send', { zipPath, remark }),
+
   // 记忆文件
   listMemoryFiles: (category, agentId) => cachedInvoke('list_memory_files', { category, agentId: agentId || null }),
   readMemoryFile: (path, agentId) => cachedInvoke('read_memory_file', { path, agentId: agentId || null }, 5000),

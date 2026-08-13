@@ -253,6 +253,10 @@ pub fn run() {
             // 日志
             logs::read_log_tail,
             logs::search_log,
+            // 当天错误日志收集与上传
+            log_upload::log_upload_preview,
+            log_upload::log_upload_build,
+            log_upload::log_upload_send,
             // 记忆文件
             memory::list_memory_files,
             memory::read_memory_file,

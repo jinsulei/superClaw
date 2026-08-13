@@ -9,15 +9,39 @@ fn log_dir() -> PathBuf {
 }
 
 fn log_path(log_name: &str) -> PathBuf {
+    let dir = log_dir();
+    // 按天文件优先：新日志按 {stem}-YYYY-MM-DD{ext} 写入（log_rotate）
+    let daily = match log_name {
+        "gateway" => Some(crate::commands::log_rotate::daily_path(&dir, "gateway", ".log")),
+        "gateway-err" => Some(crate::commands::log_rotate::daily_path(&dir, "gateway.err", ".log")),
+        "guardian" => Some(crate::commands::log_rotate::daily_path(&dir, "guardian", ".log")),
+        _ => None,
+    };
+    if let Some(p) = daily {
+        if p.exists() {
+            return p;
+        }
+        // 回退历史无日期文件（兼容旧日志）
+        let legacy = match log_name {
+            "gateway" => "gateway.log",
+            "gateway-err" => "gateway.err.log",
+            "guardian" => "guardian.log",
+            _ => "",
+        };
+        if !legacy.is_empty() {
+            let lp = dir.join(legacy);
+            if lp.exists() {
+                return lp;
+            }
+        }
+        return p;
+    }
     let filename = match log_name {
-        "gateway" => "gateway.log",
-        "gateway-err" => "gateway.err.log",
-        "guardian" => "guardian.log",
         "guardian-backup" => "guardian-backup.log",
         "config-audit" => "config-audit.jsonl",
         _ => "gateway.log",
     };
-    log_dir().join(filename)
+    dir.join(filename)
 }
 
 #[tauri::command]
