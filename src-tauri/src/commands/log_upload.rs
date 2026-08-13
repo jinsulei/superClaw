@@ -203,7 +203,7 @@ pub fn log_upload_build(excluded: Vec<String>, remark: String) -> Result<Value, 
     let mut stats_err = 0usize;
     let mut stats_warn = 0usize;
 
-    let mut add_entry = |zw: &mut zip::ZipWriter<std::fs::File>, name: &str, content: &str| -> Result<(), String> {
+    let add_entry = |zw: &mut zip::ZipWriter<std::fs::File>, name: &str, content: &str| -> Result<(), String> {
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         zw.start_file(name, opts).map_err(|e| format!("zip 写入 {name} 失败: {e}"))?;
