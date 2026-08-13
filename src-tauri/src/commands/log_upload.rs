@@ -106,7 +106,7 @@ fn redact(text: &str) -> String {
     if let Ok(re) = regex::Regex::new(r"(?i)(Bearer\s+)[a-z0-9._\-]{8,}") {
         s = re.replace_all(&s, "${1}****").into_owned();
     }
-    if let Ok(re) = regex::Regex::new(r"(?i)(authorization\s*[:=]\s*)[^\s,;\"']+") {
+    if let Ok(re) = regex::Regex::new(r#"(?i)(authorization\s*[:=]\s*)[^\s,;"']+"#) {
         s = re.replace_all(&s, "${1}****").into_owned();
     }
     if let Ok(re) = regex::Regex::new(r#"(?i)("?api[_a-z]*"?\s*[:=]\s*")[^"]{8,}""#) {
