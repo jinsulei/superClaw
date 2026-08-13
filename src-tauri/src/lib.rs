@@ -7,7 +7,7 @@ mod utils;
 
 use commands::{
     agent, assistant, claude_code, cli_conflict, config, device, diagnose, extensions, file_service, hermes,
-    hermes_providers, logs, media, memory, messaging, ocr, openclaw_history, pairing, service,
+    hermes_providers, log_upload, logs, media, memory, messaging, ocr, openclaw_history, pairing, service,
     shared_memory, skills, update,
 };
 use tauri::Manager;

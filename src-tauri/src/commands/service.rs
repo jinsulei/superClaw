@@ -1202,7 +1202,7 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use std::env;
-    use std::fs::{self, OpenOptions};
+    use std::fs;
     use std::io::Write;
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};

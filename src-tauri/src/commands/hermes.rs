@@ -382,6 +382,7 @@ async fn do_restart_gateway() -> Result<(), String> {
     let enhanced = hermes_enhanced_path();
     // 进程日志按天分离：stdout → logs/gateway-run-{date}.log；stderr → logs/errors-{date}.log
     let logs_dir = home.join("logs");
+    let log_path = crate::commands::log_rotate::daily_path(&logs_dir, "gateway-run", ".log");
     let log_file = crate::commands::log_rotate::open_daily_append(&logs_dir, "gateway-run", ".log")
         .map_err(|e| format!("打开日志失败: {e}"))?;
     let log_err = crate::commands::log_rotate::open_daily_append(&logs_dir, "errors", ".log")
