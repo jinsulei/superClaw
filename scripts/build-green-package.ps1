@@ -21,6 +21,8 @@ $script:EffectiveFailIfPortOccupied = $true
 $script:MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
 $script:MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
 $script:MiniMaxTestModel = "MiniMax-M3"
+$script:MiniMaxProviderProfile = "minimax-cn"
+$script:MiniMaxManagedBy = "superclaw-provider-profile:$script:MiniMaxProviderProfile"
 $StrictPort = 1420
 $StrictPortRequired = $true
 $StrictPortSummary = "strictPort: port 1420, fail if port occupied, no reuse existing service"
@@ -225,6 +227,7 @@ function Set-TestBuildViteEnv {
     "VITE_ENABLE_ECOMMERCE_ASSISTANT",
     "VITE_SUPERCLAW_TEST_BUILD",
     "VITE_SUPERCLAW_FORCE_PROVIDER",
+    "VITE_SUPERCLAW_MINIMAX_PROVIDER",
     "VITE_SUPERCLAW_MINIMAX_BASE_URL",
     "VITE_SUPERCLAW_MINIMAX_MODEL"
   )
@@ -235,6 +238,7 @@ function Set-TestBuildViteEnv {
   [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_PROVIDER", $script:MiniMaxProviderProfile, "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $script:MiniMaxTestBaseUrl, "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $script:MiniMaxTestModel, "Process")
   Write-Host "Test build Vite env: ecommerce assistant=true, no user system, provider=minimax, model=$script:MiniMaxTestModel" -ForegroundColor Green
@@ -403,7 +407,7 @@ function Write-HermesConfig([string]$Dir) {
 # Hermes Agent portable configuration.
 model:
   default: $script:MiniMaxTestModel
-  provider: minimax
+  provider: $script:MiniMaxProviderProfile
 ${baseUrlYamlLine}platform_toolsets:
   api_server:
     - hermes-api-server
@@ -421,11 +425,14 @@ platforms:
     enabled: true
 "@
   Write-Utf8File (Join-Path $Dir ".env") @"
+MINIMAX_CN_API_KEY=YOUR_API_KEY
 MINIMAX_API_KEY=YOUR_API_KEY
 MINIMAX_BASE_URL=$script:MiniMaxTestBaseUrl
-HERMES_PROVIDER=minimax
+MINIMAX_CN_BASE_URL=$script:MiniMaxTestBaseUrl
+HERMES_PROVIDER=$script:MiniMaxProviderProfile
 OPENAI_MODEL=$script:MiniMaxTestModel
 SUPERCLAW_FORCE_PROVIDER=minimax
+SUPERCLAW_MODEL_PROVIDER_PROFILE=$script:MiniMaxProviderProfile
 API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@
@@ -533,11 +540,14 @@ function openclawMiniMaxGatewayEnv(resourcesRoot, dataRoot) {
   return {
     config,
     env: {
+      MINIMAX_CN_API_KEY: config.apiKey,
+      MINIMAX_CN_BASE_URL: config.baseUrl,
       MINIMAX_API_KEY: config.apiKey,
       OPENAI_API_KEY: config.apiKey,
       OPENAI_BASE_URL: config.baseUrl,
       OPENAI_MODEL: config.model,
       SUPERCLAW_FORCE_PROVIDER: 'minimax',
+      SUPERCLAW_MODEL_PROVIDER_PROFILE: 'minimax-cn',
       SUPERCLAW_MINIMAX_BASE_URL: config.baseUrl,
       SUPERCLAW_MINIMAX_MODEL: config.model,
     },
@@ -871,10 +881,13 @@ Write-Utf8File (Join-Path $ConfigTemplate "Hermes-env.template") @"
 # Copy this file to OpenCloud\resources\data\hermes\.env and fill your own key.
 # Do not publish real keys.
 MINIMAX_API_KEY=YOUR_API_KEY
+MINIMAX_CN_API_KEY=YOUR_API_KEY
 MINIMAX_BASE_URL=$script:MiniMaxTestBaseUrl
-HERMES_PROVIDER=minimax
+MINIMAX_CN_BASE_URL=$script:MiniMaxTestBaseUrl
+HERMES_PROVIDER=$script:MiniMaxProviderProfile
 OPENAI_MODEL=$script:MiniMaxTestModel
 SUPERCLAW_FORCE_PROVIDER=minimax
+SUPERCLAW_MODEL_PROVIDER_PROFILE=$script:MiniMaxProviderProfile
 API_SERVER_KEY=clawpanel-local
 GATEWAY_ALLOW_ALL_USERS=true
 "@

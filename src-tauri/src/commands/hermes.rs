@@ -3357,6 +3357,10 @@ platforms:
     if let Some(env) = key_env {
         if !api_key.trim().is_empty() {
             new_pairs.push((env.into(), api_key.trim().into()));
+            if provider == "minimax" || provider == "minimax-cn" {
+                new_pairs.push(("MINIMAX_API_KEY".into(), api_key.trim().into()));
+                new_pairs.push(("MINIMAX_CN_API_KEY".into(), api_key.trim().into()));
+            }
         }
     } else if !api_key.trim().is_empty() {
         // OAuth provider 传了 api_key —— 记日志，不落盘
@@ -3367,6 +3371,10 @@ platforms:
         let u = url.trim();
         if !u.is_empty() {
             new_pairs.push((env.into(), u.into()));
+            if provider == "minimax" || provider == "minimax-cn" {
+                new_pairs.push(("MINIMAX_BASE_URL".into(), u.into()));
+                new_pairs.push(("MINIMAX_CN_BASE_URL".into(), u.into()));
+            }
         }
     }
 

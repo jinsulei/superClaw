@@ -9,10 +9,15 @@ import { icon, statusIcon } from '../lib/icons.js'
 import { API_TYPES, MODEL_PRESETS, PROVIDER_PRESETS } from '../lib/model-presets.js'
 import { t } from '../lib/i18n.js'
 import { scheduleGatewayRestart, fireRestartNow, cancelPendingRestart, onRestartState } from '../lib/gateway-restart-queue.js'
-import { applyUnifiedModelSelection } from '../lib/unified-model-routing.js'
+import { isMiniMaxOnlyMode, isTestBuildMode } from '../lib/test-build-mode.js'
+import {
+  getMiniMaxTestDefaults,
+  readMiniMaxTestConfig,
+  saveMiniMaxTestConfig,
+} from '../lib/minimax-test-config.js'
 
 const OPENCLAW_SKILLS_PROMPT_BUDGET = 12000
-const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'superclaw_ocr', 'exec']
+const OPENCLAW_DIRECT_TOOL_ALLOWLIST = ['browser', 'desktop_control', 'skill_manager', 'exec']
 const OPENCLAW_DIRECT_EXEC_CONFIG = { host: 'gateway', security: 'full', ask: 'off' }
 
 function modelRefForProvider(providerKey, modelId) {
@@ -26,65 +31,15 @@ function modelIdFromRef(ref = '') {
   return slash >= 0 ? value.slice(slash + 1) : value
 }
 
-function providerIdFromRef(ref = '') {
-  const value = String(ref || '').trim()
-  const slash = value.indexOf('/')
-  return slash > 0 ? value.slice(0, slash) : ''
-}
-
-// 记录最近一次已同步到 Hermes / Claude Code 的默认模型引用。
-// 只有主模型真正变化时才触发跨引擎同步，避免每次编辑服务商都重写 Hermes 配置。
-let lastSyncedPrimary = null
-
-async function syncDefaultModelToAgents(state) {
-  const primary = getCurrentPrimary(state.config)
-  if (!primary) return
-  // 主模型未变化则不重复同步；首次保存（lastSyncedPrimary === null）也会同步，
-  // 这样能纠正此前 Hermes / Claude Code 与 OpenClaw 默认模型不一致的遗留状态。
-  if (primary === lastSyncedPrimary) return
-
-  const providerId = providerIdFromRef(primary)
-  const model = modelIdFromRef(primary)
-  if (!providerId || !model) return
-  const provider = state.config?.models?.providers?.[providerId]
-  const baseUrl = String(provider?.baseUrl || '').trim()
-  const apiKey = String(provider?.apiKey || '').trim()
-  // 掩码 key 不能用于跨引擎同步；缺失关键信息时跳过，避免把 Hermes/Claude 配置改坏。
-  if (!baseUrl || !apiKey || /\*{2,}/.test(apiKey)) return
-
-  try {
-    const selection = {
-      providerId,
-      name: providerId,
-      baseUrl,
-      apiKey,
-      api: provider.api || 'openai-completions',
-      model,
-      models: Array.isArray(provider.models) ? provider.models : [],
-    }
-    // openclaw 已由本页写入，这里只同步 Hermes 与 Claude Code（不重载 Gateway）。
-    await applyUnifiedModelSelection(selection, { target: 'hermes', client: api })
-    await applyUnifiedModelSelection(selection, { target: 'claude_code', client: api })
-    lastSyncedPrimary = primary
-  } catch (e) {
-    // 同步失败不阻塞配置保存，也不重复重试，避免每次保存都报错。
-    console.warn('[models] 默认模型同步到 Hermes/Claude 失败:', e)
-    lastSyncedPrimary = primary
-  }
-}
-
 function ensurePortableOpenClawSkills(config) {
   if (!config.agents) config.agents = {}
   if (!config.agents.defaults) config.agents.defaults = {}
-  if (Array.isArray(config.agents.defaults.skills) && config.agents.defaults.skills.length === 0) {
-    delete config.agents.defaults.skills
-  }
-  config.agents.defaults.contextInjection = 'always'
+  delete config.agents.defaults.skills
 
   if (Array.isArray(config.agents.list)) {
     for (const agent of config.agents.list) {
       if (!agent || typeof agent !== 'object') continue
-      if (Array.isArray(agent.skills) && agent.skills.length === 0) delete agent.skills
+      delete agent.skills
       if (!agent.skillsLimits || typeof agent.skillsLimits !== 'object' || Array.isArray(agent.skillsLimits)) {
         agent.skillsLimits = {}
       }
@@ -92,7 +47,7 @@ function ensurePortableOpenClawSkills(config) {
         agent.skillsLimits.maxSkillsPromptChars = OPENCLAW_SKILLS_PROMPT_BUDGET
       }
       if (!agent.tools || typeof agent.tools !== 'object' || Array.isArray(agent.tools)) agent.tools = {}
-      agent.tools.profile = 'coding'
+      agent.tools.profile = agent.tools.profile || 'minimal'
       const allow = Array.isArray(agent.tools.alsoAllow) ? agent.tools.alsoAllow.filter(Boolean).map(String) : []
       for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
         if (!allow.includes(tool)) allow.push(tool)
@@ -110,14 +65,12 @@ function ensurePortableOpenClawSkills(config) {
   config.plugins.entries.browser = { ...(config.plugins.entries.browser || {}), enabled: true }
   config.plugins.entries['desktop-control'] = { ...(config.plugins.entries['desktop-control'] || {}), enabled: true }
   config.plugins.entries['skill-manager'] = { ...(config.plugins.entries['skill-manager'] || {}), enabled: true }
-  config.plugins.entries['superclaw-ocr'] = { ...(config.plugins.entries['superclaw-ocr'] || {}), enabled: true }
-  config.plugins.entries['superclaw-media'] = { ...(config.plugins.entries['superclaw-media'] || {}), enabled: true }
-  for (const pluginId of ['browser', 'desktop-control', 'skill-manager', 'superclaw-ocr', 'superclaw-media']) {
+  for (const pluginId of ['browser', 'desktop-control', 'skill-manager']) {
     if (!config.plugins.allow.includes(pluginId)) config.plugins.allow.push(pluginId)
   }
 
   if (!config.tools || typeof config.tools !== 'object' || Array.isArray(config.tools)) config.tools = {}
-  config.tools.profile = 'coding'
+  config.tools.profile = config.tools.profile || 'minimal'
   const allow = Array.isArray(config.tools.alsoAllow) ? config.tools.alsoAllow.filter(Boolean).map(String) : []
   for (const tool of OPENCLAW_DIRECT_TOOL_ALLOWLIST) {
     if (!allow.includes(tool)) allow.push(tool)
@@ -161,6 +114,7 @@ export async function render() {
     <div class="form-hint" style="margin-bottom:var(--space-md)">
       ${t('models.providerHint')}
     </div>
+    <div id="minimax-test-panel" class="config-section" style="margin-bottom:var(--space-md);display:none"></div>
     <div id="default-model-bar"></div>
     <div style="margin-bottom:var(--space-md)">
       <input class="form-input" id="model-search" placeholder="${t('models.searchPlaceholder')}" style="max-width:360px">
@@ -188,8 +142,7 @@ export async function render() {
 async function loadConfig(page, state) {
   const listEl = page.querySelector('#providers-list')
   try {
-    const config = await api.readOpenclawConfig()
-    state.config = config
+    state.config = await api.readOpenclawConfig()
     // 自动修复现有配置中的 baseUrl(如 Ollama 缺少 /v1),一次性迁移
     const before = JSON.stringify(state.config?.models?.providers || {})
     normalizeProviderUrls(state.config)
@@ -208,6 +161,7 @@ async function loadConfig(page, state) {
 
     renderDefaultBar(page, state)
     renderProviders(page, state)
+    renderMiniMaxTestPanel(page).catch(err => console.warn('[models] MiniMax test panel failed:', err?.message || err))
   } catch (e) {
     console.error('[models] loadConfig failed:', e)
     const detail = escapeHtml(e?.stack || e?.message || String(e))
@@ -270,6 +224,149 @@ function maskApiKey(key = '') {
   if (!value) return ''
   if (value.length <= 10) return `${value.slice(0, 2)}****`
   return `${value.slice(0, 6)}****${value.slice(-4)}`
+}
+
+function shouldShowMiniMaxTestPanel() {
+  return isMiniMaxOnlyMode() || isTestBuildMode()
+}
+
+function miniMaxSyncBadge(label, ok) {
+  const color = ok ? 'var(--success)' : 'var(--text-tertiary)'
+  const bg = ok ? 'var(--success-muted)' : 'var(--bg-tertiary)'
+  return `<span style="display:inline-flex;align-items:center;gap:4px;border-radius:10px;padding:2px 8px;background:${bg};color:${color};font-size:12px">${escapeHtml(label)} ${ok ? 'OK' : '待同步'}</span>`
+}
+
+async function renderMiniMaxTestPanel(page) {
+  const panel = page.querySelector('#minimax-test-panel')
+  if (!panel) return
+  if (!shouldShowMiniMaxTestPanel()) {
+    panel.style.display = 'none'
+    panel.innerHTML = ''
+    return
+  }
+
+  const defaults = getMiniMaxTestDefaults()
+  const status = await readMiniMaxTestConfig()
+  const baseUrl = status.baseUrl || defaults.baseUrl
+  const masked = status.maskedKey || ''
+  const configuredText = status.hasApiKey
+    ? `已配置 API Key：${escapeHtml(masked)}`
+    : '未配置 API Key'
+  const sync = status.synced || {}
+  panel.style.display = ''
+  panel.innerHTML = `
+    <div class="config-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <span>测试版 MiniMax 配置</span>
+      <span style="font-size:12px;color:var(--text-tertiary);font-weight:400">免登录测试模式</span>
+    </div>
+    <div class="form-hint" style="margin-bottom:var(--space-sm)">
+      所有 Agent 默认使用 MiniMax，本页只写入本地运行配置，不写源码、不联网上报。
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(180px,1fr) minmax(140px,.7fr);gap:10px;align-items:end">
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">API Key</label>
+        <input class="form-input" id="minimax-test-api-key" type="password" autocomplete="off" placeholder="${status.hasApiKey ? `已保存：${escapeHtml(masked)}，留空则保留` : '粘贴 MiniMax API Key'}">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Base URL</label>
+        <select class="form-input" id="minimax-test-base-url">
+          <option value="${escapeHtml(defaults.baseUrl)}" ${baseUrl === defaults.baseUrl ? 'selected' : ''}>国际 ${escapeHtml(defaults.baseUrl)}</option>
+          <option value="${escapeHtml(defaults.cnBaseUrl)}" ${baseUrl === defaults.cnBaseUrl ? 'selected' : ''}>国内 ${escapeHtml(defaults.cnBaseUrl)}</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Model</label>
+        <input class="form-input" id="minimax-test-model" value="${escapeHtml(defaults.model)}" readonly>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-primary btn-sm" id="btn-save-minimax-test">保存 MiniMax 配置</button>
+      <button class="btn btn-secondary btn-sm" id="btn-test-minimax-test">测试模型连接</button>
+      <button class="btn btn-secondary btn-sm" id="btn-reload-minimax-test">重新读取配置</button>
+      <span style="font-size:12px;color:var(--text-secondary)">${configuredText}</span>
+    </div>
+    <div id="minimax-test-result" style="margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px">
+      ${miniMaxSyncBadge('OpenClaw', sync.openclaw)}
+      ${miniMaxSyncBadge('OpenClaw Agent', sync.openclawAgent)}
+      ${miniMaxSyncBadge('Hermes', sync.hermes)}
+      ${miniMaxSyncBadge('Claude Panel', sync.claudePanel)}
+    </div>
+  `
+
+  panel.querySelector('#btn-reload-minimax-test')?.addEventListener('click', () => {
+    renderMiniMaxTestPanel(page).catch(err => toast(`MiniMax 配置读取失败: ${err?.message || err}`, 'error'))
+  })
+  panel.querySelector('#btn-test-minimax-test')?.addEventListener('click', async () => {
+    const btn = panel.querySelector('#btn-test-minimax-test')
+    const input = panel.querySelector('#minimax-test-api-key')
+    const select = panel.querySelector('#minimax-test-base-url')
+    const result = panel.querySelector('#minimax-test-result')
+    const oldText = btn?.textContent || '测试模型连接'
+    const setResult = (message, ok = false) => {
+      if (!result) return
+      result.textContent = message
+      result.style.color = ok ? 'var(--success)' : 'var(--text-secondary)'
+    }
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = '测试中...'
+    }
+    try {
+      const latest = await api.readOpenclawConfig().catch(() => ({}))
+      const savedProvider = latest?.models?.providers?.[defaults.providerId] || {}
+      const apiKey = String(input?.value || savedProvider.apiKey || '').trim()
+      const baseUrlForTest = select?.value || savedProvider.baseUrl || defaults.baseUrl
+      if (!apiKey) {
+        setResult('尚未配置 MiniMax API Key，请先填写或保存后再测试。')
+        return
+      }
+      const started = Date.now()
+      await api.testModel(baseUrlForTest, apiKey, defaults.model, 'openai-completions')
+      const elapsed = ((Date.now() - started) / 1000).toFixed(1)
+      setResult(`MiniMax 模型连接测试成功：${defaults.model}（${elapsed}s）`, true)
+      toast(`MiniMax 模型连接测试成功：${defaults.model}`, 'success')
+    } catch (err) {
+      const message = String(err?.message || err || '').replace(/sk-[A-Za-z0-9_-]{12,}/g, '[REDACTED_KEY]')
+      const summary = /401|2049|unauthorized|invalid/i.test(message)
+        ? 'MiniMax API Key 验证失败，请检查 Key 是否有效。'
+        : `MiniMax 模型连接失败：${message.slice(0, 180)}`
+      setResult(summary)
+      toast(summary, 'error', { duration: 8000 })
+    } finally {
+      if (btn) {
+        btn.disabled = false
+        btn.textContent = oldText
+      }
+    }
+  })
+  panel.querySelector('#btn-save-minimax-test')?.addEventListener('click', async () => {
+    const btn = panel.querySelector('#btn-save-minimax-test')
+    const input = panel.querySelector('#minimax-test-api-key')
+    const select = panel.querySelector('#minimax-test-base-url')
+    const oldText = btn?.textContent || '保存 MiniMax 配置'
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = '保存中...'
+    }
+    try {
+      await saveMiniMaxTestConfig({
+        apiKey: input?.value || '',
+        baseUrl: select?.value || defaults.baseUrl,
+        model: defaults.model,
+      })
+      if (input) input.value = ''
+      await renderMiniMaxTestPanel(page)
+      toast('MiniMax 本地配置已保存并同步', 'success')
+    } catch (err) {
+      toast(`MiniMax 配置保存失败: ${err?.message || err}`, 'error')
+    } finally {
+      if (btn) {
+        btn.disabled = false
+        btn.textContent = oldText
+      }
+    }
+  })
 }
 
 // 渲染当前主模型状态栏
@@ -836,8 +933,6 @@ async function saveConfigOnly(state) {
     if (primary) applyDefaultModel(state)
     normalizeProviderUrls(state.config)
     await api.writeOpenclawConfig(state.config)
-    // 默认主模型变化时同步 Hermes / Claude Code，避免三引擎默认模型长期不一致。
-    await syncDefaultModelToAgents(state)
   } catch (e) {
     toast(t('models.saveFailed') + ': ' + e, 'error')
   }
@@ -849,8 +944,6 @@ async function doAutoSave(state) {
     if (primary) applyDefaultModel(state)
     normalizeProviderUrls(state.config)
     await api.writeOpenclawConfig(state.config)
-    // 默认主模型变化时同步 Hermes / Claude Code，避免三引擎默认模型长期不一致。
-    await syncDefaultModelToAgents(state)
 
     // ⚠ 只有 Gateway 已经在运行时才触发 restart 让配置生效。
     // 如果 Gateway 没启动（首次安装 / 用户手动停了），盲目调 restart_gateway 会：

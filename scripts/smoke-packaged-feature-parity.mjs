@@ -111,6 +111,7 @@ const assistantCommands = "src-tauri/src/commands/assistant.rs";
 const tauriLib = "src-tauri/src/lib.rs";
 const modelPage = "src/pages/models.js";
 const minimaxConfig = "src/lib/minimax-test-config.js";
+const minimaxDefaults = "src/lib/test-build-mode.js";
 const desktopBuild = "scripts/build-desktop-client.ps1";
 const packageJson = "package.json";
 const tauriConfig = "src-tauri/tauri.conf.json";
@@ -232,8 +233,8 @@ const minimaxApiOk = [
   assertContains(modelPage, "尚未配置 MiniMax API Key", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
   assertContains(devApi, "read_minimax_test_config", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
   assertContains(devApi, "save_minimax_test_config", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
-  assertContains(minimaxConfig, "https://api.minimaxi.com/v1", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
-  assertContains(minimaxConfig, "MiniMax-M3", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
+  assertContains(minimaxDefaults, "https://api.minimaxi.com/v1", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
+  assertContains(minimaxDefaults, "MiniMax-M3", "PACKAGED_OPENCLAW_MINIMAX_TEST_API"),
 ].every(Boolean);
 if (minimaxApiOk) pass("PACKAGED_OPENCLAW_MINIMAX_TEST_API");
 ok = minimaxApiOk && ok;

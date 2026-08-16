@@ -55,6 +55,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$MiniMaxTestBaseUrl = "https://api.minimaxi.com/v1"
+$MiniMaxAnthropicBaseUrl = "https://api.minimaxi.com/anthropic"
+$MiniMaxTestModel = "MiniMax-M3"
+$MiniMaxProviderProfile = "minimax-cn"
+$MiniMaxManagedBy = "superclaw-provider-profile:$MiniMaxProviderProfile"
+
 function Step([string]$Message) {
   Write-Host ""
   Write-Host "[SuperClaw] $Message" -ForegroundColor Cyan
@@ -78,7 +84,11 @@ function Set-SanitizedTestBuildEnv {
   $keys = @(
     "VITE_ENABLE_ECOMMERCE_ASSISTANT",
     "VITE_SUPERCLAW_TEST_BUILD",
-    "VITE_SUPERCLAW_FORCE_PROVIDER"
+    "VITE_SUPERCLAW_FORCE_PROVIDER",
+    "VITE_SUPERCLAW_DISABLE_YYAPI",
+    "VITE_SUPERCLAW_MINIMAX_PROVIDER",
+    "VITE_SUPERCLAW_MINIMAX_BASE_URL",
+    "VITE_SUPERCLAW_MINIMAX_MODEL"
   )
   $previous = @{}
   foreach ($key in $keys) {
@@ -87,7 +97,11 @@ function Set-SanitizedTestBuildEnv {
   [Environment]::SetEnvironmentVariable("VITE_ENABLE_ECOMMERCE_ASSISTANT", "true", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_TEST_BUILD", "1", "Process")
   [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_FORCE_PROVIDER", "minimax", "Process")
-  Ok "Sanitized frontend flags: ecommerce=true, test build enabled, provider smoke=minimax, model config remains runtime-only"
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_DISABLE_YYAPI", "true", "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_PROVIDER", $MiniMaxProviderProfile, "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_BASE_URL", $MiniMaxTestBaseUrl, "Process")
+  [Environment]::SetEnvironmentVariable("VITE_SUPERCLAW_MINIMAX_MODEL", $MiniMaxTestModel, "Process")
+  Ok "Sanitized test frontend flags: ecommerce=true, provider=minimax, YYAPI disabled, model config remains runtime-only"
   return $previous
 }
 

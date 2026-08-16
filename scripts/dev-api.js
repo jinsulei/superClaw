@@ -14,7 +14,32 @@ import http from 'http'
 import https from 'https'
 import crypto from 'crypto'
 import * as skillhubSdk from './lib/skillhub-sdk.js'
-import { getEffectiveModelConfig } from './lib/model-config-source-guard.mjs'
+import {
+  assertDirectModelConfigWritable,
+  getEffectiveModelConfig,
+} from './lib/model-config-source-guard.mjs'
+import { getRuntimeMode } from './lib/runtime-mode.mjs'
+import { readYyapiConfig, yyapiRelaySummary } from './lib/yyapi-config.mjs'
+import {
+  activateAuthSession,
+  getAuthStatus,
+  loginAuthSession,
+  logoutAuthSession,
+} from './lib/auth-session.mjs'
+import { getAuthGuardDecision } from './lib/auth-guard.mjs'
+import {
+  DEFAULT_MODEL_PROVIDER_PROFILE_ID,
+  buildOpenClawProviderConfig,
+  envForProviderProfile,
+  getModelProviderProfile,
+  hermesProviderIdForProfile,
+  managedEnvKeysForProviderProfile,
+  modelDefinitionForProfile,
+  modelRefForProfile,
+  normalizeProviderProfileConfig,
+  openClawProviderIdForProfile,
+  providerProfileForBaseUrl,
+} from '../src/lib/model-provider-profiles.js'
 import { sanitizeMediaVisibleText } from '../src/shared/chat-output-guard.js'
 import {
   buildAgentIdentitySystemPrompt,
@@ -361,6 +386,8 @@ function hermesBundledRuntimeDir() {
   for (const root of [
     path.join(appRootDir(), 'resources', 'runtime', 'hermes-agent'),
     path.join(appRootDir(), 'src-tauri', 'resources', 'runtime', 'hermes-agent'),
+    path.join(appRootDir(), 'resources', 'uv-tools', 'hermes-agent'),
+    path.join(appRootDir(), 'src-tauri', 'resources', 'uv-tools', 'hermes-agent'),
   ]) {
     if (fs.existsSync(root)) return root
   }
@@ -1493,7 +1520,12 @@ function hermesRuntimeEnv(extra = {}) {
   const configuredProvider = localEnv.HERMES_PROVIDER || process.env.HERMES_PROVIDER || ''
   const forcedProvider = localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || ''
   const explicitMiniMaxTest = isServerTestBuild() || String(forcedProvider || '').trim().toLowerCase() === 'minimax'
-  const hermesProvider = configuredProvider || (explicitMiniMaxTest ? 'minimax' : '')
+  const defaultProfile = normalizeProviderProfileConfig({
+    providerId: localEnv.SUPERCLAW_MODEL_PROVIDER_PROFILE || process.env.SUPERCLAW_MODEL_PROVIDER_PROFILE || DEFAULT_MODEL_PROVIDER_PROFILE_ID,
+    baseUrl: localEnv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || undefined,
+    model: localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || undefined,
+  })
+  const hermesProvider = configuredProvider || (explicitMiniMaxTest ? 'minimax' : '') || hermesProviderIdForProfile(defaultProfile)
   const minimaxBaseUrl = normalizeHermesMiniMaxBaseUrl(
     localEnv.MINIMAX_BASE_URL
       || localEnv.MINIMAX_CN_BASE_URL
@@ -1501,7 +1533,7 @@ function hermesRuntimeEnv(extra = {}) {
       || process.env.MINIMAX_CN_BASE_URL
       || localEnv.OPENAI_BASE_URL
       || process.env.OPENAI_BASE_URL
-      || (explicitMiniMaxTest ? 'https://api.minimaxi.com/v1' : '')
+      || (explicitMiniMaxTest ? 'https://api.minimaxi.com/v1' : defaultProfile.baseUrl || '')
   )
   const minimaxApiKey = localEnv.MINIMAX_API_KEY
     || localEnv.MINIMAX_CN_API_KEY
@@ -1521,6 +1553,16 @@ function hermesRuntimeEnv(extra = {}) {
     ...process.env,
     ...localEnv,
     PATH: hermesEnhancedPath(),
+    HERMES_PROVIDER: hermesProvider,
+    OPENAI_BASE_URL: openAiBaseUrl,
+    OPENAI_MODEL: localEnv.OPENAI_MODEL || process.env.OPENAI_MODEL || defaultProfile.model,
+    OPENAI_API_KEY: localEnv.OPENAI_API_KEY || process.env.OPENAI_API_KEY || minimaxApiKey,
+    SUPERCLAW_FORCE_PROVIDER: localEnv.SUPERCLAW_FORCE_PROVIDER || process.env.SUPERCLAW_FORCE_PROVIDER || defaultProfile.group,
+    SUPERCLAW_MODEL_PROVIDER_PROFILE: defaultProfile.providerId,
+    SUPERCLAW_MODEL_PROVIDER_GROUP: defaultProfile.group,
+    MINIMAX_API_KEY: minimaxApiKey,
+    MINIMAX_BASE_URL: minimaxBaseUrl,
+    MINIMAX_CN_BASE_URL: localEnv.MINIMAX_CN_BASE_URL || process.env.MINIMAX_CN_BASE_URL || minimaxBaseUrl,
     ...extra,
   }
   // Hermes runs from a Tauri-watched portable resource directory. Python bytecode
@@ -3177,33 +3219,40 @@ function resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot) {
   const safeResourcesRoot = resourcesRoot ? path.resolve(resourcesRoot) : null
   const safeDataRoot = dataRoot ? path.resolve(dataRoot) : null
   if (!safeResourcesRoot || !safeDataRoot || !isPathInside(safeResourcesRoot, safeDataRoot)) {
-    return { provider: 'minimax', baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl, model: MINIMAX_TEST_DEFAULTS.model, apiKey: '' }
+    return { provider: MINIMAX_TEST_DEFAULTS.providerId, baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl, model: MINIMAX_TEST_DEFAULTS.model, apiKey: '' }
   }
 
   const openclawPath = path.join(safeDataRoot, '.openclaw', 'openclaw.json')
   const agentModelsPath = path.join(safeDataRoot, '.openclaw', 'agents', 'main', 'agent', 'models.json')
   const openclaw = readJsonFileRelaxed(openclawPath) || {}
   const agentModels = readJsonFileRelaxed(agentModelsPath) || {}
+  const openclawProviderId = openClawProviderIdForProfile(MINIMAX_TEST_DEFAULTS)
   const apiKey = pickOpenClawMiniMaxApiKey(
     process.env.OPENCLAW_MINIMAX_API_KEY,
     process.env.MINIMAX_CN_API_KEY,
     process.env.MINIMAX_API_KEY,
     process.env.OPENAI_API_KEY,
     openclaw.providers?.minimax?.apiKey,
-    openclaw.models?.providers?.minimax?.apiKey,
+    openclaw.models?.providers?.[openclawProviderId]?.apiKey,
     openclaw.modelProviders?.minimax?.apiKey,
     openclaw.providerConfigs?.minimax?.apiKey,
     openclaw.env?.MINIMAX_API_KEY,
     openclaw.env?.OPENAI_API_KEY,
-    agentModels.providers?.minimax?.apiKey,
+    agentModels.providers?.[openclawProviderId]?.apiKey,
     agentModels.minimax?.apiKey,
-    agentModels.models?.providers?.minimax?.apiKey
+    agentModels.models?.providers?.[openclawProviderId]?.apiKey
   )
+  const provider = openclaw.models?.providers?.[openclawProviderId] || {}
+  const normalized = normalizeProviderProfileConfig({
+    providerId: MINIMAX_TEST_DEFAULTS.providerId,
+    baseUrl: provider.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl,
+    model: provider.models?.[0]?.id || provider.models?.[0]?.model || MINIMAX_TEST_DEFAULTS.model,
+  })
 
   return {
-    provider: 'minimax',
-    baseUrl: MINIMAX_TEST_DEFAULTS.baseUrl,
-    model: MINIMAX_TEST_DEFAULTS.model,
+    provider: normalized.providerId,
+    baseUrl: normalized.baseUrl,
+    model: normalized.model,
     apiKey,
     paths: { openclaw: openclawPath, openclawAgent: agentModelsPath },
   }
@@ -3228,15 +3277,173 @@ function openclawMiniMaxGatewayConfig() {
   return { ...directConfig, effective }
 }
 
+function authYyapiKitEffectiveModelConfig(agentName = 'openclaw', options = {}) {
+  const name = cleanMiniMaxValue(agentName || 'openclaw').toLowerCase()
+  const env = options.env || process.env
+  const yyapiConfig = readYyapiConfig(env, options.yyapiConfig || {})
+  let directConfig = options.directConfig || {}
+  if (!options.directConfig && name === 'openclaw') {
+    const resourcesRoot = appResourcesDir() || path.join(appRootDir(), 'src-tauri', 'resources')
+    const dataRoot = path.join(resourcesRoot, 'data')
+    const resolved = resolveOpenClawMiniMaxConfig(resourcesRoot, dataRoot)
+    directConfig = {
+      ...resolved,
+      configPath: resolved.paths?.openclaw || '',
+    }
+  }
+  return getEffectiveModelConfig(name, {
+    env,
+    directConfig,
+    yyapiConfig,
+    configPath: directConfig.configPath || yyapiConfig.configPath || '',
+  })
+}
+
+function authYyapiKitRelayConfig(agentName = 'openclaw') {
+  const effective = authYyapiKitEffectiveModelConfig(agentName)
+  if (effective.modelSource === 'yyapi') {
+    return {
+      ...yyapiRelaySummary(readYyapiConfig(process.env)),
+      effective,
+    }
+  }
+  return {
+    mode: 'DIRECT',
+    provider: effective.provider,
+    baseUrl: effective.baseUrl,
+    model: effective.model,
+    apiKeyConfigured: effective.apiKeyConfigured,
+    apiKeyFingerprint: effective.apiKeyFingerprint,
+    status: effective.status,
+    code: effective.code,
+    effective,
+  }
+}
+
+async function handleAuthYyapiKitRestApi(req, res, url) {
+  if (!url.pathname.startsWith('/api/')) return false
+  if (url.pathname === '/api/runtime-mode') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    sendJsonResponse(res, 200, { ok: true, runtime: getRuntimeMode(process.env) })
+    return true
+  }
+  if (url.pathname === '/api/auth/status') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = getAuthStatus(process.env)
+    sendJsonResponse(res, 200, { ok: true, status, guard: getAuthGuardDecision(status) })
+    return true
+  }
+  if (url.pathname === '/api/auth/login') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = loginAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '登录状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_LOGIN_FAILED',
+        message: error.message || '登录失败',
+      })
+    }
+    return true
+  }
+  if (url.pathname === '/api/auth/logout') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const status = logoutAuthSession(process.env)
+    sendJsonResponse(res, 200, {
+      ok: true,
+      message: '已退出登录。',
+      status,
+      guard: getAuthGuardDecision(status),
+    })
+    return true
+  }
+  if (url.pathname === '/api/auth/activate') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    try {
+      const body = await readBody(req)
+      const status = activateAuthSession(body, process.env)
+      sendJsonResponse(res, 200, {
+        ok: true,
+        message: '激活状态已保存。',
+        status,
+        guard: getAuthGuardDecision(status),
+      })
+    } catch (error) {
+      sendJsonResponse(res, 400, {
+        ok: false,
+        code: error.code || 'AUTH_ACTIVATION_FAILED',
+        message: error.message || '激活失败',
+      })
+    }
+    return true
+  }
+  if (url.pathname === '/api/effective-model-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, config: authYyapiKitEffectiveModelConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/relay-config') {
+    if (req.method !== 'GET') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const agent = url.searchParams.get('agent') || 'openclaw'
+    sendJsonResponse(res, 200, { ok: true, relay: authYyapiKitRelayConfig(agent) })
+    return true
+  }
+  if (url.pathname === '/api/test-relay') {
+    if (req.method !== 'POST') {
+      sendJsonResponse(res, 405, { error: 'Method not allowed' })
+      return true
+    }
+    const body = await readBody(req)
+    const agent = cleanMiniMaxValue(body.agent || body.agentName || url.searchParams.get('agent') || 'openclaw')
+    const effective = authYyapiKitEffectiveModelConfig(agent)
+    sendJsonResponse(res, 200, {
+      ok: effective.status === 'ready',
+      language: 'zh-CN',
+      message: effective.status === 'ready' ? '模型配置检查通过。' : '模型配置未就绪。',
+      code: effective.code,
+      config: effective,
+    })
+    return true
+  }
+  return false
+}
+
 function openclawMiniMaxGatewayEnv() {
   const minimaxConfig = openclawMiniMaxGatewayConfig()
   if (minimaxConfig.effective?.modelSource !== 'direct') return {}
   if (minimaxConfig.effective?.status !== 'ready') return {}
   if (!minimaxConfig.apiKey) return {}
   return {
-    OPENCLAW_MINIMAX_API_KEY: minimaxConfig.apiKey,
-    MINIMAX_API_KEY: minimaxConfig.apiKey,
-    MINIMAX_CN_API_KEY: minimaxConfig.apiKey,
+    ...envForProviderProfile(minimaxConfig, minimaxConfig.apiKey),
     SUPERCLAW_MINIMAX_BASE_URL: minimaxConfig.baseUrl,
     SUPERCLAW_MINIMAX_MODEL: minimaxConfig.model,
   }
@@ -3334,7 +3541,8 @@ function isOpenClawGatewayNeedsSetupError(error) {
 
 function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
   const source = input && typeof input === 'object' ? input : {}
-  const id = String(source.id || source.model || defaults.model || 'MiniMax-M3').trim() || 'MiniMax-M3'
+  const fallbackModel = defaults.model || MINIMAX_TEST_DEFAULTS.model
+  const id = String(source.id || source.model || fallbackModel).trim() || fallbackModel
   return {
     ...source,
     id,
@@ -3349,18 +3557,18 @@ function normalizeOpenClawGatewayModelEntry(input, defaults = {}) {
 
 function normalizeOpenClawGatewayProvider(input, defaults = {}) {
   const provider = input && typeof input === 'object' ? { ...input } : {}
+  const fallbackModel = defaults.model || MINIMAX_TEST_DEFAULTS.model
   const modelId = String(
     provider.model ||
     provider.models?.[0]?.id ||
     provider.models?.[0]?.model ||
-    defaults.model ||
-    'MiniMax-M3'
-  ).trim() || 'MiniMax-M3'
+    fallbackModel
+  ).trim() || fallbackModel
 
   delete provider.model
   delete provider.type
   delete provider.name
-  provider.baseUrl = String(provider.baseUrl || defaults.baseUrl || 'https://api.minimaxi.com/v1')
+  provider.baseUrl = String(provider.baseUrl || defaults.baseUrl || MINIMAX_TEST_DEFAULTS.baseUrl)
   provider.api = String(provider.api || defaults.api || 'openai-completions')
   provider.apiKey = openclawEnvSecretRef('OPENCLAW_MINIMAX_API_KEY')
   provider.models = Array.isArray(provider.models) && provider.models.length
@@ -3548,7 +3756,35 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
   cfg.models.providers = cfg.models.providers && typeof cfg.models.providers === 'object'
     ? { ...cfg.models.providers }
     : {}
+  normalizeOpenClawMiniMaxProviderAliases(cfg)
 
+  const directDefaults = {
+    api: 'openai-completions',
+    baseUrl: minimaxConfig.baseUrl || 'https://api.minimaxi.com/v1',
+    model: minimaxConfig.model || MINIMAX_TEST_DEFAULTS.model,
+    apiKeyEnv: normalizeProviderProfileConfig(minimaxConfig).env.openClawApiKey,
+    contextWindow: 204800,
+    maxTokens: 131072,
+  }
+
+  const openclawProviderId = openClawProviderIdForProfile(minimaxConfig)
+  const sourceProvider = cfg.models.providers[openclawProviderId] && typeof cfg.models.providers[openclawProviderId] === 'object'
+    ? cfg.models.providers[openclawProviderId]
+    : {}
+  const fallbackProvider = cfg.models.providers['minimax-cn'] && typeof cfg.models.providers['minimax-cn'] === 'object'
+    ? cfg.models.providers['minimax-cn']
+    : {}
+  cfg.models.providers[openclawProviderId] = normalizeOpenClawGatewayProvider({
+    ...fallbackProvider,
+    ...sourceProvider,
+    baseUrl: sourceProvider.baseUrl || fallbackProvider.baseUrl || directDefaults.baseUrl,
+    api: sourceProvider.api || fallbackProvider.api || directDefaults.api,
+    models: Array.isArray(sourceProvider.models) && sourceProvider.models.length
+      ? sourceProvider.models
+      : fallbackProvider.models,
+  }, directDefaults)
+
+  delete cfg.models.providers['minimax-cn']
   delete cfg.models.mode
   delete cfg.models.default
   delete cfg.models.defaultProvider
@@ -3600,6 +3836,7 @@ function prepareOpenClawGatewayLaunchConfig(minimaxConfig = openclawMiniMaxGatew
     model: primaryResolution.model,
     primaryRef,
     source: primaryResolution.source,
+    baseUrl: directDefaults.baseUrl,
   }
 }
 
@@ -7283,14 +7520,9 @@ function modelEnvValues() {
   return values
 }
 
-const MINIMAX_TEST_DEFAULTS = {
-  providerId: 'minimax',
-  providerName: 'MiniMax',
-  model: 'MiniMax-M3',
-  baseUrl: 'https://api.minimaxi.com/v1',
-  cnBaseUrl: 'https://api.minimaxi.com/v1',
-  intlBaseUrl: 'https://api.minimax.io/v1',
-}
+const MINIMAX_TEST_DEFAULTS = normalizeProviderProfileConfig({
+  providerId: DEFAULT_MODEL_PROVIDER_PROFILE_ID,
+})
 
 function cleanMiniMaxValue(value) {
   return String(value || '').trim()
@@ -7317,13 +7549,11 @@ function normalizeMiniMaxTestPayload(input = {}) {
   const baseUrl = allowedBaseUrls.includes(rawBaseUrl)
     ? rawBaseUrl
     : MINIMAX_TEST_DEFAULTS.baseUrl
-  const out = {
-    providerId: MINIMAX_TEST_DEFAULTS.providerId,
-    providerName: MINIMAX_TEST_DEFAULTS.providerName,
-    model: MINIMAX_TEST_DEFAULTS.model,
+  const out = normalizeProviderProfileConfig({
+    providerId: input.providerId || providerProfileForBaseUrl(baseUrl).id,
+    model: input.model || MINIMAX_TEST_DEFAULTS.model,
     baseUrl,
-    cnBaseUrl: MINIMAX_TEST_DEFAULTS.cnBaseUrl,
-  }
+  })
   const apiKey = cleanMiniMaxValue(input.apiKey)
   if (apiKey && !apiKey.includes('***')) out.apiKey = apiKey
   return out
@@ -7378,18 +7608,15 @@ function miniMaxDataPath(...segments) {
 }
 
 function miniMaxProviderForBaseUrl(baseUrl) {
-  return cleanMiniMaxBaseUrl(baseUrl).includes('api.minimaxi.com') ? 'minimax-cn' : 'minimax'
+  return hermesProviderIdForProfile({ baseUrl })
 }
 
 function miniMaxOpenAiBaseUrlForBaseUrl(baseUrl) {
-  const value = cleanMiniMaxBaseUrl(baseUrl)
-  if (value.includes('api.minimaxi.com')) return MINIMAX_TEST_DEFAULTS.cnBaseUrl
-  if (value.includes('api.minimax.io')) return MINIMAX_TEST_DEFAULTS.intlBaseUrl
-  return value
+  return normalizeProviderProfileConfig({ baseUrl }).baseUrl
 }
 
 function miniMaxModelRef() {
-  return `${MINIMAX_TEST_DEFAULTS.providerId}/${MINIMAX_TEST_DEFAULTS.model}`
+  return modelRefForProfile(MINIMAX_TEST_DEFAULTS)
 }
 
 function isInvalidOpenClawModelId(modelId) {
@@ -7411,8 +7638,77 @@ function normalizeOpenClawModelRef(modelRef, fallback = miniMaxModelRef()) {
   return isInvalidOpenClawModelId(modelRef) ? fallback : String(modelRef).trim()
 }
 
+function normalizeOpenClawMiniMaxProviderAliases(config) {
+  const providers = config?.models?.providers
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return false
+  const canonicalProviderId = openClawProviderIdForProfile(MINIMAX_TEST_DEFAULTS)
+  const aliases = ['minimax-cn', 'minimax_cn'].filter(id => id !== canonicalProviderId)
+  let changed = false
+  const canonical = providers[canonicalProviderId] && typeof providers[canonicalProviderId] === 'object'
+    ? providers[canonicalProviderId]
+    : {}
+  for (const alias of aliases) {
+    const source = providers[alias]
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue
+    providers[canonicalProviderId] = {
+      ...source,
+      ...canonical,
+      apiKey: cleanMiniMaxValue(canonical.apiKey) || cleanMiniMaxValue(source.apiKey),
+      baseUrl: cleanMiniMaxBaseUrl(canonical.baseUrl) || cleanMiniMaxBaseUrl(source.baseUrl),
+      models: Array.isArray(canonical.models) && canonical.models.length ? canonical.models : source.models,
+    }
+    delete providers[alias]
+    changed = true
+  }
+  const rewriteRef = (value) => String(value || '').trim().replace(/^minimax-cn\//i, `${canonicalProviderId}/`)
+  const defaults = config?.agents?.defaults
+  if (defaults?.model && typeof defaults.model === 'object') {
+    const nextPrimary = rewriteRef(defaults.model.primary)
+    if (nextPrimary && nextPrimary !== defaults.model.primary) {
+      defaults.model.primary = nextPrimary
+      changed = true
+    }
+    if (Array.isArray(defaults.model.fallbacks)) {
+      const next = defaults.model.fallbacks.map(rewriteRef).filter(Boolean)
+      if (JSON.stringify(next) !== JSON.stringify(defaults.model.fallbacks)) {
+        defaults.model.fallbacks = next
+        changed = true
+      }
+    }
+  }
+  if (defaults?.models && typeof defaults.models === 'object' && !Array.isArray(defaults.models)) {
+    for (const key of Object.keys(defaults.models)) {
+      const nextKey = rewriteRef(key)
+      if (nextKey && nextKey !== key) {
+        defaults.models[nextKey] = defaults.models[nextKey] || defaults.models[key]
+        delete defaults.models[key]
+        changed = true
+      }
+    }
+  }
+  const agents = Array.isArray(config?.agents?.list) ? config.agents.list : []
+  for (const agent of agents) {
+    if (!agent?.model || typeof agent.model !== 'object') continue
+    const nextPrimary = rewriteRef(agent.model.primary)
+    if (nextPrimary && nextPrimary !== agent.model.primary) {
+      agent.model.primary = nextPrimary
+      changed = true
+    }
+    if (Array.isArray(agent.model.fallbacks)) {
+      const next = agent.model.fallbacks.map(rewriteRef).filter(Boolean)
+      if (JSON.stringify(next) !== JSON.stringify(agent.model.fallbacks)) {
+        agent.model.fallbacks = next
+        changed = true
+      }
+    }
+  }
+  return changed
+}
+
 function normalizeOpenClawMiniMaxModel(config) {
-  const provider = config?.models?.providers?.minimax
+  normalizeOpenClawMiniMaxProviderAliases(config)
+  const providerId = openClawProviderIdForProfile(MINIMAX_TEST_DEFAULTS)
+  const provider = config?.models?.providers?.[providerId]
   if (!provider || typeof provider !== 'object' || Array.isArray(provider)) return false
   let changed = false
   const modelId = normalizeOpenClawModelId(
@@ -7428,7 +7724,7 @@ function normalizeOpenClawMiniMaxModel(config) {
     delete provider.type
     changed = true
   }
-  if ('name' in provider && String(provider.name || '').toLowerCase() === 'minimax') {
+  if ('name' in provider && String(provider.name || '').toLowerCase().includes('minimax')) {
     delete provider.name
     changed = true
   }
@@ -7447,15 +7743,7 @@ function normalizeOpenClawMiniMaxModel(config) {
 }
 
 function miniMaxOpenClawModelDefinition() {
-  return {
-    id: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
-    name: normalizeOpenClawModelId(MINIMAX_TEST_DEFAULTS.model),
-    api: 'openai-completions',
-    reasoning: true,
-    input: ['text', 'image'],
-    contextWindow: 204800,
-    maxTokens: 131072,
-  }
+  return modelDefinitionForProfile(MINIMAX_TEST_DEFAULTS)
 }
 
 function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
@@ -7465,23 +7753,23 @@ function ensureMiniMaxOpenClawConfig(config, normalized, apiKey) {
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) {
     cfg.models.providers = {}
   }
-  const previousMiniMaxProvider = cfg.models.providers.minimax && typeof cfg.models.providers.minimax === 'object' && !Array.isArray(cfg.models.providers.minimax)
-    ? cfg.models.providers.minimax
+  const providerId = openClawProviderIdForProfile(normalized)
+  const previousMiniMaxProvider = cfg.models.providers[providerId] && typeof cfg.models.providers[providerId] === 'object' && !Array.isArray(cfg.models.providers[providerId])
+    ? cfg.models.providers[providerId]
     : {}
-  cfg.models.providers.minimax = {
-    api: 'openai-completions',
-    baseUrl: normalized.baseUrl,
+  cfg.models.providers[providerId] = {
+    ...buildOpenClawProviderConfig(normalized, apiKey),
     models: Array.isArray(previousMiniMaxProvider.models) && previousMiniMaxProvider.models.length
       ? previousMiniMaxProvider.models.map(item => ({
         ...item,
         id: normalizeOpenClawModelId(item?.id || item?.model),
         name: normalizeOpenClawModelId(item?.name || item?.id || item?.model),
-        api: item?.api || 'openai-completions',
+        api: item?.api || normalized.api || 'openai-completions',
       }))
-      : [miniMaxOpenClawModelDefinition()],
+      : [modelDefinitionForProfile(normalized)],
   }
   normalizeOpenClawMiniMaxModel(cfg)
-  if (apiKey) cfg.models.providers.minimax.apiKey = apiKey
+  if (apiKey) cfg.models.providers[providerId].apiKey = apiKey
   delete cfg.models.default
   delete cfg.models.defaultProvider
   delete cfg.models.defaultModel
@@ -7516,7 +7804,8 @@ function readMiniMaxEnvFile(envPath) {
 function readMiniMaxPlainConfig() {
   try { applyOpenclawPathConfig(readPanelConfig()) } catch {}
   const cfg = readOpenclawConfigOptional()
-  const provider = cfg?.models?.providers?.minimax || {}
+  const providerId = openClawProviderIdForProfile(MINIMAX_TEST_DEFAULTS)
+  const provider = cfg?.models?.providers?.[providerId] || {}
   const hermesEnvPath = miniMaxDataPath('hermes', '.env')
   const hermesEnv = readMiniMaxEnvFile(hermesEnvPath)
   const relayPath = miniMaxDataPath('claude-panel', 'relay-config.json')
@@ -7557,9 +7846,9 @@ function miniMaxStatusFromPlain(plain, overrides = {}) {
   const relay = plain.relay || {}
   const env = plain.hermesEnv || {}
   return {
-    providerId: MINIMAX_TEST_DEFAULTS.providerId,
-    providerName: MINIMAX_TEST_DEFAULTS.providerName,
-    model: MINIMAX_TEST_DEFAULTS.model,
+    providerId: normalized.providerId,
+    providerName: normalized.providerName,
+    model: normalized.model,
     baseUrl,
     cnBaseUrl: MINIMAX_TEST_DEFAULTS.cnBaseUrl,
     hasApiKey: !!apiKey,
@@ -7569,13 +7858,14 @@ function miniMaxStatusFromPlain(plain, overrides = {}) {
         && provider.api === 'openai-completions',
       openclawAgent: (plain.cfg?.agents?.defaults?.model?.primary || '') === miniMaxModelRef()
         || fs.existsSync(plain.paths?.openclawAgent || ''),
-      hermes: env.HERMES_PROVIDER === 'minimax'
+      hermes: env.HERMES_PROVIDER === miniMaxProviderForBaseUrl(baseUrl)
         || !!env.MINIMAX_API_KEY
         || !!env.MINIMAX_CN_API_KEY
-        || env.OPENAI_MODEL === MINIMAX_TEST_DEFAULTS.model,
-      claudePanel: relay.managedBy === 'superclaw-minimax-test'
-        || relay.defaultProvider === 'minimax'
-        || relay.name === 'MiniMax',
+        || env.OPENAI_MODEL === normalized.model,
+      claudePanel: String(relay.managedBy || '').startsWith('superclaw-provider-profile:')
+        || relay.managedBy === 'superclaw-minimax-test'
+        || relay.defaultProvider === normalized.providerId
+        || String(relay.name || '').toLowerCase().includes('minimax'),
     },
   }
 }
@@ -7588,13 +7878,12 @@ function writeMiniMaxAgentModels(normalized, apiKey) {
   if (!current.providers || typeof current.providers !== 'object' || Array.isArray(current.providers)) {
     current.providers = {}
   }
-  current.providers.minimax = {
-    api: 'openai-completions',
-    baseUrl: normalized.baseUrl,
-    apiKey: apiKey || current.providers.minimax?.apiKey || '',
-    models: [miniMaxOpenClawModelDefinition()],
-  }
-  if (!apiKey && !current.providers.minimax.apiKey) delete current.providers.minimax.apiKey
+  const providerId = openClawProviderIdForProfile(normalized)
+  current.providers[providerId] = buildOpenClawProviderConfig(
+    normalized,
+    apiKey || current.providers[providerId]?.apiKey || ''
+  )
+  if (!apiKey && !current.providers[providerId].apiKey) delete current.providers[providerId].apiKey
   delete current.defaultProvider
   delete current.defaultModel
   delete current.primary
@@ -7607,38 +7896,22 @@ function writeMiniMaxHermesEnv(normalized, apiKey) {
   const target = miniMaxDataPath('hermes', '.env')
   const providerId = miniMaxProviderForBaseUrl(normalized.baseUrl)
   const managed = [
+    ...managedEnvKeysForProviderProfile(normalized),
     'HERMES_PROVIDER',
-    'OPENAI_BASE_URL',
-    'OPENAI_API_KEY',
-    'OPENAI_MODEL',
-    'SUPERCLAW_FORCE_PROVIDER',
-    'MINIMAX_API_KEY',
-    'MINIMAX_BASE_URL',
-    'MINIMAX_CN_API_KEY',
-    'MINIMAX_CN_BASE_URL',
     'GATEWAY_ALLOW_ALL_USERS',
     'API_SERVER_KEY',
     'API_SERVER_ENABLED',
     'API_SERVER_PORT',
   ]
+  const profileEnv = envForProviderProfile(normalized, apiKey)
   const pairs = [
     ['HERMES_PROVIDER', providerId],
-    ['OPENAI_BASE_URL', normalized.baseUrl],
-    ['OPENAI_MODEL', MINIMAX_TEST_DEFAULTS.model],
-    ['SUPERCLAW_FORCE_PROVIDER', 'minimax'],
+    ...Object.entries(profileEnv),
     ['GATEWAY_ALLOW_ALL_USERS', 'true'],
     ['API_SERVER_KEY', 'clawpanel-local'],
     ['API_SERVER_ENABLED', 'true'],
     ['API_SERVER_PORT', String(hermesGatewayPort())],
   ]
-  if (apiKey) {
-    pairs.push(['OPENAI_API_KEY', apiKey])
-    if (providerId === 'minimax-cn') {
-      pairs.push(['MINIMAX_CN_API_KEY', apiKey], ['MINIMAX_CN_BASE_URL', normalized.baseUrl])
-    } else {
-      pairs.push(['MINIMAX_API_KEY', apiKey], ['MINIMAX_BASE_URL', normalized.baseUrl])
-    }
-  }
   const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : ''
   fs.mkdirSync(path.dirname(target), { recursive: true })
   fs.writeFileSync(target, _mergeEnvFile(current, managed, pairs), 'utf8')
@@ -7650,7 +7923,7 @@ function writeMiniMaxHermesConfig(normalized) {
   const providerId = miniMaxProviderForBaseUrl(normalized.baseUrl)
   const content = `# Hermes Agent configuration (managed by ClawPanel)
 model:
-  default: ${MINIMAX_TEST_DEFAULTS.model}
+  default: ${normalized.model}
   provider: ${providerId}
   api_mode: chat_completions
   base_url: ${normalized.baseUrl}
@@ -7670,21 +7943,22 @@ platforms:
 function writeMiniMaxClaudeRelay(config = {}) {
   const normalized = normalizeMiniMaxTestPayload(config)
   const apiKey = cleanMiniMaxValue(config.apiKey)
+  const profile = getModelProviderProfile(normalized.providerId)
   const target = miniMaxDataPath('claude-panel', 'relay-config.json')
   const current = readJsonFileRelaxed(target) || {}
   const next = {
     ...current,
     enabled: true,
     interfaceType: cleanMiniMaxValue(config.interfaceType) || 'relay',
-    name: cleanMiniMaxValue(config.name) || 'MiniMax',
-    provider: cleanMiniMaxValue(config.provider) || 'openai-compatible',
-    defaultProvider: cleanMiniMaxValue(config.defaultProvider) || 'minimax',
+    name: cleanMiniMaxValue(config.name) || normalized.providerName,
+    provider: cleanMiniMaxValue(config.provider) || profile.agent.claudeProvider,
+    defaultProvider: cleanMiniMaxValue(config.defaultProvider) || normalized.providerId,
     baseUrl: normalized.baseUrl,
-    model: MINIMAX_TEST_DEFAULTS.model,
+    model: normalized.model,
     branchModels: Array.isArray(config.branchModels) && config.branchModels.length
       ? config.branchModels.map(item => cleanMiniMaxValue(item)).filter(Boolean)
-      : [MINIMAX_TEST_DEFAULTS.model],
-    managedBy: cleanMiniMaxValue(config.managedBy) || 'superclaw-minimax-test',
+      : [normalized.model],
+    managedBy: cleanMiniMaxValue(config.managedBy) || profile.agent.managedBy,
     updatedAt: new Date().toISOString(),
   }
   if (apiKey) next.apiKey = apiKey
@@ -7696,6 +7970,7 @@ function writeMiniMaxClaudeRelay(config = {}) {
 
 function saveMiniMaxTestConfigLocal(input = {}) {
   const normalized = normalizeMiniMaxTestPayload(input)
+  assertDirectModelConfigWritable('minimax-test-config')
   const plain = readMiniMaxPlainConfig()
   const apiKey = normalized.apiKey || plain.apiKey
   const nextConfig = ensureMiniMaxOpenClawConfig(plain.cfg, normalized, apiKey)
@@ -7706,7 +7981,7 @@ function saveMiniMaxTestConfigLocal(input = {}) {
   const relayResult = writeMiniMaxClaudeRelay({
     ...normalized,
     apiKey,
-    branchModels: [MINIMAX_TEST_DEFAULTS.model],
+    branchModels: [normalized.model],
   })
   return {
     ...miniMaxStatusFromPlain(readMiniMaxPlainConfig(), { baseUrl: normalized.baseUrl, apiKey }),
@@ -8507,6 +8782,7 @@ const handlers = {
   },
 
   configure_claude_code_relay({ config } = {}) {
+    assertDirectModelConfigWritable('claude-code')
     const payload = config || {}
     const baseUrl = cleanMiniMaxBaseUrl(payload.baseUrl)
     const apiKey = cleanMiniMaxValue(payload.apiKey)
@@ -8525,7 +8801,8 @@ const handlers = {
       apiKey,
       model,
       branchModels: Array.isArray(payload.branchModels) ? payload.branchModels : (Array.isArray(payload.models) ? payload.models : [model]),
-      managedBy: cleanMiniMaxValue(payload.managedBy) || 'superclaw-minimax-test',
+      managedBy: cleanMiniMaxValue(payload.managedBy)
+        || getModelProviderProfile(normalizeProviderProfileConfig({ baseUrl, model }).providerId).agent.managedBy,
     })
   },
 
@@ -12353,8 +12630,14 @@ const handlers = {
               : 'OPENAI_BASE_URL'
     const managedKeys = ['OPENAI_API_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','DEEPSEEK_API_KEY','MINIMAX_API_KEY','MINIMAX_CN_API_KEY','CUSTOM_API_KEY','OPENAI_BASE_URL','ANTHROPIC_BASE_URL','OPENROUTER_BASE_URL','DEEPSEEK_BASE_URL','MINIMAX_BASE_URL','MINIMAX_CN_BASE_URL','CUSTOM_BASE_URL','GATEWAY_ALLOW_ALL_USERS','API_SERVER_KEY','API_SERVER_ENABLED','API_SERVER_PORT']
     const newPairs = [[envKey, apiKey], ['GATEWAY_ALLOW_ALL_USERS', 'true'], ['API_SERVER_KEY', 'clawpanel-local'], ['API_SERVER_ENABLED', 'true'], ['API_SERVER_PORT', String(hermesGatewayPort())]]
+    if (['minimax', 'minimax-cn'].includes(lowerProvider)) {
+      newPairs.push(['MINIMAX_API_KEY', apiKey], ['MINIMAX_CN_API_KEY', apiKey])
+    }
     if (baseUrlValue) {
       newPairs.push([baseEnvKey, baseUrlValue])
+      if (['minimax', 'minimax-cn'].includes(lowerProvider)) {
+        newPairs.push(['MINIMAX_BASE_URL', baseUrlValue], ['MINIMAX_CN_BASE_URL', baseUrlValue])
+      }
     }
     const envPath = path.join(home, '.env')
     let envContent
@@ -14381,6 +14664,44 @@ function claudePanelEnv(paths, panel) {
   }
 }
 
+function claudeCompatibleModelEnv(paths = claudeCodePaths()) {
+  const out = {}
+  const panel = claudePanelPaths(paths)
+  const relayPath = panel.relayConfig || path.join(panel.dataDir, 'relay-config.json')
+  const relay = readJsonFileRelaxed(relayPath) || {}
+  const relayKey = cleanMiniMaxValue(relay.apiKey)
+  const relayBaseUrl = cleanMiniMaxBaseUrl(relay.baseUrl)
+  const relayModel = cleanMiniMaxValue(relay.model || relay.branchModels?.[0] || '')
+  if (relay.enabled !== false && relayKey && relayBaseUrl) {
+    out.ANTHROPIC_API_KEY = relayKey
+    out.ANTHROPIC_AUTH_TOKEN = relayKey
+    out.ANTHROPIC_BASE_URL = relayBaseUrl
+    if (relayModel) {
+      out.ANTHROPIC_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_HAIKU_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_SONNET_MODEL = relayModel
+      out.ANTHROPIC_DEFAULT_OPUS_MODEL = relayModel
+    }
+    return out
+  }
+
+  const hermesEnv = readEnvFile(path.join(hermesHome(), '.env'))
+  const key = cleanMiniMaxValue(hermesEnv.MINIMAX_API_KEY || hermesEnv.MINIMAX_CN_API_KEY)
+  const baseUrl = cleanMiniMaxBaseUrl(hermesEnv.MINIMAX_BASE_URL || hermesEnv.MINIMAX_CN_BASE_URL)
+  const model = cleanMiniMaxValue(hermesEnv.OPENAI_MODEL || MINIMAX_TEST_DEFAULTS.model)
+  if (!key || !baseUrl) return out
+  out.MINIMAX_API_KEY = key
+  out.MINIMAX_BASE_URL = baseUrl
+  out.ANTHROPIC_API_KEY = key
+  out.ANTHROPIC_AUTH_TOKEN = key
+  out.ANTHROPIC_BASE_URL = baseUrl
+  out.ANTHROPIC_MODEL = model
+  out.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
+  out.ANTHROPIC_DEFAULT_SONNET_MODEL = model
+  out.ANTHROPIC_DEFAULT_OPUS_MODEL = model
+  return out
+}
+
 async function startClaudePanel() {
   const status = await claudeCodeStatus()
   const paths = status.paths
@@ -14462,6 +14783,7 @@ async function startNativeClaudeTerminal(cwd) {
     CLAUDE_CODE_PROJECTS_DIR: paths.projectsDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     PATH: `${path.dirname(paths.claude)}${path.delimiter}${process.env.PATH || ''}`,
+    ...claudeCompatibleModelEnv(paths),
   }
   fs.mkdirSync(env.APPDATA, { recursive: true })
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
@@ -14545,6 +14867,7 @@ async function claudeCodeStatus() {
     CLAUDE_CONFIG_DIR: path.join(paths.homeDir, 'claude-config'),
     CLAUDE_CODE_PROJECTS_DIR: paths.projectsDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    ...claudeCompatibleModelEnv(paths),
   }
   fs.mkdirSync(env.APPDATA, { recursive: true })
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true })
@@ -15398,6 +15721,7 @@ async function _apiMiddleware(req, res, next) {
     requestUrl = new URL(req.url || '/', 'http://127.0.0.1')
   } catch {}
   if (requestUrl && sendHermesMediaFileResponse(req, res, requestUrl)) return
+  if (requestUrl && await handleAuthYyapiKitRestApi(req, res, requestUrl)) return
 
   if (!req.url?.startsWith('/__api/')) return next()
 

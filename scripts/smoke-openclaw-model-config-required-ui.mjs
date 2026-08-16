@@ -18,9 +18,9 @@ assert(!/Gateway 未启动|Gateway 正在检查|Gateway 连接异常/.test(needs
 console.log('OPENCLAW_MODEL_CONFIG_REQUIRED_NOT_GATEWAY_DOWN: PASS')
 
 assert(/OpenClaw 模型配置未完成/.test(needsSetupBlock), 'needs_setup title mentions OpenClaw model config')
-assert(/MiniMax API Key/.test(needsSetupBlock), 'needs_setup prompt mentions MiniMax API Key')
+assert(/API Key/.test(needsSetupBlock), 'needs_setup prompt mentions API Key')
 console.log('OPENCLAW_NEEDS_SETUP_SHOWS_MODEL_CONFIG_PROMPT: PASS')
-console.log('OPENCLAW_MODEL_CONFIG_PROMPT_MENTIONS_MINIMAX_KEY: PASS')
+console.log('OPENCLAW_MODEL_CONFIG_PROMPT_MENTIONS_API_KEY: PASS')
 
 assert(/showModelConfigButton:\s*true/.test(needsSetupBlock), 'needs_setup exposes model config action')
 assert(/navigate\(['"]\/models['"]\)/.test(chat), 'chat model config action navigates to /models')
@@ -35,17 +35,17 @@ console.log('OPENCLAW_MODEL_CONFIG_REQUIRED_NO_WS_RECONNECT: PASS')
 
 assert(/id="minimax-test-api-key"/.test(models), 'MiniMax API key input exists')
 assert(/btn-save-minimax-test/.test(models), 'MiniMax save button exists')
-assert(/function shouldShowMiniMaxTestPanel\(status = null\)/.test(models), 'MiniMax panel accepts runtime config status')
-assert(/status\?\.providerId === 'minimax'[\s\S]*status\?\.hasApiKey === false/.test(models), 'MiniMax panel is visible when local MiniMax key is missing')
+assert(/function shouldShowMiniMaxTestPanel\(\)/.test(models), 'MiniMax panel visibility guard exists')
+assert(/isMiniMaxOnlyMode\(\) \|\| isTestBuildMode\(\)/.test(models), 'MiniMax panel shows in MiniMax-only or test-build mode')
 assert(/免登录测试模式/.test(models), 'login-free MiniMax config copy exists')
 console.log('OPENCLAW_MINIMAX_TEST_BUTTON_EXISTS: PASS')
 console.log('OPENCLAW_MODEL_CONFIG_LOGIN_FREE: PASS')
-console.log('OPENCLAW_MINIMAX_ENTRY_VISIBLE_WHEN_KEY_MISSING: PASS')
+console.log('OPENCLAW_MINIMAX_ENTRY_VISIBLE_IN_TEST_BUILD: PASS')
 
 const stoppedBlock = helper.match(/case OPENCLAW_GATEWAY_STATES\.STOPPED:[\s\S]*?case OPENCLAW_GATEWAY_STATES\.STARTING:/)?.[0] || ''
 const errorBlock = helper.match(/case OPENCLAW_GATEWAY_STATES\.ERROR:[\s\S]*?default:/)?.[0] || ''
 assert(/Gateway 未启动/.test(stoppedBlock), 'gateway down copy still exists for stopped state')
-assert(!/MiniMax API Key/.test(stoppedBlock + errorBlock), 'gateway down/error copy stays distinct from model config prompt')
+assert(!/API Key|模型配置/.test(stoppedBlock + errorBlock), 'gateway down/error copy stays distinct from model config prompt')
 console.log('OPENCLAW_GATEWAY_DOWN_DISTINCT_FROM_MODEL_CONFIG: PASS')
 
 console.log('\nopenclaw model config required UI smoke passed')
