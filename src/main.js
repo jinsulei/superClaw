@@ -24,6 +24,7 @@ import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.j
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
 import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
 import { isLoggedIn, navigateTo } from './lib/user-api.js'
+import { fetchAuthStatus, getAuthGuardDecision, getLocalAuthStatus } from './lib/auth-session.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
 import openclawEngine from './engines/openclaw/index.js'
 import hermesEngine from './engines/hermes/index.js'
@@ -76,27 +77,47 @@ function isLocalDevAuthBypass() {
  */
 async function checkRemoteAuth() {
   if (isLocalDevAuthBypass()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    return { ok: true }
+    return {
+      ok: true,
+      status: { authRequired: false, allowAppAccess: true, reason: 'local_dev_bypass' },
+      guard: { allowAppAccess: true, targetRoute: null, reason: 'local_dev_bypass' },
+    }
   }
-
-  if (isLoggedIn()) {
-    sessionStorage.setItem('superclaw_authed', '1')
-    try {
-      if (isTauri) {
-        await api.readPanelConfig()
-      } else {
-        await fetch('/__api/auth_login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: '123456' }),
-        })
-      }
-    } catch {}
-    return { ok: true }
+  // 桌面端（Tauri）没有 /api/auth/* HTTP 服务，远程认证端点只在 dev-api.js
+  // （Vite 开发服务器插件）里实现。直接走本地 session 状态，避免启动时尝试
+  // 请求自定义协议导致挂起/404 后卡白屏。
+  if (isTauri) {
+    const local = getLocalAuthStatus()
+    const guard = getAuthGuardDecision(local)
+    return {
+      ok: Boolean(guard.allowAppAccess),
+      status: local,
+      guard,
+      targetRoute: guard.targetRoute,
+    }
   }
-
-  return { ok: false }
+  try {
+    const status = await fetchAuthStatus()
+    const guard = status.guard || getAuthGuardDecision(status)
+    return {
+      ok: Boolean(guard.allowAppAccess),
+      status,
+      guard,
+      targetRoute: guard.targetRoute,
+    }
+  } catch (error) {
+    // 桌面端（Tauri）没有 dev-api HTTP 服务时，/api/auth/status 不可用。
+    // 回退到本地 session 状态（默认不要求登录），避免启动时被强制跳转登录页导致白屏/卡死。
+    console.warn('[auth] status check failed, fallback to local status:', error?.message || error)
+    const local = getLocalAuthStatus()
+    const guard = getAuthGuardDecision(local)
+    return {
+      ok: Boolean(guard.allowAppAccess),
+      status: local,
+      guard,
+      targetRoute: guard.targetRoute,
+    }
+  }
 }
 
 function getInitialAuthRoute() {

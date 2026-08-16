@@ -53,29 +53,45 @@ export function getAuthGuardDecision(status = publicLocalStatus()) {
 }
 
 async function requestJson(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  })
-  const payload = await response.json().catch(() => ({}))
-  if (!response.ok || payload.ok === false) {
-    const error = new Error(payload.message || payload.error || `请求失败：${response.status}`)
-    error.payload = payload
-    throw error
+  // 加超时，避免桌面端（Tauri 自定义协议）请求 /api/* 时无限挂起导致启动卡白屏。
+  const controller = new AbortController()
+  const timeoutMs = options.timeoutMs || 8000
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(path, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok || payload.ok === false) {
+      const error = new Error(payload.message || payload.error || `请求失败：${response.status}`)
+      error.payload = payload
+      throw error
+    }
+    return payload
+  } finally {
+    clearTimeout(timer)
   }
-  return payload
 }
 
 export async function fetchAuthStatus() {
-  const payload = await requestJson('/api/auth/status')
-  if (payload.status) {
-    savePublicStatus(payload.status)
-    return { ...payload.status, guard: payload.guard || getAuthGuardDecision(payload.status) }
+  try {
+    const payload = await requestJson('/api/auth/status')
+    if (payload.status) {
+      savePublicStatus(payload.status)
+      return { ...payload.status, guard: payload.guard || getAuthGuardDecision(payload.status) }
+    }
+    return publicLocalStatus()
+  } catch (error) {
+    // 后端未实现 /api/auth/status（如 Tauri 桌面端没有 dev-api HTTP 服务）时，
+    // 回退到本地 session 状态，避免启动时被强制跳转登录页导致白屏/卡死。
+    console.warn('[auth] /api/auth/status unavailable, fallback to local status:', error?.message || error)
+    return publicLocalStatus()
   }
-  return publicLocalStatus()
 }
 
 export async function loginAuth(input = {}) {
@@ -92,7 +108,13 @@ export async function activateAuth(input = {}) {
     method: 'POST',
     body: JSON.stringify(input),
   })
-  if (payload.status) savePublicStatus(payload.status)
+  const current = publicLocalStatus()
+  savePublicStatus({
+    ...current,
+    ...(payload.status || {}),
+    authRequired: payload.status?.authRequired ?? true,
+    activated: true,
+  })
   return payload
 }
 
