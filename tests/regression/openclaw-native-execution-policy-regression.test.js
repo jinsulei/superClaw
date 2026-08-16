@@ -721,7 +721,10 @@ test('OpenClaw authenticated Gateway images use the portable Tauri media bridge'
 
   assert.match(chat, /function isOpenClawGatewayMediaRoute\(value = ''\)/)
   assert.match(chat, /if \(isOpenClawGatewayMediaRoute\(direct\)\) return ''/)
-  assert.match(imageElement, /isOpenClawGatewayMediaRoute\(mediaPath\)\s*\? await api\.loadOpenclawGatewayMedia\(mediaPath\)/)
+  // The loader helper routes Gateway routes through the portable Tauri media
+  // bridge instead of the ephemeral short-lived Gateway URL.
+  assert.match(imageElement, /if \(isOpenClawGatewayMediaRoute\(mediaPath\)\)/)
+  assert.match(imageElement, /api\.loadOpenclawGatewayMedia\(mediaPath\)/)
   assert.match(tauriApi, /loadOpenclawGatewayMedia: \(path\) => invoke\('openclaw_load_gateway_media'/)
   assert.match(openclawHistorySource, /pub async fn openclaw_load_gateway_media\(path: String\)/)
   assert.match(openclawHistorySource, /route\.starts_with\("\/api\/chat\/media\/outgoing\/"\)/)
@@ -794,7 +797,10 @@ test('OpenClaw native media history keeps the owning session and a renderable at
   assert.match(openclawHistorySource, /fn attach_openclaw_local_media_fallbacks\(messages: &mut \[Value\]\)/)
   assert.match(openclawHistorySource, /"fallbackMediaPath"/)
   assert.match(openclawHistorySource, /pub async fn openclaw_load_local_media\(path: String\)/)
-  assert.match(chat, /await api\.loadOpenclawLocalMedia\(fallbackMediaPath\)/)
+  // The chat renderer now routes image loads through loadOpenClawMediaDataUrl,
+  // which still prefers the native local-media loader for the fallback path.
+  assert.match(chat, /function loadOpenClawMediaDataUrl/)
+  assert.match(chat, /api\.loadOpenclawLocalMedia\(normalized\.fallbackMediaPath\)/)
   assert.match(chat, /return mergeOpenClawUniqueMedia\(\[\], images\)/)
 })
 

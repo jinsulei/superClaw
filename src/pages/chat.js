@@ -2302,13 +2302,7 @@ function createOpenClawImageElement(att = {}) {
     try {
       let dataUrl = _openClawMediaDataUrlCache.get(mediaPath)
       if (!dataUrl) {
-        dataUrl = normalized.generatedMediaPath
-          ? await api.loadOpenclawLocalMedia(normalized.generatedMediaPath)
-          : fallbackMediaPath
-          ? await api.loadOpenclawLocalMedia(fallbackMediaPath)
-          : isOpenClawGatewayMediaRoute(mediaPath)
-          ? await api.loadOpenclawGatewayMedia(mediaPath)
-          : await api.loadHermesMediaImage(mediaPath)
+        dataUrl = await loadOpenClawMediaDataUrl(normalized, mediaPath)
         _openClawMediaDataUrlCache.set(mediaPath, dataUrl)
       }
       img.src = dataUrl
@@ -2321,6 +2315,51 @@ function createOpenClawImageElement(att = {}) {
     }
   })()
   return wrap
+}
+
+/**
+ * Try every media loader that can resolve a generated OpenClaw image, in
+ * priority order, until one succeeds. The same file path may be loadable by
+ * only one of the loaders depending on the runtime mode:
+ *   - openclaw_load_local_media allows the portable `.openclaw/media` dir and
+ *     the generated media output dir (resources/data/generated/media).
+ *   - hermes_load_media_image has the broadest allowlist and also covers both
+ *     dev (.dev-data/generated/media) and release generated dirs.
+ * A single loader failing (e.g. a missing `.openclaw/media` root) must not
+ * prevent a valid generated image from rendering.
+ */
+async function loadOpenClawMediaDataUrl(normalized = {}, mediaPath = '') {
+  const seen = new Set()
+  const candidates = []
+  const push = (fn, key) => {
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    candidates.push(fn)
+  }
+  if (normalized.generatedMediaPath) {
+    push(() => api.loadOpenclawLocalMedia(normalized.generatedMediaPath), `local:${normalized.generatedMediaPath}`)
+  }
+  if (normalized.fallbackMediaPath) {
+    push(() => api.loadOpenclawLocalMedia(normalized.fallbackMediaPath), `local:${normalized.fallbackMediaPath}`)
+  }
+  if (isOpenClawGatewayMediaRoute(mediaPath)) {
+    push(() => api.loadOpenclawGatewayMedia(mediaPath), `gateway:${mediaPath}`)
+  }
+  if (mediaPath && !isOpenClawGatewayMediaRoute(mediaPath)) {
+    push(() => api.loadHermesMediaImage(mediaPath), `hermes:${mediaPath}`)
+    push(() => api.loadOpenclawLocalMedia(mediaPath), `local:${mediaPath}`)
+  }
+  let lastError = null
+  for (const candidate of candidates) {
+    try {
+      const dataUrl = await candidate()
+      if (dataUrl) return dataUrl
+    } catch (error) {
+      lastError = error
+      console.warn('[OpenClaw] media loader failed, trying next loader', error)
+    }
+  }
+  throw lastError || new Error('No OpenClaw media loader succeeded')
 }
 
 function getOpenClawAttachmentDataUrl(att = {}) {
@@ -2339,18 +2378,25 @@ function isOpenClawPdfAttachment(att = {}) {
 function extractOpenClawWorkspaceOutputFiles(text = '') {
   const files = []
   const seen = new Set()
-  const outputPathPattern = /(?:[a-zA-Z]:\\[^\r\n`"<>|]+?\.(?:pdf|docx?|xlsx?|csv|txt|md|json|pptx?|html?))/g
+  // 匹配 Windows 本地绝对路径文件（任意扩展名，含未知类型），兼容反斜杠/正斜杠。
+  // 不再局限于 workspace 目录与已知扩展名白名单：只要 AI 返回了本地文件路径，
+  // 就按附件卡片展示（打开/下载）。
+  const outputPathPattern = /(?:[a-zA-Z]:[\\/][^\r\n`"<>|]*?\.[A-Za-z0-9]{1,10})(?![A-Za-z0-9\\/.])/g
   for (const match of String(text || '').matchAll(outputPathPattern)) {
     const path = String(match[0] || '').trim()
-    if (!path || !/\\workspace\\/i.test(path) || seen.has(path.toLowerCase())) continue
+    if (!path || seen.has(path.toLowerCase())) continue
     seen.add(path.toLowerCase())
-    const parts = path.split('\\')
-    files.push({
-      name: parts[parts.length - 1] || 'OpenClaw 输出文件',
-      fileName: parts[parts.length - 1] || 'OpenClaw 输出文件',
-      workspaceOutputPath: path,
+    const parts = path.split(/[\\/]/)
+    const fileName = parts[parts.length - 1] || 'OpenClaw 输出文件'
+    const item = {
+      name: fileName,
+      fileName,
       mimeType: 'application/octet-stream',
-    })
+    }
+    // workspace 内的输出仍走受控的 workspace 命令；其余本地路径走通用打开/下载。
+    if (/\\workspace\\/i.test(path)) item.workspaceOutputPath = path
+    else item.localPath = path
+    files.push(item)
   }
   return files
 }
@@ -2448,7 +2494,7 @@ function createOpenClawFileCard(att = {}, options = {}) {
     info.appendChild(size)
   }
   card.append(icon, info)
-  const localOutputPath = normalized.workspaceOutputPath || normalized.generatedMediaPath
+  const localOutputPath = normalized.workspaceOutputPath || normalized.generatedMediaPath || normalized.localPath || normalized.filePath || normalized.path
   if (localOutputPath) {
     const open = document.createElement('button')
     open.type = 'button'
@@ -2469,7 +2515,6 @@ function createOpenClawFileCard(att = {}, options = {}) {
         toast(`打开文件失败：${error?.message || error}`, 'error')
       }
     })
-    if (normalized.workspaceOutputPath) {
     const download = document.createElement('button')
     download.type = 'button'
     download.className = 'msg-file-preview-btn sc-document-card__action'
@@ -2483,16 +2528,15 @@ function createOpenClawFileCard(att = {}, options = {}) {
         return
       }
       try {
-        const result = await api.openclawDownloadWorkspaceOutput(normalized.workspaceOutputPath)
+        const result = normalized.workspaceOutputPath
+          ? await api.openclawDownloadWorkspaceOutput(normalized.workspaceOutputPath)
+          : await api.assistantDownloadPath(localOutputPath)
         toast(`已保存到下载目录：${result?.fileName || normalized.fileName}`, 'success')
       } catch (error) {
         toast(`下载文件失败：${error?.message || error}`, 'error')
       }
     })
     card.append(open, download)
-    } else {
-      card.appendChild(open)
-    }
   }
   if (options.preview !== false && isOpenClawPdfAttachment(normalized)) {
     const preview = document.createElement('button')

@@ -485,6 +485,11 @@ export const api = {
   assistantCheckPort: (port) => invoke('assistant_check_port', { port }),
   assistantWebSearch: (query, maxResults) => invoke('assistant_web_search', { query, max_results: maxResults || 5 }),
   assistantFetchUrl: (url) => invoke('assistant_fetch_url', { url }),
+  assistantAnalyzeVideoUrl: (url, timeoutMs, cookiesBrowser, cdpPort) => invoke('assistant_analyze_video_url', { url, timeoutMs: timeoutMs || null, cookiesBrowser: cookiesBrowser || null, cdpPort: cdpPort || null }),
+  assistantDefaultBrowser: () => invoke('assistant_default_browser'),
+  assistantManagedLogin: (url, browser) => invoke('assistant_managed_login', { url, browser: browser || null }),
+  assistantManagedLoginClose: (port) => invoke('assistant_managed_login_close', { port }),
+  assistantDownloadPath: (path) => invoke('assistant_download_path', { path }),
 
   // Skills 管理
   skillsList: (agentId) => invoke('skills_list', { agent_id: agentId || null }),

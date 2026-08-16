@@ -125,13 +125,27 @@ pub async fn openclaw_load_local_media(path: String) -> Result<String, String> {
     let filepath = tokio::fs::canonicalize(&requested)
         .await
         .map_err(|error| format!("OpenClaw local media not found: {error}"))?;
-    let media_root = tokio::fs::canonicalize(openclaw_dir().join("media"))
-        .await
-        .map_err(|error| format!("OpenClaw media directory is unavailable: {error}"))?;
+    // The portable `.openclaw/media` directory may not exist yet (the generated
+    // media output dir is created lazily). A missing media root is simply "no
+    // match" here, not a hard failure, so images written to the generated media
+    // output dir still resolve through the generated_root check below.
+    let media_root = tokio::fs::canonicalize(openclaw_dir().join("media")).await.ok();
     let generated_root =
         super::media_output_data_dir().and_then(|root| std::fs::canonicalize(root).ok());
-    let is_allowed = filepath.starts_with(&media_root)
+    // Allow the `data/generated` parent of the generated media dir as well, in
+    // case a plugin drops an artifact directly under generated/.
+    let generated_parent = generated_root
+        .as_ref()
+        .and_then(|root| root.parent().and_then(|parent| std::fs::canonicalize(parent).ok()));
+    let is_allowed = media_root
+        .as_ref()
+        .map(|root| filepath.starts_with(root))
+        .unwrap_or(false)
         || generated_root
+            .as_ref()
+            .map(|root| filepath.starts_with(root))
+            .unwrap_or(false)
+        || generated_parent
             .as_ref()
             .map(|root| filepath.starts_with(root))
             .unwrap_or(false);

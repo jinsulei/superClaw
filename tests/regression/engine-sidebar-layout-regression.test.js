@@ -8,7 +8,7 @@ const hermesStoreSource = fs.readFileSync(new URL('../../src/engines/hermes/lib/
 
 test('Hermes and OpenClaw use the compact five-entry sidebar layout', () => {
   assert.match(sidebarSource, /OPENCLAW_PRIMARY_SIDEBAR_ROUTES = \['\/chat', '\/dashboard', '\/models', '\/agents', '\/skills'\]/)
-  assert.match(sidebarSource, /HERMES_PRIMARY_SIDEBAR_ROUTES = \['\/h\/chat', '\/h\/dashboard', '\/h\/skills', '\/h\/memory', '\/models'\]/)
+  assert.match(sidebarSource, /HERMES_PRIMARY_SIDEBAR_ROUTES = \['\/h\/chat', '\/h\/dashboard', '\/models', '\/h\/skills', '\/h\/memory'\]/)
   assert.match(sidebarSource, /const isSessionSidebar = isOpenClawSidebar \|\| isHermesSidebar/)
 })
 

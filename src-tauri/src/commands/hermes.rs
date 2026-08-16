@@ -3322,6 +3322,8 @@ model:
 {provider_line}{base_url_line}{toolsets}
 terminal:
   backend: local
+web:
+  backend: ddgs
 platforms:
   api_server:
     enabled: true
@@ -3499,6 +3501,9 @@ fn merge_hermes_config_yaml(
     final_content = ensure_hermes_api_server_toolsets(&final_content);
     if !final_content.contains("terminal:") {
         final_content.push_str("terminal:\n  backend: local\n");
+    }
+    if !final_content.contains("web:") {
+        final_content.push_str("web:\n  backend: ddgs\n");
     }
     if !final_content.contains("platforms:") {
         final_content.push_str("platforms:\n  api_server:\n    enabled: true\n");

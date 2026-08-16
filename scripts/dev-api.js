@@ -7205,7 +7205,8 @@ const ALWAYS_LOCAL = new Set([
   'get_deploy_mode',
   'assistant_exec', 'assistant_read_file', 'assistant_write_file',
   'assistant_list_dir', 'assistant_open_path', 'assistant_system_info', 'assistant_list_processes',
-  'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url',
+  'assistant_check_port', 'assistant_web_search', 'assistant_fetch_url', 'assistant_analyze_video_url',
+  'assistant_managed_login', 'assistant_managed_login_close', 'assistant_download_path',
   'assistant_ensure_data_dir', 'assistant_save_image', 'assistant_load_image', 'assistant_delete_image',
   'hermes_load_media_image',
   'get_effective_model_config',
@@ -7981,13 +7982,183 @@ async function fetchReadableUrlContent(rawUrl) {
     lines.push(
       '',
       '[读取限制]',
-      '当前只读取到了短视频分享页的公开标题、描述、封面或页面文本片段；如果缺少口播、字幕和完整画面，请先基于已读信息做文字拆解。若具备用户授权的浏览器/页面读取工具，可继续从用户已打开或授权打开的页面读取公开可见信息，但不要在聊天中展示或播放平台页面。',
+      '当前只读取到了短视频分享页的公开标题、描述、封面或页面文本片段。对抖音/快手/小红书/B 站链接，客户端可额外尝试“本地下载 + 抽帧 OCR”分析画面文字，分析完成后自动删除下载文件；若需要登录才能下载，会明确提示用户登录，不绕过登录。如果仍缺少口播、字幕和完整画面，请先基于已读信息做文字拆解。若具备用户授权的浏览器/页面读取工具，可继续从用户已打开或授权打开的页面读取公开可见信息，但不要在聊天中展示或播放平台页面。',
       '[/读取限制]',
       '[/短视频页面可读取信息]'
     )
     return lines.join('\n')
   } catch (err) {
     return `抓取失败: ${readerError || err?.message || String(err)}`
+  }
+}
+
+/**
+ * 本地视频下载 + 抽帧 OCR 分析（dev 镜像）
+ * 与 Rust assistant_analyze_video_url 行为保持一致：下载到临时目录、抽帧 OCR、
+ * 分析完成后删除临时文件。
+ * 支持平台：抖音/快手/小红书/B 站（无需翻墙）。
+ */
+function analyzeVideoUrl(rawUrl, timeoutMs, cookiesBrowser, cdpPort) {
+  if (!/^https?:\/\//i.test(rawUrl || '')) {
+    return { ok: false, errorCode: 'INVALID_URL', message: 'URL 必须以 http:// 或 https:// 开头' }
+  }
+  let host = ''
+  try {
+    host = String(new URL(rawUrl).hostname || '').toLowerCase()
+  } catch {
+    return { ok: false, errorCode: 'INVALID_URL', message: 'URL 格式不合法' }
+  }
+  const supported = ['douyin', 'iesdouyin', 'kuaishou', 'xiaohongshu', 'xhslink', 'bilibili'].some(k => host.includes(k))
+  if (!supported) {
+    return { ok: false, errorCode: 'UNSUPPORTED_PLATFORM', message: '该平台暂不支持本地下载分析（当前支持：抖音/快手/小红书/B 站）' }
+  }
+
+  const resDir = appResourcesDir()
+  if (!resDir) return { ok: false, errorCode: 'RESOURCE_MISSING', message: 'resources 目录未找到' }
+  const ocrRuntime = path.join(resDir, 'runtime', 'ocr')
+  const analyzer = path.join(ocrRuntime, 'video-frame-analyzer.cjs')
+  if (!fs.existsSync(analyzer)) return { ok: false, errorCode: 'ANALYZER_MISSING', message: '本地视频分析脚本缺失' }
+
+  const openclawDir = bundledOpenclawBinDir()
+  const nodeBin = openclawDir
+    ? path.join(openclawDir, process.platform === 'win32' ? 'node.exe' : 'node')
+    : (process.platform === 'win32' ? 'node.exe' : 'node')
+
+  const workDir = path.join(os.tmpdir(), `sc-video-${process.pid}-${Date.now()}`)
+  try {
+    fs.mkdirSync(workDir, { recursive: true })
+  } catch (e) {
+    return { ok: false, errorCode: 'WORK_DIR_FAILED', message: `创建临时目录失败: ${e?.message || e}` }
+  }
+
+  // cookiesBrowser 非空时透传给 yt-dlp（--cookies-from-browser），复用用户系统浏览器登录态。
+  const analyzerArgs = [analyzer, '--url', rawUrl, '--work-dir', workDir]
+  if (cookiesBrowser) {
+    analyzerArgs.push('--cookies-from-browser', String(cookiesBrowser).trim())
+  }
+  // cdpPort 非空时透传 --cdp-port，让分析器通过 CDP 读取托管登录窗口的登录态 Cookie。
+  const port = Number(cdpPort)
+  if (port > 0) {
+    analyzerArgs.push('--cdp-port', String(port))
+  }
+
+  let result
+  try {
+    result = spawnSync(nodeBin, analyzerArgs, {
+      encoding: 'utf8',
+      timeout: Number(timeoutMs) > 0 ? Number(timeoutMs) : 180000,
+      maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
+      cwd: ocrRuntime,
+      env: { ...process.env, NO_UPDATE_NOTIFIER: '1' },
+    })
+  } catch (err) {
+    fs.rmSync(workDir, { recursive: true, force: true })
+    return { ok: false, errorCode: 'SPAWN_FAILED', message: `启动本地分析器失败: ${err?.message || err}` }
+  }
+
+  // 无论成功失败，都删除临时文件（下载的视频 + 抽出的帧）。
+  fs.rmSync(workDir, { recursive: true, force: true })
+
+  if (result.error) {
+    return { ok: false, errorCode: 'ANALYZER_TIMEOUT', message: `本地视频分析超时或失败，已中止并清理下载文件: ${result.error.message || ''}` }
+  }
+  const stdout = String(result.stdout || '').trim()
+  if (!stdout) {
+    return { ok: false, errorCode: 'ANALYZER_EMPTY', message: `本地分析器未返回结果: ${String(result.stderr || '').trim()}` }
+  }
+  try {
+    const value = JSON.parse(stdout)
+    delete value.workDir
+    return value
+  } catch (e) {
+    return { ok: false, errorCode: 'PARSE_FAILED', message: `解析本地分析结果失败: ${e?.message}; output=${stdout.slice(0, 2000)}` }
+  }
+}
+
+/** 定位 OCR runtime 目录（内含 browser-cookies.cjs），失败返回 null */
+function ocrRuntimeDir() {
+  const resDir = appResourcesDir()
+  if (!resDir) return null
+  const dir = path.join(resDir, 'runtime', 'ocr')
+  return fs.existsSync(dir) ? dir : null
+}
+
+/**
+ * 打开“内置登录窗口”（dev 镜像）
+ * 与 Rust assistant_managed_login 行为保持一致：启动托管 Edge/Chrome 实例
+ * （临时 profile + CDP），导航到指定 URL，让用户在该窗口内登录平台。
+ * 返回 { ok:true, port, ... }，端口供后续 --cdp-port 读取登录态 Cookie。
+ */
+function managedLogin(url, browser) {
+  const ocrRuntime = ocrRuntimeDir()
+  const helper = ocrRuntime ? path.join(ocrRuntime, 'browser-cookies.cjs') : null
+  if (!helper || !fs.existsSync(helper)) {
+    return { ok: false, errorCode: 'HELPER_MISSING', message: '内置浏览器登录助手缺失' }
+  }
+  const openclawDir = bundledOpenclawBinDir()
+  const nodeBin = openclawDir
+    ? path.join(openclawDir, process.platform === 'win32' ? 'node.exe' : 'node')
+    : (process.platform === 'win32' ? 'node.exe' : 'node')
+  const args = [helper, '--open-login', '--url', String(url || '')]
+  if (browser && String(browser).trim()) {
+    args.push('--browser', String(browser).trim())
+  }
+  const res = spawnSync(nodeBin, args, {
+    encoding: 'utf8',
+    timeout: 40000,
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
+    cwd: ocrRuntime,
+    env: { ...process.env, NO_UPDATE_NOTIFIER: '1' },
+  })
+  if (res.error) {
+    return { ok: false, errorCode: 'LOGIN_LAUNCH_FAILED', message: String(res.error.message || res.error) }
+  }
+  const stdout = String(res.stdout || '').trim()
+  if (!stdout) {
+    return { ok: false, errorCode: 'LOGIN_LAUNCH_FAILED', message: `内置登录窗口未返回结果: ${String(res.stderr || '').trim()}` }
+  }
+  try {
+    return JSON.parse(stdout)
+  } catch (e) {
+    return { ok: false, errorCode: 'PARSE_FAILED', message: `解析内置登录结果失败: ${e?.message}; output=${stdout.slice(0, 2000)}` }
+  }
+}
+
+/**
+ * 关闭托管登录浏览器（dev 镜像）
+ * 与 Rust assistant_managed_login_close 行为保持一致。
+ */
+function managedLoginClose(port) {
+  const ocrRuntime = ocrRuntimeDir()
+  const helper = ocrRuntime ? path.join(ocrRuntime, 'browser-cookies.cjs') : null
+  if (!helper || !fs.existsSync(helper)) {
+    return { ok: false, errorCode: 'HELPER_MISSING', message: '内置浏览器登录助手缺失' }
+  }
+  const openclawDir = bundledOpenclawBinDir()
+  const nodeBin = openclawDir
+    ? path.join(openclawDir, process.platform === 'win32' ? 'node.exe' : 'node')
+    : (process.platform === 'win32' ? 'node.exe' : 'node')
+  const res = spawnSync(nodeBin, [helper, '--close', '--port', String(port || '')], {
+    encoding: 'utf8',
+    timeout: 15000,
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
+    cwd: ocrRuntime,
+    env: { ...process.env, NO_UPDATE_NOTIFIER: '1' },
+  })
+  if (res.error) {
+    return { ok: false, errorCode: 'CLOSE_FAILED', message: String(res.error.message || res.error) }
+  }
+  const stdout = String(res.stdout || '').trim()
+  if (!stdout) {
+    return { ok: false, errorCode: 'CLOSE_FAILED', message: `关闭登录窗口未返回结果: ${String(res.stderr || '').trim()}` }
+  }
+  try {
+    return JSON.parse(stdout)
+  } catch (e) {
+    return { ok: false, errorCode: 'PARSE_FAILED', message: `解析关闭登录结果失败: ${e?.message}; output=${stdout.slice(0, 2000)}` }
   }
 }
 
@@ -11426,6 +11597,29 @@ const handlers = {
     return `已打开 ${targetPath}`
   },
 
+  assistant_download_path({ path: targetPath }) {
+    if (!targetPath) throw new Error('路径不能为空')
+    const expanded = targetPath.startsWith('~/') ? path.join(homedir(), targetPath.slice(2)) : targetPath
+    if (!fs.existsSync(expanded)) throw new Error(`路径不存在: ${targetPath}`)
+    const stat = fs.statSync(expanded)
+    if (!stat.isFile()) throw new Error(`不是文件，无法下载: ${targetPath}`)
+    const fileName = path.basename(expanded)
+    const baseDir = path.join(os.homedir(), 'Downloads', 'SuperClaw')
+    fs.mkdirSync(baseDir, { recursive: true })
+    let destination = path.join(baseDir, fileName)
+    if (fs.existsSync(destination)) {
+      const ext = path.extname(fileName)
+      const stem = path.basename(fileName, ext)
+      let n = 1
+      while (fs.existsSync(destination)) {
+        destination = path.join(baseDir, `${stem} (${n})${ext}`)
+        n += 1
+      }
+    }
+    fs.copyFileSync(expanded, destination)
+    return { path: destination, fileName: path.basename(destination) }
+  },
+
   assistant_system_info() {
     const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'linux'
     const arch = process.arch
@@ -11558,6 +11752,42 @@ const handlers = {
     if (!url) throw new Error('URL 不能为空')
     if (!url.startsWith('http://') && !url.startsWith('https://')) throw new Error('URL 必须以 http:// 或 https:// 开头')
     return fetchReadableUrlContent(url)
+  },
+
+  async assistant_analyze_video_url({ url, timeoutMs, cookiesBrowser, cdpPort }) {
+    if (!url) throw new Error('URL 不能为空')
+    return analyzeVideoUrl(url, timeoutMs, cookiesBrowser, cdpPort)
+  },
+
+  async assistant_managed_login({ url, browser }) {
+    if (!url) throw new Error('URL 不能为空')
+    return managedLogin(url, browser)
+  },
+
+  async assistant_managed_login_close({ port }) {
+    return managedLoginClose(port)
+  },
+
+  async assistant_default_browser() {
+    // dev 镜像：Windows 下读默认浏览器 ProgId，映射为 yt-dlp 浏览器名；其他平台返回 null。
+    try {
+      if (process.platform !== 'win32') return null
+      const res = require('child_process').spawnSync('reg.exe', [
+        'query', 'Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice', '/v', 'ProgId',
+      ], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+      const m = /ProgId\s+REG_SZ\s+(\S+)/i.exec(String(res.stdout || ''))
+      const progId = (m && m[1] || '').toLowerCase()
+      if (!progId) return null
+      if (progId.startsWith('chromehtml')) return 'chrome'
+      if (progId.startsWith('msedgehtm')) return 'edge'
+      if (progId.startsWith('firefoxurl')) return 'firefox'
+      if (progId.startsWith('bravehtml')) return 'brave'
+      if (progId.startsWith('operastable')) return 'opera'
+      if (progId.startsWith('vivaldihtm')) return 'vivaldi'
+      return null
+    } catch {
+      return null
+    }
   },
 
   // === 面板配置（Web 模式） ===

@@ -17,7 +17,7 @@
     "smoke:compact-chat": "node scripts/smoke-compact-chat.mjs",
     "smoke:file-service": "node scripts/smoke-file-service.mjs",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "tauri dev --no-watch",
     "tauri:build": "tauri build",
     "build:pack": "pwsh ./build.ps1",
     "build:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-desktop-client.ps1 -SkipRuntimeDownload -SanitizedTest",

@@ -1144,15 +1144,28 @@ function normalizeArtifacts(input = []) {
     .map(item => {
       const rawPath = String(item.path || item.relativePath || '').replace(/\\/g, '/')
       const rawMediaPath = String(item.mediaPath || item.generatedMediaPath || '').replace(/\\/g, '/')
+      const type = item.type || 'file'
+      const category = item.category || item.type || 'file'
+      // Image artifacts that only carry an absolute `path` (e.g. the OpenClaw
+      // superclaw_generate_image plugin returns `{ type: 'image', path }`) must
+      // keep a loadable absolute `mediaPath`; the Hermes media loader
+      // canonicalizes and validates it against allowed roots, so stripping it
+      // would make the generated image unrenderable in the chat.
+      const isImageArtifact = String(type || category).toLowerCase() === 'image' || /\.(png|jpe?g|gif|webp)$/i.test(rawPath)
+      const isAbsolutePath = value => /^(?:[a-z]:\/|\/|\\\\)/i.test(String(value || ''))
+      let mediaPath = rawMediaPath
+      if (isImageArtifact && isAbsolutePath(rawPath)) {
+        mediaPath = isAbsolutePath(rawMediaPath) ? rawMediaPath : rawPath
+      }
       return {
-        type: item.type || 'file',
-        category: item.category || item.type || 'file',
+        type,
+        category,
         path: stripAbsolutePath(rawPath),
         // Full local path used by the Hermes/OpenClaw media bridges to load
         // generated images. Unlike `path`, this is deliberately NOT stripped:
         // the Rust media loader canonicalizes and validates it against allowed
         // roots, so a relative/mangled path would fail to resolve.
-        ...(rawMediaPath ? { mediaPath: rawMediaPath } : {}),
+        ...(mediaPath ? { mediaPath } : {}),
         ...(item.mimeType ? { mimeType: item.mimeType } : {}),
         ...(item.fileName ? { fileName: item.fileName } : {}),
         text: item.text || item.content || '',

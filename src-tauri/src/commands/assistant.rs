@@ -858,7 +858,7 @@ async fn fetch_readable_url_content(url: &str) -> Result<String, String> {
     lines.extend([
         String::new(),
         "[读取限制]".to_string(),
-        "当前只读取到了短视频分享页的公开标题、描述、封面或页面文本片段；如果缺少口播、字幕和完整画面，请先基于已读信息做文字拆解。若具备用户授权的浏览器/页面读取工具，可继续从用户已打开或授权打开的页面读取公开可见信息，但不要在聊天中展示或播放平台页面。".to_string(),
+        "当前只读取到了短视频分享页的公开标题、描述、封面或页面文本片段。对抖音/快手/小红书/B 站链接，客户端可额外尝试“本地下载 + 抽帧 OCR”分析画面文字，分析完成后自动删除下载文件；若需要登录才能下载，会明确提示用户登录，不绕过登录。如果仍缺少口播、字幕和完整画面，请先基于已读信息做文字拆解。若具备用户授权的浏览器/页面读取工具，可继续从用户已打开或授权打开的页面读取公开可见信息，但不要在聊天中展示或播放平台页面。".to_string(),
         "[/读取限制]".to_string(),
         "[/短视频页面可读取信息]".to_string(),
     ]);
@@ -872,6 +872,426 @@ pub async fn assistant_fetch_url(url: String) -> Result<String, String> {
         return Err("URL 必须以 http:// 或 https:// 开头".into());
     }
     fetch_readable_url_content(&url).await
+}
+
+/// 定位内置 node 可执行文件（与 OCR runner 一致）。
+fn bundled_node_bin() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let node = {
+        super::bundled_openclaw_bin_dir()
+            .map(|dir| dir.join("node.exe"))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("node"))
+    };
+    #[cfg(not(target_os = "windows"))]
+    let node = {
+        super::bundled_openclaw_bin_dir()
+            .map(|dir| dir.join("node"))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("node"))
+    };
+    node
+}
+
+/// 定位 OCR runtime 目录（内含 video-frame-analyzer.cjs、browser-cookies.cjs）。
+fn ocr_runtime_dir() -> Result<PathBuf, String> {
+    super::app_resources_dir()
+        .map(|res| res.join("runtime").join("ocr"))
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| "OCR runtime directory not found".to_string())
+}
+
+/// 运行内置 node 脚本并解析 stdout 的单个 JSON 对象。
+/// 带超时；成功时返回 JSON，失败时返回 Err(中文错误信息)。
+fn run_bundled_node_json(
+    node: &Path,
+    args: &[&str],
+    dir: &Path,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = std::process::Command::new(node);
+    cmd.args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    let mut child = cmd.spawn().map_err(|e| format!("启动内置工具失败: {e}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr {
+            let _ = err.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let start = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("等待内置工具失败: {e}"));
+            }
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            return Err("内置工具运行超时".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    };
+
+    let stdout_bytes = stdout_thread.join().unwrap_or_default();
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+    let stdout_str = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+    let stderr_str = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+
+    if !status.success() {
+        return Err(format!(
+            "内置工具退出码 {}: {} {}",
+            status.code().unwrap_or(-1),
+            truncate_chars(&stdout_str, 300),
+            truncate_chars(&stderr_str, 300)
+        ));
+    }
+    if stdout_str.is_empty() {
+        return Err(format!("内置工具未输出结果: {}", truncate_chars(&stderr_str, 500)));
+    }
+    serde_json::from_str(&stdout_str)
+        .map_err(|e| format!("解析内置工具输出失败: {e}; output={}", truncate_chars(&stdout_str, 500)))
+}
+
+/// 打开“内置登录窗口”：启动一个托管 Edge/Chrome 实例（临时 profile + CDP），
+/// 导航到指定 URL，让用户在该窗口内登录平台。浏览器进程独立存活，返回端口号
+/// 供后续 `--cdp-port` 读取登录态 Cookie。
+#[tauri::command]
+pub async fn assistant_managed_login(
+    url: String,
+    browser: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let ocr_runtime = ocr_runtime_dir()?;
+    let helper = ocr_runtime.join("browser-cookies.cjs");
+    if !helper.is_file() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "HELPER_MISSING",
+            "message": "内置浏览器登录助手缺失"
+        }));
+    }
+    let node = bundled_node_bin();
+    let helper_str = helper.to_string_lossy().into_owned();
+    let mut args = vec![
+        helper_str.as_str(),
+        "--open-login",
+        "--url",
+        url.as_str(),
+    ];
+    if let Some(b) = browser.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--browser");
+        args.push(b);
+    }
+    match run_bundled_node_json(&node, &args, &ocr_runtime, std::time::Duration::from_secs(40)) {
+        Ok(value) => Ok(value),
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "LOGIN_LAUNCH_FAILED",
+            "message": e
+        })),
+    }
+}
+
+/// 关闭托管登录浏览器（Browser.close），并允许调用方在关闭后清理 profile。
+#[tauri::command]
+pub async fn assistant_managed_login_close(port: u64) -> Result<serde_json::Value, String> {
+    let ocr_runtime = ocr_runtime_dir()?;
+    let helper = ocr_runtime.join("browser-cookies.cjs");
+    if !helper.is_file() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "HELPER_MISSING",
+            "message": "内置浏览器登录助手缺失"
+        }));
+    }
+    let node = bundled_node_bin();
+    let helper_str = helper.to_string_lossy().into_owned();
+    let port_str = port.to_string();
+    let args = [
+        helper_str.as_str(),
+        "--close",
+        "--port",
+        port_str.as_str(),
+    ];
+    match run_bundled_node_json(&node, &args, &ocr_runtime, std::time::Duration::from_secs(15)) {
+        Ok(value) => Ok(value),
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "CLOSE_FAILED",
+            "message": e
+        })),
+    }
+}
+
+/// 本地视频下载 + 抽帧 OCR 分析命令。
+///
+/// 使用内置 yt-dlp + ffmpeg/ffprobe + tesseract OCR 把短视频下载到本地临时目录，
+/// 按时间轴抽取若干帧做 OCR 文本识别，分析完成后立即删除下载文件与临时帧，
+/// 避免长期占用磁盘空间。
+///
+/// 当前支持平台：抖音/快手/小红书/B 站（无需翻墙）。YouTube/TikTok 等需要
+/// 翻墙的平台不启用本地下载，返回 UNSUPPORTED_PLATFORM。
+///
+/// 返回 JSON：
+///   成功: { ok:true, duration, title, frames:[{time,timeLabel,text}] }
+///   需登录: { ok:false, loginRequired:true, errorCode:"LOGIN_REQUIRED", message }
+///   失败: { ok:false, errorCode, message }
+#[tauri::command]
+pub async fn assistant_analyze_video_url(
+    url: String,
+    timeout_ms: Option<u64>,
+    cookies_browser: Option<String>,
+    cdp_port: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "INVALID_URL",
+            "message": "URL 必须以 http:// 或 https:// 开头"
+        }));
+    }
+
+    // 仅对无需翻墙的目标平台启用本地下载分析。
+    let host = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_lowercase()))
+        .unwrap_or_default();
+    let supported = host.contains("douyin")
+        || host.contains("iesdouyin")
+        || host.contains("kuaishou")
+        || host.contains("xiaohongshu")
+        || host.contains("xhslink")
+        || host.contains("bilibili");
+    if !supported {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "UNSUPPORTED_PLATFORM",
+            "message": "该平台暂不支持本地下载分析（当前支持：抖音/快手/小红书/B 站）"
+        }));
+    }
+
+    // 定位 OCR runtime（内含 video-frame-analyzer.cjs 与 tesseract.js）。
+    let ocr_runtime = super::app_resources_dir()
+        .map(|res| res.join("runtime").join("ocr"))
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| "OCR runtime directory not found".to_string())?;
+    let analyzer = ocr_runtime.join("video-frame-analyzer.cjs");
+    if !analyzer.is_file() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "ANALYZER_MISSING",
+            "message": "本地视频分析脚本缺失"
+        }));
+    }
+
+    // 创建临时工作目录（下载视频 + 抽帧），分析完成后由本函数删除。
+    let work_dir = std::env::temp_dir().join(format!(
+        "sc-video-{}-{}",
+        std::process::id(),
+        chrono::Local::now().format("%Y%m%d%H%M%S%3f")
+    ));
+    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "WORK_DIR_FAILED",
+            "message": format!("创建临时目录失败: {e}")
+        }));
+    }
+
+    // 定位内置 node（与 OCR runner 一致）。
+    #[cfg(target_os = "windows")]
+    let node = {
+        super::bundled_openclaw_bin_dir()
+            .map(|dir| dir.join("node.exe"))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("node"))
+    };
+    #[cfg(not(target_os = "windows"))]
+    let node = {
+        super::bundled_openclaw_bin_dir()
+            .map(|dir| dir.join("node"))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("node"))
+    };
+
+    let mut cmd = std::process::Command::new(&node);
+    cmd.arg(&analyzer)
+        .arg("--url")
+        .arg(&url)
+        .arg("--work-dir")
+        .arg(&work_dir)
+        .current_dir(&ocr_runtime)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env("NO_UPDATE_NOTIFIER", "1");
+    if let Some(browser) = cookies_browser.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.arg("--cookies-from-browser").arg(browser);
+    }
+    if let Some(port) = cdp_port {
+        if port > 0 {
+            cmd.arg("--cdp-port").arg(port.to_string());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(180_000).max(10_000));
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&work_dir);
+            return Ok(serde_json::json!({
+                "ok": false,
+                "errorCode": "SPAWN_FAILED",
+                "message": format!("启动本地分析器失败: {e}")
+            }));
+        }
+    };
+
+    // 并发读取 stdout/stderr，避免管道写满导致子进程阻塞。
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut out) = stdout {
+            let _ = out.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        if let Some(mut err) = stderr {
+            let _ = err.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let start = std::time::Instant::now();
+    let wait_result: Result<(), String> = loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => break Ok(()),
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                break Err(format!("等待本地分析器失败: {e}"));
+            }
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            break Err("本地视频分析超时".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    };
+
+    // 无论成功失败/超时，都必须删除下载的临时文件（用户要求分析完即清理）。
+    let _ = std::fs::remove_dir_all(&work_dir);
+
+    let stdout_bytes = stdout_thread.join().unwrap_or_default();
+    let stderr_bytes = stderr_thread.join().unwrap_or_default();
+
+    if let Err(message) = wait_result {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "ANALYZER_TIMEOUT",
+            "message": format!("{message}，已中止并清理下载文件")
+        }));
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+    if stdout.is_empty() {
+        let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+        return Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "ANALYZER_EMPTY",
+            "message": format!("本地分析器未返回结果: {stderr}")
+        }));
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&stdout) {
+        Ok(mut value) => {
+            // 工作目录已由 Rust 清理，移除 workDir 字段，避免前端误用已删除路径。
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("workDir");
+            }
+            Ok(value)
+        }
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "errorCode": "PARSE_FAILED",
+            "message": format!("解析本地分析结果失败: {e}; output={}", truncate_chars(&stdout, 2000))
+        })),
+    }
+}
+
+/// 检测系统默认浏览器（返回 yt-dlp 认识的浏览器名：chrome/edge/firefox/brave/opera/vivaldi）。
+///
+/// Windows 通过注册表 `HKCU\...\UrlAssociations\http\UserChoice` 的 ProgId 判断；
+/// 其它平台暂不检测，返回 null，由前端让用户手动选择。
+#[tauri::command]
+pub async fn assistant_default_browser() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let key_path = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice";
+        let output = std::process::Command::new("reg.exe")
+            .args(["query", key_path, "/v", "ProgId"])
+            .creation_flags(0x08000000)
+            .output()
+            .map_err(|e| format!("读取默认浏览器失败: {e}"))?;
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        let prog_id = text
+            .lines()
+            .map(str::trim)
+            .find(|l| l.to_lowercase().contains("progid"))
+            .and_then(|l| l.split_whitespace().next_back())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let lower = prog_id.to_lowercase();
+        let name = if lower.starts_with("chromehtml") {
+            Some("chrome")
+        } else if lower.starts_with("msedgehtm") {
+            Some("edge")
+        } else if lower.starts_with("firefoxurl") {
+            Some("firefox")
+        } else if lower.starts_with("bravehtml") {
+            Some("brave")
+        } else if lower.starts_with("operastable") {
+            Some("opera")
+        } else if lower.starts_with("vivaldihtm") {
+            Some("vivaldi")
+        } else {
+            None
+        };
+        Ok(name.map(|s| s.to_string()))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
 }
 
 /// 列出目录内容
@@ -938,4 +1358,63 @@ pub async fn assistant_open_path(path: String) -> Result<String, String> {
     }
 
     Ok(format!("已打开 {path}"))
+}
+
+/// 将本地文件复制一份到「下载目录/SuperClaw」，返回目标路径。
+/// 用于聊天里返回的本地路径文件/附件卡片上的“下载/导出”按钮，
+/// 不限定必须位于 OpenClaw 便携工作区内（区别于 openclaw_download_workspace_output）。
+#[tauri::command]
+pub async fn assistant_download_path(path: String) -> Result<serde_json::Value, String> {
+    if path.trim().is_empty() {
+        return Err("路径不能为空".into());
+    }
+    let source = PathBuf::from(&path);
+    if !source.exists() {
+        return Err(format!("路径不存在: {path}"));
+    }
+    if !source.is_file() {
+        return Err(format!("不是文件，无法下载: {path}"));
+    }
+    let file_name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("无法获取文件名: {path}"))?
+        .to_string();
+
+    // 目标目录：系统「下载」目录，取不到时退回主目录。
+    let download_dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .map(|d| d.join("SuperClaw"))
+        .ok_or_else(|| "无法确定下载目录".to_string())?;
+    std::fs::create_dir_all(&download_dir).map_err(|e| format!("创建下载目录失败: {e}"))?;
+
+    // 同名文件已存在时自动追加序号，避免覆盖。
+    let mut destination = download_dir.join(&file_name);
+    if destination.exists() {
+        let stem = source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file");
+        let ext = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        let mut n = 1;
+        loop {
+            let candidate = download_dir.join(format!("{stem} ({n}){ext}"));
+            if !candidate.exists() {
+                destination = candidate;
+                break;
+            }
+            n += 1;
+        }
+    }
+
+    std::fs::copy(&source, &destination).map_err(|e| format!("复制文件失败: {e}"))?;
+
+    Ok(serde_json::json!({
+        "path": destination.to_string_lossy().to_string(),
+        "fileName": destination.file_name().and_then(|n| n.to_str()).unwrap_or(&file_name),
+    }))
 }

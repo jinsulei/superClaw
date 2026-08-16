@@ -473,8 +473,87 @@ function withHermesLinkTimeout(promise, timeoutMs = HERMES_LINK_FETCH_TIMEOUT_MS
   })
 }
 
+// Open `url` in the user's system default browser. Tauri desktop uses the shell
+// plugin (respects `start`/`xdg-open`/`open`); Web mode uses `window.open`.
+async function openExternalUrl(url) {
+  if (!url) return
+  if (window.__TAURI_INTERNALS__) {
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(url)
+    return
+  }
+  const win = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!win) throw new Error('popup blocked')
+}
+
 async function assistantFetchUrlWithTimeout(url) {
   return withHermesLinkTimeout(api.assistantFetchUrl(url))
+}
+
+// 本地视频下载+抽帧分析支持平台：抖音/快手/小红书/B 站（无需翻墙）。
+function isLocalAnalyzerSupportedPlatform(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return [
+      'douyin.com',
+      'iesdouyin.com',
+      'kuaishou.com',
+      'xiaohongshu.com',
+      'xhslink.com',
+      'bilibili.com',
+    ].some(domain => host === domain || host.endsWith(`.${domain}`))
+  } catch {
+    return false
+  }
+}
+
+const HERMES_VIDEO_ANALYZER_TIMEOUT_MS = 120000
+
+function analyzeVideoUrlWithTimeout(url, cookiesBrowser, managedLogin) {
+  return withHermesLinkTimeout(
+    api.assistantAnalyzeVideoUrl(url, HERMES_VIDEO_ANALYZER_TIMEOUT_MS, cookiesBrowser, managedLogin?.port || null),
+    HERMES_VIDEO_ANALYZER_TIMEOUT_MS,
+  )
+}
+
+function formatLocalVideoAnalysisForPrompt(analysis) {
+  const frames = Array.isArray(analysis?.frames) ? analysis.frames : []
+  const duration = Number(analysis?.duration) || 0
+  const lines = [
+    '[本地视频抽帧分析结果]',
+    `视频标题: ${analysis?.title || '未知'}`,
+    `视频时长: ${duration > 0 ? `${Math.floor(duration)} 秒` : '未知'}`,
+    '抽帧方式: 已通过内置工具把视频下载到本地临时目录，按时间轴抽取画面帧并做 OCR 文字识别；分析完成后下载文件与临时帧已删除。',
+    frames.length ? '帧 OCR 文本:' : '帧 OCR 文本: 无',
+  ]
+  for (const frame of frames) {
+    const text = String(frame?.text || '').trim()
+    lines.push(`  [${frame?.timeLabel || '00:00'}] ${text || '（无文字）'}`)
+  }
+  lines.push('[/本地视频抽帧分析结果]')
+  return lines.join('\n')
+}
+
+function videoLinkReadToast(payload) {
+  if (payload?.localError === 'LOGIN_WINDOW_CLOSED') {
+    return { text: '内置登录窗口已关闭或无法连接，请重新打开内置登录窗口并登录后重试。', type: 'warning' }
+  }
+  if (payload?.localError === 'COOKIE_DECRYPT_FAILED') {
+    return { text: '浏览器登录态 Cookie 解密失败（新版 Chrome/Edge 的 DPAPI / App-Bound 加密）。关闭浏览器无法解决；请改用“打开内置登录窗口”，在工具内置浏览器中登录后即可自动读取登录态下载视频。', type: 'warning' }
+  }
+  if (payload?.localError === 'COOKIE_READ_FAILED') {
+    return { text: '无法读取浏览器登录态，可能是浏览器正在运行导致 Cookie 数据库被占用；请关闭该浏览器后重试，或改用“打开内置登录窗口”。', type: 'warning' }
+  }
+  if (payload?.loginRequired) {
+    return { text: '该视频需要登录才能下载分析，请在对应平台登录后重试。', type: 'warning' }
+  }
+  if (payload?.localAnalysis?.ok === true) {
+    return { text: '已通过本地抽帧 OCR 读取视频画面文字，正在交给 Hermes 分析。', type: 'success' }
+  }
+  if (payload?.fetchStatus?.kind === 'link_fetch_success') {
+    return { text: '已读取视频/社媒链接公开信息，正在交给 Hermes 做有限分析。', type: 'success' }
+  }
+  return { text: '视频/社媒链接抓取未完整成功，已进入 metadata_only 有限分析。', type: 'warning' }
 }
 
 function buildLinkReaderNormalizedMetadata(url, {
@@ -485,15 +564,21 @@ function buildLinkReaderNormalizedMetadata(url, {
   status = '',
   materialLevel = '',
   errorMessage = '',
+  analysis = null,
 } = {}) {
   const kind = fetchStatus?.kind || ''
-  const fetchSucceeded = kind === 'link_fetch_success'
+  const fetchSucceeded = kind === 'link_fetch_success' || (analysis && analysis.ok === true)
   const videoLink = isVideoShareUrl(url)
+  const frames = Array.isArray(analysis?.frames) ? analysis.frames : []
+  const hasOcrText = frames.some(f => String(f?.text || '').trim())
+  const timeline = frames
+    .filter(f => String(f?.text || '').trim())
+    .map(f => ({ time: f.timeLabel || '00:00', description: String(f.text || '').trim().slice(0, 300) }))
   return normalizeLinkReaderResult({
     url,
     platform: platform || (videoLink ? videoPlatformLabel(url) : 'webpage'),
     status: status || (fetchSucceeded ? 'partial' : 'failed'),
-    material_level: materialLevel || (fetchSucceeded ? (videoLink ? 'metadata_only' : 'webpage_text') : 'fetch_failed'),
+    material_level: materialLevel || (fetchSucceeded ? (hasOcrText ? 'frame_ocr' : (videoLink ? 'metadata_only' : 'webpage_text')) : 'fetch_failed'),
     visible_text: visibleText || url,
     description: String(content || '').slice(0, 500),
     error_code: fetchSucceeded ? '' : kind || 'link_fetch_failed',
@@ -501,15 +586,21 @@ function buildLinkReaderNormalizedMetadata(url, {
     transcript_available: false,
     subtitle_available: false,
     audio_transcript_available: false,
-    frame_ocr_available: false,
+    frame_ocr_available: hasOcrText,
+    duration: Number.isFinite(Number(analysis?.duration)) ? Number(analysis.duration) : null,
+    title: analysis?.title || '',
+    timeline,
     material_limitations: videoLink
-      ? ['metadata_only', 'no_transcript', 'no_ocr', 'no_asr']
+      ? (hasOcrText
+          ? ['no_transcript', 'no_asr', 'frame_ocr_only']
+          : ['metadata_only', 'no_transcript', 'no_ocr', 'no_asr'])
       : [],
   })
 }
 
 function formatShortVideoWorkflowInstructions(platform = '短视频平台') {
   return [
+    '本地增强：对抖音/快手/小红书/B 站链接，客户端会先尝试“本地下载 + 抽帧 OCR”分析画面文字，并在读取结果后自动删除下载文件与临时帧。如果本轮前置内容里包含 [本地视频抽帧分析结果]，请把它当作可靠素材一并拆解；若其中标注“需要登录”，则不能绕过登录，需要明确提示用户先在对应平台登录后重试。',
     '重要补充：如果第一次 browser_navigate 只返回首页、登录态、短内容或空内容，不要立即失败；必须继续尝试 browser_snapshot，再用 browser_console 读取 document.title、meta description、JSON-LD、document.body.innerText 的前 8000 字。',
     '如果后台浏览器没有继承用户桌面抖音/快手/小红书登录态，要明确说明是隔离浏览器未拿到原生页上下文；再进入素材补充流程，不要把“抓取超时”当成最终回答。',
     `本轮用户提供的是${platform}等短视频/外部视频链接。`,
@@ -636,15 +727,19 @@ function formatVideoLinkFallbackPrompt(url, failureText) {
   ].join('\n')
 }
 
-function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
+function formatVideoLinkAnalysisRequest(url, fetchedContent = '', analysis = null) {
   const platform = videoPlatformLabel(url)
   const clipped = String(fetchedContent || '').trim()
   const fetchFailed = !clipped || isFetchedContentFailure(clipped)
-  const materialLevel = fetchFailed
-    ? 'fetch_failed'
-    : clipped.includes('[短视频页面可读取信息]')
-      ? 'metadata_only'
-      : 'webpage_text'
+  const frames = Array.isArray(analysis?.frames) ? analysis.frames : []
+  const hasOcrText = frames.some(f => String(f?.text || '').trim())
+  const materialLevel = analysis?.ok === true
+    ? (hasOcrText ? 'frame_ocr' : 'metadata_only')
+    : fetchFailed
+      ? 'fetch_failed'
+      : clipped.includes('[短视频页面可读取信息]')
+        ? 'metadata_only'
+        : 'webpage_text'
   const lines = [
     '[SHORT_VIDEO_LINK_REQUEST]',
     '[视频链接分析请求]',
@@ -654,13 +749,23 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
     'transcriptAvailable: false',
     'subtitleAvailable: false',
     'audioTranscriptAvailable: false',
-    'frameOcrAvailable: false',
-    '来源: 用户提交的视频/社媒链接。当前版本不会直接解析视频正文、画面或字幕，只会把链接和公开可见信息交给 Hermes 进行文本化有限分析。',
+    `frameOcrAvailable: ${hasOcrText}`,
+    '来源: 用户提交的视频/社媒链接。',
+  ]
+  if (analysis?.ok === true) {
+    lines.push('分析方式: 已通过内置工具把视频下载到本地临时目录并做抽帧 OCR；下载文件与临时帧分析后已删除。')
+  } else {
+    lines.push('来源补充: 当前版本不会直接解析视频正文、画面或字幕，只会把链接和公开可见信息交给 Hermes 进行文本化有限分析。')
+  }
+  lines.push(
     '读取策略: 优先使用 browser_navigate / browser_snapshot / computer_use 等可用后台浏览器工具读取公开可见信息；不要展示、播放、嵌入、截图回传、保存或主动建议打开平台页面。',
     '读取兜底: browser_navigate 后如果只拿到首页、登录态、空白页或很短的结果，必须继续调用 browser_snapshot 和 browser_console 读取标题、meta、JSON-LD、可见正文；只有这些都失败后才进入素材补充流程。',
     '合规边界: 不保存账号 Cookie，不保存或提及平台截图，不主动要求用户提供截图，不询问是否打开平台页面，不绕过登录、付费、权限、robots 或平台限制；只把公开可见的标题、字幕、口播、页面文字、封面说明等转成文字结果。',
     '处理目标: 先做文字型视频拆解，再询问是否继续仿写/改写，或生成标题、口播稿、分镜、拍摄清单、发布文案。',
-  ]
+  )
+  if (analysis?.ok === true) {
+    lines.push('', formatLocalVideoAnalysisForPrompt(analysis))
+  }
   if (clipped && !isFetchedContentFailure(clipped)) {
     lines.push('', '[前置读取内容]', clipped, '[/前置读取内容]')
   } else if (clipped) {
@@ -670,35 +775,81 @@ function formatVideoLinkAnalysisRequest(url, fetchedContent = '') {
   return lines.join('\n')
 }
 
-async function buildHermesVideoLinkAnalysisPayload(url, { visibleText = '', supplement = '' } = {}) {
+async function buildHermesVideoLinkAnalysisPayload(url, { visibleText = '', supplement = '', cookiesBrowser = null, managedLogin = null } = {}) {
   const platform = videoPlatformLabel(url)
   let fetchedContent = ''
   let fetchStatus = { kind: 'link_fetch_failed', message: '网页抓取失败：没有读取到可分析的网页内容。' }
-  try {
-    fetchedContent = await assistantFetchUrlWithTimeout(url)
-    fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
-  } catch (err) {
-    const message = err?.message || String(err)
-    fetchedContent = `抓取失败: ${message}`
-    fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+  let localAnalysis = null
+  let loginRequired = false
+  let localError = ''
+
+  // 1) 本地视频下载 + 抽帧 OCR（仅支持平台；分析完自动删除下载文件）。
+  //    cookiesBrowser 非空时透传给 yt-dlp（--cookies-from-browser），复用用户
+  //    在系统浏览器中登录的会话，解决需要登录才能下载的视频。
+  if (isLocalAnalyzerSupportedPlatform(url)) {
+    try {
+      const result = await analyzeVideoUrlWithTimeout(url, cookiesBrowser, managedLogin)
+      if (result && typeof result === 'object') {
+        if (result.ok === true) {
+          localAnalysis = result
+          fetchStatus = { kind: 'link_fetch_success', message: '已通过本地抽帧 OCR 读取到视频画面文字。' }
+        } else if (result.loginRequired === true) {
+          loginRequired = true
+          fetchedContent = `需要登录: ${result.message || '该视频需要登录才能下载分析'}`
+          fetchStatus = { kind: 'link_login_required', message: '该视频需要登录才能下载，请在对应平台登录后重试。' }
+        } else {
+          localError = String(result.errorCode || '')
+          fetchedContent = result.message || '本地视频分析失败，回退到公开页面抓取。'
+          fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+        }
+      }
+    } catch (err) {
+      fetchedContent = `本地视频分析失败: ${err?.message || String(err)}`
+      fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+    }
   }
+
+  // 2) 公开页面抓取（本地分析未成功或非支持平台时兜底）。
+  if (!localAnalysis && !loginRequired) {
+    try {
+      const content = await assistantFetchUrlWithTimeout(url)
+      // 优先使用公开抓取到的真实页面内容；仅当公开抓取也失败时才保留
+      // 本地分析器给出的更具体错误（如 COOKIE_READ_FAILED / COOKIE_DECRYPT_FAILED）。
+      if (!content || isFetchedContentFailure(content)) {
+        if (!fetchedContent) fetchedContent = content
+      } else {
+        fetchedContent = content
+      }
+      if (!loginRequired) fetchStatus = classifyHermesLinkFetchStatus(content)
+    } catch (err) {
+      const message = err?.message || String(err)
+      fetchedContent = fetchedContent || `抓取失败: ${message}`
+      fetchStatus = classifyHermesLinkFetchStatus(fetchedContent)
+    }
+  }
+
   const cleanSupplement = String(supplement || '').trim()
   const displayText = String(visibleText || '').trim()
     || (cleanSupplement ? `${cleanSupplement}\n${url}` : `请分析这个${platform}视频链接：${url}`)
-  const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent), cleanSupplement)
+  const modelContent = appendUserSupplement(formatVideoLinkAnalysisRequest(url, fetchedContent, localAnalysis), cleanSupplement)
   const instructions = [
     formatShortVideoWorkflowInstructions(platform),
-    fetchStatus.kind === 'link_fetch_success'
-      ? '本轮已经先尝试读取链接公开页面信息。请基于前置读取内容做有限视频/社媒链接分析；如果只是 metadata 或页面文本，必须说明素材限制。'
-      : '本轮前置链接抓取失败或超时。不要直接报任务失败；请基于用户粘贴文本、平台类型和链接做 metadata_only 有限分析，并明确要求补充标题、口播、字幕、截图或正文素材。',
+    loginRequired
+      ? '该视频需要登录后才能下载分析。请明确告诉用户：需要先在对应平台（App/网页）登录后，再把链接发给我重试；不要尝试绕过登录。'
+      : localAnalysis?.ok === true
+        ? '本轮已通过本地下载+抽帧 OCR 读取到视频画面中的文字。请基于这些帧文字与公开元信息做拆解；如果帧文字较少，说明画面文字有限。'
+        : fetchStatus.kind === 'link_fetch_success'
+          ? '本轮已经先尝试读取链接公开页面信息。请基于前置读取内容做有限视频/社媒链接分析；如果只是 metadata 或页面文本，必须说明素材限制。'
+          : '本轮前置链接抓取失败或超时。不要直接报任务失败；请基于用户粘贴文本、平台类型和链接做 metadata_only 有限分析，并明确要求补充标题、口播、字幕、截图或正文素材。',
   ].join('\n\n')
   const normalizedLinkReaderResult = buildLinkReaderNormalizedMetadata(url, {
     platform,
     content: fetchedContent,
     visibleText: displayText,
     fetchStatus,
+    analysis: localAnalysis,
   })
-  return { platform, visibleText: displayText, modelContent, instructions, fetchStatus, normalizedLinkReaderResult }
+  return { platform, visibleText: displayText, modelContent, instructions, fetchStatus, normalizedLinkReaderResult, localAnalysis, loginRequired, localError }
 }
 
 function formatVideoLinkSuccessPrompt(url, clipped) {
@@ -1096,7 +1247,7 @@ function parseHermesMediaDirectiveData(value = '') {
   }
 }
 
-const HERMES_DOCUMENT_EXTENSION_PATTERN = /\.(pptx?|docx?|xlsx?|pdf|csv|md|txt|json)$/i
+const HERMES_DOCUMENT_EXTENSION_PATTERN = /\.[A-Za-z0-9]{1,10}$/i
 
 /**
  * Convert an absolute filesystem path into a document attachment object.
@@ -1132,7 +1283,8 @@ function parseHermesDocumentPath(value = '') {
 function extractHermesDocumentPathsFromText(lineText = '') {
   const attachments = []
   const source = String(lineText || '')
-  const docPathRe = /(?:[A-Za-z]:[\\/]|\\\\[^\\\r\n]+\\[^\\\r\n]+)[^\r\n`"<>|]*?\.(?:pptx?|docx?|xlsx?|pdf|csv|md|txt|json)(?![A-Za-z0-9\\/])(?:[。，、；：！？）】」"'`]*)/gi
+  // 任意扩展名（含未知类型），兼容反斜杠/正斜杠。只要 AI 返回本地文件路径就识别为附件。
+  const docPathRe = /(?:[A-Za-z]:[\\/]|\\\\[^\\\r\n]+\\[^\\\r\n]+)[^\r\n`"<>|]*?\.[A-Za-z0-9]{1,10}(?![A-Za-z0-9\\/])(?:[。，、；：！？）】」"'`]*)/gi
   const cleaned = source.replace(docPathRe, (full) => {
     const trailing = (full.match(/[。，、；：！？）】」"'`]+$/) || [''])[0]
     const path = full.slice(0, full.length - trailing.length)
@@ -1354,6 +1506,125 @@ function showWorkFileModal() {
   })
 }
 
+/**
+ * 登录引导弹窗：需要登录才能下载的视频，引导用户选择登录态来源。resolve:
+ *   - null：用户取消
+ *   - { mode: 'none' }：不使用 Cookie，直接重试（走公开信息兜底）
+ *   - { mode: 'browser', browser: 'edge' }：用该系统浏览器 Cookie 重试
+ *   - { mode: 'managed', port: 12345, browser: 'edge' }：用内置登录窗口（CDP）重试
+ */
+async function showVideoLoginModal(url, message) {
+  // 尽力自动检测默认浏览器，用于预选下拉项；失败也不阻塞弹窗展示。
+  let detected = ''
+  api.assistantDefaultBrowser()
+    .then(v => { detected = String(v || '').trim() })
+    .catch(() => { detected = '' })
+
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay'
+    overlay.innerHTML = `
+      <div class="modal hm-chat-login-modal" style="max-width:520px">
+        <div class="modal-title">需要登录才能下载分析</div>
+        <div class="modal-body">
+          <p style="margin:0 0 10px;line-height:1.6">${escHtml(message || '该视频需要登录后才能下载分析。')}</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+            <button type="button" class="btn btn-primary btn-sm" data-act="managed">打开内置登录窗口</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-act="open">在系统浏览器打开</button>
+          </div>
+          <p style="margin:0 0 12px;line-height:1.6;color:var(--text-secondary)">
+            推荐：点击“打开内置登录窗口”，在弹出的工具内置浏览器中登录对应平台；登录完成后点“我已登录，重新分析”，程序会自动读取该窗口的登录态下载视频，无需手动复制 Cookie。
+          </p>
+          <p style="margin:0 0 12px;line-height:1.6;color:var(--text-secondary)">
+            也可以先在系统浏览器中登录，再从下方选择一个已登录的浏览器重新分析（复用该浏览器的登录态）。
+          </p>
+          <label class="hm-chat-workfile-field" style="display:block;margin-bottom:4px">
+            <span>登录态来源浏览器</span>
+            <select class="hm-input hm-chat-login-browser" style="width:100%">
+              <option value="">自动检测（默认浏览器）</option>
+              <option value="edge">Microsoft Edge</option>
+              <option value="chrome">Google Chrome</option>
+              <option value="firefox">Firefox</option>
+              <option value="none">不使用 Cookie（跳过登录，只抓公开信息）</option>
+            </select>
+          </label>
+          <p style="margin:6px 0 0;font-size:12px;color:var(--text-tertiary)" class="hm-chat-login-managed-status"></p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary btn-sm" data-act="cancel">取消</button>
+          <button class="btn btn-primary btn-sm" data-act="retry">我已登录，重新分析</button>
+        </div>
+      </div>
+    `
+    document.body.appendChild(overlay)
+    const select = overlay.querySelector('.hm-chat-login-browser')
+    const managedBtn = overlay.querySelector('[data-act="managed"]')
+    const managedStatus = overlay.querySelector('.hm-chat-login-managed-status')
+
+    let managedPort = 0
+    let managedBrowser = ''
+
+    const close = (v) => {
+      overlay.remove()
+      // 用户取消且内置登录窗口已打开时，自动关闭该窗口，避免后台残留浏览器进程。
+      if (v === null && managedPort) {
+        api.assistantManagedLoginClose(managedPort).catch(() => {})
+      }
+      resolve(v)
+    }
+    const pick = () => {
+      const v = (select?.value || '').trim()
+      if (v) return v
+      // 未手动选择：用自动检测到的默认浏览器，检测不到则回退 Edge（Windows 默认）。
+      return detected || 'edge'
+    }
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close(null)
+    })
+    overlay.querySelector('[data-act="cancel"]').onclick = () => close(null)
+    overlay.querySelector('[data-act="open"]').onclick = async () => {
+      try { await openExternalUrl(url) } catch (err) { toast(`打开浏览器失败: ${err?.message || String(err)}`, 'warning') }
+    }
+    managedBtn.onclick = async () => {
+      if (managedPort) {
+        managedStatus.textContent = `内置登录窗口已在运行（${managedBrowser}，端口 ${managedPort}）。请在弹出的窗口中登录，登录完成后点“我已登录，重新分析”。`
+        return
+      }
+      managedBtn.disabled = true
+      managedStatus.textContent = '正在打开内置登录窗口…'
+      try {
+        const raw = pick()
+        const useBrowser = raw === 'none' ? (detected || 'edge') : raw
+        const res = await api.assistantManagedLogin(url, useBrowser)
+        if (res?.ok && res?.port) {
+          managedPort = Number(res.port)
+          managedBrowser = useBrowser
+          managedStatus.textContent = `内置登录窗口已打开（${useBrowser}，端口 ${res.port}）。请在弹出的窗口中登录对应平台，登录完成后点“我已登录，重新分析”。`
+        } else {
+          managedStatus.textContent = `打开内置登录窗口失败：${res?.message || '未知错误'}`
+        }
+      } catch (err) {
+        managedStatus.textContent = `打开内置登录窗口失败：${err?.message || String(err)}`
+      } finally {
+        managedBtn.disabled = false
+      }
+    }
+    overlay.querySelector('[data-act="retry"]').onclick = () => {
+      if (managedPort) {
+        close({ mode: 'managed', port: managedPort, browser: managedBrowser })
+        return
+      }
+      const v = pick()
+      if (v === 'none') close({ mode: 'none' })
+      else close({ mode: 'browser', browser: v })
+    }
+    select?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(null) }
+    })
+  })
+}
+
 // ----------------------------------------------------------- context menu
 
 function showContextMenu(x, y, items) {
@@ -1521,6 +1792,17 @@ export function render() {
       && ['task_result', 'task_error'].includes(item.message_type)
   }
 
+  function inboxHasImageArtifacts(item = {}) {
+    const artifacts = Array.isArray(item?.artifacts) ? item.artifacts : []
+    return artifacts.some(artifact => {
+      const type = String(artifact?.type || artifact?.category || '').toLowerCase()
+      const path = String(artifact?.mediaPath || artifact?.path || '').trim()
+      if (!path) return false
+      if (type === 'image') return true
+      return /\.(png|jpe?g|gif|webp)$/i.test(path)
+    })
+  }
+
   function redactHermesInboxFullContent(value = '') {
     return String(value || '')
       .replace(/<think>[\s\S]*?<\/think>/gi, '[REDACTED]')
@@ -1579,10 +1861,19 @@ export function render() {
     if (!store.activeSession()) store.newChat({ title: 'Hermes 协作收件箱' })
     for (const item of fresh) {
       const key = inboxMessageKey(item)
-      renderedInboxMessages.add(key)
-      if (isOpenClawInboxResultMessage(item) && item.message_type === 'task_result') {
-        store.attachCollaborationResult(item)
+      const isOpenClawResult = isOpenClawInboxResultMessage(item) && item.message_type === 'task_result'
+      let attachOk = false
+      if (isOpenClawResult) {
+        attachOk = store.attachCollaborationResult(item)
       }
+      // For an OpenClaw image result, don't burn the inbox message if the
+      // target session message isn't available yet: leave it unprocessed so the
+      // next render can attach the image. Otherwise the generated image would be
+      // permanently lost (and a refresh would never show it).
+      if (isOpenClawResult && !attachOk && inboxHasImageArtifacts(item)) {
+        continue
+      }
+      renderedInboxMessages.add(key)
       const label = item.message_type === 'task_error' ? '错误回传'
         : item.message_type === 'task_delegate' ? '任务委派'
         : item.message_type === 'task_request' ? '任务请求'
@@ -2590,7 +2881,7 @@ export function render() {
             <div class="hm-chat-document-card hm-document-card${clickableClass}"${clickableAttrs} title="${escAttr(tooltip)}" aria-label="${escAttr(`${openLabel}: ${name}`)}">
               <span class="hm-document-card__type is-${type}">${label}</span>
               <span class="hm-document-card__info"><span class="hm-chat-document-name">${escHtml(name)}</span>${att.size ? `<span class="hm-document-card__size">${escHtml(formatDocumentFileSize(att.size))}</span>` : ''}</span>
-              ${docPath ? `<span class="hm-document-card__open" aria-hidden="true">${ICONS.chevron}<span class="hm-document-card__open-text">${escHtml(openLabel)}</span></span>` : ''}
+              ${docPath ? `<span class="hm-document-card__open" aria-hidden="true">${ICONS.chevron}<span class="hm-document-card__open-text">${escHtml(openLabel)}</span></span><button type="button" class="hm-document-card__download" data-hermes-doc-download="${escAttr(docPath)}" aria-label="${escAttr(t('engine.chatDocDownload') || '下载文件')}" title="${escAttr(t('engine.chatDocDownload') || '下载文件')}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>` : ''}
             </div>
           `
         }).join('')}
@@ -3161,6 +3452,26 @@ export function render() {
       })
     })
 
+    el.querySelectorAll('[data-hermes-doc-download]').forEach(btn => {
+      btn.addEventListener('click', async (event) => {
+        event.preventDefault()
+        event.stopPropagation()  // 防止冒泡触发卡片整卡打开
+        const path = btn.dataset.hermesDocDownload
+        if (!path) return
+        if (!isTauriRuntime()) {
+          toast(t('engine.chatDocDownloadUnavailable'), 'warning')
+          return
+        }
+        try {
+          const result = await api.assistantDownloadPath(path)
+          toast(t('engine.chatDocDownloadSaved', { fileName: result?.fileName || '文件' }), 'success')
+        } catch (err) {
+          console.error('[hermes-chat] download document failed:', err)
+          toast(t('engine.chatDocDownloadFailed'), 'error')
+        }
+      })
+    })
+
     el.querySelectorAll('[data-material-expand]').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation()
@@ -3559,7 +3870,38 @@ export function render() {
       linkMenuOpen = false
       linkDraft = ''
       if (isVideoShareUrl(url)) {
-        const payload = await buildHermesVideoLinkAnalysisPayload(url, { supplement })
+        let payload = await buildHermesVideoLinkAnalysisPayload(url, { supplement })
+        // 需要登录或浏览器 Cookie 读取失败：弹登录引导，让用户先在系统浏览器
+        // 登录，再选一个浏览器的登录态（Cookie）重新下载分析。
+        if (payload.loginRequired || payload.localError === 'COOKIE_READ_FAILED' || payload.localError === 'COOKIE_DECRYPT_FAILED') {
+          const message = (payload.localError === 'COOKIE_DECRYPT_FAILED'
+            ? '浏览器登录态 Cookie 解密失败（新版 Chrome/Edge 的 DPAPI / App-Bound 加密）。关闭浏览器无法解决；可改用 Firefox，或直接把视频标题/页面文字/字幕粘贴给 Hermes 做文字型视频拆解。'
+            : payload.localError === 'COOKIE_READ_FAILED'
+              ? '无法读取浏览器登录态（Cookie 数据库可能被占用）。请先完全关闭该浏览器再重试，或改用 Firefox。'
+              : (payload.fetchStatus?.message && String(payload.fetchStatus.message)) || '该视频需要登录才能下载分析。')
+          const chosen = await showVideoLoginModal(url, message)
+          if (chosen === null) {
+            // 用户取消：恢复链接菜单，方便稍后重试。
+            linkMenuOpen = true
+            linkDraft = url
+            linkError = ''
+            return
+          }
+          let cookiesBrowser = null
+          let managedLogin = null
+          if (chosen.mode === 'managed') {
+            managedLogin = { port: chosen.port }
+          } else if (chosen.mode === 'browser') {
+            cookiesBrowser = chosen.browser
+          }
+          try {
+            payload = await buildHermesVideoLinkAnalysisPayload(url, { supplement, cookiesBrowser, managedLogin })
+          } finally {
+            if (managedLogin?.port) {
+              try { await api.assistantManagedLoginClose(managedLogin.port) } catch {}
+            }
+          }
+        }
         resetInput()
         forceScrollBottom = true
         draw()
@@ -3571,12 +3913,8 @@ export function render() {
             link_reader_result: payload.normalizedLinkReaderResult,
           },
         })
-        toast(
-          payload.fetchStatus.kind === 'link_fetch_success'
-            ? '已读取视频/社媒链接公开信息，正在交给 Hermes 做有限分析。'
-            : '视频/社媒链接抓取未完整成功，已进入 metadata_only 有限分析。',
-          payload.fetchStatus.kind === 'link_fetch_success' ? 'success' : 'warning',
-        )
+        const readToast = videoLinkReadToast(payload)
+        toast(readToast.text, readToast.type)
       } else {
         let content = ''
         let fetchStatus = null
@@ -4565,10 +4903,40 @@ export function render() {
     const directUrl = extractFirstHttpUrl(text)
     if (!attachments.length && directUrl && isVideoShareUrl(directUrl)) {
       try {
-        const payload = await buildHermesVideoLinkAnalysisPayload(directUrl, {
+        let payload = await buildHermesVideoLinkAnalysisPayload(directUrl, {
           visibleText: text,
           supplement: stripFirstHttpUrl(text),
         })
+        // 需要登录：弹登录引导。取消则保留原 payload（Hermes 会提示用户登录）。
+        if (payload.loginRequired || payload.localError === 'COOKIE_READ_FAILED' || payload.localError === 'COOKIE_DECRYPT_FAILED') {
+          const message = (payload.localError === 'COOKIE_DECRYPT_FAILED'
+            ? '浏览器登录态 Cookie 解密失败（新版 Chrome/Edge 的 DPAPI / App-Bound 加密）。关闭浏览器无法解决；可改用 Firefox，或直接把视频标题/页面文字/字幕粘贴给 Hermes 做文字型视频拆解。'
+            : payload.localError === 'COOKIE_READ_FAILED'
+              ? '无法读取浏览器登录态（Cookie 数据库可能被占用）。请先完全关闭该浏览器再重试，或改用 Firefox。'
+              : (payload.fetchStatus?.message && String(payload.fetchStatus.message)) || '该视频需要登录才能下载分析。')
+          const chosen = await showVideoLoginModal(directUrl, message)
+          if (chosen !== null) {
+            let cookiesBrowser = null
+            let managedLogin = null
+            if (chosen.mode === 'managed') {
+              managedLogin = { port: chosen.port }
+            } else if (chosen.mode === 'browser') {
+              cookiesBrowser = chosen.browser
+            }
+            try {
+              payload = await buildHermesVideoLinkAnalysisPayload(directUrl, {
+                visibleText: text,
+                supplement: stripFirstHttpUrl(text),
+                cookiesBrowser,
+                managedLogin,
+              })
+            } finally {
+              if (managedLogin?.port) {
+                try { await api.assistantManagedLoginClose(managedLogin.port) } catch {}
+              }
+            }
+          }
+        }
         clearDraftForSend()
         await store.sendMessage(payload.visibleText, {
           clientRequestId,
@@ -4584,12 +4952,8 @@ export function render() {
             link_reader_result: payload.normalizedLinkReaderResult,
           },
         })
-        toast(
-          payload.fetchStatus.kind === 'link_fetch_success'
-            ? '已读取视频/社媒链接公开信息，正在交给 Hermes 做有限分析。'
-            : '视频/社媒链接抓取未完整成功，已进入 metadata_only 有限分析。',
-          payload.fetchStatus.kind === 'link_fetch_success' ? 'success' : 'warning',
-        )
+        const readToast = videoLinkReadToast(payload)
+        toast(readToast.text, readToast.type)
         hermesSendInFlight = false
         return
       } catch (err) {

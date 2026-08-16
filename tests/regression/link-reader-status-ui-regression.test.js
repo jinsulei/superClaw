@@ -55,7 +55,7 @@ test('ordinary Link Reader status metadata must not fabricate rich materials', (
   assert.doesNotMatch(ordinaryFailureBranch, /asr\s*:\s*['"`][^'"`]+/)
   assert.doesNotMatch(ordinaryFailureBranch, /comments\s*:\s*\[[^\]]+\]/)
   assert.match(chatSource, /transcript_available:\s*false/)
-  assert.match(chatSource, /frame_ocr_available:\s*false/)
+  assert.match(chatSource, /frame_ocr_available:\s*hasOcrText/)
   assert.match(chatSource, /audio_transcript_available:\s*false/)
 })
 

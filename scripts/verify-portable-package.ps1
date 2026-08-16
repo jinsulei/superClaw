@@ -96,6 +96,8 @@ if (-not $packageVersion -or $packageVersion -ne $tauriVersion -or $packageVersi
 
 Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\openclaw\openclaw.cmd") (Join-Path $resources "runtime\openclaw\openclaw.cmd") "OpenClaw launcher"
 Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\ocr-runner.cjs") (Join-Path $resources "runtime\ocr\ocr-runner.cjs") "shared OCR runner"
+Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\video-frame-analyzer.cjs") (Join-Path $resources "runtime\ocr\video-frame-analyzer.cjs") "shared video frame analyzer"
+Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\browser-cookies.cjs") (Join-Path $resources "runtime\ocr\browser-cookies.cjs") "managed-browser cookie helper"
 Compare-File (Join-Path $RepoRoot "src-tauri\resources\data\ocr\ocr-config.json") (Join-Path $resources "data\ocr\ocr-config.json") "shared OCR config"
 Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\claude-panel\server.js") (Join-Path $resources "runtime\claude-panel\server.js") "Claude panel server"
 Compare-File (Join-Path $RepoRoot "src-tauri\resources\runtime\claude-panel\local-desktop-mcp.js") (Join-Path $resources "runtime\claude-panel\local-desktop-mcp.js") "Claude desktop MCP"
@@ -108,11 +110,13 @@ foreach ($plugin in @("skill-manager", "desktop-control", "superclaw-ocr")) {
 
 foreach ($required in @(
   "runtime\hermes.cmd",
-  "runtime\hermes-agent\Scripts\hermes.exe",
+  "runtime\hermes-agent\Scripts\hermes.cmd",
   "runtime\document-tools\hermes_document_tool.py",
   "runtime\document-tools\superclaw-file.cmd",
   "runtime\ocr\tessdata\eng.traineddata.gz",
   "runtime\ocr\tessdata\chi_sim.traineddata.gz",
+  "runtime\ocr\video-frame-analyzer.cjs",
+  "runtime\ocr\browser-cookies.cjs",
   "runtime\openclaw\node.exe",
   "runtime\openclaw\node_modules\mmx-cli\dist\mmx.mjs",
   "data\hermes\SOUL.md",
@@ -155,6 +159,8 @@ $freshInputs = @(
   (Join-Path $RepoRoot "package.json"),
   (Join-Path $RepoRoot "scripts\build-desktop-client.ps1"),
   (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\ocr-runner.cjs"),
+  (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\video-frame-analyzer.cjs"),
+  (Join-Path $RepoRoot "src-tauri\resources\runtime\ocr\browser-cookies.cjs"),
   (Join-Path $RepoRoot "src-tauri\resources\data\ocr\ocr-config.json"),
   (Join-Path $RepoRoot "src-tauri\resources\runtime\claude-panel\server.js"),
   (Join-Path $RepoRoot "src-tauri\resources\runtime\claude-panel\local-desktop-mcp.js"),
@@ -201,7 +207,24 @@ if ($SkipBootCheck) {
 
 $manifestPath = Join-Path $PackageRoot "package-manifest.json"
 if ($WriteManifest -and $errors.Count -eq 0) {
-  $commit = (& git -C $RepoRoot rev-parse HEAD 2>$null | Select-Object -First 1)
+  # NOTE: do not invoke "git" directly in this process. Windows PowerShell 5.1 has a
+  # known bug where a native command's stderr redirection (even "2>$null" or "*> file")
+  # intermittently leaks a pipe handle and the parent process hangs forever -- the build
+  # appears stuck right after the verify summary. We isolate git inside a background job
+  # and give it a hard timeout so the verify script can never block on it. On timeout or
+  # failure, source_commit is simply left null (cosmetic manifest metadata only).
+  $commit = $null
+  $gitJob = Start-Job -ScriptBlock { param($r) git -C $r rev-parse HEAD } -ArgumentList $RepoRoot
+  if (Wait-Job -Job $gitJob -Timeout 5) {
+    $commit = ($gitJob | Receive-Job | Select-Object -First 1)
+    if ($commit) {
+      # Deserialized job strings carry extra properties (PSComputerName/RunspaceId) that
+      # ConvertTo-Json would serialize as an object; cast to a plain string here.
+      $commit = [string]$commit
+      if ($commit -notmatch '^[0-9a-f]{40}$') { $commit = $null }
+    }
+  }
+  Remove-Job -Job $gitJob -Force -ErrorAction SilentlyContinue
   $checkedFiles = @(
     $checked.ToArray() | ForEach-Object {
       [pscustomobject]@{

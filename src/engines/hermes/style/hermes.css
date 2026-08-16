@@ -6340,6 +6340,10 @@ body[data-active-engine="hermes"][data-theme="dark"] {
 [data-engine="hermes"] .hm-document-card__open { order: 3; display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--hm-text-secondary, #5f6d81); font-size: 11px; white-space: nowrap; }
 [data-engine="hermes"] .hm-document-card__open svg { opacity: .7; }
 
+[data-engine="hermes"] .hm-document-card__download { order: 4; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 4px; padding: 4px; border: none; background: transparent; color: var(--hm-text-secondary, #5f6d81); cursor: pointer; border-radius: 4px; transition: background .15s, color .15s; }
+[data-engine="hermes"] .hm-document-card__download:hover { background: var(--hm-hover-bg, rgba(0,0,0,.06)); color: var(--hm-text-primary, #1f2937); }
+[data-engine="hermes"] .hm-document-card__download:focus-visible { outline: 2px solid var(--hm-accent, #3b82f6); outline-offset: 1px; }
+
 [data-engine="hermes"] .hm-chat-execution-artifact {
   max-width: 100%;
   padding: 3px 7px;
