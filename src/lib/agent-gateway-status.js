@@ -268,21 +268,38 @@ export function isAgentGatewayUsable(state) {
 export function isOpenClawModelConfigRequired(status) {
   if (!status) return false
   const value = typeof status === 'object' ? status : { message: String(status) }
+
+  // Gateway 已就绪/已连接 => 不是模型配置缺失导致的拦截，
+  // 即使消息里恰好提到 api key / model config（例如 "API key verified"）。
+  if (value.ready === true || value.connected === true || value.verified === true) return false
+  const state = String(value.status || value.state || '').toLowerCase()
+  if (state === 'ready' || state === 'connected' || state === 'live' || state === 'running') return false
+
+  // 后端显式结构化信号，是最可靠的开机判断。
+  if (value.needsSetup === true || value.needs_setup === true) return true
+  if (value.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP) return true
+  if (value.code === 'OPENCLAW_MODEL_CONFIG_REQUIRED') return true
+  if (value.errorCode === 'OPENCLAW_MODEL_CONFIG_REQUIRED') return true
+
+  // 文本兜底：只匹配强「缺失/需配置」措辞，避免把 merely 提到
+  // api key / model config 的正常消息误判为 needs_setup。
   const text = JSON.stringify(value).toLowerCase()
-  return value.needsSetup === true
-    || value.needs_setup === true
-    || value.status === OPENCLAW_GATEWAY_STATES.NEEDS_SETUP
-    || value.code === 'OPENCLAW_MODEL_CONFIG_REQUIRED'
-    || value.errorCode === 'OPENCLAW_MODEL_CONFIG_REQUIRED'
-    || text.includes('openclaw_model_config_required')
+  return text.includes('openclaw_model_config_required')
     || text.includes('openclaw_minimax_api_key_required')
     || text.includes('model_config_required')
-    || text.includes('model config')
-    || text.includes('api key')
-    || text.includes('apikey')
-    || text.includes('minimax key')
-    || text.includes('模型配置')
+    || text.includes('model config required')
+    || text.includes('model configuration required')
+    || text.includes('api key required')
+    || text.includes('apikey required')
+    || text.includes('missing api key')
+    || text.includes('no api key')
+    || text.includes('missing apikey')
+    || text.includes('please configure')
+    || text.includes('please set up')
+    || text.includes('需要配置')
+    || text.includes('请先配置')
     || text.includes('未配置')
+    || text.includes('配置未完成')
 }
 
 export function normalizeGatewayUiState(raw) {
@@ -441,7 +458,7 @@ function normalizeProbePayload(agent, payload = {}) {
     || source.port === cfg?.port
   )
   const verified = Boolean(source.verified || source.isVerified)
-  const needsSetup = isOpenClawModelConfigRequired(source) || /OPENCLAW_MINIMAX_API_KEY_REQUIRED|api key|config|配置|未配置|needs_setup/i.test(text)
+  const needsSetup = isOpenClawModelConfigRequired(source) || /OPENCLAW_MINIMAX_API_KEY_REQUIRED|model_config_required|model config required|api key required|apikey required|missing api key|missing apikey|no api key|please configure|please set up|needs_setup|需要配置|请先配置|未配置|配置未完成/i.test(text)
   const ready = Boolean(source.ready || source.usable || source.status === OPENCLAW_GATEWAY_STATES.READY)
 
   let status = 'unknown'

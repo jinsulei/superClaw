@@ -185,7 +185,7 @@ function bindOpenClawAutoScrollObservers() {
   observeOpenClawMessageRowsForResize()
 }
 let _isLoadingHistory = false
-let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null
+let _streamSafetyTimer = null, _unsubEvent = null, _unsubReady = null, _unsubStatus = null, _unsubReconnectStuck = null
 let _chatSnapshotLifecycleBound = false
 let _seenRunIds = new Set()
 let _pageActive = false
@@ -1950,6 +1950,18 @@ function scheduleOpenClawGatewayUiConvergence(reason = 'render') {
   _openClawGatewayLastReadyReason = `${reason}-scheduled`
 }
 
+async function syncOpenClawModelConfigAndReprobe() {
+  // 模型配置可能尚未写入（新注册 / 早退 boot 未执行 sync）：先同步一次再重新探测。
+  if (typeof window.__superclaw_sync_default_model_settings === 'function') {
+    try {
+      await window.__superclaw_sync_default_model_settings()
+    } catch (err) {
+      console.warn('[chat] needs_setup 模型配置同步失败:', err?.message || err)
+    }
+  }
+  return refreshOpenClawGatewayUiState()
+}
+
 async function autoStartOpenClawGatewayOnEnter() {
   if (_openClawGatewayAutoStartPromise) return _openClawGatewayAutoStartPromise
   _openClawGatewayAutoStartPromise = (async () => {
@@ -1961,7 +1973,19 @@ async function autoStartOpenClawGatewayOnEnter() {
       markOpenClawGatewayReady('auto-enter-ready', { probe })
       return true
     }
-    if (state === 'needs_setup') return false
+    if (state === 'needs_setup') {
+      // 同步模型配置后重试，避免新用户因配置未写入而进不了聊天
+      const syncedProbe = await syncOpenClawModelConfigAndReprobe()
+      if (!_pageActive) return false
+      if (hasOpenClawGatewayReadySignal(syncedProbe)) {
+        await connectGateway({ skipProbe: true })
+        markOpenClawGatewayReady('auto-enter-synced-ready', { probe: syncedProbe })
+        return true
+      }
+      const syncedState = hasOpenClawGatewayReadySignal(syncedProbe) ? 'ready' : normalizeGatewayUiState(syncedProbe)
+      if (syncedState === 'needs_setup') return false
+      return startOrRepairOpenClawGateway()
+    }
     const healthProbe = await probeOpenClawGatewayHealthForSend().catch(() => null)
     if (!_pageActive) return false
     if (hasOpenClawGatewayReadySignal(healthProbe)) {
@@ -1982,6 +2006,34 @@ async function autoStartOpenClawGatewayOnEnter() {
   })
   return _openClawGatewayAutoStartPromise
 }
+
+// 事件总线兜底：HMR/页面重挂载可能导致 wsClient.onReconnectStuck 订阅丢失，
+// 这里在模块级注册一个 window 事件监听，收到「重连卡住」信号就主动拉起 Gateway。
+;(function bindOpenClawReconnectStuckWindowFallback() {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+  const handler = async (e) => {
+    const attempts = e?.detail?.attempts || 0
+    if (!_pageActive) return
+    // main.js 已在进行全局恢复时，本页不再重复拉起，避免双启动。
+    if (window.__superclawGatewayRecovering) return
+    window.__superclawGatewayRecovering = true
+    try {
+      console.log(`[chat] 收到重连卡住事件 (${attempts})，主动尝试拉起 Gateway...`)
+      await autoStartOpenClawGatewayOnEnter()
+    } catch (err) {
+      if (!_pageActive || _openClawGatewayUiState === 'ready') return
+      setOpenClawGatewayUiState('error', { error: err?.message || String(err) })
+    } finally {
+      window.__superclawGatewayRecovering = false
+    }
+  }
+  // 避免 HMR 重复注册：先移除上一次的处理器，再注册新的。
+  if (window.__superclawReconnectStuckChatHandler) {
+    window.removeEventListener('superclaw:openclaw-reconnect-stuck', window.__superclawReconnectStuckChatHandler)
+  }
+  window.__superclawReconnectStuckChatHandler = handler
+  window.addEventListener('superclaw:openclaw-reconnect-stuck', handler)
+})()
 
 function bindConnectOverlay(page) {
   const fixBtn = page.querySelector('#btn-fix-connect')
@@ -2688,6 +2740,7 @@ async function connectGateway(options = {}) {
     if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
     if (_unsubReady) { _unsubReady(); _unsubReady = null }
     if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
+    if (_unsubReconnectStuck) { _unsubReconnectStuck(); _unsubReconnectStuck = null }
 
     if (!options.skipProbe) {
       const probe = await refreshOpenClawGatewayUiState()
@@ -2775,6 +2828,21 @@ async function connectGateway(options = {}) {
       handleEvent(msg)
     })
 
+    // 连续多次 WS 重连失败时，主动尝试拉起/修复 Gateway（而不是干等下一次重连）
+    _unsubReconnectStuck = wsClient.onReconnectStuck((attempts) => {
+      if (!_pageActive) return
+      // 与 main.js 的全局恢复 + 本页 window 兜底共用同一把锁，避免重复拉起 Gateway。
+      if (window.__superclawGatewayRecovering) return
+      window.__superclawGatewayRecovering = true
+      console.log(`[chat] WS 重连卡住 (${attempts})，主动尝试拉起 Gateway...`)
+      autoStartOpenClawGatewayOnEnter().catch(err => {
+        if (!_pageActive || _openClawGatewayUiState === 'ready') return
+        setOpenClawGatewayUiState('error', { error: err?.message || String(err) })
+      }).finally(() => {
+        window.__superclawGatewayRecovering = false
+      })
+    })
+
     // 如果已连接且 Gateway 就绪，直接复用
     if (wsClient.connected && wsClient.gatewayReady) {
       _sessionKey = resolveGatewaySessionKey(wsClient.sessionKey)
@@ -2846,14 +2914,20 @@ async function ensureOpenClawGatewayReadyForSend() {
     markOpenClawGatewayReady('send-ws-ready')
     return true
   }
-  const statusProbe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
+  let statusProbe = await probeAgentGateway('openclaw', { timeoutMs: 1800 })
   if (isOpenClawModelConfigRequired(statusProbe)) {
-    setOpenClawGatewayUiState('needs_setup', {
-      probe: statusProbe,
-      error: statusProbe?.message || statusProbe?.error || '',
-    })
-    toast('OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。', 'warning')
-    return false
+    // 配置可能尚未写入（新注册 / 早退 boot 未执行 sync）：先同步一次再探测，避免误拦截
+    const syncedProbe = await syncOpenClawModelConfigAndReprobe().catch(() => null)
+    if (syncedProbe && !isOpenClawModelConfigRequired(syncedProbe)) {
+      statusProbe = syncedProbe
+    } else {
+      setOpenClawGatewayUiState('needs_setup', {
+        probe: syncedProbe || statusProbe,
+        error: (syncedProbe || statusProbe)?.message || (syncedProbe || statusProbe)?.error || '',
+      })
+      toast('OpenClaw 模型配置未完成，请先到模型设置中配置服务商、API Key 和主模型。', 'warning')
+      return false
+    }
   }
   const healthProbe = hasOpenClawGatewayReadySignal(statusProbe)
     ? statusProbe
@@ -2902,7 +2976,6 @@ async function ensureOpenClawGatewayReadyForSend() {
 }
 
 async function refreshSessionList() {
-  if (!_sessionListEl) return
   const fallbackCurrentSession = _sessionKey
     ? [{ sessionKey: _sessionKey, key: _sessionKey, updatedAt: Date.now(), localOnly: true }]
     : []
@@ -12049,6 +12122,7 @@ export function cleanup() {
   if (_unsubEvent) { _unsubEvent(); _unsubEvent = null }
   if (_unsubReady) { _unsubReady(); _unsubReady = null }
   if (_unsubStatus) { _unsubStatus(); _unsubStatus = null }
+  if (_unsubReconnectStuck) { _unsubReconnectStuck(); _unsubReconnectStuck = null }
   clearTimeout(_streamSafetyTimer)
   if (_scrollFrame) {
     cancelAnimationFrame(_scrollFrame)

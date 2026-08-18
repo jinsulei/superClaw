@@ -88,6 +88,8 @@ export class WsClient {
     this._missedHeartbeats = 0
     this._heartbeatTimer = null
     this._reconnectState = 'idle' // idle | attempting | scheduled
+    this._reconnectStuckListeners = []
+    this._reconnectStuckNotified = false
 
     // 消息缓存
     this._messageCache = new Map()
@@ -136,6 +138,32 @@ export class WsClient {
   onReady(fn) {
     if (!this._readyCallbacks.includes(fn)) this._readyCallbacks.push(fn)
     return () => { this._readyCallbacks = this._readyCallbacks.filter(cb => cb !== fn) }
+  }
+
+  /**
+   * 订阅「重连卡住」事件：连续多次重连失败后触发，供上层尝试主动拉起 Gateway。
+   * 每次连接断开周期内只触发一次；连接建立后重置。
+   */
+  onReconnectStuck(fn) {
+    if (!this._reconnectStuckListeners.includes(fn)) this._reconnectStuckListeners.push(fn)
+    return () => { this._reconnectStuckListeners = this._reconnectStuckListeners.filter(cb => cb !== fn) }
+  }
+
+  _emitReconnectStuck(attempts) {
+    for (const fn of this._reconnectStuckListeners) {
+      try { fn(attempts) } catch (e) { console.error('[ws] reconnect-stuck listener error:', e) }
+    }
+    // 事件总线兜底：无论 chat 页是否订阅了 onReconnectStuck，
+    // 都能让上层（chat 页 / main）收到「重连卡住」信号并主动拉起 Gateway。
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('superclaw:openclaw-reconnect-stuck', {
+          detail: { attempts },
+        }))
+      }
+    } catch (e) {
+      console.warn('[ws] dispatch reconnect-stuck event failed:', e?.message || e)
+    }
   }
 
   connect(host, token, opts = {}) {
@@ -601,6 +629,7 @@ export class WsClient {
     this._autoPairAttempts = 0
     this._authRetryCount = 0
     this._initRetryCount = 0
+    this._reconnectStuckNotified = false
     this._hello = payload || null
     this._snapshot = payload?.snapshot || null
     this._serverVersion = payload?.serverVersion || null
@@ -689,6 +718,11 @@ export class WsClient {
     this._pendingReconnect = true
     this._setConnected(false, 'reconnecting', `重连中 (${this._reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})，${Math.round(delay/1000)}秒后...`)
     console.log(`[ws] 计划重连 (${this._reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})，延迟 ${Math.round(delay/1000)}秒`)
+    // 连续多次重连失败：通知上层主动尝试拉起/修复 Gateway，而不是干等下一次重连
+    if (this._reconnectAttempts >= 3 && !this._reconnectStuckNotified) {
+      this._reconnectStuckNotified = true
+      this._emitReconnectStuck(this._reconnectAttempts)
+    }
     this._reconnectTimer = setTimeout(() => {
       if (!this._intentionalClose) {
         this._reconnectState = 'attempting'

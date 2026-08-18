@@ -10,7 +10,7 @@ window._jsLoaded = true
 import { initRouter, navigate, registerRoute, setDefaultRoute } from './router.js'
 import { renderSidebar, openMobileSidebar } from './components/sidebar.js'
 import { initTheme } from './lib/theme.js'
-import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange } from './lib/app-state.js'
+import { detectOpenclawStatus, isOpenclawReady, isUpgrading, isGatewayRunning, isGatewayForeign, onGatewayChange, startGatewayPoll, onGuardianGiveUp, resetAutoRestart, loadActiveInstance, getActiveInstance, onInstanceChange, probeOpenclawGatewayHealth } from './lib/app-state.js'
 import { wsClient } from './lib/ws-client.js'
 import { api, checkBackendHealth, isBackendOnline, isTauriRuntime, onBackendStatusChange } from './lib/tauri-api.js'
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'
@@ -1156,6 +1156,88 @@ async function autoConnectWebSocket() {
     console.error('[main] 自动连接 WebSocket 失败:', e)
   }
 }
+
+// === OpenClaw WS 重连卡住 → 主动拉起 Gateway ===
+let _openclawReconnectRecovering = false
+
+async function startOpenClawGatewayService() {
+  if (isTauriRuntime()) {
+    await api.startService('ai.openclaw.gateway')
+    return { ok: true }
+  }
+  const res = await fetch('/__api/dev/agents/start', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'openclaw' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || data.message || data.code || 'OpenClaw Gateway 启动失败')
+  }
+  return data
+}
+
+async function handleOpenClawReconnectStuck(attempts) {
+  if (_openclawReconnectRecovering) return
+  _openclawReconnectRecovering = true
+  // 硬超时兜底：即使底层 Tauri 命令/HTTP 请求挂起，也要保证恢复状态能复位。
+  const hardTimeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('recovery timeout')), 30000)
+  )
+  try {
+    await Promise.race([
+      (async () => {
+        console.log(`[main] OpenClaw WS 重连卡住 (${attempts})，主动尝试拉起 Gateway...`)
+        const health = await probeOpenclawGatewayHealth(2500).catch(() => null)
+        if (health?.ready) {
+          autoConnectWebSocket()
+          return
+        }
+        await startOpenClawGatewayService()
+        // 等待 Gateway 端口就绪（最多约 15 秒）
+        for (let i = 0; i < 15; i++) {
+          await new Promise(r => setTimeout(r, 1000))
+          const h = await probeOpenclawGatewayHealth(1500).catch(() => null)
+          if (h?.ready) break
+        }
+        await detectOpenclawStatus().catch(() => {})
+        if (isGatewayRunning()) autoConnectWebSocket()
+      })(),
+      hardTimeout,
+    ])
+  } catch (err) {
+    if (err?.message === 'recovery timeout') {
+      console.warn('[main] 重连恢复超时，已复位恢复状态（Gateway 可能仍在启动中）')
+    } else {
+      console.warn('[main] 重连卡住后自动拉起 Gateway 失败:', err?.message || err)
+    }
+  } finally {
+    _openclawReconnectRecovering = false
+  }
+}
+
+// 全局兜底：ws-client 连续重连失败时派发 superclaw:openclaw-reconnect-stuck，
+// 这里在应用入口统一响应，无论当前是否停留在聊天页都能尝试恢复 Gateway。
+;(function bindOpenClawReconnectStuckRecovery() {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+  const handler = async (e) => {
+    // 聊天页（chat.js）可能已接手恢复（设置了 window.__superclawGatewayRecovering），
+    // 避免重复拉起 Gateway。
+    if (window.__superclawGatewayRecovering) return
+    window.__superclawGatewayRecovering = true
+    try {
+      await handleOpenClawReconnectStuck(e?.detail?.attempts || 0)
+    } finally {
+      window.__superclawGatewayRecovering = false
+    }
+  }
+  // 避免 HMR 重复注册：先移除上一次的处理器，再注册新的。
+  if (window.__superclawReconnectStuckMainHandler) {
+    window.removeEventListener('superclaw:openclaw-reconnect-stuck', window.__superclawReconnectStuckMainHandler)
+  }
+  window.__superclawReconnectStuckMainHandler = handler
+  window.addEventListener('superclaw:openclaw-reconnect-stuck', handler)
+})()
 
 let _openclawRuntimeHooksBound = false
 
