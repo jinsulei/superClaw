@@ -51,6 +51,13 @@ export default {
   remainingTokens: _('剩余额度', 'Remaining Tokens'),
   goToLogin: _('前往登录 →', 'Go to Login →'),
   goToDashboard: _('进入主面板 →', 'Go to Dashboard →'),
+  // 领取兑换码额度
+  claimRedeemHint: _('激活码 {code} 可领取 {amount} Token，点击下方按钮领取。', 'Activation code {code} is ready for {amount} tokens. Click the button below to claim.'),
+  claimRedeemBtn: _('领取 Token 额度', 'Claim Tokens'),
+  claimRedeeming: _('领取中...', 'Claiming...'),
+  claimRedeemSuccess: _('领取成功！额度已到账。', 'Claimed successfully! Tokens credited.'),
+  claimRedeemFailed: _('领取失败', 'Claim failed'),
+  claimRetry: _('重试领取', 'Retry Claim'),
 
   // 登录页面
   loginTitle: _('欢迎回来', 'Welcome Back'),

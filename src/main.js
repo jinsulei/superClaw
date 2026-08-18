@@ -23,7 +23,7 @@ import { onKernelChange } from './lib/kernel.js'
 import { showFloorBlocker, hideFloorBlocker } from './components/floor-blocker.js'
 import { registerEngine, initEngineManager, getActiveEngine, getActiveEngineId, onEngineChange } from './lib/engine-manager.js'
 import { getMiniMaxDefaultConfig, isMiniMaxOnlyMode } from './lib/test-build-mode.js'
-import { isLoggedIn, navigateTo } from './lib/user-api.js'
+import { isLoggedIn, getStoredUser, navigateTo } from './lib/user-api.js'
 import { fetchAuthStatus, getAuthGuardDecision, getLocalAuthStatus } from './lib/auth-session.js'
 import { YYAPI_PROVIDER_KEY, getYyapiBaseUrl } from './lib/yyapi-config.js'
 import openclawEngine from './engines/openclaw/index.js'
@@ -83,10 +83,47 @@ async function checkRemoteAuth() {
       guard: { allowAppAccess: true, targetRoute: null, reason: 'local_dev_bypass' },
     }
   }
-  // 桌面端（Tauri）没有 /api/auth/* HTTP 服务，远程认证端点只在 dev-api.js
-  // （Vite 开发服务器插件）里实现。直接走本地 session 状态，避免启动时尝试
-  // 请求自定义协议导致挂起/404 后卡白屏。
+  // 真实用户系统会话优先：远程 JWT（superclaw_token）已存在说明已注册/已登录。
+  // 注册必须绑定激活码、登录必须先注册，因此视为「已登录且已激活」，直接放行，
+  // 避免注册/登录成功后（claim 页 reload 进入应用）又被 dev-api /api/auth/status
+  // 的空内存态（loggedIn=false）弹回激活/登录页。
+  if (isLoggedIn()) {
+    const user = getStoredUser()
+    return {
+      ok: true,
+      status: {
+        authRequired: true,
+        loggedIn: true,
+        activated: true,
+        allowAppAccess: true,
+        sessionValid: true,
+        sessionConfigured: true,
+        user,
+        reason: 'authenticated',
+        source: 'remote',
+      },
+      guard: { allowAppAccess: true, targetRoute: null, reason: 'authenticated' },
+    }
+  }
+  // 桌面端（Tauri）打包模式（tauri:// 自定义协议）没有 /api/auth/* HTTP 服务，
+  // 直接走本地 session 状态，避免启动时请求自定义协议挂起/404 后卡白屏。
+  // 开发模式（vite dev，WebView 加载自 http://127.0.0.1:1420）下 dev-api.js 提供
+  // /api/auth/* 远程端点，优先同步服务器认证状态，让桌面端也能走登录/激活流程。
   if (isTauri) {
+    if (import.meta.env.DEV) {
+      try {
+        const status = await fetchAuthStatus()
+        const guard = status.guard || getAuthGuardDecision(status)
+        return {
+          ok: Boolean(guard.allowAppAccess),
+          status,
+          guard,
+          targetRoute: guard.targetRoute,
+        }
+      } catch (error) {
+        console.warn('[auth] tauri dev auth status failed, fallback to local:', error?.message || error)
+      }
+    }
     const local = getLocalAuthStatus()
     const guard = getAuthGuardDecision(local)
     return {
@@ -785,7 +822,15 @@ async function boot() {
     return
   }
   if (authRoutes.has(currentRoute)) {
-    navigate('/dashboard')
+    // 仅当用户处于真实已登录/已激活状态时，才把 auth 页踢回 dashboard。
+    // dev 模式下 dev-api /api/auth/status 可能返回 authRequired=false、allowAppAccess=true，
+    // 但此时本地并没有远程 JWT（例如点击「重新激活」/「退出登录」清除了 token），
+    // 应允许停留在激活/登录页，而不是被强制跳走导致无法重新进入认证流程。
+    const genuinelyAuthenticated = isLoggedIn()
+      || (authCheck?.status?.loggedIn === true && authCheck?.status?.activated === true)
+    if (genuinelyAuthenticated) {
+      navigate('/dashboard')
+    }
   }
 
   // 订阅内核版本变化：低于硬地板时弹出全屏拦截，恢复后自动隐藏；

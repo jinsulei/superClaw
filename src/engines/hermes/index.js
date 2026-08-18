@@ -130,6 +130,7 @@ export default {
     }, {
       section: '',
       items: [
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/models', label: t('sidebar.models'), icon: 'models' },
         { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
       ]

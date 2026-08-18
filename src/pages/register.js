@@ -170,10 +170,17 @@ function bindRegisterEvents(page) {
         localStorage.setItem('superclaw_yyapi_user_id', String(result.new_api_user_id))
       }
 
-      // 清理 sessionStorage 中的激活码
-      sessionStorage.removeItem('superclaw_activation_code')
-      sessionStorage.removeItem('superclaw_activation_amount')
-
+      // 激活码保留在 sessionStorage 中，供领证页（claim）点击"领取 Token"时兑换充值；
+      // 领取成功后由 claim 页清理。
+      // 注册成功后立即同步模型配置（OpenClaw provider + 主模型），避免新用户进入聊天时
+      // 因网关模型配置尚未写入而被 needs_setup 拦截、得不到回复。
+      if (typeof window.__superclaw_sync_default_model_settings === 'function') {
+        try {
+          await window.__superclaw_sync_default_model_settings()
+        } catch (err) {
+          console.warn('[register] default model sync failed:', err)
+        }
+      }
       // 跳转到领证页面（auth 页面间跳转，不触发全量刷新）
       navigateToAuth('claim')
     } catch (err) {

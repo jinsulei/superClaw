@@ -131,6 +131,7 @@ export default {
     }, {
       section: '',
       items: [
+        { route: '/profile', label: t('sidebar.profile'), icon: 'profile' },
         { route: '/payment', label: t('sidebar.recharge'), icon: 'recharge' },
         // HIDDEN: { route: '/settings', label: t('sidebar.settings'), icon: 'settings' },
         { route: '/chat-debug', label: t('sidebar.checkRepair'), icon: 'diagnose' },

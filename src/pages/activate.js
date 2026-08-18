@@ -54,9 +54,9 @@ function bindActivateEvents(page) {
   const btnText = page.querySelector('#btn-activate-text')
   const statusEl = page.querySelector('#activate-status')
 
-  // 自动格式化：大写激活码
+  // 自动格式化：保留大小写（激活码区分大小写），仅去除非法字符
   codeInput.addEventListener('input', () => {
-    codeInput.value = codeInput.value.toUpperCase().replace(/[^0-9A-Z]/g, '')
+    codeInput.value = codeInput.value.replace(/[^0-9a-zA-Z]/g, '')
   })
 
   form.addEventListener('submit', async (e) => {

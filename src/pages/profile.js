@@ -2,7 +2,7 @@
  * 个人中心页面
  * 展示用户信息、退出登录、重置激活（调试用）
  */
-import { getUserInfo, getUserQuota, getStoredUser, logout, navigateTo } from '../lib/user-api.js'
+import { getUserInfo, getUserQuota, getStoredUser, logout, clearAuth, navigateTo } from '../lib/user-api.js'
 import { icon, statusIcon } from '../lib/icons.js'
 import { t } from '../lib/i18n.js'
 import { toast } from '../components/toast.js'
@@ -159,10 +159,11 @@ function bindProfileEvents(page) {
     navigateTo('login')
   })
 
-  // 重置激活（清除 sessionStorage 中的激活码，跳转到激活页）
+  // 重置激活（清除激活码并登出本地会话，跳转到激活页）
   page.querySelector('#btn-reset-activation')?.addEventListener('click', () => {
     sessionStorage.removeItem('superclaw_activation_code')
     sessionStorage.removeItem('superclaw_activation_amount')
+    clearAuth()
     toast(t('profile.resetActivationDone'), 'info')
     navigateTo('activate')
   })

@@ -9,6 +9,7 @@ import {
   getYyapiBaseUrl,
   isYyapiBaseUrl,
 } from './yyapi-config.js'
+import { clearLocalAuthSession } from './auth-session.js'
 
 const LOGOUT_MODEL_PLACEHOLDER = 'superclaw-login-required'
 
@@ -66,6 +67,9 @@ export function isLoggedIn() {
 export function clearAuth() {
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
+  // 同时清空本地 dev-api 会话（superclaw_auth_user / superclaw_auth_state），
+  // 避免重新激活/退出登录后 dev-api /api/auth/status 仍返回已登录状态。
+  clearLocalAuthSession()
   clearConfiguredModelsForLogout().catch(err => {
     console.warn('[auth] clear configured models failed:', err?.message || err)
   })
@@ -240,6 +244,7 @@ export async function logout() {
   }
   localStorage.removeItem('superclaw_token')
   localStorage.removeItem('superclaw_user')
+  clearLocalAuthSession()
   await clearConfiguredModelsForLogout()
 }
 
@@ -252,7 +257,9 @@ export async function bindActivation(code) {
 }
 
 export async function redeemCode(code) {
-  return request('/user/redemption/activate', { auth: true, body: { code } })
+  // suppressAuthRedirect: 注册后立即兑换时，若 token 异常不应把用户踢回登录页，
+  // 兑换失败的提示由调用方（领证页）展示，便于重试。
+  return request('/user/redemption/activate', { auth: true, suppressAuthRedirect: true, body: { code } })
 }
 
 async function requestV2(path, options = {}) {

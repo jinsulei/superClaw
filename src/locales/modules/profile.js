@@ -17,4 +17,6 @@ export default {
   logout: _('退出登录', 'Sign out'),
   resetActivation: _('重新激活', 'Reset activation'),
   resetActivationDone: _('已清除本地激活状态，请重新激活。', 'Local activation state cleared. Please activate again.'),
+  apiKey: _('接口密钥', 'API Key'),
+  yyapiAutoKeyHint: _('系统已自动分配 YYApi 接口密钥，用于模型调用鉴权，请妥善保管。', 'A YYApi API key has been auto-assigned for model authentication. Please keep it secure.'),
 }
