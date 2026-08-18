@@ -427,6 +427,7 @@ export const api = {
 
   // 面板配置 (clawpanel.json)
   getOpenclawDir: () => invoke('get_openclaw_dir'),
+  getOpenclawCliPath: () => invoke('get_openclaw_cli_path'),
   // Tauri: 重启应用进程；Web: 没有应用进程概念，刷新浏览器即可拿到新状态
   relaunchApp: () => {
     if (!isTauriRuntime()) {

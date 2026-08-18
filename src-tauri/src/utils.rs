@@ -203,6 +203,21 @@ pub fn resolve_openclaw_cli_path() -> Option<String> {
     }
 }
 
+/// 返回可直接粘贴到终端的 OpenClaw CLI 完整路径（含空格时自动加引号）。
+/// 用于消息渠道手动安装命令等场景，避免用户在非包根目录执行相对路径失败。
+pub fn openclaw_cli_path_display() -> String {
+    let raw = resolve_openclaw_cli_path().unwrap_or_default();
+    if raw.is_empty() {
+        // 兜底：无法解析出内置/绑定路径时，提示用户在 PATH 中直接使用 openclaw
+        return "openclaw".to_string();
+    }
+    if raw.contains(' ') {
+        format!("\"{}\"", raw)
+    } else {
+        raw
+    }
+}
+
 /// 根据 CLI 路径判断安装来源
 pub fn classify_cli_source(cli_path: &str) -> String {
     let lower = cli_path.replace('\\', "/").to_lowercase();

@@ -6241,6 +6241,14 @@ pub fn get_openclaw_dir() -> Result<Value, String> {
     }))
 }
 
+/// 返回当前实际使用的 OpenClaw CLI 完整路径（用于消息渠道的手动安装命令展示）。
+/// 便携包优先返回内置 `resources/runtime/openclaw/openclaw.cmd` 的绝对路径，
+/// 这样用户复制的命令即使不在包根目录执行也能正常工作。
+#[tauri::command]
+pub fn get_openclaw_cli_path() -> Result<Option<String>, String> {
+    Ok(crate::utils::resolve_openclaw_cli_path())
+}
+
 #[tauri::command]
 pub fn read_panel_config() -> Result<Value, String> {
     let path = super::panel_config_path();

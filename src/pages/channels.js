@@ -1163,8 +1163,29 @@ function openExternalUrl(href) {
 
 const BUNDLED_OPENCLAW_CMD = '.\\resources\\runtime\\openclaw\\openclaw.cmd'
 
+// 内置 OpenClaw CLI 完整路径（运行时从后端解析，避免相对路径在非包根目录执行失败）
+let _resolvedOpenClawCliPath = ''
+
+async function resolveOpenClawCliPath() {
+  if (_resolvedOpenClawCliPath) return _resolvedOpenClawCliPath
+  try {
+    const p = await api.getOpenclawCliPath()
+    if (p && typeof p === 'string' && p.trim()) {
+      _resolvedOpenClawCliPath = p.trim()
+      return _resolvedOpenClawCliPath
+    }
+  } catch (e) {
+    console.warn('[channels] 解析 OpenClaw CLI 路径失败，使用相对路径兜底:', e?.message || e)
+  }
+  _resolvedOpenClawCliPath = BUNDLED_OPENCLAW_CMD
+  return _resolvedOpenClawCliPath
+}
+
 function bundledOpenclawCommand(args) {
-  return `${BUNDLED_OPENCLAW_CMD} ${args}`
+  let cliPath = _resolvedOpenClawCliPath || BUNDLED_OPENCLAW_CMD
+  // 完整路径可能包含空格（如 Program Files / 用户名），cmd 中需加引号才能正确执行
+  if (cliPath.includes(' ')) cliPath = `"${cliPath}"`
+  return `${cliPath} ${args}`
 }
 
 function getManualCommandSpecs(pid, reg) {
@@ -1461,6 +1482,9 @@ async function handleGatewayWhatsAppLogin(btn, resultEl, actionDef) {
 async function openConfigDialog(pid, page, state, accountId) {
   const reg = PLATFORM_REGISTRY[pid]
   if (!reg) { toast(t('channels.unknownPlatform'), 'error'); return }
+
+  // 手动安装命令需要 OpenClaw CLI 完整路径（内置 agent 安装插件时命令需在任意目录可执行）
+  await resolveOpenClawCliPath()
 
   if (reg.panelSupport === 'docs-only') {
     const docsOnlyContent = `

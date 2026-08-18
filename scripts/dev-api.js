@@ -12079,6 +12079,11 @@ const handlers = {
     }
   },
 
+  // Web 模式下的 OpenClaw CLI 完整路径（用于消息渠道手动安装命令展示）
+  get_openclaw_cli_path() {
+    return resolveOpenclawCliPath() || null
+  },
+
   read_panel_config() {
     return readPanelConfig()
   },
