@@ -117,6 +117,7 @@ const ICONS = {
 let _delegated = false
 let _openClawSidebarSessions = []
 let _openClawSidebarSessionListenerBound = false
+let _openClawSidebarLoading = false
 
 const OPENCLAW_PRIMARY_SIDEBAR_ROUTES = ['/chat', '/dashboard', '/models', '/agents', '/skills']
 const OPENCLAW_SESSION_STORAGE_KEY = 'superclaw-last-session'
@@ -176,6 +177,46 @@ function _bindOpenClawSidebarSessionListener() {
     _openClawSidebarSessions = sessions
     _renderOpenClawSidebarSessions()
   })
+  // 应用启动后主动拉取一次 OpenClaw 会话列表，避免必须进入「实时会话」页才显示。
+  // 本地 raw JSONL 是持久数据源，不依赖 Gateway 就绪，可作为侧边栏的初始列表。
+  _loadOpenClawSidebarSessions()
+}
+
+function _normalizeOpenClawSidebarSessionKey(key) {
+  const raw = String(key || '').trim()
+  if (!raw || raw === 'main') return 'agent:main:main'
+  if (raw.startsWith('agent:')) return raw
+  return `agent:main:${raw}`
+}
+
+async function _loadOpenClawSidebarSessions() {
+  if (_openClawSidebarLoading) return
+  _openClawSidebarLoading = true
+  try {
+    const rawResult = await (isTauriRuntime()
+      ? api.listOpenclawRawSessions(80).catch(() => ({ sessions: [] }))
+      : Promise.resolve({ sessions: [] }))
+    const rawSessions = rawResult?.sessions || rawResult || []
+    if (!Array.isArray(rawSessions)) return
+    // 与本地缓存会话合并（以本地为底，raw 覆盖远端时间戳/计数），并规范化 key。
+    const map = new Map()
+    for (const s of _readOpenClawSidebarSessions()) {
+      const key = _normalizeOpenClawSidebarSessionKey(s?.sessionKey || s?.key)
+      if (key) map.set(key, s)
+    }
+    for (const s of rawSessions) {
+      const key = _normalizeOpenClawSidebarSessionKey(s?.sessionKey || s?.key)
+      if (!key) continue
+      const local = map.get(key)
+      map.set(key, local ? { ...local, ...s, sessionKey: key, key } : { ...s, sessionKey: key, key })
+    }
+    _openClawSidebarSessions = Array.from(map.values())
+    _renderOpenClawSidebarSessions()
+  } catch (e) {
+    console.warn('[sidebar] OpenClaw 会话列表加载失败:', e?.message || e)
+  } finally {
+    _openClawSidebarLoading = false
+  }
 }
 
 function _readHermesSidebarSessions() {
